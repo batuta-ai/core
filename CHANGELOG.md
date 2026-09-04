@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/batuta-ai/core/compare/v1.0.1...v1.1.0) (2026-09-04)
+
+
+### Features
+
+* **cmd:** batuta binary with version, inventory and doctor ([b42226b](https://github.com/batuta-ai/core/commit/b42226bec433812e30060711263b97a368d495c1))
+
 ## [1.0.1](https://github.com/batuta-ai/core/compare/v1.0.0...v1.0.1) (2026-09-04)
 
 
