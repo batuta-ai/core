@@ -1,3 +1,55 @@
 # Changelog
 
+## 1.0.0 (2026-09-04)
+
+
+### Features
+
+* add guarded delivery preflight ([0209bf2](https://github.com/batuta-ai/core/commit/0209bf275adbcca50e40ca2e0ccc03f059f8719d))
+* add redacted executor inventory core ([59f0c0d](https://github.com/batuta-ai/core/commit/59f0c0d2f6306620c654eb123305340f2237d057))
+* add safe publication process boundary ([bf501c9](https://github.com/batuta-ai/core/commit/bf501c975aa4bff72b553943d1f89ef2c0433740))
+* bind exact executor runtime pairs ([0f486b0](https://github.com/batuta-ai/core/commit/0f486b0445a3ef0bad207522b31bb259f8c3b5d7))
+* carry catalog model costs into routing ([973c2bd](https://github.com/batuta-ai/core/commit/973c2bdb88be83cd5a0632d857c52eb5d9f5090f))
+* coordinate parallel delivery waves ([485a3e4](https://github.com/batuta-ai/core/commit/485a3e441e8bb804ca318346655a41fc22cbeb62))
+* enrich Claude and Agy inventory ([9040eb2](https://github.com/batuta-ai/core/commit/9040eb26f52a73773646793d65bc442b9e33e2ce))
+* extract the daemon-free packages of batuta-compozy as batuta-ai/core ([4eca7be](https://github.com/batuta-ai/core/commit/4eca7be4fa677f184233050ebf62b545a155b9c8))
+* integrate task commits deterministically ([910c4c6](https://github.com/batuta-ai/core/commit/910c4c6a657e621991842d7e6fb650bb5b6430c0))
+* inventory local executor capabilities ([048358d](https://github.com/batuta-ai/core/commit/048358d2c6369ced46a61fb728916284870da389))
+* normalize live executor inventory ([0e554f0](https://github.com/batuta-ai/core/commit/0e554f0fa1992825a7bb1b0f082e9a03cd63ad30))
+* persist owned routing generations ([cd9cf42](https://github.com/batuta-ai/core/commit/cd9cf42a3f4097f27c883b99ba2f77df446dc619))
+* persist parallel delivery graphs ([2c0e709](https://github.com/batuta-ai/core/commit/2c0e709411950bdf7e7063a3b2a21727a76aa3eb))
+* pin migration-free delivery state ([1481c0a](https://github.com/batuta-ai/core/commit/1481c0a9667889b0de5a02a5fe8a2def5d2d7eff))
+* plan trusted worktree publication ([5ee79fb](https://github.com/batuta-ai/core/commit/5ee79fbfc6443004feee1fe4db6c040114914010))
+* publish worktree through bounded state machine ([555a14b](https://github.com/batuta-ai/core/commit/555a14b4180a2678d1b016f1c83f7dfdaaf41bde))
+* reconcile delivery fallbacks across runs ([7e831a5](https://github.com/batuta-ai/core/commit/7e831a568eacceb13631b842632bdf68643182df))
+* run dependency-safe task waves ([ff3191a](https://github.com/batuta-ai/core/commit/ff3191a27cf758da9d03fee25b4883ee93ebd65f))
+* select domain complexity lanes ([ecfba7f](https://github.com/batuta-ai/core/commit/ecfba7f8bdf25fdaedf3cec58d5f7eaebbd95c1c))
+* validate task lane classification ([2445295](https://github.com/batuta-ai/core/commit/2445295f5f53647ae01ff0bb63916ea9bcccfe1c))
+* verify publication independently ([22948bd](https://github.com/batuta-ai/core/commit/22948bd471ef3e2bc5fbf0cc9dcf39d73acc2941))
+
+
+### Bug Fixes
+
+* accept earlier delivery ceilings and report typed tool errors ([6f527b4](https://github.com/batuta-ai/core/commit/6f527b4d13c88b90bc1da6dcf8c7708fccf7d589))
+* align routing with live models ([0ba3f3c](https://github.com/batuta-ai/core/commit/0ba3f3cdce527b9f9197bb046a56b0f61cbe63ec))
+* apply the routing matrix on a reused worktree that carries integrated tasks ([06aafe2](https://github.com/batuta-ai/core/commit/06aafe29e2c12aa0cd5eb45adb5e3674d100f351))
+* close a deterministically blocked publication as a blocked delivery ([6a8c308](https://github.com/batuta-ai/core/commit/6a8c308501bd1a4485ebcef6274c2804d51ade61))
+* close delivery mutation boundaries ([a683f21](https://github.com/batuta-ai/core/commit/a683f2165bab8d01db19a3af87fe46a702bbe17f))
+* close parallel delivery release gates ([2bc4201](https://github.com/batuta-ai/core/commit/2bc4201e51b6a3d273d45da337414873d2833f81))
+* harden delivery retries and recovery ([99a6c8b](https://github.com/batuta-ai/core/commit/99a6c8bb1afab4e490b5807de8c982ae596b42ac))
+* ignore build artifacts when collecting task tracking evidence ([353ad69](https://github.com/batuta-ai/core/commit/353ad69ebd15d5f1574e97347d4085309a565664))
+* make routing catalog-driven ([3028bf3](https://github.com/batuta-ai/core/commit/3028bf3f63ce875e32cba6f7c643e2d1d543d9b8))
+* preserve provider routing evidence ([ac83cab](https://github.com/batuta-ai/core/commit/ac83cab0b60840a499bb38800cb8e94f017216cf))
+* preserve routing alignment generations ([ac727ed](https://github.com/batuta-ai/core/commit/ac727ed6ea081fbf97be13d159be3bf519ae8b24))
+* prove a blocked delivery by its recorded publication blockers ([822afd6](https://github.com/batuta-ai/core/commit/822afd6f542f3851421c67d43052bdb603d12d09))
+* **publication:** refresh worktree status ([cfc7f99](https://github.com/batuta-ai/core/commit/cfc7f99d41ff2cda7f4f5928efcf2d22480aadfe))
+* raise the delivery token ceiling to 500M ([a79d1c5](https://github.com/batuta-ai/core/commit/a79d1c5cd5ace32a6df195bfba9335bc38359abd))
+* reject truncated Git evidence ([5a1d342](https://github.com/batuta-ai/core/commit/5a1d3426da8af0e55d971e5e6ca029142eda935a))
+* request JSON output from compozy version probe ([baa5ba5](https://github.com/batuta-ai/core/commit/baa5ba5c52d81a7310c2e0ebee548d964a62a202))
+* size the delivery budget for CompozyOS accounting and start runs as the agent ([7cb8647](https://github.com/batuta-ai/core/commit/7cb864740441834b790db3a15017933a064ec5ed))
+* start a publication-only attempt when every task is already integrated ([cc5a692](https://github.com/batuta-ai/core/commit/cc5a69233d2a7b796b96b6a4f380830de4f41215))
+* treat a repository without a remote as a local-only publication ([f34f485](https://github.com/batuta-ai/core/commit/f34f485c2f574e3c987a49c661d1a4a6f2bf2891))
+
+## Changelog
+
 Releases are generated by release-please from commit messages.
