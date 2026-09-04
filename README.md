@@ -10,6 +10,12 @@ that extension now depends on this module, and the file hosts in
 binary built here. The doctrine and skills live in
 [batuta-ai/skills](https://github.com/batuta-ai/skills).
 
+## Versioning
+
+The module is **pre-release**: `v1.1.0-beta.N` until the API stabilizes.
+`v1.0.0` and `v1.0.1` are retracted (published before the beta line);
+`go get github.com/batuta-ai/core@latest` resolves to the current beta.
+
 ## Packages
 
 | Package | Owns |

@@ -4,5 +4,11 @@
   "bump-minor-pre-major": true,
   "bump-patch-for-minor-pre-major": false,
   "include-component-in-tag": false,
-  "packages": { ".": { "package-name": "batuta-core", "changelog-path": "CHANGELOG.md" } }
+  "packages": {
+    ".": {
+      "package-name": "batuta-core",
+      "changelog-path": "CHANGELOG.md"
+    }
+  },
+  "release-as": "1.0.1"
 }
