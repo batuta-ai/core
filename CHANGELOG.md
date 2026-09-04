@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.1](https://github.com/batuta-ai/core/compare/v1.0.0...v1.0.1) (2026-09-04)
+
+
+### Bug Fixes
+
+* retract the accidental v1.0.0 release and document the beta line ([d4a848e](https://github.com/batuta-ai/core/commit/d4a848ea9ac98e17f2daabc23ec2c0ddcbbb6ef3))
+
 ## 1.0.0 (2026-09-04)
 
 
