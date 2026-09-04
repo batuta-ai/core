@@ -10,5 +10,6 @@
       "changelog-path": "CHANGELOG.md"
     }
   },
-  "release-as": "1.0.1"
+  "prerelease": true,
+  "prerelease-type": "beta"
 }
