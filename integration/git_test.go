@@ -13,7 +13,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/publication"
 )
 
 func TestGitClientCandidateValidatesOneCommitAndTaskLocalTracking(t *testing.T) {
@@ -25,7 +25,7 @@ func TestGitClientCandidateValidatesOneCommitAndTaskLocalTracking(t *testing.T) 
 	writeIntegrationFile(t, trackingPath, "status: completed\n")
 	verification := []byte(`{"checks":["go test ./..."],"status":"passed","task_id":"task_01"}`)
 	runner := &delegatingRunner{delegate: publication.ExecRunner{}}
-	client := GitClient{Executable: fixture.git, Runner: runner, scratchRootForTest: filepath.Join(t.TempDir(), "scratch")}
+	client := GitClient{Executable: fixture.git, Runner: runner, scratchRootForTest: filepath.Join(tempDir(t), "scratch")}
 
 	evidence, err := client.Candidate(context.Background(), CandidateRequest{
 		TaskID: "task_01", Slug: "demo", WorktreeRoot: candidateRoot,
@@ -140,7 +140,7 @@ func TestGitClientCandidateValidatesCommittedTrackingFromGitObject(t *testing.T)
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newIntegrationGitFixture(t)
 			branch := "batuta/task/task_01"
-			root := filepath.Join(t.TempDir(), "task_01")
+			root := filepath.Join(tempDir(t), "task_01")
 			fixture.run(t, fixture.root, "worktree", "add", "-b", branch, root, fixture.base)
 			writeIntegrationFile(t, filepath.Join(root, "product.txt"), "candidate\n")
 			tracking := filepath.Join(root, ".compozy", "tasks", "demo", "task_01.md")
@@ -280,7 +280,7 @@ func TestGitClientCandidateRejectsSymlinkRootAndCancellation(t *testing.T) {
 
 	fixture := newIntegrationGitFixture(t)
 	root, branch, _ := fixture.candidate(t, "task_01", "product.txt", "candidate\n")
-	link := filepath.Join(t.TempDir(), "candidate-link")
+	link := filepath.Join(tempDir(t), "candidate-link")
 	if err := os.Symlink(root, link); err != nil {
 		t.Fatalf("Symlink() error = %v", err)
 	}
@@ -309,7 +309,7 @@ func TestGitClientPreflightReturnsMaximalConflictFreePrefixAndCleansScratch(t *t
 	first := fixture.candidateEvidence(t, "task_01", "shared.txt", "first\n")
 	second := fixture.candidateEvidence(t, "task_02", "shared.txt", "second\n")
 	third := fixture.candidateEvidence(t, "task_03", "third.txt", "third\n")
-	scratch := filepath.Join(t.TempDir(), "scratch")
+	scratch := filepath.Join(tempDir(t), "scratch")
 	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: scratch}
 	request := PreflightRequest{
 		OperationID: integrationDigest([]byte("preflight-op")), RequestDigest: integrationDigest([]byte("preflight-request")),
@@ -344,7 +344,7 @@ func TestGitClientPreflightAcceptsAllCandidatesAndHonorsCancellation(t *testing.
 		IntegrationRoot: fixture.root, StartingHeadSHA: fixture.base,
 		Candidates: []CandidateEvidence{first, second},
 	}
-	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(t.TempDir(), "scratch")}
+	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(tempDir(t), "scratch")}
 	result, err := client.Preflight(context.Background(), request)
 	if err != nil {
 		t.Fatalf("Preflight() error = %v", err)
@@ -380,7 +380,7 @@ func TestGitClientPreflightReportsFirstAndLastConflict(t *testing.T) {
 				wantAccepted = []string{"task_01"}
 			}
 			result, err := (GitClient{
-				Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(t.TempDir(), "scratch"),
+				Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(tempDir(t), "scratch"),
 			}).Preflight(context.Background(), PreflightRequest{
 				OperationID:     integrationDigest([]byte("boundary-" + conflict)),
 				RequestDigest:   integrationDigest([]byte("boundary-request-" + conflict)),
@@ -399,11 +399,11 @@ func TestGitClientPreflightRejectsSymlinkScratchRoot(t *testing.T) {
 
 	fixture := newIntegrationGitFixture(t)
 	candidate := fixture.candidateEvidence(t, "task_01", "first.txt", "first\n")
-	actualScratch := filepath.Join(t.TempDir(), "actual-scratch")
+	actualScratch := filepath.Join(tempDir(t), "actual-scratch")
 	if err := os.MkdirAll(actualScratch, 0o700); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	scratchLink := filepath.Join(t.TempDir(), "scratch-link")
+	scratchLink := filepath.Join(tempDir(t), "scratch-link")
 	if err := os.Symlink(actualScratch, scratchLink); err != nil {
 		t.Fatalf("Symlink() error = %v", err)
 	}
@@ -422,7 +422,7 @@ func TestGitClientPreflightRejectsInsecureExistingScratchWithoutChangingPermissi
 
 	fixture := newIntegrationGitFixture(t)
 	candidate := fixture.candidateEvidence(t, "task_01", "first.txt", "first\n")
-	scratch := filepath.Join(t.TempDir(), "scratch")
+	scratch := filepath.Join(tempDir(t), "scratch")
 	if err := os.Mkdir(scratch, 0o755); err != nil {
 		t.Fatalf("Mkdir() error = %v", err)
 	}
@@ -447,7 +447,7 @@ func TestGitClientPreflightRejectsForeignRepositoryAndOperationalCherryPickFailu
 	integrationFixture := newIntegrationGitFixture(t)
 	foreignFixture := newIntegrationGitFixture(t)
 	foreign := foreignFixture.candidateEvidence(t, "task_01", "first.txt", "first\n")
-	client := GitClient{Executable: integrationFixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(t.TempDir(), "scratch")}
+	client := GitClient{Executable: integrationFixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(tempDir(t), "scratch")}
 	request := PreflightRequest{
 		OperationID: integrationDigest([]byte("foreign-repo-op")), RequestDigest: integrationDigest([]byte("foreign-repo-request")),
 		IntegrationRoot: integrationFixture.root, StartingHeadSHA: integrationFixture.base, Candidates: []CandidateEvidence{foreign},
@@ -498,7 +498,7 @@ func TestGitClientApplyAndReconcileExactPrefix(t *testing.T) {
 	fixture := newIntegrationGitFixture(t)
 	first := fixture.candidateEvidence(t, "task_01", "first.txt", "first\n")
 	second := fixture.candidateEvidence(t, "task_02", "second.txt", "second\n")
-	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(t.TempDir(), "scratch")}
+	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(tempDir(t), "scratch")}
 	preflight, err := client.Preflight(context.Background(), PreflightRequest{
 		OperationID: integrationDigest([]byte("apply-op")), RequestDigest: integrationDigest([]byte("apply-request")),
 		IntegrationRoot: fixture.root, StartingHeadSHA: fixture.base,
@@ -549,7 +549,7 @@ func TestGitClientReconcilesAmbiguousApplyWithoutDuplicatingCommit(t *testing.T)
 
 	fixture := newIntegrationGitFixture(t)
 	candidate := fixture.candidateEvidence(t, "task_01", "first.txt", "first\n")
-	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(t.TempDir(), "scratch")}
+	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(tempDir(t), "scratch")}
 	preflight, err := client.Preflight(context.Background(), PreflightRequest{
 		OperationID: integrationDigest([]byte("ambiguous-op")), RequestDigest: integrationDigest([]byte("ambiguous-request")),
 		IntegrationRoot: fixture.root, StartingHeadSHA: fixture.base, Candidates: []CandidateEvidence{candidate},
@@ -584,7 +584,7 @@ func TestGitClientReconcileRejectsForeignCommitWithExpectedTree(t *testing.T) {
 
 	fixture := newIntegrationGitFixture(t)
 	candidate := fixture.candidateEvidence(t, "task_01", "first.txt", "first\n")
-	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(t.TempDir(), "scratch")}
+	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(tempDir(t), "scratch")}
 	preflight, err := client.Preflight(context.Background(), PreflightRequest{
 		OperationID: integrationDigest([]byte("foreign-tree-op")), RequestDigest: integrationDigest([]byte("foreign-tree-request")),
 		IntegrationRoot: fixture.root, StartingHeadSHA: fixture.base, Candidates: []CandidateEvidence{candidate},
@@ -613,7 +613,7 @@ func TestGitClientApplyAndReconcileRejectForeignDirtyAndCanceledState(t *testing
 
 	fixture := newIntegrationGitFixture(t)
 	candidate := fixture.candidateEvidence(t, "task_01", "first.txt", "first\n")
-	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(t.TempDir(), "scratch")}
+	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: filepath.Join(tempDir(t), "scratch")}
 	preflight, err := client.Preflight(context.Background(), PreflightRequest{
 		OperationID: integrationDigest([]byte("foreign-op")), RequestDigest: integrationDigest([]byte("foreign-request")),
 		IntegrationRoot: fixture.root, StartingHeadSHA: fixture.base, Candidates: []CandidateEvidence{candidate},
@@ -663,7 +663,7 @@ func newIntegrationGitFixture(t *testing.T) *integrationGitFixture {
 	if err != nil {
 		t.Fatalf("Abs(git) error = %v", err)
 	}
-	fixture := &integrationGitFixture{git: git, root: filepath.Join(t.TempDir(), "integration")}
+	fixture := &integrationGitFixture{git: git, root: filepath.Join(tempDir(t), "integration")}
 	fixture.run(t, "", "init", "--initial-branch=main", fixture.root)
 	fixture.run(t, fixture.root, "config", "user.email", "batuta@example.invalid")
 	fixture.run(t, fixture.root, "config", "user.name", "Batuta Test")
@@ -678,7 +678,7 @@ func newIntegrationGitFixture(t *testing.T) *integrationGitFixture {
 func (f *integrationGitFixture) candidate(t *testing.T, taskID, path, content string) (string, string, string) {
 	t.Helper()
 	branch := "batuta/task/" + taskID
-	root := filepath.Join(t.TempDir(), taskID)
+	root := filepath.Join(tempDir(t), taskID)
 	f.run(t, f.root, "worktree", "add", "-b", branch, root, f.base)
 	writeIntegrationFile(t, filepath.Join(root, path), content)
 	f.run(t, root, "add", path)

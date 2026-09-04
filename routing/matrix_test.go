@@ -10,7 +10,7 @@ import (
 func TestMatrixApplyArchivesGenerationAndDeliveryWithoutStoredConfig(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -52,7 +52,7 @@ func TestMatrixApplyArchivesGenerationAndDeliveryWithoutStoredConfig(t *testing.
 func TestMatrixApplyReplaysIdenticalHeaderWithoutResettingBudget(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -98,7 +98,7 @@ func TestMatrixApplyReplaysIdenticalHeaderWithoutResettingBudget(t *testing.T) {
 func TestMatrixApplyChangedTaskOrWorktreeCreatesDistinctDelivery(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -137,7 +137,7 @@ func TestMatrixApplyRejectsForeignOrForgedGenerationWithoutMutation(t *testing.T
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			store, err := NewOwnershipStore(t.TempDir())
+			store, err := NewOwnershipStore(tempDir(t))
 			if err != nil {
 				t.Fatalf("NewOwnershipStore() error = %v", err)
 			}
@@ -181,7 +181,7 @@ func confirmMatrixInput(t *testing.T, store *OwnershipStore, input MatrixApplyIn
 func TestMatrixApplyAcceptsWorktreeSnapshotWithIntegratedProgress(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}

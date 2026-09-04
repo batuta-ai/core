@@ -6,7 +6,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 )
 
 type compozyModelIdentity struct {

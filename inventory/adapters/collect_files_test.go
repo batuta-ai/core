@@ -8,14 +8,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/inventory"
+	"github.com/batuta-ai/core/publication"
 )
 
 func TestCollectorProjectsCodexAndCursorFilesWithoutContents(t *testing.T) {
 	const secret = "BATUTA_LOCAL_FILE_SECRET_a03d"
-	workspace := t.TempDir()
-	userHome := t.TempDir()
+	workspace := tempDir(t)
+	userHome := tempDir(t)
 	codexHome := filepath.Join(userHome, ".codex")
 	for _, directory := range []string{codexHome, filepath.Join(workspace, ".cursor", "rules")} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {

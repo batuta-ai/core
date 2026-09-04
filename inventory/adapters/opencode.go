@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 )
 
 func NewOpenCode(executable string) (Adapter, error) {

@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
-	"github.com/franciscpd/batuta-compozy/internal/inventory/adapters"
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/inventory"
+	"github.com/batuta-ai/core/inventory/adapters"
+	"github.com/batuta-ai/core/publication"
 )
 
 func TestCollectorRunsProbesWithExplicitBoundedParallelism(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	runner := &parallelismCollectorRunner{}
 	collector, err := adapters.NewCollector(runner, adapters.CollectorOptions{
 		TrustedWorkspace:   workspace,
@@ -45,7 +45,7 @@ func TestCollectorRunsProbesWithExplicitBoundedParallelism(t *testing.T) {
 func TestCollectorKeepsHealthyExecutorsWhenOneAdapterIsMalformed(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	runner := &fixtureCollectorRunner{}
 	collector, err := adapters.NewCollector(runner, adapters.CollectorOptions{
 		TrustedWorkspace:   workspace,
@@ -83,7 +83,7 @@ func TestCollectorKeepsHealthyExecutorsWhenOneAdapterIsMalformed(t *testing.T) {
 func TestCollectorAssociatesConstructorOwnedProviderBindings(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	collector, err := adapters.NewCollector(&fixtureCollectorRunner{}, adapters.CollectorOptions{
 		TrustedWorkspace:   workspace,
 		WorkspaceID:        "ws-fixture",
@@ -115,7 +115,7 @@ func TestCollectorAssociatesConstructorOwnedProviderBindings(t *testing.T) {
 func TestLiveInventoryDigestChangesWhenEnrichmentChangesButCatalogGenerationDoesNot(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	runner := &fixtureCollectorRunner{claudePlugin: "frontend-kit"}
 	collector, err := adapters.NewCollector(runner, adapters.CollectorOptions{
 		TrustedWorkspace: workspace, WorkspaceID: "ws-fixture",
@@ -142,7 +142,7 @@ func TestCollectorAlwaysReportsAllSixRecordsWhenOptionalBinariesAreMissing(t *te
 	t.Parallel()
 
 	collector, err := adapters.NewCollector(&fixtureCollectorRunner{}, adapters.CollectorOptions{
-		TrustedWorkspace: t.TempDir(),
+		TrustedWorkspace: tempDir(t),
 		WorkspaceID:      "ws-fixture",
 	})
 	if err != nil {
@@ -165,7 +165,7 @@ func TestCollectorAlwaysReportsAllSixRecordsWhenOptionalBinariesAreMissing(t *te
 func TestCollectorEnforcesOneSharedSubprocessBudget(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	runner := &fixtureCollectorRunner{manyAgents: true}
 	collector, err := adapters.NewCollector(runner, adapters.CollectorOptions{
 		TrustedWorkspace:   workspace,
@@ -187,7 +187,7 @@ func TestCollectorEnforcesOneSharedSubprocessBudget(t *testing.T) {
 func TestCollectorMarksEvidenceUnknownAtNormalizedRecordBudget(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	runner := &fixtureCollectorRunner{manyModels: true}
 	collector, err := adapters.NewCollector(runner, adapters.CollectorOptions{
 		TrustedWorkspace:   workspace,
@@ -221,7 +221,7 @@ func TestCollectorMarksEvidenceUnknownAtNormalizedRecordBudget(t *testing.T) {
 func TestCollectorBoundsAgyLocalEvidenceAtRecordLimit(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	runner := &fixtureCollectorRunner{manyAgyAgents: true}
 	collector, err := adapters.NewCollector(runner, adapters.CollectorOptions{
 		TrustedWorkspace: workspace, WorkspaceID: "ws-fixture", AgyExecutable: filepath.Join(workspace, "agy"),

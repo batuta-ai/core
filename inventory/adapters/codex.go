@@ -3,7 +3,7 @@ package adapters
 import (
 	"encoding/json"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 )
 
 func NewCodex(executable string) (Adapter, error) {

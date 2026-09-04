@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 )
 
 const fixtureSecret = "BATUTA_ADAPTER_SECRET_91ef"

@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/publication"
 )
 
 var conventionalCommitSubject = regexp.MustCompile(`^[a-z][a-z0-9-]*(\([A-Za-z0-9][A-Za-z0-9._/-]*\))?!?: [^[:space:]].*$`)
@@ -696,7 +696,11 @@ func (c GitClient) secureScratchRoot(ctx context.Context, repositoryRoot string)
 		}
 		root = filepath.Join(batutaRoot, "integration")
 	} else {
-		temporary, err := canonicalDirectory(os.TempDir())
+		systemTemp, err := filepath.EvalSymlinks(os.TempDir())
+		if err != nil {
+			return "", errors.New("integration: system temporary directory is unavailable")
+		}
+		temporary, err := canonicalDirectory(systemTemp)
 		if err != nil || !pathContained(temporary, root) || root == temporary {
 			return "", errors.New("integration: test scratch root must stay under the system temporary directory")
 		}

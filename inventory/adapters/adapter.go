@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 )
 
 type Adapter interface {

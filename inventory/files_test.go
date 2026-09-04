@@ -10,8 +10,8 @@ import (
 func TestFileReaderAllowsContainedFilesAndRejectsSymlinkEscapes(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
-	outside := t.TempDir()
+	workspace := tempDir(t)
+	outside := tempDir(t)
 	if err := os.MkdirAll(filepath.Join(workspace, ".cursor", "rules"), 0o755); err != nil {
 		t.Fatalf("mkdir rules: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestFileReaderAllowsContainedFilesAndRejectsSymlinkEscapes(t *testing.T) {
 func TestFileReaderEnforcesSharedFileAndByteBudgets(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	if err := os.WriteFile(filepath.Join(workspace, "one"), []byte("12345"), 0o600); err != nil {
 		t.Fatalf("write one: %v", err)
 	}

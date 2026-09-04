@@ -11,7 +11,7 @@ import (
 func TestArtifactLoaderUsesCanonicalSlugStableOrderAndEveryAuthoredByte(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	writeTask(t, root, "demo", "task_02.md", "completed", "frontend", "high", nil, "frontend body")
 	writeTask(t, root, "demo", "task_01.md", "completed", "backend", "low", nil, "backend body")
 	writeTaskManifest(t, root, "demo", []string{"task_01", "task_02"}, [][2]string{{"task_01", "task_02"}})
@@ -46,7 +46,7 @@ func TestArtifactLoaderUsesCanonicalSlugStableOrderAndEveryAuthoredByte(t *testi
 func TestArtifactLoaderRejectsInvalidSlugAndSymlinkEscape(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	loader, err := NewArtifactLoader(root)
 	if err != nil {
 		t.Fatalf("NewArtifactLoader() error = %v", err)
@@ -57,7 +57,7 @@ func TestArtifactLoaderRejectsInvalidSlugAndSymlinkEscape(t *testing.T) {
 		}
 	}
 
-	outside := t.TempDir()
+	outside := tempDir(t)
 	writeTask(t, outside, "outside", "task_01.md", "pending", "backend", "low", nil, "secret outside body")
 	writeTaskManifest(t, outside, "outside", []string{"task_01"}, nil)
 	if err := os.MkdirAll(filepath.Join(root, ".compozy", "tasks"), 0o755); err != nil {
@@ -75,7 +75,7 @@ func TestArtifactLoaderRequiresCanonicalDomainAndComplexity(t *testing.T) {
 	t.Parallel()
 
 	for _, taskType := range []string{"test", "refactor", "chore", "bugfix", "qa-report", "qa-execution", "unknown"} {
-		root := t.TempDir()
+		root := tempDir(t)
 		writeTask(t, root, "demo", "task_01.md", "pending", taskType, "low", nil, "body")
 		writeTaskManifest(t, root, "demo", []string{"task_01"}, nil)
 		loader, err := NewArtifactLoader(root)
@@ -87,7 +87,7 @@ func TestArtifactLoaderRequiresCanonicalDomainAndComplexity(t *testing.T) {
 		}
 	}
 
-	root := t.TempDir()
+	root := tempDir(t)
 	path := writeTask(t, root, "demo", "task_01.md", "pending", "backend", "low", nil, "body")
 	writeTaskManifest(t, root, "demo", []string{"task_01"}, nil)
 	payload := []byte("---\nstatus: pending\ntitle: Missing complexity\ntype: backend\n---\nbody\n")
@@ -103,7 +103,7 @@ func TestArtifactLoaderRequiresCanonicalDomainAndComplexity(t *testing.T) {
 func TestArtifactLoaderUsesManifestTopologicalOrderAndCanonicalDigest(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	writeTask(t, root, "demo", "task_01.md", "pending", "frontend", "medium", nil, "first")
 	writeTask(t, root, "demo", "task_02.md", "pending", "backend", "low", nil, "second")
 	writeTaskManifest(t, root, "demo", []string{"task_01", "task_02"}, [][2]string{{"task_02", "task_01"}})
@@ -131,7 +131,7 @@ func TestArtifactLoaderUsesManifestTopologicalOrderAndCanonicalDigest(t *testing
 func TestTaskSetDeliverySnapshotKeepsCompletedTasksAndStableItemIdentity(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	writeTask(t, root, "demo", "task_01.md", "completed", "backend", "low", nil, "done")
 	writeTask(t, root, "demo", "task_02.md", "pending", "frontend", "high", nil, "remaining")
 	writeTaskManifest(t, root, "demo", []string{"task_01", "task_02"}, [][2]string{{"task_01", "task_02"}})
@@ -162,7 +162,7 @@ func TestArtifactLoaderRejectsUnsupportedAuthoredStatus(t *testing.T) {
 	t.Parallel()
 
 	for _, status := range []string{"", "done", "in_progress", "blocked", "failed"} {
-		root := t.TempDir()
+		root := tempDir(t)
 		writeTask(t, root, "demo", "task_01.md", status, "backend", "low", nil, "body")
 		writeTaskManifest(t, root, "demo", []string{"task_01"}, nil)
 		loader, err := NewArtifactLoader(root)
@@ -178,7 +178,7 @@ func TestArtifactLoaderRejectsUnsupportedAuthoredStatus(t *testing.T) {
 func TestTaskSnapshotReconcileCarriesCompletedTaskAndStableItemMapping(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	writeTask(t, root, "demo", "task_01.md", "pending", "backend", "low", nil, "first")
 	writeTask(t, root, "demo", "task_02.md", "pending", "frontend", "high", nil, "second")
 	writeTaskManifest(t, root, "demo", []string{"task_01", "task_02"}, [][2]string{{"task_01", "task_02"}})

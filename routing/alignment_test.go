@@ -12,7 +12,7 @@ func TestMatrixApplyRequiresCurrentOperatorAlignmentBeforeNewDelivery(t *testing
 	t.Parallel()
 
 	input := validMatrixApplyInput(t)
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -30,7 +30,7 @@ func TestAlignmentConfirmationRejectsUnarchivedGeneration(t *testing.T) {
 	t.Parallel()
 
 	input := validMatrixApplyInput(t)
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -44,7 +44,7 @@ func TestAlignmentConfirmationIsReusableUntilRuntimeOrFallbackChanges(t *testing
 	t.Parallel()
 
 	input := validMatrixApplyInput(t)
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -108,7 +108,7 @@ func TestAlignmentConfirmationIsReusableUntilRuntimeOrFallbackChanges(t *testing
 func TestAlignmentReplayProtectsLatestEquivalentGeneration(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}

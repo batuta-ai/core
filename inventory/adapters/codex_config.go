@@ -5,7 +5,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 	"github.com/pelletier/go-toml/v2"
 )
 

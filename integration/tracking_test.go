@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/publication"
 )
 
 func TestFileTrackingSynchronizerPreservesParallelTaskEvidenceAndRebuildsSharedState(t *testing.T) {
@@ -142,7 +142,7 @@ func TestFileTrackingSynchronizerRejectsSharedProjectionThatOverwritesCommittedT
 
 	fixture := newIntegrationGitFixture(t)
 	branch := "batuta/task/task_01"
-	root := filepath.Join(t.TempDir(), "task_01")
+	root := filepath.Join(tempDir(t), "task_01")
 	fixture.run(t, fixture.root, "worktree", "add", "-b", branch, root, fixture.base)
 	writeIntegrationFile(t, filepath.Join(root, "product.txt"), "product\n")
 	path := ".compozy/tasks/demo/task_01.md"
@@ -177,7 +177,7 @@ func TestFileTrackingSynchronizerRejectsSharedProjectionThroughEscapingSymlink(t
 	t.Parallel()
 
 	fixture := newIntegrationGitFixture(t)
-	outside := t.TempDir()
+	outside := tempDir(t)
 	if err := os.MkdirAll(filepath.Join(fixture.root, ".compozy", "tasks"), 0o700); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}

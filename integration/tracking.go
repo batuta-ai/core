@@ -14,7 +14,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/publication"
 )
 
 var metadataCommitEnvironment = []string{

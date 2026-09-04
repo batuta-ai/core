@@ -16,7 +16,7 @@ import (
 func TestOwnershipStoreArchivesAndLoadsImmutableRoutingGeneration(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -43,7 +43,7 @@ func TestOwnershipStoreArchivesAndLoadsImmutableRoutingGeneration(t *testing.T) 
 func TestOwnershipStoreBoundsUnconfirmedCandidates(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -78,7 +78,7 @@ func TestOwnershipStoreBoundsUnconfirmedCandidates(t *testing.T) {
 func TestOwnershipStoreKeepsInterleavedPendingGenerations(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -105,7 +105,7 @@ func TestOwnershipStoreKeepsInterleavedPendingGenerations(t *testing.T) {
 func TestOwnershipStorePreservesReferencedGenerationWhileReplacingCandidate(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -137,7 +137,7 @@ func TestOwnershipStorePreservesReferencedGenerationWhileReplacingCandidate(t *t
 func TestOwnershipStoreConcurrentCandidateArchiveRemainsBounded(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	stores := make([]*OwnershipStore, 2)
 	for index := range stores {
 		store, err := NewOwnershipStore(root)
@@ -179,7 +179,7 @@ func TestOwnershipStoreConcurrentCandidateArchiveRemainsBounded(t *testing.T) {
 func TestOwnershipWorkspaceLockSerializesSeparateStoreInstances(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	first, err := NewOwnershipStore(root)
 	if err != nil {
 		t.Fatalf("NewOwnershipStore(first) error = %v", err)
@@ -231,7 +231,7 @@ func TestOwnershipWorkspaceLockSerializesSeparateStoreInstances(t *testing.T) {
 func TestDeliveryGraphCrossStoreWritersNeverAdmitMoreThanFourTasks(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	stores := make([]*OwnershipStore, 2)
 	for index := range stores {
 		store, err := NewOwnershipStore(root)
@@ -361,7 +361,7 @@ func TestDeliveryGraphCrossStoreWritersNeverAdmitMoreThanFourTasks(t *testing.T)
 func TestOwnershipJournalHashesWorkspaceFilenameAndExcludesSecrets(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	store, err := NewOwnershipStore(root)
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
@@ -393,7 +393,7 @@ func TestOwnershipJournalHashesWorkspaceFilenameAndExcludesSecrets(t *testing.T)
 func TestRoutingGenerationArchiveSurvivesRefreshAndRestart(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -426,7 +426,7 @@ func TestRoutingGenerationArchiveSurvivesRefreshAndRestart(t *testing.T) {
 func TestJournalTransactionWithoutPersistIsReadOnly(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}

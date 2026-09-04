@@ -10,13 +10,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/publication"
 )
 
 func TestBootstrapInitializesSafeWorkspaceAndReplaysWithoutAnotherCommit(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	writeBootstrapFile(t, root, ".gitignore", ".env\n")
 	writeBootstrapFile(t, root, ".env", "SECRET=not-committed\n")
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
@@ -55,7 +55,7 @@ func TestBootstrapInitializesSafeWorkspaceAndReplaysWithoutAnotherCommit(t *test
 func TestBootstrapBlocksUnignoredSensitivePathsAndRollsBackOwnedRepository(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 	writeBootstrapFile(t, root, ".env.production", "TOKEN=secret\n")
 	writeBootstrapFile(t, root, "config/private.pem", "private-key\n")
@@ -82,7 +82,7 @@ func TestBootstrapBlocksUnignoredSensitivePathsAndRollsBackOwnedRepository(t *te
 func TestBootstrapPreservesExistingEmptyRepositoryWhenSensitivePathBlocksCommit(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	runGit(t, root, "init", "--initial-branch=main", ".")
 	writeBootstrapFile(t, root, ".npmrc", "//registry.example/:_authToken=secret\n")
 
@@ -101,7 +101,7 @@ func TestBootstrapPreservesExistingEmptyRepositoryWhenSensitivePathBlocksCommit(
 func TestBootstrapRechecksTheExactStagedSetBeforeCommit(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 	bootstrapper := realBootstrapper(t)
 	delegate := bootstrapper.Runner
@@ -124,7 +124,7 @@ func TestBootstrapRechecksTheExactStagedSetBeforeCommit(t *testing.T) {
 func TestBootstrapRejectsExistingHeadlessRepositoryOnNonMainBranch(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	runGit(t, root, "init", "--initial-branch=master", ".")
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 
@@ -140,7 +140,7 @@ func TestBootstrapRejectsExistingHeadlessRepositoryOnNonMainBranch(t *testing.T)
 func TestBootstrapDoesNotDestroyCommittedRepositoryWhenConcurrentFileAppearsAfterCommit(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 	bootstrapper := realBootstrapper(t)
 	delegate := bootstrapper.Runner
@@ -177,7 +177,7 @@ func TestSensitivePathRecognizesLegacySSHPrivateKeys(t *testing.T) {
 func TestBootstrapDisablesHooksThatCouldChangeTheInspectedIndex(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	runGit(t, root, "init", "--initial-branch=main", ".")
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 	hook := filepath.Join(root, ".git", "hooks", "prepare-commit-msg")
@@ -200,7 +200,7 @@ func TestBootstrapDisablesHooksThatCouldChangeTheInspectedIndex(t *testing.T) {
 func TestBootstrapTreatsDetachedValidHeadAsInitialized(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	runGit(t, root, "init", "--initial-branch=main", ".")
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 	runGit(t, root, "add", "README.md")

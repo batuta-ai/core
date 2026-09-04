@@ -6,7 +6,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 )
 
 func TestSelectorRequiresResolvedHardCapabilities(t *testing.T) {

@@ -178,7 +178,7 @@ func TestGitClientUpstreamHeadReturnsTheRemoteTrackingSHA(t *testing.T) {
 	t.Parallel()
 
 	repository := newTestRepository(t)
-	remote := filepath.Join(t.TempDir(), "remote.git")
+	remote := filepath.Join(tempDir(t), "remote.git")
 	runCommand(t, repository.git, "", "init", "--bare", remote)
 	repository.run(t, "remote", "add", "origin", remote)
 	repository.run(t, "push", "--set-upstream", "origin", "main")
@@ -368,7 +368,7 @@ func newTestRepository(t *testing.T) testRepository {
 	if err != nil {
 		t.Fatalf("absolute git path: %v", err)
 	}
-	repository := testRepository{git: git, path: filepath.Join(t.TempDir(), "repository with spaces")}
+	repository := testRepository{git: git, path: filepath.Join(tempDir(t), "repository with spaces")}
 	runCommand(t, git, "", "init", "--initial-branch=main", repository.path)
 	repository.run(t, "config", "user.email", "batuta@example.invalid")
 	repository.run(t, "config", "user.name", "Batuta Test")

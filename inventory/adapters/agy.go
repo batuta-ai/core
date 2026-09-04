@@ -1,7 +1,7 @@
 package adapters
 
 import (
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 )
 
 func NewAgy(executable string) (Adapter, error) {

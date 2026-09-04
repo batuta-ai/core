@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
+	"github.com/batuta-ai/core/inventory"
 )
 
 func TestCodexConfigProjectionKeepsOnlyAllowlistedDeclaredFields(t *testing.T) {

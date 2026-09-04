@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/franciscpd/batuta-compozy/internal/inventory"
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/inventory"
+	"github.com/batuta-ai/core/publication"
 )
 
 const (

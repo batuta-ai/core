@@ -14,7 +14,7 @@ import (
 func TestDeliveryJournalPersistsStrictSchemaV2(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestDeliveryJournalPersistsStrictSchemaV2(t *testing.T) {
 func TestLegacyGraphlessDeliveryLoadsByteForByteAndCannotGainGraph(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	store, err := NewOwnershipStore(root)
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
@@ -328,7 +328,7 @@ func TestDeliveryGraphConflictReexecutionAppendsAttemptAndIntegratedIsImmutable(
 
 func persistedGraphDeliveryStore(t *testing.T) (*OwnershipStore, DeliveryRecord) {
 	t.Helper()
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -387,7 +387,7 @@ func TestDeliveryJournalRejectsUnknownTrailingAndOversizedInput(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			root := t.TempDir()
+			root := tempDir(t)
 			store, err := NewOwnershipStore(root)
 			if err != nil {
 				t.Fatalf("NewOwnershipStore() error = %v", err)
@@ -405,7 +405,7 @@ func TestDeliveryJournalRejectsUnknownTrailingAndOversizedInput(t *testing.T) {
 func TestDeliveryJournalUpgradesV1OnlyOnExplicitMutation(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
+	root := tempDir(t)
 	store, err := NewOwnershipStore(root)
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
@@ -527,7 +527,7 @@ func TestTerminalDeliveryRejectsNewAttemptsAtDomainAndJournalBoundaries(t *testi
 func TestJournalTransactionKeepsPersistedIntentAfterCallbackError(t *testing.T) {
 	t.Parallel()
 
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}
@@ -614,7 +614,7 @@ func TestDeliveryAttemptIdentityIsStableAndOrderSensitive(t *testing.T) {
 
 func persistedDeliveryStore(t *testing.T) *OwnershipStore {
 	t.Helper()
-	store, err := NewOwnershipStore(t.TempDir())
+	store, err := NewOwnershipStore(tempDir(t))
 	if err != nil {
 		t.Fatalf("NewOwnershipStore() error = %v", err)
 	}

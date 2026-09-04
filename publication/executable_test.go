@@ -7,7 +7,7 @@ import (
 )
 
 func TestExecutableResolverReturnsAnAbsolutePath(t *testing.T) {
-	directory := t.TempDir()
+	directory := tempDir(t)
 	executable := filepath.Join(directory, "controlled-tool")
 	if err := os.WriteFile(executable, []byte("test executable"), 0o755); err != nil {
 		t.Fatalf("write executable: %v", err)
@@ -24,7 +24,7 @@ func TestExecutableResolverReturnsAnAbsolutePath(t *testing.T) {
 }
 
 func TestExecutableResolverRejectsMissingExecutable(t *testing.T) {
-	t.Setenv("PATH", t.TempDir())
+	t.Setenv("PATH", tempDir(t))
 	if _, err := (ExecutableResolver{}).Resolve("definitely-missing-tool"); err == nil {
 		t.Fatal("Resolve() error = nil, want missing executable error")
 	}

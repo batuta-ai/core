@@ -25,7 +25,7 @@ func TestExecRunnerUsesExactExecutableArgvAndDirectory(t *testing.T) {
 		"semi;colon",
 		"`backticks`",
 	}
-	directory := t.TempDir()
+	directory := tempDir(t)
 
 	result, err := (ExecRunner{}).Run(context.Background(), helperCommand(t, directory, "argv", wantArgs...))
 	if err != nil {
@@ -53,7 +53,7 @@ func TestExecRunnerUsesExactExecutableArgvAndDirectory(t *testing.T) {
 func TestExecRunnerPassesBoundedStdinAndEnvironmentOverrides(t *testing.T) {
 	t.Parallel()
 
-	command := helperCommand(t, t.TempDir(), "stdin-environment")
+	command := helperCommand(t, tempDir(t), "stdin-environment")
 	command.Stdin = []byte("deterministic input\n")
 	command.Environment = []string{"BATUTA_TEST_VALUE=deterministic environment"}
 	result, err := (ExecRunner{}).Run(context.Background(), command)
@@ -68,7 +68,7 @@ func TestExecRunnerPassesBoundedStdinAndEnvironmentOverrides(t *testing.T) {
 func TestExecRunnerBoundsStdoutAndStderrWhileProcessRuns(t *testing.T) {
 	t.Parallel()
 
-	command := helperCommand(t, t.TempDir(), "large-output")
+	command := helperCommand(t, tempDir(t), "large-output")
 	command.StdoutLimit = 64 * 1024
 	command.StderrLimit = 32 * 1024
 
@@ -90,7 +90,7 @@ func TestExecRunnerBoundsStdoutAndStderrWhileProcessRuns(t *testing.T) {
 func TestExecRunnerUsesSafeDefaultOutputLimits(t *testing.T) {
 	t.Parallel()
 
-	result, err := (ExecRunner{}).Run(context.Background(), helperCommand(t, t.TempDir(), "large-output"))
+	result, err := (ExecRunner{}).Run(context.Background(), helperCommand(t, tempDir(t), "large-output"))
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -131,7 +131,7 @@ func TestBoundedWriterRetainsOnlyItsLimitWhileDraining(t *testing.T) {
 func TestExecRunnerReturnsBoundedStderrAndExitCode(t *testing.T) {
 	t.Parallel()
 
-	command := helperCommand(t, t.TempDir(), "fail")
+	command := helperCommand(t, tempDir(t), "fail")
 	command.StderrLimit = 64 * 1024
 
 	result, err := (ExecRunner{}).Run(context.Background(), command)
@@ -161,7 +161,7 @@ func TestExecRunnerHonorsContextCancellation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := (ExecRunner{}).Run(ctx, helperCommand(t, t.TempDir(), "block"))
+	_, err := (ExecRunner{}).Run(ctx, helperCommand(t, tempDir(t), "block"))
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run() error = %v, want context deadline exceeded", err)
 	}
@@ -174,7 +174,7 @@ func TestExecRunnerPreservesManualContextCancellation(t *testing.T) {
 	timer := time.AfterFunc(100*time.Millisecond, cancel)
 	defer timer.Stop()
 
-	_, err := (ExecRunner{}).Run(ctx, helperCommand(t, t.TempDir(), "block"))
+	_, err := (ExecRunner{}).Run(ctx, helperCommand(t, tempDir(t), "block"))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Run() error = %v, want context canceled", err)
 	}

@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/franciscpd/batuta-compozy/internal/publication"
+	"github.com/batuta-ai/core/publication"
 )
 
 func TestProbeRunnerAllowsOnlyRegisteredExecutableArgv(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	executable := filepath.Join(workspace, "bin", "codex")
 	capture := &captureCommandRunner{result: publication.CommandResult{Stdout: []byte(`{"status":"ok"}`)}}
 	runner, err := NewProbeRunner(capture, workspace, []ProbeSpec{{
@@ -57,7 +57,7 @@ func TestProbeRunnerAllowsOnlyRegisteredExecutableArgv(t *testing.T) {
 func TestProbeRunnerRejectsCallerPathsAndMutatingFlags(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	absolute := filepath.Join(workspace, "bin", "executor")
 	tests := []struct {
 		name string
@@ -95,7 +95,7 @@ func TestProbeRunnerRejectsCallerPathsAndMutatingFlags(t *testing.T) {
 func TestProbeRunnerUsesTrustedWorkspaceTimeoutAndOutputCaps(t *testing.T) {
 	t.Parallel()
 
-	workspace := t.TempDir()
+	workspace := tempDir(t)
 	capture := &captureCommandRunner{result: publication.CommandResult{Stdout: []byte("safe")}}
 	runner, err := NewProbeRunner(capture, workspace, []ProbeSpec{{
 		ID:         "compozy.version",
@@ -138,10 +138,10 @@ func TestProbeRunnerRedactsFailuresBeforeReturning(t *testing.T) {
 		},
 		err: errors.New("executor failed with token " + secret),
 	}
-	runner, err := NewProbeRunner(capture, t.TempDir(), []ProbeSpec{{
+	runner, err := NewProbeRunner(capture, tempDir(t), []ProbeSpec{{
 		ID:         "cursor.status",
 		Executor:   ExecutorCursorAgent,
-		Executable: filepath.Join(t.TempDir(), "cursor-agent"),
+		Executable: filepath.Join(tempDir(t), "cursor-agent"),
 		Args:       []string{"status", "--format", "json"},
 	}})
 	if err != nil {
