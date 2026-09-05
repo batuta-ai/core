@@ -111,3 +111,16 @@ func TestInspectGitWithSpentContext(t *testing.T) {
 		t.Fatalf("inspectGit with a cancelled context = %q; a spent context must not report a repository, doctor must give git its own", top)
 	}
 }
+
+func TestVersionPrefersTheBuildVersion(t *testing.T) {
+	previous := buildVersion
+	t.Cleanup(func() { buildVersion = previous })
+	buildVersion = "v9.9.9-beta.1"
+	if got := version(); got != "v9.9.9-beta.1" {
+		t.Fatalf("version() = %q, want the ldflags value", got)
+	}
+	buildVersion = ""
+	if got := version(); got == "" || got == "v9.9.9-beta.1" {
+		t.Fatalf("version() without ldflags = %q", got)
+	}
+}

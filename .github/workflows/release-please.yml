@@ -19,8 +19,8 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # PR de release é gerado mecanicamente a partir de commits já na main:
-      # merge imediato via bypass de admin, sem exigir aprovação
+      # The release PR is generated mechanically from commits already on main:
+      # merge it at once with the admin bypass, no approval needed
       - name: Auto-merge release PR
         if: ${{ steps.release.outputs.pr }}
         run: gh pr merge --squash --admin --repo "${{ github.repository }}" "${{ fromJson(steps.release.outputs.pr).number }}"
