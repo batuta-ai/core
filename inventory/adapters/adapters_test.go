@@ -94,6 +94,7 @@ func TestAdaptersUseOnlyClosedCommandShapes(t *testing.T) {
 				{"--version"},
 				{"agent"},
 				{"plugin", "list"},
+				{"models"},
 			},
 		},
 	}
@@ -125,7 +126,7 @@ func TestClaudeAdapterUsesOnlyReadOnlyBoundedCommands(t *testing.T) {
 
 func TestAgyAdapterUsesOnlyReadOnlyBoundedCommands(t *testing.T) {
 	t.Parallel()
-	assertStaticCommandShapes(t, mustNewAgy(t, "/opt/bin/agy"), [][]string{{"--version"}, {"agent"}, {"plugin", "list"}})
+	assertStaticCommandShapes(t, mustNewAgy(t, "/opt/bin/agy"), [][]string{{"--version"}, {"agent"}, {"plugin", "list"}, {"models"}})
 }
 
 func assertStaticCommandShapes(t *testing.T, adapter Adapter, want [][]string) {
@@ -233,9 +234,9 @@ func TestClaudeAndAgyAdaptersNormalizeInstalledMissingMalformedPartialAndSkewed(
 		if installed.Availability != inventory.AvailabilityAvailable || installed.Version.State != inventory.ResolutionResolved {
 			t.Fatalf("%s installed snapshot = %#v", name, installed)
 		}
-		wantBindings := []inventory.ProviderBinding{{ProviderID: "claude"}}
+		wantBindings := []inventory.ProviderBinding{{ProviderID: "claude"}, {ProviderID: "claude", ModelID: "haiku"}, {ProviderID: "claude", ModelID: "sonnet"}, {ProviderID: "claude", ModelID: "opus"}}
 		if name == "agy" {
-			wantBindings = nil
+			wantBindings = []inventory.ProviderBinding{{ProviderID: "agy"}, {ProviderID: "agy", ModelID: "gemini-3.8-flash-high"}, {ProviderID: "agy", ModelID: "gemini-3.8-flash-low"}}
 		}
 		if !slices.Equal(installed.ProviderBindings, wantBindings) {
 			t.Fatalf("%s provider bindings = %#v, want %#v", name, installed.ProviderBindings, wantBindings)
@@ -337,6 +338,8 @@ func TestAdaptersDistinguishResolvedDeclaredAndUnknown(t *testing.T) {
 		"codex":    {"models": inventory.ResolutionResolved, "config": inventory.ResolutionDeclared},
 		"opencode": {"models": inventory.ResolutionResolved, "config": inventory.ResolutionResolved},
 		"cursor":   {"models": inventory.ResolutionResolved, "config": inventory.ResolutionUnknown},
+		"claude":   {"models": inventory.ResolutionDeclared, "plugins": inventory.ResolutionResolved},
+		"agy":      {"models": inventory.ResolutionResolved, "agents": inventory.ResolutionResolved},
 	}
 	for name, expectations := range want {
 		snapshot := fixtureAdapter(t, name).Normalize(fixtureOutputs(t, name))
@@ -688,5 +691,29 @@ func TestCompozyAdapterCapturesCatalogModelCosts(t *testing.T) {
 	}
 	if !slices.Equal(snapshot.CatalogModelCosts, want) {
 		t.Fatalf("catalog model costs = %#v, want live and unknown priced pairs only %#v", snapshot.CatalogModelCosts, want)
+	}
+}
+
+func TestModelBindingsBackDoctorCountsForEveryExecutor(t *testing.T) {
+	t.Parallel()
+
+	want := map[string][]inventory.ProviderBinding{
+		"cursor": {{ProviderID: "cursor"}, {ProviderID: "cursor", ModelID: "auto"}, {ProviderID: "cursor", ModelID: "grok-4.6"}, {ProviderID: "cursor", ModelID: "composer-2.5"}},
+		"agy":    {{ProviderID: "agy"}, {ProviderID: "agy", ModelID: "gemini-3.8-flash-high"}, {ProviderID: "agy", ModelID: "gemini-3.8-flash-low"}},
+		"claude": {{ProviderID: "claude"}, {ProviderID: "claude", ModelID: "haiku"}, {ProviderID: "claude", ModelID: "sonnet"}, {ProviderID: "claude", ModelID: "opus"}},
+	}
+	for name, bindings := range want {
+		snapshot := fixtureAdapter(t, name).Normalize(fixtureOutputs(t, name))
+		if !slices.Equal(snapshot.ProviderBindings, bindings) {
+			t.Fatalf("%s bindings = %#v, want %#v", name, snapshot.ProviderBindings, bindings)
+		}
+		for _, binding := range snapshot.ProviderBindings {
+			if strings.Contains(binding.ModelID, "SECRET") {
+				t.Fatalf("%s leaked a canary into bindings: %#v", name, snapshot.ProviderBindings)
+			}
+		}
+	}
+	if agy := fixtureAdapter(t, "agy").Normalize(map[inventory.ProbeID][]byte{}); agy.ProviderBindings != nil {
+		t.Fatalf("agy without a models probe should bind nothing, got %#v", agy.ProviderBindings)
 	}
 }

@@ -103,7 +103,7 @@ func TestCollectorAssociatesConstructorOwnedProviderBindings(t *testing.T) {
 		inventory.ExecutorCompozy:     nil,
 		inventory.ExecutorCodex:       {{ProviderID: "codex"}, {ProviderID: "codex", ModelID: "gpt-5.6-sol"}},
 		inventory.ExecutorOpenCode:    {{ProviderID: "opencode", ModelID: "openai/gpt-5.6-terra"}},
-		inventory.ExecutorCursorAgent: {{ProviderID: "cursor"}},
+		inventory.ExecutorCursorAgent: {{ProviderID: "cursor"}, {ProviderID: "cursor", ModelID: "grok-4.6"}},
 	}
 	for _, executor := range snapshot.Executors {
 		if got := executor.ProviderBindings; !slices.Equal(got, want[executor.ID]) {

@@ -6,6 +6,11 @@ import (
 	"github.com/batuta-ai/core/inventory"
 )
 
+// claudeDeclaredModels are the aliases `claude -p --model` accepts. Claude
+// Code has no command that lists models, so the routing doctrine declares
+// them; the evidence state says so.
+var claudeDeclaredModels = []string{"haiku", "sonnet", "opus"}
+
 func NewClaude(executable string) (Adapter, error) {
 	ids := map[string]inventory.ProbeID{
 		"version": "claude.version",
@@ -27,6 +32,10 @@ func normalizeClaude(ids map[string]inventory.ProbeID, outputs map[inventory.Pro
 		ProviderBindings: []inventory.ProviderBinding{{ProviderID: "claude"}},
 		CredentialState:  inventory.CredentialUnknown,
 	}
+	for _, model := range claudeDeclaredModels {
+		snapshot.ProviderBindings = append(snapshot.ProviderBindings, inventory.ProviderBinding{ProviderID: "claude", ModelID: model})
+	}
+	snapshot.Capabilities = append(snapshot.Capabilities, evidence("models", "declared: claude -p --model aliases", inventory.ResolutionDeclared, nil, claudeDeclaredModels))
 	raw := outputs[ids["plugins"]]
 	plugins, ok := claudePluginIdentifiers(raw)
 	if ok {
