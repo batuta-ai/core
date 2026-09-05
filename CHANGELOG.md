@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.1](https://github.com/batuta-ai/core/compare/v1.1.0-beta...v1.1.0-beta.1) (2026-09-05)
+
+
+### Features
+
+* **cli:** add capabilities subcommand and git-aware doctor ([#7](https://github.com/batuta-ai/core/issues/7)) ([b9e3154](https://github.com/batuta-ai/core/commit/b9e31547bf51875ac8d2722c4099855588e51194))
+
 ## [1.1.0-beta](https://github.com/batuta-ai/core/compare/v1.0.1...v1.1.0-beta) (2026-09-04)
 
 
