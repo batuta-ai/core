@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.2](https://github.com/batuta-ai/core/compare/v1.1.0-beta.1...v1.1.0-beta.2) (2026-09-05)
+
+
+### Bug Fixes
+
+* **cli:** doctor inspects git with its own context ([#9](https://github.com/batuta-ai/core/issues/9)) ([3c13300](https://github.com/batuta-ai/core/commit/3c133007ab5085885636e9538684cd6fa69d4c39))
+
 ## [1.1.0-beta.1](https://github.com/batuta-ai/core/compare/v1.1.0-beta...v1.1.0-beta.1) (2026-09-05)
 
 
