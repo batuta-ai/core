@@ -1,0 +1,46 @@
+# Prebuilt binaries for every release. release-please creates the tag and
+# the GitHub release; the release-binaries workflow runs goreleaser on the
+# tag and attaches the archives to that release.
+version: 2
+project_name: batuta
+
+builds:
+  - id: batuta
+    main: ./cmd/batuta
+    binary: batuta
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - -s -w -X main.buildVersion={{ .Tag }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - id: default
+    ids: [batuta]
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE*
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+release:
+  github:
+    owner: batuta-ai
+    name: core
+  mode: keep-existing
+  prerelease: auto
+
+changelog:
+  disable: true

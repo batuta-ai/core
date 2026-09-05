@@ -75,7 +75,14 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 }
 
+// buildVersion is set by goreleaser (-X main.buildVersion={{ .Tag }}); a
+// `go install` build reports the module version from build info instead.
+var buildVersion string
+
 func version() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return info.Main.Version
 	}
