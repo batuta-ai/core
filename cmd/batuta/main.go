@@ -1,10 +1,12 @@
 // Command batuta is the deterministic side of the Batuta conducting cycle.
 //
-// Subcommands available today: version, inventory, doctor. The verification
-// gates, run trails and the unattended loop land in later releases.
+// Subcommands available today: version, capabilities, inventory, doctor. The
+// verification gates, run trails and the unattended loop land in later
+// releases; hosts probe `batuta capabilities` before relying on them.
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,8 +29,12 @@ const usage = `batuta — the conductor's deterministic tools
 
 Usage:
   batuta version
+  batuta capabilities
   batuta inventory [--workspace <dir>] [--timeout <duration>]
-  batuta doctor    [--workspace <dir>] [--json]
+  batuta doctor    [--workspace <dir>] [--json] [--timeout <duration>]
+
+capabilities  The subcommands this binary ships, as JSON. Skills probe it
+           before calling gate or loop; an older binary fails the probe.
 
 inventory  Redacted snapshot of the executor CLIs installed on this machine
            (codex, opencode, cursor-agent, claude, agy, compozy): versions,
@@ -54,6 +60,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, version())
 		return nil
+	case "capabilities":
+		return runCapabilities(stdout)
 	case "inventory":
 		return runInventory(args[1:], stdout)
 	case "doctor":
@@ -72,6 +80,21 @@ func version() string {
 		return info.Main.Version
 	}
 	return "devel"
+}
+
+// commands lists every subcommand this binary ships. Append gate and loop
+// here when they land; skills read this list, never the usage text.
+var commands = []string{"capabilities", "doctor", "inventory", "version"}
+
+type capabilities struct {
+	Version  string   `json:"version"`
+	Commands []string `json:"commands"`
+}
+
+func runCapabilities(stdout io.Writer) error {
+	encoder := json.NewEncoder(stdout)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(capabilities{Version: version(), Commands: commands})
 }
 
 // executables resolves the executor CLIs on PATH (and through mise when
@@ -176,7 +199,10 @@ func runInventory(args []string, stdout io.Writer) error {
 type doctorReport struct {
 	Workspace     string           `json:"workspace"`
 	GitRepository bool             `json:"git_repository"`
+	GitToplevel   string           `json:"git_toplevel,omitempty"`
+	GitClean      *bool            `json:"git_clean,omitempty"`
 	GitExecutable string           `json:"git_executable,omitempty"`
+	Commands      []string         `json:"commands"`
 	SkillsPath    string           `json:"skills_path,omitempty"`
 	Executors     []doctorExecutor `json:"executors"`
 	Digest        string           `json:"inventory_digest"`
@@ -210,11 +236,11 @@ func runDoctor(args []string, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	report := doctorReport{Workspace: root, Digest: snapshot.Digest}
+	report := doctorReport{Workspace: root, Digest: snapshot.Digest, Commands: commands}
 	if git, err := exec.LookPath("git"); err == nil {
 		report.GitExecutable = git
-		_, statErr := os.Stat(filepath.Join(root, ".git"))
-		report.GitRepository = statErr == nil
+		report.GitToplevel, report.GitClean = inspectGit(ctx, git, root)
+		report.GitRepository = report.GitToplevel != ""
 	}
 	report.SkillsPath = findSkills(root)
 	paths := map[inventory.ExecutorID]string{
@@ -258,6 +284,23 @@ func summarizeEvidence(executor inventory.ExecutorSnapshot) (string, int) {
 	return "", models
 }
 
+// inspectGit asks git itself whether root is inside a repository — a
+// worktree checkout has a .git file, a nested directory has none — and
+// whether the working tree is clean, which the conducting preflight needs.
+func inspectGit(ctx context.Context, git, root string) (toplevel string, clean *bool) {
+	out, err := exec.CommandContext(ctx, git, "-C", root, "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "", nil
+	}
+	toplevel = strings.TrimSpace(string(out))
+	status, err := exec.CommandContext(ctx, git, "-C", root, "status", "--porcelain").Output()
+	if err != nil {
+		return toplevel, nil
+	}
+	isClean := len(bytes.TrimSpace(status)) == 0
+	return toplevel, &isClean
+}
+
 func findSkills(root string) string {
 	home, _ := os.UserHomeDir()
 	candidates := []string{
@@ -283,7 +326,14 @@ func findSkills(root string) string {
 func printDoctor(w io.Writer, report doctorReport) {
 	fmt.Fprintf(w, "workspace   %s\n", report.Workspace)
 	if report.GitRepository {
-		fmt.Fprintln(w, "git         repository ✓")
+		state := "status unknown"
+		if report.GitClean != nil {
+			state = "dirty tree — commit or stash before delegating"
+			if *report.GitClean {
+				state = "clean tree"
+			}
+		}
+		fmt.Fprintf(w, "git         repository ✓ %s (%s)\n", state, report.GitToplevel)
 	} else {
 		fmt.Fprintln(w, "git         not a repository — /batuta-init will offer to initialize it")
 	}
