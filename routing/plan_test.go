@@ -87,7 +87,10 @@ func TestParsePlanRejectsBrokenContractsWithTheLine(t *testing.T) {
 		"status suffix": {func(s string) string {
 			return strings.Replace(s, "**Status:** approved", "**Status:** approved-pending-review", 1)
 		}, "exactly proposed"},
-		"status twice":     {func(s string) string { return strings.Replace(s, "## Tasks", "**Status:** done\n\n## Tasks", 1) }, "already declared"},
+		"status twice": {func(s string) string { return strings.Replace(s, "## Tasks", "**Status:** done\n\n## Tasks", 1) }, "already declared"},
+		"status twice one line": {func(s string) string {
+			return strings.Replace(s, "**Status:** approved", "**Status:** approved · **Status:** done", 1)
+		}, "once"},
 		"duplicate number": {func(s string) string { return strings.Replace(s, "- [ ] 3.", "- [ ] 2.", 1) }, "already defined"},
 		"malformed task line": {func(s string) string {
 			return strings.Replace(s, "- [ ] 3. Document the retry policy — docs/low", "- [ ] 3. Document the retry policy", 1)
@@ -146,7 +149,7 @@ func TestPlanLoaderReadsFromBatutaDirectoryOnly(t *testing.T) {
 func TestParsePlanIgnoresStatusInCommentsAndFencesAndOrdersForwardDependencies(t *testing.T) {
 	t.Parallel()
 	payload := strings.Replace(planFixture, "**Created:** 2026-09-05 · **Status:** approved",
-		"<!-- example: **Status:** approved -->\n```\n**Status:** approved\n```\n**Created:** 2026-09-05 · **Status:** proposed", 1)
+		"<!-- example: **Status:** approved -->\n<!--\n**Status:** approved\n-->\n```\n**Status:** approved\n```\n~~~\n**Status:** approved\n~~~\n**Created:** 2026-09-05 · **Status:** proposed", 1)
 	payload = strings.Replace(payload, "Depends on: 1", "Depends on: 3", 1)
 	plan, err := ParsePlan("checkout-hardening", []byte(payload))
 	if err != nil {

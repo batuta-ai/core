@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -109,8 +110,13 @@ func (l *PlanLoader) ListPlans() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := os.ReadDir(directory)
+	handle, err := os.Open(directory)
 	if err != nil {
+		return nil, errors.New("routing: plan directory is unavailable")
+	}
+	defer handle.Close()
+	entries, err := handle.ReadDir(maxPlanDirectoryEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, errors.New("routing: plan directory is unavailable")
 	}
 	if len(entries) > maxPlanDirectoryEntries {
@@ -165,6 +171,7 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 		lineNo    int
 		inGoal    bool
 		inFence   bool
+		inComment bool
 		statusAt  int
 		pending   = map[int][]pendingDependency{}
 		flushTask = func() error {
@@ -194,18 +201,29 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 			}
 			return Plan{}, fmt.Errorf("%w: line 1: expected `# Plan — <title>`", ErrReauthoringRequired)
 		}
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		trimmed := strings.TrimSpace(line)
+		if inComment {
+			if strings.Contains(trimmed, "-->") {
+				inComment = false
+			}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "<!--") {
+			inComment = !strings.Contains(trimmed[4:], "-->")
+			continue
+		}
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			inFence = !inFence
 			continue
 		}
-		if inFence || strings.HasPrefix(strings.TrimSpace(line), "<!--") {
+		if inFence {
 			continue
 		}
 		if planMetaLine.MatchString(line) {
 			if strings.Contains(line, "**Status:**") {
 				m := planStatusLine.FindStringSubmatch(line)
-				if m == nil {
-					return Plan{}, fmt.Errorf("%w: line %d: Status must be exactly proposed | approved | in progress | done", ErrReauthoringRequired, lineNo)
+				if m == nil || strings.Count(line, "**Status:**") > 1 {
+					return Plan{}, fmt.Errorf("%w: line %d: Status must be exactly proposed | approved | in progress | done, once", ErrReauthoringRequired, lineNo)
 				}
 				if plan.Status != "" {
 					return Plan{}, fmt.Errorf("%w: line %d: Status already declared at line %d", ErrReauthoringRequired, lineNo, statusAt)
