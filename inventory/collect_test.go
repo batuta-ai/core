@@ -287,8 +287,10 @@ func (r *fixtureCollectorRunner) Run(_ context.Context, command publication.Comm
 		output = `{`
 	case "codex doctor --json --summary":
 		output = `{"schema_version":1}`
-	case "codex debug models --bundled":
+	case "codex debug models":
 		output = `{"models":[{"slug":"gpt-5.6-sol"}]}`
+	case "codex debug models --bundled":
+		output = `{"models":[{"slug":"gpt-5.2"}]}`
 	case "opencode --version":
 		output = `1.0.95`
 	case "opencode debug config":
