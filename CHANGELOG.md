@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.3](https://github.com/batuta-ai/core/compare/v1.1.0-beta.2...v1.1.0-beta.3) (2026-09-05)
+
+
+### Bug Fixes
+
+* **inventory:** bind models for claude, agy and cursor-agent ([#15](https://github.com/batuta-ai/core/issues/15)) ([d0bf813](https://github.com/batuta-ai/core/commit/d0bf8133d2539803700d9cfcb0f9a840aadeab14)), closes [#11](https://github.com/batuta-ai/core/issues/11)
+
 ## [1.1.0-beta.2](https://github.com/batuta-ai/core/compare/v1.1.0-beta.1...v1.1.0-beta.2) (2026-09-05)
 
 
