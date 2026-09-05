@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.5](https://github.com/batuta-ai/core/compare/v1.1.0-beta.4...v1.1.0-beta.5) (2026-09-05)
+
+
+### Bug Fixes
+
+* **inventory:** read codex models from the account list, bundled only as fallback ([#21](https://github.com/batuta-ai/core/issues/21)) ([4fd69e7](https://github.com/batuta-ai/core/commit/4fd69e7ede3344c7c6768e1f2b24d2f300e3a6db)), closes [#20](https://github.com/batuta-ai/core/issues/20)
+
 ## [1.1.0-beta.4](https://github.com/batuta-ai/core/compare/v1.1.0-beta.3...v1.1.0-beta.4) (2026-09-05)
 
 
