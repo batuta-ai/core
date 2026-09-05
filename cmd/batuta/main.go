@@ -239,7 +239,10 @@ func runDoctor(args []string, stdout io.Writer) error {
 	report := doctorReport{Workspace: root, Digest: snapshot.Digest, Commands: commands}
 	if git, err := exec.LookPath("git"); err == nil {
 		report.GitExecutable = git
-		report.GitToplevel, report.GitClean = inspectGit(ctx, git, root)
+		// The probe context may already be spent by collect; git gets its own.
+		gitCtx, cancelGit := context.WithTimeout(context.Background(), 5*time.Second)
+		report.GitToplevel, report.GitClean = inspectGit(gitCtx, git, root)
+		cancelGit()
 		report.GitRepository = report.GitToplevel != ""
 	}
 	report.SkillsPath = findSkills(root)
