@@ -1169,7 +1169,7 @@ func TestDeliveryGraphRetriesOnTheSameRuntimeBeforeEscalating(t *testing.T) {
 	}
 	third, err := graph.RecordFailureWithPolicy("task_1", 3, TaskFailure{ChildRunID: "loop-task-3", TerminalStatus: "failed", BlockerCode: "implementation_failed", TokensUsed: 10}, generation, graphGitSHA("base-4"), policy)
 	if err != nil || third.Blocked || third.Runtime != second.Runtime {
-		t.Fatalf("third failure = %#v, error=%v; want one retry on the fallback", third, err)
+		t.Fatalf("third failure = %#v, error=%v; want one retry on the fallback when AbortAfterEscalation is off", third, err)
 	}
 	if _, err := graph.AttachWorktree("task_1", 4, GraphWorktree{ID: "wt-task-4", Root: "/managed/task-4", Ready: true}); err != nil {
 		t.Fatalf("AttachWorktree(fourth) error = %v", err)
@@ -1177,6 +1177,43 @@ func TestDeliveryGraphRetriesOnTheSameRuntimeBeforeEscalating(t *testing.T) {
 	fourth, err := graph.RecordFailureWithPolicy("task_1", 4, TaskFailure{ChildRunID: "loop-task-4", TerminalStatus: "failed", BlockerCode: "implementation_failed", TokensUsed: 10}, generation, graphGitSHA("base-5"), policy)
 	if err != nil || !fourth.Blocked {
 		t.Fatalf("fourth failure = %#v, error=%v; want blocked at MaxTaskExecutions", fourth, err)
+	}
+
+	doctrine, err := NewDeliveryGraph(record.TaskSnapshot, generation, record.InitialWorktreeFingerprint.HeadSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := doctrine.AdmitReadyWave(ReadyWaveInput{IntegrationHeadSHA: record.InitialWorktreeFingerprint.HeadSHA, RemainingSlots: 1, ReachableCommits: map[string]bool{}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := doctrine.BeginWaveAttempts(1, generation); err != nil {
+		t.Fatal(err)
+	}
+	for execution := 1; execution <= 3; execution++ {
+		if _, err := doctrine.AttachWorktree("task_1", execution, GraphWorktree{ID: fmt.Sprintf("wt-%d", execution), Root: fmt.Sprintf("/managed/%d", execution), Ready: true}); err != nil {
+			t.Fatalf("AttachWorktree(%d) error = %v", execution, err)
+		}
+		result, err := doctrine.RecordFailureWithPolicy("task_1", execution, TaskFailure{ChildRunID: fmt.Sprintf("run-%d", execution), TerminalStatus: "failed", BlockerCode: "implementation_failed", TokensUsed: 1}, generation, graphGitSHA(fmt.Sprintf("b-%d", execution)), ConductingFailurePolicy)
+		if err != nil {
+			t.Fatalf("doctrine failure %d error = %v", execution, err)
+		}
+		switch execution {
+		case 1:
+			if result.Blocked || result.Runtime != selected {
+				t.Fatalf("doctrine 1 = %#v, want same runtime", result)
+			}
+		case 2:
+			if result.Blocked || result.Runtime.Model != "gpt-5.6-terra" {
+				t.Fatalf("doctrine 2 = %#v, want escalation", result)
+			}
+		case 3:
+			if !result.Blocked {
+				t.Fatalf("doctrine 3 = %#v, want abort after escalation", result)
+			}
+		}
+	}
+	if task, _ := doctrine.Task("task_1"); task.State != GraphTaskBlocked || len(task.Attempts) != 3 {
+		t.Fatalf("task after doctrine = %#v", task)
 	}
 	if _, err := graph.RecordFailureWithPolicy("task_1", 1, failure, generation, graphGitSHA("base-2"), FailurePolicy{RetryAllowed: true, SameRuntimeRetries: -1}); !errors.Is(err, ErrInvalidDeliveryTransition) {
 		t.Fatalf("negative retries error = %v", err)

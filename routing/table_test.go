@@ -72,18 +72,20 @@ func TestParseRoutingTableReadsTheLaneTableOnly(t *testing.T) {
 func TestParseRoutingTableRejectsBrokenRows(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct{ edit, want string }{
-		"self below critical": {"| medium | * | codex | gpt-5.6-terra | subscription |", "self is only allowed"},
-		"unknown lane":        {"| low | frontend | cursor-agent | composer-2.5 | subscription |", "is not low|medium|high|critical"},
-		"unknown domain":      {"| low | frontend | cursor-agent | composer-2.5 | subscription |", `domain "web" is unknown`},
-		"placeholder model":   {"| high | * | codex | gpt-5.6-sol | subscription |", "names no exact model"},
-		"duplicate row":       {"| low | frontend | cursor-agent | composer-2.5 | subscription |", "already has a row"},
+		"self below critical":          {"| medium | * | codex | gpt-5.6-terra | subscription |", "self is only allowed"},
+		"unknown lane":                 {"| low | frontend | cursor-agent | composer-2.5 | subscription |", "is not low|medium|high|critical"},
+		"unknown domain":               {"| low | frontend | cursor-agent | composer-2.5 | subscription |", `domain "web" is unknown`},
+		"placeholder model":            {"| high | * | codex | gpt-5.6-sol | subscription |", "names no exact model"},
+		"duplicate row":                {"| low | frontend | cursor-agent | composer-2.5 | subscription |", "already has a row"},
+		"default outside codex medium": {"| high | * | codex | gpt-5.6-sol | subscription |", "allowed only for codex on medium"},
 	}
 	replacements := map[string]string{
-		"self below critical": "| medium | * | self | — | host |",
-		"unknown lane":        "| tiny | frontend | cursor-agent | composer-2.5 | subscription |",
-		"unknown domain":      "| low | web | cursor-agent | composer-2.5 | subscription |",
-		"placeholder model":   "| high | * | codex | `<strongest model>` | subscription |",
-		"duplicate row":       "| low | * | cursor-agent | composer-2.5 | subscription |",
+		"self below critical":          "| medium | * | self | — | host |",
+		"unknown lane":                 "| tiny | frontend | cursor-agent | composer-2.5 | subscription |",
+		"unknown domain":               "| low | web | cursor-agent | composer-2.5 | subscription |",
+		"placeholder model":            "| high | * | codex | `<strongest model>` | subscription |",
+		"duplicate row":                "| low | * | cursor-agent | composer-2.5 | subscription |",
+		"default outside codex medium": "| high | * | codex | default model | subscription |",
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -96,6 +98,16 @@ func TestParseRoutingTableRejectsBrokenRows(t *testing.T) {
 	}
 	if _, err := ParseRoutingTable([]byte("# nothing here\n")); !errors.Is(err, ErrRoutingTableInvalid) {
 		t.Fatalf("no table error = %v", err)
+	}
+	if _, err := ParseRoutingTable(append(make([]byte, maxTaskArtifactBytes+1), routingTableFixture...)); !errors.Is(err, ErrRoutingTableInvalid) {
+		t.Fatalf("oversized payload error = %v", err)
+	}
+	table, err := ParseRoutingTable([]byte(strings.Replace(routingTableFixture, "| medium | * | codex | gpt-5.6-terra |", "| medium | * | codex | default model |", 1)))
+	if err != nil {
+		t.Fatalf("codex default on medium error = %v", err)
+	}
+	if row, _ := table.Row(ComplexityMedium, DomainBackend); row.Model != DefaultModel {
+		t.Fatalf("default row = %#v", row)
 	}
 }
 
@@ -191,5 +203,63 @@ func TestRoutingTableGenerationSkipsUnavailableExecutors(t *testing.T) {
 	table.Rows = table.Rows[:4]
 	if _, err := table.Generation(input); !errors.Is(err, ErrNoEligibleCandidate) {
 		t.Fatalf("no executor at all: error = %v", err)
+	}
+}
+
+func withModels(snapshot inventory.InventorySnapshot, id inventory.ExecutorID, state inventory.ResolutionState, models ...string) inventory.InventorySnapshot {
+	for index := range snapshot.Executors {
+		if snapshot.Executors[index].ID == id {
+			snapshot.Executors[index].Capabilities = []inventory.Evidence{{Name: "models", Source: "test", State: state, Identifiers: models}}
+		}
+	}
+	return snapshot
+}
+
+func TestRoutingTableGenerationRejectsUnlistedModelsAndKeepsReasoningSteps(t *testing.T) {
+	t.Parallel()
+	table, err := ParseRoutingTable([]byte(routingTableFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := TableGenerationInput{
+		Tasks:         []GenerationTask{{ID: "task_1", Domain: DomainBackend, Complexity: ComplexityLow}},
+		TaskSetDigest: hexDigestFixture("plan"), WorkspaceIdentityDigest: digestFixture("workspace"),
+	}
+	input := base
+	input.Snapshot = withModels(tableSnapshot(t, inventory.ExecutorCodex, inventory.ExecutorOpenCode), inventory.ExecutorOpenCode, inventory.ResolutionResolved, "opencode/other/model")
+	generation, err := table.Generation(input)
+	if err != nil {
+		t.Fatalf("Generation() error = %v", err)
+	}
+	if generation.Cells[0].Selected.ExecutorID != inventory.ExecutorCodex || len(generation.Rejections) != 1 || generation.Rejections[0].Code != "model_not_listed" {
+		t.Fatalf("unlisted model: cell = %#v, rejections = %#v", generation.Cells[0], generation.Rejections)
+	}
+	input.Snapshot = withModels(tableSnapshot(t, inventory.ExecutorCodex, inventory.ExecutorOpenCode), inventory.ExecutorOpenCode, inventory.ResolutionResolved, "opencode/kimi/k2.5")
+	if generation, err = table.Generation(input); err != nil || generation.Cells[0].Selected.ExecutorID != inventory.ExecutorOpenCode {
+		t.Fatalf("listed model: %#v, %v", generation.Cells, err)
+	}
+	input.Snapshot = withModels(tableSnapshot(t, inventory.ExecutorCodex, inventory.ExecutorOpenCode), inventory.ExecutorOpenCode, inventory.ResolutionUnknown)
+	if generation, err = table.Generation(input); err != nil || generation.Cells[0].Selected.ExecutorID != inventory.ExecutorOpenCode {
+		t.Fatalf("unknown evidence: %#v, %v", generation.Cells, err)
+	}
+	same, err := ParseRoutingTable([]byte(strings.Replace(routingTableFixture, "| high | * | codex | gpt-5.6-sol |", "| high | * | codex | gpt-5.6-terra |", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input = base
+	input.Snapshot = tableSnapshot(t, inventory.ExecutorCodex)
+	input.Tasks = []GenerationTask{{ID: "task_1", Domain: DomainBackend, Complexity: ComplexityMedium}}
+	generation, err = same.Generation(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cell := generation.Cells[0]
+	if cell.Selected.Reasoning != "medium" || len(cell.Fallbacks) != 2 || cell.Fallbacks[0].ModelID != "gpt-5.6-terra" || cell.Fallbacks[0].Reasoning != "high" || cell.Fallbacks[1].ExecutorID != ExecutorSelf {
+		t.Fatalf("reasoning step: %#v", cell)
+	}
+	deflt, _ := ParseRoutingTable([]byte(strings.Replace(routingTableFixture, "| medium | * | codex | gpt-5.6-terra |", "| medium | * | codex | default |", 1)))
+	input.Snapshot = withModels(tableSnapshot(t, inventory.ExecutorCodex), inventory.ExecutorCodex, inventory.ResolutionResolved, "gpt-5.6-sol")
+	if generation, err = deflt.Generation(input); err != nil || generation.Cells[0].Selected.ModelID != DefaultModel {
+		t.Fatalf("default model: %#v, %v", generation.Cells, err)
 	}
 }

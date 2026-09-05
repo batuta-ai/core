@@ -722,7 +722,15 @@ func (g *DeliveryGraph) RecordAnswer(
 type FailurePolicy struct {
 	RetryAllowed       bool
 	SameRuntimeRetries int
+	// AbortAfterEscalation blocks the task on the first failure of a runtime
+	// other than the one it started with: the doctrine's "failure after
+	// escalation aborts". False keeps walking the cell's fallbacks.
+	AbortAfterEscalation bool
 }
+
+// ConductingFailurePolicy is the skills' doctrine: one retry on the same
+// executor, then one escalation, then abort.
+var ConductingFailurePolicy = FailurePolicy{RetryAllowed: true, SameRuntimeRetries: 1, AbortAfterEscalation: true}
 
 // RecordFailure advances to the next runtime on every failure; see
 // RecordFailureWithPolicy for the retry-then-escalate variant.
@@ -801,7 +809,8 @@ func (g *DeliveryGraph) RecordFailureWithPolicy(
 	if sameRuntimeRuns(task.Attempts[:execution], attempt.Runtime) > policy.SameRuntimeRetries {
 		nextRuntime, eligible = nextRuntimeForTask(generation, *task, attempt.Runtime)
 	}
-	if !retryAllowed || execution == MaxTaskExecutions || !eligible {
+	escalated := attempt.Runtime != task.Attempts[0].Runtime
+	if !retryAllowed || execution == MaxTaskExecutions || !eligible || (policy.AbortAfterEscalation && escalated) {
 		task.State = GraphTaskBlocked
 		task.BlockerCode = failure.BlockerCode
 		if err := validateGraphTask(*task, "pending"); err != nil {

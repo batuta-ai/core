@@ -75,16 +75,27 @@ func TestParsePlanRejectsBrokenContractsWithTheLine(t *testing.T) {
 		"missing accept": {func(s string) string {
 			return strings.Replace(s, "      Accept: README mentions the retry → grep -n retry README.md\n", "", 1)
 		}, "task 3 has no Accept"},
-		"unknown lane":       {func(s string) string { return strings.Replace(s, "backend/medium", "backend/huge", 1) }, "line 12: unknown lane"},
-		"forward dependency": {func(s string) string { return strings.Replace(s, "Depends on: 1", "Depends on: 3", 1) }, "not defined above it"},
-		"duplicate number":   {func(s string) string { return strings.Replace(s, "- [ ] 3.", "- [ ] 2.", 1) }, "already defined"},
+		"unknown lane": {func(s string) string { return strings.Replace(s, "backend/medium", "backend/huge", 1) }, "line 12: unknown lane"},
+		"dependency cycle": {func(s string) string {
+			s = strings.Replace(s, "Depends on: 1", "Depends on: 3", 1)
+			return strings.Replace(s, "      Accept: README mentions the retry → grep -n retry README.md\n", "      Depends on: 2\n      Accept: README mentions the retry → grep -n retry README.md\n", 1)
+		}, "cycle"},
+		"missing dependency": {func(s string) string { return strings.Replace(s, "Depends on: 1", "Depends on: 9", 1) }, "does not exist"},
+		"status in prose only": {func(s string) string {
+			return strings.Replace(s, "**Created:** 2026-09-05 · **Status:** approved", "Created 2026-09-05, **Status:** approved in prose", 1)
+		}, "no `**Status:**`"},
+		"status suffix": {func(s string) string {
+			return strings.Replace(s, "**Status:** approved", "**Status:** approved-pending-review", 1)
+		}, "exactly proposed"},
+		"status twice":     {func(s string) string { return strings.Replace(s, "## Tasks", "**Status:** done\n\n## Tasks", 1) }, "already declared"},
+		"duplicate number": {func(s string) string { return strings.Replace(s, "- [ ] 3.", "- [ ] 2.", 1) }, "already defined"},
 		"malformed task line": {func(s string) string {
 			return strings.Replace(s, "- [ ] 3. Document the retry policy — docs/low", "- [ ] 3. Document the retry policy", 1)
 		}, "task line must read"},
 		"no status":               {func(s string) string { return strings.Replace(s, "**Status:** approved", "**State:** approved", 1) }, "no `**Status:**`"},
 		"no title":                {func(s string) string { return strings.Replace(s, "# Plan — Checkout hardening", "# Checkout", 1) }, "line 1"},
 		"no tasks":                {func(s string) string { return s[:strings.Index(s, "## Tasks")] + "## Tasks\n" }, "no tasks"},
-		"dependency not a number": {func(s string) string { return strings.Replace(s, "Depends on: 1", "Depends on: task_1", 1) }, "lists task numbers"},
+		"dependency not a number": {func(s string) string { return strings.Replace(s, "Depends on: 1", "Depends on: task_1", 1) }, "lists other tasks"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -129,5 +140,29 @@ func TestPlanLoaderReadsFromBatutaDirectoryOnly(t *testing.T) {
 	slugs, err := loader.ListPlans()
 	if err != nil || len(slugs) != 1 || slugs[0] != "checkout-hardening" {
 		t.Fatalf("ListPlans() = %v, %v", slugs, err)
+	}
+}
+
+func TestParsePlanIgnoresStatusInCommentsAndFencesAndOrdersForwardDependencies(t *testing.T) {
+	t.Parallel()
+	payload := strings.Replace(planFixture, "**Created:** 2026-09-05 · **Status:** approved",
+		"<!-- example: **Status:** approved -->\n```\n**Status:** approved\n```\n**Created:** 2026-09-05 · **Status:** proposed", 1)
+	payload = strings.Replace(payload, "Depends on: 1", "Depends on: 3", 1)
+	plan, err := ParsePlan("checkout-hardening", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParsePlan() error = %v", err)
+	}
+	if plan.Status != PlanProposed {
+		t.Fatalf("status = %q, want proposed (comment and fence ignored)", plan.Status)
+	}
+	if plan.Tasks[1].ID != "task_2" || plan.Tasks[1].Dependencies[0] != "task_3" {
+		t.Fatalf("file order must be kept in plan.Tasks: %#v", plan.Tasks[1])
+	}
+	ids := []string{plan.Set.Tasks[0].ID, plan.Set.Tasks[1].ID, plan.Set.Tasks[2].ID}
+	if ids[0] != "task_1" || ids[1] != "task_3" || ids[2] != "task_2" {
+		t.Fatalf("set order = %v, want dependencies first", ids)
+	}
+	if _, err := plan.Set.DeliverySnapshot(); err != nil {
+		t.Fatalf("DeliverySnapshot() on the ordered set error = %v", err)
 	}
 }

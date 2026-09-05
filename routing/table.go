@@ -21,6 +21,11 @@ const ExecutorSelf inventory.ExecutorID = "self"
 // that has no row of its own.
 const DomainAny Domain = "*"
 
+// DefaultModel marks a row that runs the CLI's own default model. The
+// doctrine allows it for codex on the medium lane only (flat subscription
+// cost); adapters omit the model flags for it.
+const DefaultModel = "default"
+
 const tablePolicyVersion = "routing-table.v1"
 
 var (
@@ -52,6 +57,9 @@ type RoutingTable struct {
 // backticks around the model are stripped. `self` is accepted only on the
 // critical lane.
 func ParseRoutingTable(payload []byte) (RoutingTable, error) {
+	if len(payload) > maxTaskArtifactBytes {
+		return RoutingTable{}, fmt.Errorf("%w: byte budget exceeded", ErrRoutingTableInvalid)
+	}
 	scanner := bufio.NewScanner(strings.NewReader(string(payload)))
 	scanner.Buffer(make([]byte, 1024), maxTaskArtifactBytes)
 	var (
@@ -114,6 +122,12 @@ func ParseRoutingTable(payload []byte) (RoutingTable, error) {
 		}
 		if row.Executor == ExecutorSelf && row.Lane != ComplexityCritical {
 			return RoutingTable{}, fmt.Errorf("%w: line %d: self is only allowed on the critical lane", ErrRoutingTableInvalid, lineNo)
+		}
+		if strings.EqualFold(row.Model, "default") || strings.EqualFold(row.Model, "default model") {
+			row.Model = DefaultModel
+		}
+		if row.Model == DefaultModel && (row.Executor != inventory.ExecutorCodex || row.Lane != ComplexityMedium) {
+			return RoutingTable{}, fmt.Errorf("%w: line %d: the CLI default model is allowed only for codex on medium", ErrRoutingTableInvalid, lineNo)
 		}
 		if row.Executor != ExecutorSelf && (row.Model == "" || strings.HasPrefix(row.Model, "<")) {
 			return RoutingTable{}, fmt.Errorf("%w: line %d: row names no exact model", ErrRoutingTableInvalid, lineNo)
@@ -242,7 +256,8 @@ func (t RoutingTable) Generation(input TableGenerationInput) (RoutingGeneration,
 			if !found {
 				continue
 			}
-			runtimeKey := string(row.Executor) + "\x00" + row.Model
+			reasoning := reasoningFor(lane)
+			runtimeKey := string(row.Executor) + "\x00" + row.Model + "\x00" + reasoning
 			if _, duplicate := seen[runtimeKey]; duplicate {
 				continue
 			}
@@ -255,7 +270,7 @@ func (t RoutingTable) Generation(input TableGenerationInput) (RoutingGeneration,
 				continue
 			}
 			candidates = append(candidates, RuntimeCandidate{
-				ExecutorID: row.Executor, ProviderID: string(row.Executor), ModelID: row.Model, Reasoning: reasoningFor(lane),
+				ExecutorID: row.Executor, ProviderID: string(row.Executor), ModelID: row.Model, Reasoning: reasoning,
 			})
 		}
 		if len(candidates) == 0 {
@@ -289,5 +304,29 @@ func tableRowRejection(row RoutingRow, executors map[inventory.ExecutorID]invent
 	if executor.CredentialState == inventory.CredentialMissing {
 		return "credential_missing"
 	}
+	if row.Model != DefaultModel && !executorListsModel(executor, row.Model) {
+		return "model_not_listed"
+	}
 	return ""
+}
+
+// executorListsModel says whether the executor's `models` evidence names
+// the model. Evidence that is unknown (the CLI could not list) proves
+// nothing either way and the row stands; resolved or declared evidence that
+// omits the model rejects it — the doctrine treats an unlisted model as an
+// unavailable executor.
+func executorListsModel(executor inventory.ExecutorSnapshot, model string) bool {
+	listed := false
+	for _, evidence := range executor.Capabilities {
+		if evidence.Name != "models" || evidence.State == inventory.ResolutionUnknown {
+			continue
+		}
+		listed = true
+		for _, identifier := range evidence.Identifiers {
+			if identifier == model || strings.HasSuffix(identifier, "/"+model) || identifier == string(executor.ID)+"/"+model {
+				return true
+			}
+		}
+	}
+	return !listed
 }

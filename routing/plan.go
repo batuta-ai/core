@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -25,6 +26,8 @@ var (
 	_ TaskSource = (*ArtifactLoader)(nil)
 	_ TaskSource = (*PlanLoader)(nil)
 )
+
+const maxPlanDirectoryEntries = 512
 
 // PlanStatus is the `**Status:**` value in a plan header.
 type PlanStatus string
@@ -110,6 +113,9 @@ func (l *PlanLoader) ListPlans() ([]string, error) {
 	if err != nil {
 		return nil, errors.New("routing: plan directory is unavailable")
 	}
+	if len(entries) > maxPlanDirectoryEntries {
+		return nil, fmt.Errorf("%w: .batuta holds more than %d entries", ErrReauthoringRequired, maxPlanDirectoryEntries)
+	}
 	slugs := make([]string, 0)
 	for _, entry := range entries {
 		name := entry.Name()
@@ -125,8 +131,11 @@ func (l *PlanLoader) ListPlans() ([]string, error) {
 }
 
 var (
-	planTitleLine  = regexp.MustCompile(`^#\s+Plan\s*[—:-]\s*(.+?)\s*$`)
-	planStatusLine = regexp.MustCompile(`\*\*Status:\*\*\s*(proposed|approved|in progress|done)\b`)
+	planTitleLine = regexp.MustCompile(`^#\s+Plan\s*[—:-]\s*(.+?)\s*$`)
+	// Metadata lives on lines that start with a bold field; a status
+	// mentioned in prose, a comment or a code fence is not a declaration.
+	planMetaLine   = regexp.MustCompile(`^\*\*(Created|Status):\*\*`)
+	planStatusLine = regexp.MustCompile(`\*\*Status:\*\*\s*(proposed|approved|in progress|done)\s*(?:·|$)`)
 	planCreated    = regexp.MustCompile(`\*\*Created:\*\*\s*([^·*]+?)\s*(?:·|$)`)
 	planGoalLine   = regexp.MustCompile(`^\*\*Goal:\*\*\s*(.*)$`)
 	// - [ ] 1. Title — domain/complexity → executor/model
@@ -155,6 +164,9 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 		numbers   = map[int]int{}
 		lineNo    int
 		inGoal    bool
+		inFence   bool
+		statusAt  int
+		pending   = map[int][]pendingDependency{}
 		flushTask = func() error {
 			if current == nil {
 				return nil
@@ -182,13 +194,28 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 			}
 			return Plan{}, fmt.Errorf("%w: line 1: expected `# Plan — <title>`", ErrReauthoringRequired)
 		}
-		if plan.Status == "" {
-			if m := planStatusLine.FindStringSubmatch(line); m != nil {
-				plan.Status = PlanStatus(m[1])
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || strings.HasPrefix(strings.TrimSpace(line), "<!--") {
+			continue
+		}
+		if planMetaLine.MatchString(line) {
+			if strings.Contains(line, "**Status:**") {
+				m := planStatusLine.FindStringSubmatch(line)
+				if m == nil {
+					return Plan{}, fmt.Errorf("%w: line %d: Status must be exactly proposed | approved | in progress | done", ErrReauthoringRequired, lineNo)
+				}
+				if plan.Status != "" {
+					return Plan{}, fmt.Errorf("%w: line %d: Status already declared at line %d", ErrReauthoringRequired, lineNo, statusAt)
+				}
+				plan.Status, statusAt = PlanStatus(m[1]), lineNo
 			}
 			if m := planCreated.FindStringSubmatch(line); m != nil && plan.Created == "" {
 				plan.Created = strings.TrimSpace(m[1])
 			}
+			continue
 		}
 		if m := planGoalLine.FindStringSubmatch(line); m != nil {
 			plan.Goal = m[1]
@@ -261,12 +288,10 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 		case "Depends on":
 			for _, item := range splitList(m[2], ",") {
 				dependency, err := strconv.Atoi(item)
-				if err != nil || dependency < 1 {
-					return Plan{}, fmt.Errorf("%w: line %d: Depends on lists task numbers", ErrReauthoringRequired, lineNo)
+				if err != nil || dependency < 1 || dependency == current.Number {
+					return Plan{}, fmt.Errorf("%w: line %d: Depends on lists other tasks' numbers", ErrReauthoringRequired, lineNo)
 				}
-				if _, defined := numbers[dependency]; !defined || dependency == current.Number {
-					return Plan{}, fmt.Errorf("%w: line %d: task %d depends on task %d, which is not defined above it", ErrReauthoringRequired, lineNo, current.Number, dependency)
-				}
+				pending[current.Number] = append(pending[current.Number], pendingDependency{number: dependency, line: lineNo})
 				current.Dependencies = append(current.Dependencies, "task_"+strconv.Itoa(dependency))
 			}
 		}
@@ -283,8 +308,19 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 	if len(plan.Tasks) == 0 {
 		return Plan{}, fmt.Errorf("%w: plan has no tasks", ErrReauthoringRequired)
 	}
-	set := TaskSet{Slug: slug, Tasks: make([]TaskArtifact, 0, len(plan.Tasks))}
-	for _, task := range plan.Tasks {
+	for number, dependencies := range pending {
+		for _, dependency := range dependencies {
+			if _, defined := numbers[dependency.number]; !defined {
+				return Plan{}, fmt.Errorf("%w: line %d: task %d depends on task %d, which does not exist", ErrReauthoringRequired, dependency.line, number, dependency.number)
+			}
+		}
+	}
+	ordered, err := topologicalPlanOrder(plan.Tasks)
+	if err != nil {
+		return Plan{}, err
+	}
+	set := TaskSet{Slug: slug, Tasks: make([]TaskArtifact, 0, len(ordered))}
+	for _, task := range ordered {
 		set.Tasks = append(set.Tasks, task.TaskArtifact)
 	}
 	snapshot, err := set.DeliverySnapshot()
@@ -294,6 +330,58 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 	set.Digest = snapshot.Digest
 	plan.Set = set
 	return plan, nil
+}
+
+type pendingDependency struct {
+	number int
+	line   int
+}
+
+// topologicalPlanOrder returns the tasks with every dependency before its
+// dependents, keeping the file order among tasks that are otherwise free
+// (Kahn's algorithm, lowest task number first). A cycle is a reauthoring
+// error naming the tasks involved.
+func topologicalPlanOrder(tasks []PlanTask) ([]PlanTask, error) {
+	byID := make(map[string]PlanTask, len(tasks))
+	indegree := make(map[string]int, len(tasks))
+	dependents := make(map[string][]string, len(tasks))
+	for _, task := range tasks {
+		byID[task.ID] = task
+		indegree[task.ID] += 0
+		for _, dependency := range task.Dependencies {
+			indegree[task.ID]++
+			dependents[dependency] = append(dependents[dependency], task.ID)
+		}
+	}
+	ready := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if indegree[task.ID] == 0 {
+			ready = append(ready, task.ID)
+		}
+	}
+	ordered := make([]PlanTask, 0, len(tasks))
+	for len(ready) > 0 {
+		id := ready[0]
+		ready = ready[1:]
+		ordered = append(ordered, byID[id])
+		for _, dependent := range dependents[id] {
+			indegree[dependent]--
+			if indegree[dependent] == 0 {
+				ready = append(ready, dependent)
+				slices.SortFunc(ready, func(a, b string) int { return byID[a].Number - byID[b].Number })
+			}
+		}
+	}
+	if len(ordered) != len(tasks) {
+		stuck := make([]string, 0)
+		for _, task := range tasks {
+			if indegree[task.ID] > 0 {
+				stuck = append(stuck, strconv.Itoa(task.Number))
+			}
+		}
+		return nil, fmt.Errorf("%w: tasks %s depend on each other in a cycle", ErrReauthoringRequired, strings.Join(stuck, ", "))
+	}
+	return ordered, nil
 }
 
 func splitList(value, separator string) []string {
