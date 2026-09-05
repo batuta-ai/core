@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.4](https://github.com/batuta-ai/core/compare/v1.1.0-beta.3...v1.1.0-beta.4) (2026-09-05)
+
+
+### Features
+
+* **routing:** plan task source, routing-table generation and retry-then-escalate policy ([#16](https://github.com/batuta-ai/core/issues/16)) ([4df559c](https://github.com/batuta-ai/core/commit/4df559c86fa19e6d4bfd48e9a31ae1c2fb751cd2))
+
 ## [1.1.0-beta.3](https://github.com/batuta-ai/core/compare/v1.1.0-beta.2...v1.1.0-beta.3) (2026-09-05)
 
 
