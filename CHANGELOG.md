@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.6](https://github.com/batuta-ai/core/compare/v1.1.0-beta.5...v1.1.0-beta.6) (2026-09-05)
+
+
+### Features
+
+* **release:** ship prebuilt binaries with goreleaser ([#23](https://github.com/batuta-ai/core/issues/23)) ([38585c0](https://github.com/batuta-ai/core/commit/38585c08ca0106c775b9e01b979b6a5ddb98b516)), closes [#22](https://github.com/batuta-ai/core/issues/22)
+
 ## [1.1.0-beta.5](https://github.com/batuta-ai/core/compare/v1.1.0-beta.4...v1.1.0-beta.5) (2026-09-05)
 
 
