@@ -1,6 +1,8 @@
 package adapters
 
 import (
+	"strings"
+
 	"github.com/batuta-ai/core/inventory"
 )
 
@@ -9,13 +11,15 @@ func NewAgy(executable string) (Adapter, error) {
 		"version": "agy.version",
 		"agents":  "agy.agents",
 		"plugins": "agy.plugins",
+		"models":  "agy.models",
 	}
 	args := map[string][]string{
 		"version": {"--version"},
 		"agents":  {"agent"},
 		"plugins": {"plugin", "list"},
+		"models":  {"models"},
 	}
-	return orderedAdapter(inventory.ExecutorAgy, executable, []string{"version", "agents", "plugins"}, ids, args, "version", "plugins", func(outputs map[inventory.ProbeID][]byte) inventory.ExecutorSnapshot {
+	return orderedAdapter(inventory.ExecutorAgy, executable, []string{"version", "agents", "plugins", "models"}, ids, args, "version", "plugins", func(outputs map[inventory.ProbeID][]byte) inventory.ExecutorSnapshot {
 		return normalizeAgy(ids, outputs)
 	})
 }
@@ -40,8 +44,35 @@ func normalizeAgy(ids map[string]inventory.ProbeID, outputs map[inventory.ProbeI
 		}
 		snapshot.Capabilities = append(snapshot.Capabilities, evidence(entry.name, entry.source, inventory.ResolutionResolved, raw, identifiers))
 	}
+	modelRaw := outputs[ids["models"]]
+	models := agyModelIdentifiers(modelRaw)
+	if len(models) > 0 {
+		snapshot.ProviderBindings = []inventory.ProviderBinding{{ProviderID: "agy"}}
+		for _, model := range models {
+			snapshot.ProviderBindings = append(snapshot.ProviderBindings, inventory.ProviderBinding{ProviderID: "agy", ModelID: model})
+		}
+		snapshot.Capabilities = append(snapshot.Capabilities, evidence("models", "agy models", inventory.ResolutionResolved, modelRaw, models))
+	} else {
+		snapshot.Capabilities = append(snapshot.Capabilities, unknownEvidence("models", "agy models", "probe_unavailable"))
+	}
 	appendSkew(&snapshot, schemaSkewed(outputs[ids["plugins"]]))
 	return snapshot
+}
+
+// agyModelIdentifiers reads `agy models`: one `<id><TAB><display name>` line
+// per model after a "Fetching available models..." banner. Only the id is
+// kept, and only when it is a safe public identifier.
+func agyModelIdentifiers(raw []byte) []string {
+	models := make([]string, 0)
+	for _, line := range strings.Split(string(raw), "\n") {
+		id, _, found := strings.Cut(strings.TrimSpace(line), "\t")
+		id = strings.TrimSpace(id)
+		if !found || !safePublicIdentifier(id) {
+			continue
+		}
+		models = append(models, id)
+	}
+	return cleanIdentifiers(models)
 }
 
 func safeLineIdentifiers(raw []byte) []string {

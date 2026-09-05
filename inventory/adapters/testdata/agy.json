@@ -1,5 +1,6 @@
 {
   "version": "agy 1.1.14",
   "agents": "default\nreview\nBATUTA_ADAPTER_SECRET_91ef\n",
-  "plugins": "frontend-kit\nreview-kit\nBATUTA_ADAPTER_SECRET_91ef\n"
+  "plugins": "frontend-kit\nreview-kit\nBATUTA_ADAPTER_SECRET_91ef\n",
+  "models": "Fetching available models...\ngemini-3.8-flash-high\tGemini 3.8 Flash (High)\ngemini-3.8-flash-low\tGemini 3.8 Flash (Low)\nBATUTA_ADAPTER_SECRET_91ef\tSecret\nno-tab-line\n"
 }

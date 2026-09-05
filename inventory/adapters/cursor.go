@@ -55,6 +55,9 @@ func normalizeCursor(ids map[string]inventory.ProbeID, outputs map[inventory.Pro
 		}
 	}
 	if len(models) > 0 {
+		for _, model := range models {
+			snapshot.ProviderBindings = append(snapshot.ProviderBindings, inventory.ProviderBinding{ProviderID: "cursor", ModelID: strings.TrimPrefix(model, "cursor/")})
+		}
 		snapshot.Capabilities = append(snapshot.Capabilities, evidence("models", "agent models", inventory.ResolutionResolved, modelRaw, models))
 	} else {
 		snapshot.Capabilities = append(snapshot.Capabilities, unknownEvidence("models", "agent models", "probe_unavailable"))
