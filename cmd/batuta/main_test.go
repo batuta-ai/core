@@ -95,3 +95,19 @@ func TestInspectGit(t *testing.T) {
 		t.Fatalf("inspectGit(nested, dirty) = %q, %v; want toplevel %q and dirty", top, clean, root)
 	}
 }
+
+func TestInspectGitWithSpentContext(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	root := t.TempDir()
+	if out, err := exec.Command(git, "-C", root, "init", "-q").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	spent, cancel := context.WithCancel(context.Background())
+	cancel()
+	if top, _ := inspectGit(spent, git, root); top != "" {
+		t.Fatalf("inspectGit with a cancelled context = %q; a spent context must not report a repository, doctor must give git its own", top)
+	}
+}
