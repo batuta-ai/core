@@ -49,6 +49,7 @@ func TestAdaptersUseOnlyClosedCommandShapes(t *testing.T) {
 				{"mcp", "list", "--json"},
 				{"plugin", "list", "--json"},
 				{"plugin", "marketplace", "list", "--json"},
+				{"debug", "models"},
 				{"debug", "models", "--bundled"},
 			},
 		},
@@ -716,4 +717,48 @@ func TestModelBindingsBackDoctorCountsForEveryExecutor(t *testing.T) {
 	if agy := fixtureAdapter(t, "agy").Normalize(map[inventory.ProbeID][]byte{}); agy.ProviderBindings != nil {
 		t.Fatalf("agy without a models probe should bind nothing, got %#v", agy.ProviderBindings)
 	}
+}
+
+func TestCodexPrefersTheAccountModelListOverTheBundledOne(t *testing.T) {
+	t.Parallel()
+
+	adapter := fixtureAdapter(t, "codex")
+	outputs := fixtureOutputs(t, "codex")
+	outputs[adapter.ProbeID("models_bundled")] = []byte(`{"models":[{"slug":"gpt-5.2"},{"slug":"gpt-5.6-sol"}]}`)
+	account := adapter.Normalize(outputs)
+	if !slices.Equal(account.ProviderBindings, []inventory.ProviderBinding{{ProviderID: "codex"}, {ProviderID: "codex", ModelID: "gpt-5.6-sol"}}) {
+		t.Fatalf("account bindings = %#v", account.ProviderBindings)
+	}
+	if !hasEvidenceState(account.Capabilities, "models", inventory.ResolutionResolved) || evidenceSource(account.Capabilities, "models") != "codex debug models" {
+		t.Fatalf("account evidence = %#v", account.Capabilities)
+	}
+
+	delete(outputs, adapter.ProbeID("models"))
+	bundled := adapter.Normalize(outputs)
+	if !slices.Equal(bundled.ProviderBindings, []inventory.ProviderBinding{{ProviderID: "codex"}, {ProviderID: "codex", ModelID: "gpt-5.2"}, {ProviderID: "codex", ModelID: "gpt-5.6-sol"}}) {
+		t.Fatalf("bundled bindings = %#v", bundled.ProviderBindings)
+	}
+	if !strings.Contains(evidenceSource(bundled.Capabilities, "models"), "--bundled") {
+		t.Fatalf("bundled evidence must say it is the fallback: %#v", bundled.Capabilities)
+	}
+
+	outputs[adapter.ProbeID("models")] = []byte("not json")
+	if fallback := adapter.Normalize(outputs); !strings.Contains(evidenceSource(fallback.Capabilities, "models"), "--bundled") {
+		t.Fatalf("malformed account list must fall back: %#v", fallback.Capabilities)
+	}
+
+	delete(outputs, adapter.ProbeID("models_bundled"))
+	none := adapter.Normalize(outputs)
+	if !hasEvidenceState(none.Capabilities, "models", inventory.ResolutionUnknown) || len(none.ProviderBindings) != 1 {
+		t.Fatalf("no list at all = %#v", none)
+	}
+}
+
+func evidenceSource(capabilities []inventory.Evidence, name string) string {
+	for _, capability := range capabilities {
+		if capability.Name == name {
+			return capability.Source
+		}
+	}
+	return ""
 }
