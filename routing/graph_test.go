@@ -1119,3 +1119,66 @@ func graphGitSHA(seed string) string {
 func graphTime(value time.Time) *time.Time {
 	return &value
 }
+
+func TestDeliveryGraphRetriesOnTheSameRuntimeBeforeEscalating(t *testing.T) {
+	t.Parallel()
+
+	record := validDeliveryFixture(t)
+	record.Attempts = nil
+	generation := validGenerationFixture(t)
+	selected := generation.Rules[0].Runtime
+	generation.Cells = []RoutingCell{{
+		Domain: DomainFrontend, Complexity: ComplexityHigh, TaskIDs: []string{"task_1"},
+		Selected:      RuntimeCandidate{ProviderID: selected.Provider, ModelID: selected.Model, Reasoning: selected.Reasoning},
+		Fallbacks:     []RuntimeCandidate{{ProviderID: "codex", ModelID: "gpt-5.6-terra", Reasoning: "high"}},
+		FallbackLimit: 1,
+	}}
+	generation, _ = finalizeGeneration(generation)
+	graph, err := NewDeliveryGraph(record.TaskSnapshot, generation, record.InitialWorktreeFingerprint.HeadSHA)
+	if err != nil {
+		t.Fatalf("NewDeliveryGraph() error = %v", err)
+	}
+	wave, err := graph.AdmitReadyWave(ReadyWaveInput{
+		IntegrationHeadSHA: record.InitialWorktreeFingerprint.HeadSHA, RemainingSlots: 1, ReachableCommits: map[string]bool{},
+	})
+	if err != nil {
+		t.Fatalf("AdmitReadyWave() error = %v", err)
+	}
+	if err := graph.BeginWaveAttempts(wave.Number, generation); err != nil {
+		t.Fatalf("BeginWaveAttempts() error = %v", err)
+	}
+	if _, err := graph.AttachWorktree("task_1", 1, GraphWorktree{ID: "wt-task-1", Root: "/managed/task-1", Ready: true}); err != nil {
+		t.Fatalf("AttachWorktree() error = %v", err)
+	}
+	policy := FailurePolicy{RetryAllowed: true, SameRuntimeRetries: 1}
+	failure := TaskFailure{ChildRunID: "loop-task-1", TerminalStatus: "failed", BlockerCode: "implementation_failed", TokensUsed: 10}
+
+	first, err := graph.RecordFailureWithPolicy("task_1", 1, failure, generation, graphGitSHA("base-2"), policy)
+	if err != nil || first.Blocked || first.Runtime != selected {
+		t.Fatalf("first failure = %#v, error=%v; want a retry on %#v", first, err, selected)
+	}
+	if _, err := graph.AttachWorktree("task_1", 2, GraphWorktree{ID: "wt-task-2", Root: "/managed/task-2", Ready: true}); err != nil {
+		t.Fatalf("AttachWorktree(retry) error = %v", err)
+	}
+	second, err := graph.RecordFailureWithPolicy("task_1", 2, TaskFailure{ChildRunID: "loop-task-2", TerminalStatus: "failed", BlockerCode: "implementation_failed", TokensUsed: 10}, generation, graphGitSHA("base-3"), policy)
+	if err != nil || second.Blocked || second.Runtime != (RuntimeValue{Provider: "codex", Model: "gpt-5.6-terra", Reasoning: "high"}) {
+		t.Fatalf("second failure = %#v, error=%v; want escalation to the fallback", second, err)
+	}
+	if _, err := graph.AttachWorktree("task_1", 3, GraphWorktree{ID: "wt-task-3", Root: "/managed/task-3", Ready: true}); err != nil {
+		t.Fatalf("AttachWorktree(escalated) error = %v", err)
+	}
+	third, err := graph.RecordFailureWithPolicy("task_1", 3, TaskFailure{ChildRunID: "loop-task-3", TerminalStatus: "failed", BlockerCode: "implementation_failed", TokensUsed: 10}, generation, graphGitSHA("base-4"), policy)
+	if err != nil || third.Blocked || third.Runtime != second.Runtime {
+		t.Fatalf("third failure = %#v, error=%v; want one retry on the fallback", third, err)
+	}
+	if _, err := graph.AttachWorktree("task_1", 4, GraphWorktree{ID: "wt-task-4", Root: "/managed/task-4", Ready: true}); err != nil {
+		t.Fatalf("AttachWorktree(fourth) error = %v", err)
+	}
+	fourth, err := graph.RecordFailureWithPolicy("task_1", 4, TaskFailure{ChildRunID: "loop-task-4", TerminalStatus: "failed", BlockerCode: "implementation_failed", TokensUsed: 10}, generation, graphGitSHA("base-5"), policy)
+	if err != nil || !fourth.Blocked {
+		t.Fatalf("fourth failure = %#v, error=%v; want blocked at MaxTaskExecutions", fourth, err)
+	}
+	if _, err := graph.RecordFailureWithPolicy("task_1", 1, failure, generation, graphGitSHA("base-2"), FailurePolicy{RetryAllowed: true, SameRuntimeRetries: -1}); !errors.Is(err, ErrInvalidDeliveryTransition) {
+		t.Fatalf("negative retries error = %v", err)
+	}
+}

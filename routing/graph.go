@@ -713,6 +713,19 @@ func (g *DeliveryGraph) RecordAnswer(
 	return execution + 1, false, nil
 }
 
+// FailurePolicy decides what a recorded failure leads to. RetryAllowed false
+// blocks the task at once. SameRuntimeRetries is how many times the same
+// runtime is tried again before the cell's fallbacks take over: the
+// conducting doctrine retries once on the same executor with specific
+// feedback, then escalates one row up (SameRuntimeRetries: 1). Zero keeps
+// the daemon's behaviour of advancing on every failure.
+type FailurePolicy struct {
+	RetryAllowed       bool
+	SameRuntimeRetries int
+}
+
+// RecordFailure advances to the next runtime on every failure; see
+// RecordFailureWithPolicy for the retry-then-escalate variant.
 func (g *DeliveryGraph) RecordFailure(
 	taskID string,
 	execution int,
@@ -721,7 +734,19 @@ func (g *DeliveryGraph) RecordFailure(
 	nextBaseHeadSHA string,
 	retryAllowed bool,
 ) (TaskFailureResult, error) {
-	if g == nil || !boundedArgument(taskID) || execution < 1 || execution > MaxTaskExecutions ||
+	return g.RecordFailureWithPolicy(taskID, execution, failure, generation, nextBaseHeadSHA, FailurePolicy{RetryAllowed: retryAllowed})
+}
+
+func (g *DeliveryGraph) RecordFailureWithPolicy(
+	taskID string,
+	execution int,
+	failure TaskFailure,
+	generation RoutingGeneration,
+	nextBaseHeadSHA string,
+	policy FailurePolicy,
+) (TaskFailureResult, error) {
+	retryAllowed := policy.RetryAllowed
+	if g == nil || policy.SameRuntimeRetries < 0 || !boundedArgument(taskID) || execution < 1 || execution > MaxTaskExecutions ||
 		!boundedArgument(failure.ChildRunID) || !validTaskTerminalStatus(failure.TerminalStatus) ||
 		!boundedArgument(failure.BlockerCode) || failure.TokensUsed < 0 ||
 		!canonicalGitSHA.MatchString(nextBaseHeadSHA) {
@@ -772,7 +797,10 @@ func (g *DeliveryGraph) RecordFailure(
 	tokens := failure.TokensUsed
 	attempt.TokensUsed = &tokens
 
-	nextRuntime, eligible := nextRuntimeForTask(generation, *task, attempt.Runtime)
+	nextRuntime, eligible := attempt.Runtime, true
+	if sameRuntimeRuns(task.Attempts[:execution], attempt.Runtime) > policy.SameRuntimeRetries {
+		nextRuntime, eligible = nextRuntimeForTask(generation, *task, attempt.Runtime)
+	}
 	if !retryAllowed || execution == MaxTaskExecutions || !eligible {
 		task.State = GraphTaskBlocked
 		task.BlockerCode = failure.BlockerCode
@@ -2073,6 +2101,18 @@ func validTaskTerminalStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+// sameRuntimeRuns counts the distinct runs (attempts continued after an
+// answer share a run) that already used this runtime.
+func sameRuntimeRuns(attempts []GraphTaskAttempt, runtime RuntimeValue) int {
+	runs := map[int]struct{}{}
+	for _, attempt := range attempts {
+		if attempt.Runtime == runtime {
+			runs[graphAttemptRunExecution(attempt)] = struct{}{}
+		}
+	}
+	return len(runs)
 }
 
 func nextRuntimeForTask(generation RoutingGeneration, task GraphTask, current RuntimeValue) (RuntimeValue, bool) {
