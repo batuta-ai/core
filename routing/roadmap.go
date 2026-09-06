@@ -2,6 +2,7 @@ package routing
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -123,4 +124,36 @@ func ParseRoadmap(payload []byte) (Roadmap, error) {
 		return Roadmap{}, err
 	}
 	return roadmap, nil
+}
+
+// TickPhase marks the phase linked to slug as done without rewriting the
+// roadmap's other bytes. A roadmap that does not name slug is unchanged.
+func TickPhase(path, slug string) error {
+	payload, err := readBoundedFile(path, maxTaskArtifactBytes)
+	if err != nil {
+		return err
+	}
+	if _, err := ParseRoadmap(payload); err != nil {
+		return err
+	}
+
+	offset := 0
+	for _, line := range bytes.SplitAfter(payload, []byte("\n")) {
+		content := bytes.TrimSuffix(line, []byte("\n"))
+		content = bytes.TrimSuffix(content, []byte("\r"))
+		match := roadmapPhaseLine.FindStringSubmatch(string(content))
+		if match != nil {
+			_, tail, linked := strings.Cut(match[3], "→")
+			if linked && strings.TrimSpace(tail) == "plans/"+slug+".md" {
+				if match[1] == " " {
+					updated := append([]byte(nil), payload...)
+					updated[offset+3] = 'x'
+					return os.WriteFile(path, updated, 0o644)
+				}
+				return nil
+			}
+		}
+		offset += len(line)
+	}
+	return nil
 }

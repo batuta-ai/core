@@ -113,3 +113,30 @@ func TestRoadmapLoaderReportsMissingPlans(t *testing.T) {
 		})
 	}
 }
+
+func TestTickPhaseRewritesOnlyTheLine(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "roadmap.md")
+	before := "# Roadmap — Checkout delivery\r\n\r\n" +
+		"- [ ] 1. Foundation → plans/foundation.md\r\n" +
+		"Keep plans/checkout-hardening.md in this prose.\r\n" +
+		"- [ ] 2. Harden checkout → plans/checkout-hardening.md\r\n" +
+		"- [ ] 3. Release → plans/release.md\r\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := TickPhase(path, "checkout-hardening"); err != nil {
+		t.Fatalf("TickPhase() error = %v", err)
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(before,
+		"- [ ] 2. Harden checkout → plans/checkout-hardening.md",
+		"- [x] 2. Harden checkout → plans/checkout-hardening.md", 1)
+	if string(payload) != want {
+		t.Fatalf("roadmap after TickPhase() = %q, want %q", payload, want)
+	}
+}

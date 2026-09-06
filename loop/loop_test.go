@@ -910,7 +910,7 @@ func TestAbandonClosesAnOpenDelivery(t *testing.T) {
 
 func jsonUnmarshal(payload []byte, target any) error { return json.Unmarshal(payload, target) }
 
-func TestLoopMovesAFinishedPlanIntoDone(t *testing.T) {
+func TestLoopArchivesTheFinishedPlan(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
 			f := setup(t)
@@ -967,5 +967,44 @@ func TestLoopMovesAFinishedPlanIntoDone(t *testing.T) {
 				t.Fatal("missing delivery_opened record")
 			}
 		})
+	}
+}
+
+func TestLoopTicksTheRoadmapPhaseWhenThePlanIsArchived(t *testing.T) {
+	f := setup(t)
+	path := filepath.Join(f.root, ".batuta", "roadmap.md")
+	before := "# Roadmap — Greetings delivery\n\n" +
+		"Delivery notes stay byte-for-byte intact.\n" +
+		"- [ ] 1. Build greetings → plans/greetings.md\n" +
+		"- [ ] 2. Release greetings → plans/release-greetings.md\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/roadmap.md")
+	f.run(t, "commit", "-q", "-m", "chore: add roadmap")
+
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(before,
+		"- [ ] 1. Build greetings → plans/greetings.md",
+		"- [x] 1. Build greetings → plans/greetings.md", 1)
+	if string(payload) != want {
+		t.Fatalf("roadmap after archive = %q, want %q", payload, want)
+	}
+	if committed := f.run(t, "show", "HEAD:.batuta/roadmap.md"); committed != strings.TrimSpace(want) {
+		t.Fatalf("committed roadmap = %q, want %q", committed, strings.TrimSpace(want))
+	}
+	if status := f.run(t, "status", "--porcelain"); status != "" {
+		t.Fatalf("tree dirty after archive: %s", status)
 	}
 }
