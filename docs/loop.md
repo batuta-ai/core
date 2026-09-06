@@ -137,6 +137,10 @@ exit `1` with the reason on stderr.
   (no background work, quick synchronous commands only, `TASK n:
   DONE|INCOMPLETE` mandatory). Any tree change during the verifier round
   invalidates it.
+- **Unsigned child sessions.** Executor and verifier sessions receive
+  `commit.gpgsign=false` through Git's command-line configuration environment.
+  The loop's integration commit does not receive that override and therefore
+  keeps the user's signing configuration.
 - **Dashboard watch.** `--dashboard` with `--watch` renders a live panel
   every interval, clearing the screen before each redraw. The watch mode
   follows the most recent open delivery when no delivery argument is given,

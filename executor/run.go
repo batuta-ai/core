@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -69,9 +71,13 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 	sink := &progressSink{callback: s.Progress}
 	stdoutObserver := &progressObserver{sink: sink}
 	stderrObserver := &progressObserver{sink: sink}
+	environment, err := unsignedGitEnvironment(s.Environment)
+	if err != nil {
+		return Result{ExitCode: -1}, err
+	}
 	raw, runErr := s.Runner.Run(runCtx, publication.Command{
 		Executable: executable, Args: invocation.Args, Directory: invocation.Dir,
-		Environment: s.Environment, StdoutLimit: outputLimit, StderrLimit: outputLimit,
+		Environment: environment, StdoutLimit: outputLimit, StderrLimit: outputLimit,
 		Observer: stdoutObserver, StderrObserver: stderrObserver,
 	})
 	stdoutObserver.flush()
@@ -93,6 +99,34 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 	}
 	adapter.Outcome(&result)
 	return result, nil
+}
+
+func unsignedGitEnvironment(environment []string) ([]string, error) {
+	count := 0
+	if value, found := os.LookupEnv("GIT_CONFIG_COUNT"); found {
+		parsed, err := strconv.Atoi(value)
+		if err != nil || parsed < 0 {
+			return nil, fmt.Errorf("executor: invalid GIT_CONFIG_COUNT %q", value)
+		}
+		count = parsed
+	}
+	for _, entry := range environment {
+		name, value, found := strings.Cut(entry, "=")
+		if found && name == "GIT_CONFIG_COUNT" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 0 {
+				return nil, fmt.Errorf("executor: invalid GIT_CONFIG_COUNT %q", value)
+			}
+			count = parsed
+		}
+	}
+
+	result := append([]string(nil), environment...)
+	return append(result,
+		"GIT_CONFIG_COUNT="+strconv.Itoa(count+1),
+		"GIT_CONFIG_KEY_"+strconv.Itoa(count)+"=commit.gpgsign",
+		"GIT_CONFIG_VALUE_"+strconv.Itoa(count)+"=false",
+	), nil
 }
 
 func (s Subprocess) resolve(executable string) (string, error) {
