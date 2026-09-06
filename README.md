@@ -25,15 +25,34 @@ The module is **pre-release**: `v1.1.0-beta.N` until the API stabilizes.
 | `integration` | one task = one commit: candidate evidence in a task worktree, verified integration into the canonical worktree, tracking digests |
 | `publication` | command runner with output limits, git snapshots and ancestry, publication plan and independent verification of the reviewed HEAD |
 | `repository` | guarded repository bootstrap: `.gitignore`-aware, blocks unignored sensitive paths, one `chore: initialize workspace` commit |
+| `journal` | append-only, hash-chained JSONL per delivery under `.batuta/journal/`; every record carries the graph after the transition, so `--resume` continues from the last one |
+| `worktree` | `git worktree` per task attempt under `.batuta/worktrees/`, squash to one commit, bookkeeping commits, `.git/info/exclude` |
+| `executor` | adapter frontmatter (`skills/batuta/adapters/*.md`) to argv — never a shell — subprocess with stdin closed, timeout and process-group kill, `finished` and `limit_regex` rules |
+| `gates` | the four mechanical gates: finished · tree · tests · verify (scope, proofs, independent read-only verifier) |
+| `loop` | `batuta loop`: the mechanical conductor over `routing.DeliveryGraph` on file hosts — see [docs/loop.md](docs/loop.md) |
 
 No package imports a daemon SDK. Everything runs over `git`, `gh` and the
 executor CLIs through `publication.CommandRunner`.
 
+## The binary
+
+`batuta version` · `capabilities` · `inventory` · `doctor` · `loop` · `trail`.
+Skills probe `batuta capabilities` before calling a subcommand.
+
+```
+batuta loop --dry-run [<plan>]          waves, executors, worktrees; runs nothing
+batuta loop [<plan>]                    run the approved plan to a terminal state
+batuta loop --resume <delivery>         continue after an interruption
+batuta loop --answer <task> "<text>"    answer a parked task and continue
+batuta loop --abandon <delivery>        close a delivery; ticks what integrated
+batuta loop --dashboard [<delivery>]    TSV state of the open deliveries
+batuta trail [<delivery>]               one line per journal record
+```
+
 ## Roadmap
 
-- `journal`, `worktree` and `executor` interfaces so the same graph runs with a file journal, `git worktree` and subprocess executors on any CLI host, and with the CompozyOS daemon in the extension.
-- `gates`: the four mechanical verification gates.
-- `cmd/batuta`: `doctor`, `inventory`, `gate`, `trail`, `loop`.
+- `cmd/batuta gate <name>`: the gates as standalone subcommands for the interactive skill.
+- Token accounting for CLI executors that report it.
 
 ## Develop
 

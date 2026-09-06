@@ -51,13 +51,13 @@ func TestRunPrintsCapabilities(t *testing.T) {
 	if got.Version == "" {
 		t.Fatal("capabilities.version is empty")
 	}
-	for _, want := range []string{"capabilities", "doctor", "inventory", "version"} {
+	for _, want := range []string{"capabilities", "doctor", "inventory", "loop", "trail", "version"} {
 		if !slices.Contains(got.Commands, want) {
 			t.Fatalf("capabilities.commands = %v, missing %q", got.Commands, want)
 		}
 	}
-	if slices.Contains(got.Commands, "gate") || slices.Contains(got.Commands, "loop") {
-		t.Fatalf("capabilities.commands = %v advertises subcommands run() does not implement", got.Commands)
+	if slices.Contains(got.Commands, "gate") {
+		t.Fatalf("capabilities.commands = %v advertises a subcommand run() does not implement", got.Commands)
 	}
 }
 
@@ -122,5 +122,20 @@ func TestVersionPrefersTheBuildVersion(t *testing.T) {
 	buildVersion = ""
 	if got := version(); got == "" || got == "v9.9.9-beta.1" {
 		t.Fatalf("version() without ldflags = %q", got)
+	}
+}
+
+func TestLoopSubcommandRefusesToRunOutsideAPreparedWorkspace(t *testing.T) {
+	root := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"loop", "--workspace", root, "--dry-run"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("loop in a non-repository error = %v", err)
+	}
+	if err := run([]string{"trail", "--workspace", root}, &stdout, &stderr); err == nil {
+		t.Fatal("trail without journals should fail")
+	}
+	if err := run([]string{"loop", "--workspace", root, "--dashboard"}, &stdout, &stderr); err != nil || !strings.Contains(stdout.String(), "no open deliveries") {
+		t.Fatalf("dashboard without journals = %v\n%s", err, stdout.String())
 	}
 }

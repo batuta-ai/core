@@ -71,6 +71,7 @@ func (ExecRunner) Run(ctx context.Context, command Command) (CommandResult, erro
 	cmd.Env = append(os.Environ(), command.Environment...)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
+	configureProcess(cmd)
 
 	err := cmd.Run()
 	result := CommandResult{

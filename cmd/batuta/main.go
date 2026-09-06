@@ -1,8 +1,8 @@
 // Command batuta is the deterministic side of the Batuta conducting cycle.
 //
-// Subcommands available today: version, capabilities, inventory, doctor. The
-// verification gates, run trails and the unattended loop land in later
-// releases; hosts probe `batuta capabilities` before relying on them.
+// Subcommands: version, capabilities, inventory, doctor, loop, trail. The
+// standalone verification gates (`gate`) land in a later release; hosts
+// probe `batuta capabilities` before relying on any of them.
 package main
 
 import (
@@ -15,13 +15,16 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/inventory/adapters"
+	"github.com/batuta-ai/core/loop"
 	"github.com/batuta-ai/core/publication"
 )
 
@@ -32,9 +35,23 @@ Usage:
   batuta capabilities
   batuta inventory [--workspace <dir>] [--timeout <duration>]
   batuta doctor    [--workspace <dir>] [--json] [--timeout <duration>]
+  batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [<plan>]
+  batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
+  batuta loop      --dashboard [<delivery>]
+  batuta trail     [<delivery>]
 
 capabilities  The subcommands this binary ships, as JSON. Skills probe it
            before calling gate or loop; an older binary fails the probe.
+
+loop       The mechanical conductor over an approved plan
+           (.batuta/plan-<slug>.md): routing from .batuta/routing.md, one
+           executor session per task in its own worktree through the
+           adapter, the four gates, retry then escalation, one commit per
+           task integrated onto the checked-out branch, everything
+           journaled under .batuta/journal/. Exit 0 when every task
+           integrated; 2 blocked; 3 waiting for an answer; 130 canceled.
+trail      One line per journal record of a delivery (the latest by
+           default).
 
 inventory  Redacted snapshot of the executor CLIs installed on this machine
            (codex, opencode, cursor-agent, claude, agy, compozy): versions,
@@ -46,6 +63,10 @@ doctor     What a conductor needs to know before the first cycle: which
 
 func main() {
 	if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		var exit *ExitError
+		if errors.As(err, &exit) {
+			os.Exit(exit.Code)
+		}
 		fmt.Fprintln(os.Stderr, "batuta:", err)
 		os.Exit(1)
 	}
@@ -66,6 +87,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runInventory(args[1:], stdout)
 	case "doctor":
 		return runDoctor(args[1:], stdout)
+	case "loop":
+		return runLoop(args[1:], stdout, stderr)
+	case "trail":
+		return runTrail(args[1:], stdout)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return nil
@@ -89,9 +114,9 @@ func version() string {
 	return "devel"
 }
 
-// commands lists every subcommand this binary ships. Append gate and loop
-// here when they land; skills read this list, never the usage text.
-var commands = []string{"capabilities", "doctor", "inventory", "version"}
+// commands lists every subcommand this binary ships. Append gate here when
+// it lands; skills read this list, never the usage text.
+var commands = []string{"capabilities", "doctor", "inventory", "loop", "trail", "version"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
@@ -312,25 +337,141 @@ func inspectGit(ctx context.Context, git, root string) (toplevel string, clean *
 }
 
 func findSkills(root string) string {
-	home, _ := os.UserHomeDir()
-	candidates := []string{
-		filepath.Join(root, ".agents", "skills", "batuta"),
-		filepath.Join(root, ".claude", "skills", "batuta"),
+	path, err := loop.FindSkills(root, "")
+	if err != nil {
+		return ""
 	}
-	if home != "" {
-		candidates = append(candidates,
-			filepath.Join(home, ".agents", "skills", "batuta"),
-			filepath.Join(home, ".claude", "skills", "batuta"),
-			filepath.Join(home, ".codex", "skills", "batuta"),
-			filepath.Join(home, ".config", "opencode", "skills", "batuta"),
-		)
+	return path
+}
+
+// ExitError carries the loop's exit code: the delivery ended, and not in
+// the state that means success.
+type ExitError struct {
+	Code  int
+	State string
+}
+
+func (e *ExitError) Error() string { return "delivery " + e.State }
+
+func runLoop(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("loop", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	workspace := flags.String("workspace", "", "repository root (default: current directory)")
+	skills := flags.String("skills", "", "batuta skill directory holding adapters/ and templates/ (default: auto-detected)")
+	dryRun := flags.Bool("dry-run", false, "show the waves, executors and worktrees; run nothing")
+	resume := flags.String("resume", "", "continue a delivery from its journal")
+	abandon := flags.String("abandon", "", "close a delivery that will not continue; ticks what integrated")
+	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
+	dashboard := flags.Bool("dashboard", false, "print the state of the open deliveries as TSV")
+	parallel := flags.Int("parallel", 0, "executors per wave, at most 4 (default: the profile's Execution line)")
+	taskTimeout := flags.Duration("task-timeout", 45*time.Minute, "time budget per executor session")
+	testTimeout := flags.Duration("test-timeout", 15*time.Minute, "time budget for the test command and each proof")
+	maxWaves := flags.Int("max-waves", 0, "stop after N waves (the delivery stays resumable)")
+	keep := flags.Bool("keep-worktrees", false, "keep task worktrees after integration or abort")
+	maxLimitWaits := flags.Int("max-limit-waits", 20, "consecutive usage-limit waits one attempt may take")
+	limitWait := flags.Duration("limit-wait", 30*time.Minute, "wait when a usage-limit message names no reset time")
+	if err := flags.Parse(args); err != nil {
+		return err
 	}
-	for _, candidate := range candidates {
-		if _, err := os.Stat(filepath.Join(candidate, "SKILL.md")); err == nil {
-			return candidate
+	rest := flags.Args()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if *dashboard {
+		delivery := ""
+		if len(rest) > 0 {
+			delivery = rest[0]
 		}
+		return loop.Dashboard(*workspace, delivery, stdout)
 	}
-	return ""
+	opts := loop.Options{
+		Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
+		MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait,
+		Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
+			root, err := workspaceRoot(*workspace)
+			if err != nil {
+				return inventory.InventorySnapshot{}, err
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			defer cancel()
+			snapshot, _, err := collect(probeCtx, root)
+			return snapshot, err
+		},
+	}
+	if *abandon != "" {
+		opts.Resume = *abandon
+		state, err := loop.Abandon(ctx, opts)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "delivery %s %s\n", *abandon, state)
+		return nil
+	}
+	if *answer != "" {
+		if len(rest) != 1 {
+			return errors.New("usage: batuta loop --answer <task> \"<text>\"")
+		}
+		delivery, err := loop.Answer(*workspace, *answer, rest[0])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "answer recorded for %s in delivery %s; resuming\n", *answer, delivery)
+		opts.Resume = delivery
+	} else if *resume != "" {
+		opts.Resume = *resume
+	}
+	var runner *loop.Runner
+	var err error
+	if opts.Resume != "" {
+		runner, err = loop.Resume(ctx, opts)
+	} else {
+		if len(rest) > 0 {
+			opts.Plan = rest[0]
+		}
+		runner, err = loop.New(ctx, opts)
+	}
+	if err != nil {
+		return err
+	}
+	if *dryRun {
+		preview, err := runner.DryRun()
+		if err != nil {
+			return err
+		}
+		loop.PrintPreview(stdout, preview)
+		return nil
+	}
+	state, err := runner.Run(ctx)
+	if err != nil {
+		if errors.Is(err, loop.ErrStopped) {
+			fmt.Fprintf(stdout, "stopped after %d wave(s); resume with: batuta loop --resume %s\n", *maxWaves, runner.Delivery())
+			return nil
+		}
+		return err
+	}
+	switch state {
+	case loop.StateDone:
+		return nil
+	case loop.StateWaitingInput:
+		return &ExitError{Code: 3, State: state}
+	case loop.StateCanceled:
+		return &ExitError{Code: 130, State: state}
+	default:
+		return &ExitError{Code: 2, State: state}
+	}
+}
+
+func runTrail(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("trail", flag.ContinueOnError)
+	workspace := flags.String("workspace", "", "repository root (default: current directory)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	delivery := ""
+	if rest := flags.Args(); len(rest) > 0 {
+		delivery = rest[0]
+	}
+	return loop.Trail(*workspace, delivery, stdout)
 }
 
 func printDoctor(w io.Writer, report doctorReport) {
