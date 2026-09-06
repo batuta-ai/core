@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -22,6 +23,7 @@ type Command struct {
 	Directory   string
 	Stdin       []byte
 	Environment []string
+	Observer    io.Writer
 	StdoutLimit int64
 	StderrLimit int64
 }
@@ -70,6 +72,9 @@ func (ExecRunner) Run(ctx context.Context, command Command) (CommandResult, erro
 	cmd.Stdin = bytes.NewReader(command.Stdin)
 	cmd.Env = append(os.Environ(), command.Environment...)
 	cmd.Stdout = stdout
+	if command.Observer != nil {
+		cmd.Stdout = io.MultiWriter(stdout, command.Observer)
+	}
 	cmd.Stderr = stderr
 	configureProcess(cmd)
 
