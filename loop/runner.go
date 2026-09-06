@@ -54,6 +54,7 @@ const (
 	StateDone         = "done"
 	StateBlocked      = "blocked"
 	StateWaitingInput = "waiting_input"
+	StateWaitingPlan  = "waiting_plan"
 	StateCanceled     = "canceled"
 	StateAbandoned    = "abandoned"
 )
@@ -218,6 +219,15 @@ func New(ctx context.Context, opts Options) (*Runner, error) {
 	}
 	r.graph = graph
 	r.delivery = r.plan.Slug + "-" + r.now().UTC().Format("20060102-150405")
+	baseID := r.delivery
+	for suffix := 2; ; suffix++ {
+		if _, err := os.Lstat(r.store.Path(r.delivery)); errors.Is(err, os.ErrNotExist) {
+			break
+		} else if err != nil {
+			return nil, err
+		}
+		r.delivery = baseID + "-" + strconv.Itoa(suffix)
+	}
 	return r, nil
 }
 
