@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.1.0-beta.12](https://github.com/batuta-ai/core/compare/v1.1.0-beta.11...v1.1.0-beta.12) (2026-09-06)
+
+
+### Features
+
+* batuta loop --dashboard --watch redraws the panel until the delivery ([01f7816](https://github.com/batuta-ai/core/commit/01f78160bc3653590f814cec0464282837fe2872))
+* gate 3 names a criterion reported DONE whose proof failed ([a557ad6](https://github.com/batuta-ai/core/commit/a557ad60dea7900aa86afaf91b36cbc10080b92d))
+* **loop:** live dashboard and per-criterion progress protocol ([#34](https://github.com/batuta-ai/core/issues/34)) ([f09b1a6](https://github.com/batuta-ai/core/commit/f09b1a6db61414ca8c7a0a08b002eb72bd9e703d))
+* render the live panel from a delivery's journal ([69432b4](https://github.com/batuta-ai/core/commit/69432b4677a0cc2d5b2527b526bb327bb27790b1))
+
+
+### Bug Fixes
+
+* **executor:** parse BATUTA-PROGRESS lines on stderr too ([5d837d5](https://github.com/batuta-ai/core/commit/5d837d56f8797cd98da2146051a1ecd816286a3f))
+
 ## [1.1.0-beta.11](https://github.com/batuta-ai/core/compare/v1.1.0-beta.10...v1.1.0-beta.11) (2026-09-06)
 
 
