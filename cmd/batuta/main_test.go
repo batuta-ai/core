@@ -57,10 +57,24 @@ func TestRunPrintsCapabilities(t *testing.T) {
 	if got.Version == "" {
 		t.Fatal("capabilities.version is empty")
 	}
-	for _, want := range []string{"capabilities", "doctor", "gate", "inventory", "loop", "trail", "version"} {
+	for _, want := range []string{"capabilities", "doctor", "gate", "inventory", "loop", "roadmap", "trail", "version"} {
 		if !slices.Contains(got.Commands, want) {
 			t.Fatalf("capabilities.commands = %v, missing %q", got.Commands, want)
 		}
+	}
+}
+
+func TestCapabilitiesListsRoadmap(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"capabilities"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(capabilities) error = %v", err)
+	}
+	var got capabilities
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("capabilities is not JSON: %v\n%s", err, stdout.String())
+	}
+	if !slices.Contains(got.Commands, "roadmap") {
+		t.Fatalf("capabilities.commands = %v, missing %q", got.Commands, "roadmap")
 	}
 }
 

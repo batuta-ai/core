@@ -124,9 +124,9 @@ func version() string {
 	return "devel"
 }
 
-// commands lists every subcommand this binary ships; skills read this list,
+// commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "trail", "version"}
+var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "roadmap", "trail", "version"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
