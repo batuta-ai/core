@@ -53,27 +53,101 @@ func TestParseCriteriaSplitsTextFromProof(t *testing.T) {
 }
 
 func TestVerifierParsesOneLinePerCriterion(t *testing.T) {
-	if v := Verifier("chatter\nTASK 1: DONE\nTASK 2: DONE\n", 2); !v.Pass || v.Signal != "2/2 DONE" {
+	if v := Verifier("chatter\nTASK 1: DONE\nTASK 2: DONE\n", 2, nil); !v.Pass || v.Signal != "2/2 DONE" {
 		t.Fatalf("all done = %#v", v)
 	}
-	if v := Verifier("TASK 1: DONE\nTASK 2: INCOMPLETE — no test for 4xx\n", 2); v.Pass || !strings.Contains(v.Detail, "no test for 4xx") {
+	if v := Verifier("TASK 1: DONE\nTASK 2: INCOMPLETE — no test for 4xx\n", 2, nil); v.Pass || !strings.Contains(v.Detail, "no test for 4xx") {
 		t.Fatalf("incomplete = %#v", v)
 	}
-	if v := Verifier("TASK 1: DONE\n", 2); v.Pass || !strings.Contains(v.Signal, "1 of 2") {
+	if v := Verifier("TASK 1: DONE\n", 2, nil); v.Pass || !strings.Contains(v.Signal, "1 of 2") {
 		t.Fatalf("short = %#v", v)
 	}
-	if v := Verifier("TASK 1: DONE\nTASK 3: DONE\n", 2); v.Pass || !strings.Contains(v.Signal, "skipped criterion 2") {
+	if v := Verifier("TASK 1: DONE\nTASK 3: DONE\n", 2, nil); v.Pass || !strings.Contains(v.Signal, "skipped criterion 2") {
 		t.Fatalf("wrong numbers = %#v", v)
 	}
-	if v := Verifier("I looked and it seems fine.", 1); v.Pass || !strings.Contains(v.Signal, "no TASK") {
+	if v := Verifier("I looked and it seems fine.", 1, nil); v.Pass || !strings.Contains(v.Signal, "no TASK") {
 		t.Fatalf("no lines = %#v", v)
 	}
 	if !NeedsVerifier("high", false, 1) || !NeedsVerifier("low", true, 1) || !NeedsVerifier("low", false, 2) || NeedsVerifier("medium", false, 1) {
 		t.Fatal("NeedsVerifier rules")
 	}
-	prompt := VerifierPrompt("Retry the payment", ParseCriteria([]string{"x → npm test"}), "abc")
+	prompt := VerifierPrompt("Retry the payment", ParseCriteria([]string{"x → npm test"}), nil, "abc")
 	if !strings.Contains(prompt, "Criterion 1: x (proof: `npm test`)") || !strings.Contains(prompt, "TASK <n>: DONE") {
 		t.Fatalf("prompt = %q", prompt)
+	}
+}
+
+func TestVerifierPromptCarriesProofOutcomes(t *testing.T) {
+	criteria := []Criterion{
+		{Text: "passing proof", Proof: "go test ./passing"},
+		{Text: "failing proof", Proof: "go test ./failing"},
+		{Text: "read the implementation"},
+		{Text: "proof not run", Proof: "go test ./missing"},
+	}
+	proofs := []Verdict{{Pass: true}, {Pass: false}, {Pass: true}}
+	prompt := VerifierPrompt("Proof-aware verification", criteria, proofs, "main")
+
+	wants := []string{
+		"Criterion 1: passing proof (proof: `go test ./passing`) — proof run by the conductor: passed",
+		"Criterion 2: failing proof (proof: `go test ./failing`) — proof run by the conductor: failed",
+		"Criterion 3: read the implementation — no proof; judge it by reading",
+		"Criterion 4: proof not run (proof: `go test ./missing`) — no proof; judge it by reading",
+		"A criterion whose proof passed is INCOMPLETE only for something you can point at in the diff: missing code, a placeholder, a test that does not test the criterion. Never because a command could not run in your environment; the conductor already ran the proof.",
+	}
+	for _, want := range wants {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("VerifierPrompt() missing %q in:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestVerifierSetsAsideEnvironmentObjectionsWhenTheProofPassed(t *testing.T) {
+	tests := []struct {
+		name       string
+		proofs     []Verdict
+		reason     string
+		wantPass   bool
+		wantSignal string
+		wantDetail string
+	}{
+		{
+			name:       "passing proof",
+			proofs:     []Verdict{{Pass: true}, {Pass: true}},
+			reason:     "sandbox restrictions prevented verifying integration.",
+			wantPass:   true,
+			wantSignal: "2/2 DONE (1 environment objection(s) set aside)",
+			wantDetail: "criterion 2: environment objection set aside, its proof passed — sandbox restrictions prevented verifying integration.",
+		},
+		{
+			name:       "failed proof",
+			proofs:     []Verdict{{Pass: true}, {Pass: false}},
+			reason:     "sandbox restrictions prevented verifying integration.",
+			wantSignal: "1 criterion(s) INCOMPLETE",
+			wantDetail: "TASK 2: INCOMPLETE — sandbox restrictions prevented verifying integration.",
+		},
+		{
+			name:       "proofs unavailable",
+			reason:     "sandbox restrictions prevented verifying integration.",
+			wantSignal: "1 criterion(s) INCOMPLETE",
+			wantDetail: "TASK 2: INCOMPLETE — sandbox restrictions prevented verifying integration.",
+		},
+		{
+			name:       "real objection",
+			proofs:     []Verdict{{Pass: true}, {Pass: true}},
+			reason:     "no test covers the error path",
+			wantSignal: "1 criterion(s) INCOMPLETE",
+			wantDetail: "TASK 2: INCOMPLETE — no test covers the error path",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			output := "TASK 1: DONE\nTASK 2: INCOMPLETE — " + test.reason + "\n"
+			verdict := Verifier(output, 2, test.proofs)
+			if verdict.Pass != test.wantPass || verdict.Signal != test.wantSignal || !strings.Contains(verdict.Detail, test.wantDetail) {
+				t.Fatalf("Verifier() = %#v", verdict)
+			}
+		})
 	}
 }
 
