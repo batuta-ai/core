@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.8](https://github.com/batuta-ai/core/compare/v1.1.0-beta.7...v1.1.0-beta.8) (2026-09-06)
+
+
+### Features
+
+* **loop:** batuta loop, the mechanical conductor over the delivery graph ([#30](https://github.com/batuta-ai/core/issues/30)) ([50d01ca](https://github.com/batuta-ai/core/commit/50d01ca9aa7c874fc85b821064e92ffb263971b8)), closes [#18](https://github.com/batuta-ai/core/issues/18)
+
 ## [1.1.0-beta.7](https://github.com/batuta-ai/core/compare/v1.1.0-beta.6...v1.1.0-beta.7) (2026-09-06)
 
 
