@@ -1,16 +1,31 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
 )
+
+type panelCallbackWriter struct {
+	builder strings.Builder
+	once    sync.Once
+	fn      func()
+}
+
+func (w *panelCallbackWriter) Write(p []byte) (int, error) {
+	w.once.Do(w.fn)
+	return w.builder.Write(p)
+}
+
+func (w *panelCallbackWriter) String() string { return w.builder.String() }
 
 func panelRecord(t *testing.T, kind journal.Kind, task string, at time.Time, detail any, graph routing.DeliveryGraph) journal.Record {
 	t.Helper()
@@ -146,6 +161,39 @@ func TestDashboardTSVUnchanged(t *testing.T) {
 		if got.String() != want {
 			t.Fatalf("Dashboard = %q, want %q", got.String(), want)
 		}
+	}
+}
+
+func TestWatchStopsAtTerminalState(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 6, 12, 34, 56, 0, time.UTC)
+	graph := routing.DeliveryGraph{Tasks: []routing.GraphTask{{TaskID: "task_1", State: routing.GraphTaskRunning}}}
+	if _, err := store.Append("demo", panelRecord(t, KindOpened, "", now, map[string]any{"slug": "demo"}, graph)); err != nil {
+		t.Fatal(err)
+	}
+	var appendErr error
+	out := &panelCallbackWriter{fn: func() {
+		_, appendErr = store.Append("demo", panelRecord(t, KindTerminal, "", now.Add(time.Second), map[string]any{"state": StateDone}, graph))
+	}}
+	if err := Watch(context.Background(), root, "demo", time.Millisecond, out); err != nil {
+		t.Fatal(err)
+	}
+	if appendErr != nil {
+		t.Fatal(appendErr)
+	}
+	if got := strings.Count(out.String(), "\x1b[2J\x1b[H"); got < 2 {
+		t.Fatalf("screen cleared %d times, want at least 2 redraws:\n%s", got, out.String())
+	}
+	if !strings.Contains(strings.Join(strings.Fields(out.String()), " "), "last delivery_terminal state=done") {
+		t.Fatalf("terminal panel was not rendered:\n%s", out.String())
 	}
 }
 

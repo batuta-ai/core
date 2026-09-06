@@ -1,8 +1,10 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -11,6 +13,64 @@ import (
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
 )
+
+const panelClearScreen = "\x1b[2J\x1b[H"
+
+// Watch redraws the most recent journal state until the delivery ends or
+// the context is canceled. It only reads the journal.
+func Watch(ctx context.Context, workspace, delivery string, interval time.Duration, w io.Writer) error {
+	_, store, err := openStore(workspace)
+	if err != nil {
+		return err
+	}
+	if delivery == "" {
+		ids, err := store.List()
+		if err != nil {
+			return err
+		}
+		for _, id := range ids {
+			records, err := store.Read(id)
+			if err == nil && len(records) > 0 && records[0].Kind == KindOpened && terminalState(records) == "" {
+				delivery = id
+				break
+			}
+		}
+		if delivery == "" {
+			_, err := fmt.Fprintln(w, "no open deliveries")
+			return err
+		}
+	}
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	redraw := func() (bool, error) {
+		records, err := store.Read(delivery)
+		if err != nil {
+			return false, err
+		}
+		if _, err := io.WriteString(w, panelClearScreen+RenderPanel(records, time.Now())); err != nil {
+			return false, err
+		}
+		return terminalState(records) != "", nil
+	}
+	terminal, err := redraw()
+	if err != nil || terminal {
+		return err
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			terminal, err := redraw()
+			if err != nil || terminal {
+				return err
+			}
+		}
+	}
+}
 
 // RenderPanel renders one delivery from its journal without reading or writing
 // external state. The opening record identifies the delivery by its plan slug.

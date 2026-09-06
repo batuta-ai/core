@@ -37,7 +37,7 @@ Usage:
   batuta doctor    [--workspace <dir>] [--json] [--timeout <duration>]
   batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [<plan>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
-  batuta loop      --dashboard [<delivery>]
+  batuta loop      --dashboard [--watch] [--interval 2s] [<delivery>]
   batuta trail     [<delivery>]
   batuta gate tree --snapshot [--dir <d>]
   batuta gate tree --before '<json>' [--dir <d>]
@@ -367,6 +367,8 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	abandon := flags.String("abandon", "", "close a delivery that will not continue; ticks what integrated")
 	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
 	dashboard := flags.Bool("dashboard", false, "print the state of the open deliveries as TSV")
+	watch := flags.Bool("watch", false, "redraw a live dashboard until the delivery ends")
+	interval := flags.Duration("interval", 2*time.Second, "live dashboard redraw interval")
 	parallel := flags.Int("parallel", 0, "executors per wave, at most 4 (default: the profile's Execution line)")
 	taskTimeout := flags.Duration("task-timeout", 45*time.Minute, "time budget per executor session")
 	testTimeout := flags.Duration("test-timeout", 15*time.Minute, "time budget for the test command and each proof")
@@ -386,7 +388,13 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 		if len(rest) > 0 {
 			delivery = rest[0]
 		}
+		if *watch {
+			return loop.Watch(ctx, *workspace, delivery, *interval, stdout)
+		}
 		return loop.Dashboard(*workspace, delivery, stdout)
+	}
+	if *watch {
+		return errors.New("--watch requires --dashboard")
 	}
 	opts := loop.Options{
 		Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
