@@ -15,3 +15,4 @@
 - [x] Render the live panel from a delivery's journal → codex (gpt-6-astra), 1 retry, commit 69432b4677a0 (trail: .batuta/runs/2026-09-06-watch-task-5.md, plan watch, 2026-09-06)
 - [x] batuta loop --dashboard --watch redraws the panel until the delivery ends → codex (gpt-5.6-sol), commit 01f78160bc36 (trail: .batuta/runs/2026-09-06-watch-task-6.md, plan watch, 2026-09-06)
 - [x] Document the protocol, the record and the panel → codex (gpt-5.4-mini), commit 8a24304733d9 (trail: .batuta/runs/2026-09-06-watch-task-7.md, plan watch, 2026-09-06)
+- [x] parse BATUTA-PROGRESS on stderr too (codex exec fala no stderr) → codex (codex/gpt-5.6-sol), primeira tentativa, commit 5d837d5 em feat/watch (trail: .batuta/runs/2026-09-06-progress-stderr.md)
