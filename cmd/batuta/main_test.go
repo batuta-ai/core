@@ -76,8 +76,8 @@ func TestInspectGit(t *testing.T) {
 	if resolved, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolved
 	}
-	if top, clean := inspectGit(ctx, git, root); top != "" || clean != nil {
-		t.Fatalf("inspectGit(non-repo) = %q, %v; want empty", top, clean)
+	if top, state, clean := inspectGit(ctx, git, root); top != "" || state != "" || clean != nil {
+		t.Fatalf("inspectGit(non-repo) = %q, %q, %v; want empty", top, state, clean)
 	}
 	for _, args := range [][]string{
 		{"init", "-q"},
@@ -92,9 +92,9 @@ func TestInspectGit(t *testing.T) {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
 	}
-	top, clean := inspectGit(ctx, git, root)
-	if top != root || clean == nil || !*clean {
-		t.Fatalf("inspectGit(fresh repo) = %q, %v; want %q, clean", top, clean, root)
+	top, state, clean := inspectGit(ctx, git, root)
+	if top != root || state != "clean" || clean == nil || !*clean {
+		t.Fatalf("inspectGit(fresh repo) = %q, %q, %v; want %q, clean, true", top, state, clean, root)
 	}
 	nested := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(nested, 0o755); err != nil {
@@ -103,9 +103,58 @@ func TestInspectGit(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(nested, "f.txt"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	top, clean = inspectGit(ctx, git, nested)
-	if top != root || clean == nil || *clean {
-		t.Fatalf("inspectGit(nested, dirty) = %q, %v; want toplevel %q and dirty", top, clean, root)
+	top, state, clean = inspectGit(ctx, git, nested)
+	if top != root || state != "dirty" || clean == nil || *clean {
+		t.Fatalf("inspectGit(nested, dirty) = %q, %q, %v; want toplevel %q, dirty, false", top, state, clean, root)
+	}
+}
+
+func TestInspectGitTellsManagedStateApart(t *testing.T) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "gc.auto", "0"},
+		{"config", "gc.autoDetach", "false"},
+		{"config", "maintenance.auto", "false"},
+	} {
+		if out, err := exec.Command(git, append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "WORK.md"), []byte("managed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managedDir := filepath.Join(root, ".batuta")
+	if err := os.MkdirAll(managedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(managedDir, "state.json"), []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	top, state, clean := inspectGit(context.Background(), git, root)
+	if top != root || state != "managed" || clean == nil || *clean {
+		t.Fatalf("inspectGit(managed) = %q, %q, %v; want %q, managed, false", top, state, clean, root)
+	}
+	var output bytes.Buffer
+	printDoctor(&output, doctorReport{
+		GitRepository: true,
+		GitToplevel:   root,
+		GitState:      state,
+		GitClean:      clean,
+	})
+	if !strings.Contains(output.String(), "managed state only (WORK.md, .batuta/) — fine for /batuta, commit before batuta loop") {
+		t.Fatalf("printDoctor(managed) = %q, want managed-state guidance", output.String())
 	}
 }
 
@@ -132,8 +181,35 @@ func TestInspectGitWithSpentContext(t *testing.T) {
 	}
 	spent, cancel := context.WithCancel(context.Background())
 	cancel()
-	if top, _ := inspectGit(spent, git, root); top != "" {
+	if top, _, _ := inspectGit(spent, git, root); top != "" {
 		t.Fatalf("inspectGit with a cancelled context = %q; a spent context must not report a repository, doctor must give git its own", top)
+	}
+}
+
+func TestDoctorPrintsCleanAndDirtyGitStates(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		state string
+		clean bool
+		want  string
+	}{
+		{name: "clean", state: "clean", clean: true, want: "clean tree"},
+		{name: "dirty", state: "dirty", clean: false, want: "dirty tree — commit or stash before delegating"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var output bytes.Buffer
+			printDoctor(&output, doctorReport{
+				GitRepository: true,
+				GitToplevel:   "/repo",
+				GitState:      tc.state,
+				GitClean:      &tc.clean,
+			})
+			if !strings.Contains(output.String(), tc.want) {
+				t.Fatalf("printDoctor(%s) = %q, want %q", tc.state, output.String(), tc.want)
+			}
+		})
 	}
 }
 
