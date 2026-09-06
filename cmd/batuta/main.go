@@ -1,8 +1,8 @@
 // Command batuta is the deterministic side of the Batuta conducting cycle.
 //
-// Subcommands: version, capabilities, inventory, doctor, loop, trail. The
-// standalone verification gates (`gate`) land in a later release; hosts
-// probe `batuta capabilities` before relying on any of them.
+// Subcommands: version, capabilities, inventory, doctor, loop, trail, and
+// standalone verification gates. Hosts probe `batuta capabilities` before
+// relying on the complete gate suite.
 package main
 
 import (
@@ -39,6 +39,8 @@ Usage:
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
   batuta loop      --dashboard [<delivery>]
   batuta trail     [<delivery>]
+  batuta gate tree --snapshot [--dir <d>]
+  batuta gate tree --before '<json>' [--dir <d>]
 
 capabilities  The subcommands this binary ships, as JSON. Skills probe it
            before calling gate or loop; an older binary fails the probe.
@@ -91,6 +93,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runLoop(args[1:], stdout, stderr)
 	case "trail":
 		return runTrail(args[1:], stdout)
+	case "gate":
+		return runGate(args[1:], stdout)
 	case "help", "--help", "-h":
 		fmt.Fprint(stdout, usage)
 		return nil
