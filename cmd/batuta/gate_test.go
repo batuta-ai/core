@@ -99,6 +99,74 @@ func TestGateTestsTimeout(t *testing.T) {
 	}
 }
 
+func TestGateProofs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell commands")
+	}
+	repo := committedGitRepository(t, mustGit(t))
+	tests := []struct {
+		name       string
+		accept     string
+		wantPass   []bool
+		wantCode   int
+		wantSignal string
+	}{
+		{
+			name:     "two passing criteria",
+			accept:   "first works → true;second works → true",
+			wantPass: []bool{true, true},
+		},
+		{
+			name:     "one failing criterion",
+			accept:   "first works → true;second fails → false",
+			wantPass: []bool{true, false},
+			wantCode: 2,
+		},
+		{
+			name:       "criterion without proof",
+			accept:     "human checks the result",
+			wantPass:   []bool{true},
+			wantSignal: "left to the verifier",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"gate", "proofs", "--accept", tt.accept, "--dir", repo}, &stdout, &stderr)
+			if tt.wantCode == 0 && err != nil {
+				t.Fatalf("gate proofs error = %v; stderr = %q", err, stderr.String())
+			}
+			if tt.wantCode == 2 {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != "proofs failed" {
+					t.Fatalf("gate proofs error = %v, want proofs failed exit 2", err)
+				}
+			}
+			if strings.Count(stdout.String(), "\n") != 1 || !strings.HasSuffix(stdout.String(), "\n") {
+				t.Fatalf("gate proofs stdout = %q, want one newline-terminated line", stdout.String())
+			}
+			var verdicts []struct {
+				Pass   bool   `json:"pass"`
+				Signal string `json:"signal"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &verdicts); err != nil {
+				t.Fatalf("gate proofs output is not JSON: %v\n%s", err, stdout.String())
+			}
+			if len(verdicts) != len(tt.wantPass) {
+				t.Fatalf("gate proofs returned %d verdicts, want %d", len(verdicts), len(tt.wantPass))
+			}
+			for index, want := range tt.wantPass {
+				if verdicts[index].Pass != want {
+					t.Fatalf("gate proofs verdict %d pass = %v, want %v", index+1, verdicts[index].Pass, want)
+				}
+			}
+			if tt.wantSignal != "" && !strings.Contains(verdicts[0].Signal, tt.wantSignal) {
+				t.Fatalf("gate proofs signal = %q, want it to contain %q", verdicts[0].Signal, tt.wantSignal)
+			}
+		})
+	}
+}
+
 func TestGateScope(t *testing.T) {
 	git := mustGit(t)
 	tests := []struct {

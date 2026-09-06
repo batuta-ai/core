@@ -18,9 +18,11 @@ import (
 
 func runGate(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("a gate name is required; available gates: scope, tests, tree")
+		return errors.New("a gate name is required; available gates: proofs, scope, tests, tree")
 	}
 	switch args[0] {
+	case "proofs":
+		return runGateProofs(args[1:], stdout)
 	case "scope":
 		return runGateScope(args[1:], stdout)
 	case "tests":
@@ -28,8 +30,42 @@ func runGate(args []string, stdout io.Writer) error {
 	case "tree":
 		return runGateTree(args[1:], stdout)
 	default:
-		return fmt.Errorf("unknown gate %q; available gates: scope, tests, tree", args[0])
+		return fmt.Errorf("unknown gate %q; available gates: proofs, scope, tests, tree", args[0])
 	}
+}
+
+func runGateProofs(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("gate proofs", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	accept := flags.String("accept", "", "semicolon-separated acceptance criteria and proof commands")
+	dir := flags.String("dir", "", "workspace (default: current directory)")
+	timeout := flags.Duration("timeout", 15*time.Minute, "proof command timeout")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*accept) == "" {
+		return errors.New("usage: batuta gate proofs --accept \"<criterion → proof>;...\" [--dir <d>] [--timeout <duration>]")
+	}
+
+	root, err := workspaceRoot(*dir)
+	if err != nil {
+		return err
+	}
+	shell, err := gates.NewShellRunner(*timeout)
+	if err != nil {
+		return err
+	}
+	criteria := gates.ParseCriteria(strings.Split(*accept, ";"))
+	verdicts := gates.Proofs(context.Background(), shell, root, criteria)
+	if err := json.NewEncoder(stdout).Encode(verdicts); err != nil {
+		return err
+	}
+	for _, verdict := range verdicts {
+		if !verdict.Pass {
+			return &ExitError{Code: 2, State: "proofs failed"}
+		}
+	}
+	return nil
 }
 
 func runGateScope(args []string, stdout io.Writer) error {
