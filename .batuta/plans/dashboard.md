@@ -5,7 +5,7 @@
 **Created:** 2026-09-06 · **Status:** approved
 
 ## Tasks
-- [ ] 1. Executor output streams to the run log while the session runs — backend/medium
+- [x] 1. Executor output streams to the run log while the session runs — backend/medium
       Scope: loop/attempt.go, loop/loop_test.go, executor/run.go, executor/run_test.go
       Accept: while an executor runs, its stdout and stderr lines appear in .batuta/runs/<date>-<plan>-<task>-e<n>.out.log as they are produced, and the file ends with the same header and body as today when the session ends → go test ./loop -run TestLoopStreamsExecutorOutputToTheRunLog -count=1; the existing progress observer keeps working on both streams → go test ./executor -run 'TestSubprocess.*Progress' -count=1
 - [ ] 2. A view model summarises the journal for the dashboard — backend/high
