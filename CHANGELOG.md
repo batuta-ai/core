@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0-beta.15](https://github.com/batuta-ai/core/compare/v1.1.0-beta.14...v1.1.0-beta.15) (2026-09-06)
+
+
+### Features
+
+* **routing:** per-task blocks in a plan's Decisions and context ([cb868ff](https://github.com/batuta-ai/core/commit/cb868ffa216cd1e8e8a77410c31c402a75d74a3f))
+* **routing:** per-task blocks in a plan's Decisions and context ([db8031a](https://github.com/batuta-ai/core/commit/db8031a0ce957643c8b209a6abaa83be6f6a8fff)), closes [#53](https://github.com/batuta-ai/core/issues/53)
+
 ## [1.1.0-beta.14](https://github.com/batuta-ai/core/compare/v1.1.0-beta.13...v1.1.0-beta.14) (2026-09-06)
 
 
