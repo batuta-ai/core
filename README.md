@@ -44,6 +44,7 @@ Skills probe `batuta capabilities` before calling a subcommand.
 
 ```
 batuta loop --dry-run [<plan>]          waves, executors, worktrees; runs nothing
+batuta loop --roadmap [--dry-run]       run the approved roadmap delivery
 batuta loop [<plan>]                    run the approved plan to a terminal state
 batuta loop --resume <delivery>         continue after an interruption
 batuta loop --answer <task> "<text>"    answer a parked task and continue
@@ -54,6 +55,7 @@ batuta trail [<delivery>]               one line per journal record
 
 ## Roadmap
 
+- `batuta loop --roadmap [--dry-run]`: the roadmap delivery runner.
 - `cmd/batuta gate <name>`: the gates as standalone subcommands for the interactive skill.
 - Token accounting for CLI executors that report it.
 

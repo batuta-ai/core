@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,10 +57,24 @@ func TestRunPrintsCapabilities(t *testing.T) {
 	if got.Version == "" {
 		t.Fatal("capabilities.version is empty")
 	}
-	for _, want := range []string{"capabilities", "doctor", "gate", "inventory", "loop", "trail", "version"} {
+	for _, want := range []string{"capabilities", "doctor", "gate", "inventory", "loop", "roadmap", "trail", "version"} {
 		if !slices.Contains(got.Commands, want) {
 			t.Fatalf("capabilities.commands = %v, missing %q", got.Commands, want)
 		}
+	}
+}
+
+func TestCapabilitiesListsRoadmap(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"capabilities"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(capabilities) error = %v", err)
+	}
+	var got capabilities
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("capabilities is not JSON: %v\n%s", err, stdout.String())
+	}
+	if !slices.Contains(got.Commands, "roadmap") {
+		t.Fatalf("capabilities.commands = %v, missing %q", got.Commands, "roadmap")
 	}
 }
 
@@ -249,6 +264,79 @@ func TestLoopSubcommandRefusesToRunOutsideAPreparedWorkspace(t *testing.T) {
 	}
 	if err := run([]string{"loop", "--workspace", root, "--dashboard"}, &stdout, &stderr); err != nil || !strings.Contains(stdout.String(), "no open deliveries") {
 		t.Fatalf("dashboard without journals = %v\n%s", err, stdout.String())
+	}
+}
+
+func TestLoopRoadmapDryRunPrintsTheChain(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".batuta", "plans", "done"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		"roadmap.md":             "# Roadmap — Delivery\n\n- [x] 1. Finished → plans/finished.md\n- [ ] 2. Ready → plans/ready.md\n- [ ] 3. Draft → plans/draft.md\n- [ ] 4. Missing → plans/missing.md\n- [ ] 5. Unplanned\n",
+		"plans/done/finished.md": "archived",
+	}
+	for slug, status := range map[string]string{"ready": "approved", "draft": "proposed"} {
+		files["plans/"+slug+".md"] = "# Plan — " + slug + "\n\n**Goal:** Deliver.\n**Created:** 2026-09-06 · **Status:** " + status + "\n\n## Tasks\n- [ ] 1. Build — backend/low\n      Scope: out.txt\n      Accept: exists → test -f out.txt\n"
+	}
+	for name, payload := range files {
+		if err := os.WriteFile(filepath.Join(root, ".batuta", name), []byte(payload), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"loop", "--workspace", root, "--dry-run", "--roadmap"}, &stdout, &stderr); err != nil {
+		t.Fatalf("roadmap dry run = %v\n%s", err, &stderr)
+	}
+	previous := -1
+	for _, want := range []string{
+		"roadmap Delivery",
+		"1. Finished → plans/finished.md: done",
+		"2. Ready → plans/ready.md: approved",
+		"3. Draft → plans/draft.md: waiting_plan (proposed)",
+		"4. Missing → plans/missing.md: waiting_plan (missing)",
+		"5. Unplanned → (no plan): waiting_plan (missing)",
+	} {
+		index := strings.Index(stdout.String(), want)
+		if index <= previous {
+			t.Fatalf("missing or out of order %q:\n%s", want, &stdout)
+		}
+		previous = index
+	}
+	if err := run([]string{"loop", "--workspace", root, "--dry-run", "--roadmap", "--answer", "1", "hello"}, &stdout, &stderr); err != nil {
+		t.Fatalf("roadmap dry run must not record an answer: %v", err)
+	}
+	for name, want := range files {
+		if got, err := os.ReadFile(filepath.Join(root, ".batuta", name)); err != nil || string(got) != want {
+			t.Errorf("dry run changed %s: %q, %v", name, got, err)
+		}
+	}
+	for _, name := range []string{journal.Dir, ".batuta/worktrees", "WORK.md", "out.txt"} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Errorf("dry run created %s: %v", name, err)
+		}
+	}
+}
+
+func TestLoopRoadmapWaitingPlanExitCode(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".batuta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".batuta", "roadmap.md"), []byte("# Roadmap — Delivery\n\n- [ ] 1. Missing → plans/missing.md\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"loop", "--workspace", root, "--roadmap"}, &stdout, &stderr)
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 4 || exit.State != loop.StateWaitingPlan {
+		t.Fatalf("waiting plan exit = %v, want code 4, waiting_plan", err)
+	}
+	if !strings.Contains(stdout.String(), "waiting_plan") {
+		t.Fatalf("waiting_plan was not printed: %s", &stdout)
+	}
+	if _, err := os.Stat(filepath.Join(root, journal.Dir)); !os.IsNotExist(err) {
+		t.Fatalf("waiting plan opened a journal: %v", err)
 	}
 }
 

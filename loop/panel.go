@@ -107,7 +107,11 @@ func RenderPanel(records []journal.Record, now time.Time) string {
 		}
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "delivery %s   branch %s @ %s   wave %d   elapsed %s\n", panelValue(opened.Slug), panelValue(opened.Branch), panelCommit(head), len(graph.Waves), panelElapsed(started, now))
+	phase := ""
+	if opened.Phase > 0 && opened.PhaseTitle != "" {
+		phase = fmt.Sprintf("   phase %d · %s", opened.Phase, opened.PhaseTitle)
+	}
+	fmt.Fprintf(&b, "delivery %s%s   branch %s @ %s   wave %d   elapsed %s\n", panelValue(opened.Slug), phase, panelValue(opened.Branch), panelCommit(head), len(graph.Waves), panelElapsed(started, now))
 	table := tabwriter.NewWriter(&b, 0, 8, 2, ' ', 0)
 	fmt.Fprintln(table, "task\tlane\texecutor/model\texec\tstate\tdetail")
 	for _, task := range graph.Tasks {

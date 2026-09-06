@@ -155,6 +155,41 @@ exit `1` with the reason on stderr.
   exits cleanly when there are no open deliveries, and stops at the terminal
   record or on cancellation without writing to the journal.
 
+## Roadmap
+
+A roadmap is the level above the plan: the delivery as a whole, split into
+phases, each phase one plan approved on its own. Waves stay computed from
+`Depends on`; they are never written.
+
+```markdown
+# Roadmap — <title>
+
+- [x] 1. <phase title> → plans/<slug>.md
+- [ ] 2. <phase title> → plans/<slug>.md
+- [ ] 3. <phase title>
+```
+
+Contract (`routing.ParseRoadmap`, file `.batuta/roadmap.md`): line 1 is
+`# Roadmap — <title>`; a phase is `- [ ] N. <title>` or `- [x] N. <title>`,
+numbers start at 1 and increase by one; the optional tail ` → plans/<slug>.md`
+names the plan (`.batuta/plans/<slug>.md`, or `.batuta/plans/done/<slug>.md`
+once finished); a phase without a tail is listed but not planned yet.
+Everything else is prose. A broken line fails with its number, like a plan.
+
+`batuta loop --roadmap` runs the phases in order: the first phase not ticked
+must have a plan with `Status: approved`; the loop opens one delivery for it
+on the current branch, runs it to `done`, archives the plan, ticks the
+roadmap line, and opens the next phase on the head the previous one left.
+`--dry-run --roadmap` prints the chain (phase, plan, state) and runs nothing.
+The chain stops with the delivery's state: `blocked` is terminal (fix the
+cause and run the roadmap again — a new delivery for the same phase);
+`waiting_input` continues with `batuta loop --resume <delivery> --roadmap`
+after `--answer`. When the next phase has no approved plan the run ends with
+`waiting_plan`, exit code 4. The `opened` journal record carries `roadmap`,
+`phase` and `phase_title`, and `batuta trail` and the dashboard show them.
+`.batuta/roadmap.md` is managed state: exempt from the clean-tree preflight
+and from the scope check, committed by the loop with the plan bookkeeping.
+
 ## Files the loop writes
 
 | Path | Tracked | When |

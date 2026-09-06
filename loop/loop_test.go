@@ -910,7 +910,7 @@ func TestAbandonClosesAnOpenDelivery(t *testing.T) {
 
 func jsonUnmarshal(payload []byte, target any) error { return json.Unmarshal(payload, target) }
 
-func TestLoopMovesAFinishedPlanIntoDone(t *testing.T) {
+func TestLoopArchivesTheFinishedPlan(t *testing.T) {
 	for _, legacy := range []bool{false, true} {
 		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
 			f := setup(t)
@@ -967,5 +967,334 @@ func TestLoopMovesAFinishedPlanIntoDone(t *testing.T) {
 				t.Fatal("missing delivery_opened record")
 			}
 		})
+	}
+}
+
+func TestLoopTicksTheRoadmapPhaseWhenThePlanIsArchived(t *testing.T) {
+	f := setup(t)
+	path := filepath.Join(f.root, ".batuta", "roadmap.md")
+	before := "# Roadmap — Greetings delivery\n\n" +
+		"Delivery notes stay byte-for-byte intact.\n" +
+		"- [ ] 1. Build greetings → plans/greetings.md\n" +
+		"- [ ] 2. Release greetings → plans/release-greetings.md\n"
+	if err := os.WriteFile(path, []byte(before), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/roadmap.md")
+	f.run(t, "commit", "-q", "-m", "chore: add roadmap")
+
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(before,
+		"- [ ] 1. Build greetings → plans/greetings.md",
+		"- [x] 1. Build greetings → plans/greetings.md", 1)
+	if string(payload) != want {
+		t.Fatalf("roadmap after archive = %q, want %q", payload, want)
+	}
+	if committed := f.run(t, "show", "HEAD:.batuta/roadmap.md"); committed != strings.TrimSpace(want) {
+		t.Fatalf("committed roadmap = %q, want %q", committed, strings.TrimSpace(want))
+	}
+	if status := f.run(t, "status", "--porcelain"); status != "" {
+		t.Fatalf("tree dirty after archive: %s", status)
+	}
+}
+
+func TestLoopOpenedRecordCarriesTheRoadmapPhase(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		roadmap    string
+		wantFields bool
+	}{
+		{
+			name: "plan named by roadmap",
+			roadmap: "# Roadmap — Greetings delivery\n\n" +
+				"- [ ] 1. Build greetings → plans/greetings.md\n",
+			wantFields: true,
+		},
+		{
+			name: "plan not named by roadmap",
+			roadmap: "# Roadmap — Other delivery\n\n" +
+				"- [ ] 1. Prepare release → plans/release.md\n",
+		},
+		{name: "no roadmap"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			if tc.roadmap != "" {
+				if err := os.WriteFile(filepath.Join(f.root, ".batuta", "roadmap.md"), []byte(tc.roadmap), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				f.run(t, "add", ".batuta/roadmap.md")
+				f.run(t, "commit", "-q", "-m", "chore: add roadmap")
+			}
+
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("default", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.open(); err != nil {
+				t.Fatal(err)
+			}
+			records := readJournal(t, f, r.Delivery())
+			var detail map[string]any
+			if err := json.Unmarshal(records[0].Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantFields {
+				if detail["roadmap"] != "Greetings delivery" || detail["phase"] != float64(1) || detail["phase_title"] != "Build greetings" {
+					t.Fatalf("opened detail = %#v", detail)
+				}
+				return
+			}
+			for _, field := range []string{"roadmap", "phase", "phase_title"} {
+				if _, ok := detail[field]; ok {
+					t.Errorf("opened detail unexpectedly contains %s: %#v", field, detail)
+				}
+			}
+		})
+	}
+}
+
+func TestTrailPrintsThePhase(t *testing.T) {
+	f := setup(t)
+	roadmap := "# Roadmap — Greetings delivery\n\n" +
+		"- [ ] 1. Build greetings → plans/greetings.md\n"
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "roadmap.md"), []byte(roadmap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/roadmap.md")
+	f.run(t, "commit", "-q", "-m", "chore: add roadmap")
+
+	var loopOut bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &loopOut))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	var trailOut bytes.Buffer
+	if err := Trail(f.root, r.Delivery(), &trailOut); err != nil {
+		t.Fatal(err)
+	}
+	if got := trailOut.String(); !strings.Contains(got, "phase 1 · Build greetings") {
+		t.Fatalf("trail does not show phase:\n%s", got)
+	}
+}
+
+func setupRoadmap(t *testing.T) fixture {
+	t.Helper()
+	f := setup(t)
+	for slug, task := range map[string]string{"greetings": "one", "release": "two"} {
+		path, proof := "out/1.txt", "test -f out/1.txt"
+		if slug == "release" {
+			path, proof = "out/2.txt", "test -f out/1.txt && test -f out/2.txt"
+		}
+		plan := "# Plan — " + slug + "\n\n**Goal:** Add a greeting.\n**Created:** 2026-09-06 · **Status:** approved\n\n## Tasks\n" +
+			"- [ ] 1. Add greeting " + task + " — backend/low\n      Scope: " + path + "\n      Accept: greeting exists → " + proof + "\n"
+		if err := os.WriteFile(filepath.Join(f.root, routing.PlanPath(slug)), []byte(plan), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	roadmap := "# Roadmap — Greetings delivery\n\n- [ ] 1. Build greetings → plans/greetings.md\n- [ ] 2. Release greetings → plans/release.md\n"
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "roadmap.md"), []byte(roadmap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta")
+	f.run(t, "commit", "-q", "-m", "chore: prepare roadmap")
+	return f
+}
+
+func roadmapDeliveries(t *testing.T, f fixture) map[string]openedDetail {
+	t.Helper()
+	store, err := journal.Open(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := store.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened := make(map[string]openedDetail)
+	for _, id := range ids {
+		records := readJournal(t, f, id)
+		if len(records) == 0 || records[0].Kind != KindOpened || kinds(records)[KindOpened] != 1 {
+			t.Fatalf("delivery %s must open exactly once: %v", id, kinds(records))
+		}
+		var detail openedDetail
+		if err := json.Unmarshal(records[0].Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		opened[id] = detail
+	}
+	return opened
+}
+
+func TestRoadmapRunsApprovedPhasesInOrder(t *testing.T) {
+	f := setupRoadmap(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	initialHead := f.run(t, "rev-parse", "HEAD")
+	var secondHead string
+	probes := 0
+	opts.Inventory = func(context.Context) (inventory.InventorySnapshot, error) {
+		probes++
+		if probes == 2 {
+			secondHead = f.run(t, "rev-parse", "HEAD")
+			if _, err := os.Stat(filepath.Join(f.root, ".batuta", "plans", "done", "greetings.md")); err != nil {
+				t.Fatalf("first plan not archived before second delivery: %v", err)
+			}
+			roadmap := f.run(t, "show", "HEAD:.batuta/roadmap.md")
+			if !strings.Contains(roadmap, "- [x] 1.") || !strings.Contains(roadmap, "- [ ] 2.") {
+				t.Fatalf("roadmap before second delivery: %s", roadmap)
+			}
+		}
+		return f.snapshot(), nil
+	}
+	if state, err := RunRoadmap(context.Background(), opts); err != nil || state != StateDone {
+		t.Fatalf("RunRoadmap() = %s, %v\n%s", state, err, &out)
+	}
+	deliveries := roadmapDeliveries(t, f)
+	if len(deliveries) != 2 || probes != 2 || secondHead == initialHead {
+		t.Fatalf("deliveries = %v, probes = %d, heads = %s / %s", deliveries, probes, initialHead, secondHead)
+	}
+	for id, opened := range deliveries {
+		wantHead, wantPhase := initialHead, 1
+		if opened.Slug == "release" {
+			wantHead, wantPhase = secondHead, 2
+		}
+		if opened.Head != wantHead || opened.Phase != wantPhase || opened.Roadmap != "Greetings delivery" || opened.Branch != "main" {
+			t.Errorf("opened %s = %+v, want head %s, phase %d", id, opened, wantHead, wantPhase)
+		}
+		if state := terminalState(readJournal(t, f, id)); state != StateDone {
+			t.Errorf("delivery %s state = %s", id, state)
+		}
+		archived := f.run(t, "show", "HEAD:.batuta/plans/done/"+opened.Slug+".md")
+		if !strings.Contains(archived, "**Status:** done") {
+			t.Errorf("archived plan: %s", archived)
+		}
+	}
+	if roadmap := f.run(t, "show", "HEAD:.batuta/roadmap.md"); strings.Count(roadmap, "- [x]") != 2 {
+		t.Fatalf("roadmap after chain: %s", roadmap)
+	}
+	if state, err := RunRoadmap(context.Background(), opts); err != nil || state != StateDone || len(roadmapDeliveries(t, f)) != 2 {
+		t.Fatalf("completed roadmap rerun = %s, %v", state, err)
+	}
+	if status := f.run(t, "status", "--porcelain"); status != "" {
+		t.Fatalf("dirty tree: %s", status)
+	}
+}
+
+func TestRoadmapStopsAtAPhaseWithoutAnApprovedPlan(t *testing.T) {
+	for _, status := range []string{"missing", "proposed", "in progress", "done"} {
+		t.Run(status, func(t *testing.T) {
+			f := setupRoadmap(t)
+			path := filepath.Join(f.root, routing.PlanPath("release"))
+			payload, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status == "missing" {
+				err = os.Remove(path)
+			} else {
+				err = os.WriteFile(path, []byte(strings.Replace(string(payload), "Status:** approved", "Status:** "+status, 1)), 0o644)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.run(t, "add", "-A", ".batuta/plans")
+			f.run(t, "commit", "-q", "-m", "chore: defer release plan")
+			var out bytes.Buffer
+			opts := f.options("default", &out)
+			if state, err := RunRoadmap(context.Background(), opts); err != nil || state != StateWaitingPlan {
+				t.Fatalf("RunRoadmap() = %s, %v\n%s", state, err, &out)
+			}
+			for _, opened := range roadmapDeliveries(t, f) {
+				if opened.Slug != "greetings" {
+					t.Fatalf("opened an unapproved phase: %+v", opened)
+				}
+			}
+			if len(roadmapDeliveries(t, f)) != 1 || !strings.Contains(out.String(), "waiting_plan") {
+				t.Fatalf("expected one delivery and waiting_plan output:\n%s", &out)
+			}
+			if roadmap := f.run(t, "show", "HEAD:.batuta/roadmap.md"); !strings.Contains(roadmap, "- [ ] 2.") {
+				t.Fatalf("unapproved phase ticked: %s", roadmap)
+			}
+		})
+	}
+}
+
+func TestRoadmapStopsOnABlockedPhase(t *testing.T) {
+	f := setupRoadmap(t)
+	var out bytes.Buffer
+	opts := f.options("always-broken", &out)
+	opts.Now = func() time.Time { return time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC) }
+	if state, err := RunRoadmap(context.Background(), opts); err != nil || state != StateBlocked {
+		t.Fatalf("RunRoadmap() = %s, %v\n%s", state, err, &out)
+	}
+	deliveries := roadmapDeliveries(t, f)
+	if len(deliveries) != 1 {
+		t.Fatalf("blocked chain opened %d deliveries", len(deliveries))
+	}
+	var blockedID string
+	for id := range deliveries {
+		blockedID = id
+	}
+	before := len(readJournal(t, f, blockedID))
+	resume := opts
+	resume.Resume = blockedID
+	if _, err := Resume(context.Background(), resume); err == nil || !strings.Contains(err.Error(), "already ended: blocked") {
+		t.Fatalf("Resume(blocked) = %v", err)
+	}
+	if _, err := RunRoadmap(context.Background(), resume); err == nil || !strings.Contains(err.Error(), "already ended: blocked") {
+		t.Fatalf("RunRoadmap(resume blocked) = %v", err)
+	}
+	if roadmap := f.run(t, "show", "HEAD:.batuta/roadmap.md"); strings.Contains(roadmap, "- [x]") {
+		t.Fatalf("blocked phase ticked: %s", roadmap)
+	}
+	opts.Environment = []string{"FAKE_SCENARIO=default", "FAKE_STATE=" + f.state}
+	if state, err := RunRoadmap(context.Background(), opts); err != nil || state != StateDone {
+		t.Fatalf("fresh recovery = %s, %v\n%s", state, err, &out)
+	}
+	if len(roadmapDeliveries(t, f)) != 3 || len(readJournal(t, f, blockedID)) != before {
+		t.Fatal("recovery must open a fresh delivery and preserve the blocked journal")
+	}
+}
+
+func TestRoadmapResumeContinuesTheOpenPhase(t *testing.T) {
+	f := setupRoadmap(t)
+	var out bytes.Buffer
+	opts := f.options("ask", &out)
+	if state, err := RunRoadmap(context.Background(), opts); err != nil || state != StateWaitingInput {
+		t.Fatalf("RunRoadmap() = %s, %v\n%s", state, err, &out)
+	}
+	deliveries := roadmapDeliveries(t, f)
+	if len(deliveries) != 1 {
+		t.Fatalf("waiting chain opened %d deliveries", len(deliveries))
+	}
+	delivery, err := Answer(f.root, "1", "hello there")
+	if err != nil || deliveries[delivery].Slug != "greetings" {
+		t.Fatalf("Answer() = %s, %v", delivery, err)
+	}
+	opts.Resume = delivery
+	if state, err := RunRoadmap(context.Background(), opts); err != nil || state != StateDone {
+		t.Fatalf("resumed roadmap = %s, %v\n%s", state, err, &out)
+	}
+	if len(roadmapDeliveries(t, f)) != 2 || terminalState(readJournal(t, f, delivery)) != StateDone {
+		t.Fatal("resume must finish the original delivery and open only the next phase")
+	}
+	if payload, err := os.ReadFile(filepath.Join(f.root, "out", "1.txt")); err != nil || string(payload) != "hello there\n" {
+		t.Fatalf("answer was not used: %q, %v", payload, err)
 	}
 }

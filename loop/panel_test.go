@@ -95,6 +95,18 @@ func TestRenderPanelLayout(t *testing.T) {
 	}
 }
 
+func TestPanelHeaderShowsThePhase(t *testing.T) {
+	t.Parallel()
+	records, _, now := panelFixture(t)
+	records[0] = panelRecord(t, KindOpened, "", now.Add(-252*time.Second), map[string]any{
+		"slug": "greetings", "roadmap": "Greetings delivery", "phase": 1,
+		"phase_title": "Build greetings", "branch": "main", "head": "4e2651c123456",
+	}, routing.DeliveryGraph{})
+	if got := RenderPanel(records, now); !strings.Contains(got, "phase 1 · Build greetings") {
+		t.Fatalf("panel header does not show phase:\n%s", got)
+	}
+}
+
 func TestRenderPanelShowsCriterionProgress(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

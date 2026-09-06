@@ -36,6 +36,7 @@ Usage:
   batuta inventory [--workspace <dir>] [--timeout <duration>]
   batuta doctor    [--workspace <dir>] [--json] [--timeout <duration>]
   batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [<plan>]
+  batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
   batuta loop      --dashboard [--watch] [--interval 2s] [<delivery>]
   batuta trail     [<delivery>]
@@ -55,7 +56,8 @@ loop       The mechanical conductor over an approved plan
            adapter, the four gates, retry then escalation, one commit per
            task integrated onto the checked-out branch, everything
            journaled under .batuta/journal/. Exit 0 when every task
-           integrated; 2 blocked; 3 waiting for an answer; 130 canceled.
+           integrated; 2 blocked; 3 waiting for an answer; 4 waiting for
+           an approved roadmap plan; 130 canceled.
 trail      One line per journal record of a delivery (the latest by
            default).
 
@@ -122,9 +124,9 @@ func version() string {
 	return "devel"
 }
 
-// commands lists every subcommand this binary ships; skills read this list,
+// commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "trail", "version"}
+var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "roadmap", "trail", "version"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
@@ -386,6 +388,7 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	workspace := flags.String("workspace", "", "repository root (default: current directory)")
 	skills := flags.String("skills", "", "batuta skill directory holding adapters/ and templates/ (default: auto-detected)")
 	dryRun := flags.Bool("dry-run", false, "show the waves, executors and worktrees; run nothing")
+	roadmap := flags.Bool("roadmap", false, "run the phases in .batuta/roadmap.md in order")
 	resume := flags.String("resume", "", "continue a delivery from its journal")
 	abandon := flags.String("abandon", "", "close a delivery that will not continue; ticks what integrated")
 	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
@@ -403,6 +406,9 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	rest := flags.Args()
+	if *roadmap && (*dashboard || *watch || *abandon != "" || (len(rest) > 0 && *answer == "")) {
+		return errors.New("--roadmap runs .batuta/roadmap.md; it cannot be combined with a plan, --dashboard, --watch or --abandon")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -433,6 +439,9 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 			return snapshot, err
 		},
 	}
+	if *roadmap && *dryRun {
+		return loop.DryRunRoadmap(opts)
+	}
 	if *abandon != "" {
 		opts.Resume = *abandon
 		state, err := loop.Abandon(ctx, opts)
@@ -454,6 +463,16 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 		opts.Resume = delivery
 	} else if *resume != "" {
 		opts.Resume = *resume
+	}
+	if *roadmap {
+		state, err := loop.RunRoadmap(ctx, opts)
+		if errors.Is(err, loop.ErrStopped) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return loopExit(state)
 	}
 	var runner *loop.Runner
 	var err error
@@ -484,11 +503,17 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
+	return loopExit(state)
+}
+
+func loopExit(state string) error {
 	switch state {
 	case loop.StateDone:
 		return nil
 	case loop.StateWaitingInput:
 		return &ExitError{Code: 3, State: state}
+	case loop.StateWaitingPlan:
+		return &ExitError{Code: 4, State: state}
 	case loop.StateCanceled:
 		return &ExitError{Code: 130, State: state}
 	default:

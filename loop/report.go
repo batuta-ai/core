@@ -169,6 +169,12 @@ func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary)
 		if r.planPath != filepath.Join(r.root, r.plan.Path) {
 			args = append(args, filepath.Join(".batuta", "plans"))
 		}
+		roadmap := filepath.Join(".batuta", "roadmap.md")
+		if _, err := os.Stat(filepath.Join(r.root, roadmap)); err == nil {
+			args = append(args, roadmap)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 		if _, err := r.git.Runner.Run(ctx, publication.Command{
 			Executable: r.git.Git, Args: args, Directory: r.root,
 		}); err != nil {
@@ -244,6 +250,14 @@ func (r *Runner) tickPlan(summary Summary) (bool, error) {
 			return false, err
 		}
 		r.planPath = done
+		roadmap := filepath.Join(r.root, ".batuta", "roadmap.md")
+		if _, err := os.Stat(roadmap); err == nil {
+			if err := routing.TickPhase(roadmap, r.plan.Slug); err != nil {
+				return false, err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return false, err
+		}
 	}
 	return true, nil
 }
@@ -665,7 +679,12 @@ func recordSummary(record journal.Record) string {
 	}
 	switch record.Kind {
 	case KindOpened:
-		return pick("slug", "branch", "head", "parallel")
+		summary := pick("slug", "branch", "head", "parallel")
+		var opened openedDetail
+		if json.Unmarshal(record.Detail, &opened) == nil && opened.Phase > 0 && opened.PhaseTitle != "" {
+			summary += fmt.Sprintf(" phase %d · %s", opened.Phase, opened.PhaseTitle)
+		}
+		return summary
 	case KindWave:
 		return pick("wave", "tasks")
 	case KindStarted:
