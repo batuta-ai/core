@@ -28,3 +28,4 @@
 - [x] loop aceita .batuta/plans/<slug>.md como argumento (lacuna da task 9) → codex (codex/gpt-5.4-mini), primeira tentativa, commit 45c9c09 em feat/followups
 - [x] executor and verifier sessions run with commit.gpgsign=false (core #49) → codex (codex/gpt-5.6-sol), primeira tentativa, commit 05b8a18 em fix/unsigned-executors (trail: .batuta/runs/2026-09-06-unsigned-executors.md)
 - [x] per-task blocks in a plan Decisions and context (core #53) → codex (codex/gpt-5.6-sol), primeira tentativa, commit db8031a em feat/task-decisions (trail: .batuta/runs/2026-09-06-task-decisions.md)
+- [x] conflicting candidate re-executes on the same runtime (core #18, SettleWave item) → codex (codex/gpt-5.6-sol), primeira tentativa, commit b90a737 em fix/settle-conflict (trail: .batuta/runs/2026-09-06-settle-conflict.md)
