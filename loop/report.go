@@ -679,7 +679,12 @@ func recordSummary(record journal.Record) string {
 	}
 	switch record.Kind {
 	case KindOpened:
-		return pick("slug", "branch", "head", "parallel")
+		summary := pick("slug", "branch", "head", "parallel")
+		var opened openedDetail
+		if json.Unmarshal(record.Detail, &opened) == nil && opened.Phase > 0 && opened.PhaseTitle != "" {
+			summary += fmt.Sprintf(" phase %d · %s", opened.Phase, opened.PhaseTitle)
+		}
+		return summary
 	case KindWave:
 		return pick("wave", "tasks")
 	case KindStarted:

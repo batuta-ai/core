@@ -100,6 +100,9 @@ type Runner struct {
 	skills     string
 	plan       routing.Plan
 	planPath   string
+	roadmap    string
+	phase      int
+	phaseTitle string
 	table      routing.RoutingTable
 	generation routing.RoutingGeneration
 	graph      *routing.DeliveryGraph
@@ -137,6 +140,9 @@ type attemptWorktree struct {
 
 type openedDetail struct {
 	Slug       string                    `json:"slug"`
+	Roadmap    string                    `json:"roadmap,omitempty"`
+	Phase      int                       `json:"phase,omitempty"`
+	PhaseTitle string                    `json:"phase_title,omitempty"`
 	PlanPath   string                    `json:"plan_path"`
 	PlanDigest string                    `json:"plan_digest"`
 	Branch     string                    `json:"branch"`
@@ -165,6 +171,9 @@ func New(ctx context.Context, opts Options) (*Runner, error) {
 		return nil, err
 	}
 	if err := r.loadPlan(opts.Plan); err != nil {
+		return nil, err
+	}
+	if err := r.loadRoadmapPhase(); err != nil {
 		return nil, err
 	}
 	if r.plan.Status != routing.PlanApproved {
@@ -407,6 +416,32 @@ func (r *Runner) loadPlan(reference string) error {
 	}
 	r.plan = plan
 	r.planPath = filepath.Join(r.root, plan.Path)
+	return nil
+}
+
+func (r *Runner) loadRoadmapPhase() error {
+	path := filepath.Join(r.root, ".batuta", "roadmap.md")
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("loop: roadmap: %w", err)
+	}
+	loader, err := routing.NewRoadmapLoader(r.root)
+	if err != nil {
+		return fmt.Errorf("loop: roadmap: %w", err)
+	}
+	roadmap, err := loader.Load()
+	if err != nil {
+		return fmt.Errorf("loop: roadmap: %w", err)
+	}
+	for _, phase := range roadmap.Phases {
+		if phase.Slug == r.plan.Slug {
+			r.roadmap = roadmap.Title
+			r.phase = phase.Number
+			r.phaseTitle = phase.Title
+			break
+		}
+	}
 	return nil
 }
 
@@ -713,7 +748,8 @@ func (r *Runner) open() error {
 		tasks = append(tasks, taskSummary{ID: task.ID, Number: task.Number, Title: task.Title, Domain: string(task.Domain), Complexity: string(task.Complexity), Hint: hint})
 	}
 	detail := openedDetail{
-		Slug: r.plan.Slug, PlanPath: r.plan.Path, PlanDigest: r.plan.Set.Digest,
+		Slug: r.plan.Slug, Roadmap: r.roadmap, Phase: r.phase, PhaseTitle: r.phaseTitle,
+		PlanPath: r.plan.Path, PlanDigest: r.plan.Set.Digest,
 		Branch: r.branch, Head: r.openedHead, Parallel: r.parallel, Workspace: r.root,
 		Generation: r.generation, Tasks: tasks,
 	}

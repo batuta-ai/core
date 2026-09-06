@@ -1008,3 +1008,87 @@ func TestLoopTicksTheRoadmapPhaseWhenThePlanIsArchived(t *testing.T) {
 		t.Fatalf("tree dirty after archive: %s", status)
 	}
 }
+
+func TestLoopOpenedRecordCarriesTheRoadmapPhase(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		roadmap    string
+		wantFields bool
+	}{
+		{
+			name: "plan named by roadmap",
+			roadmap: "# Roadmap — Greetings delivery\n\n" +
+				"- [ ] 1. Build greetings → plans/greetings.md\n",
+			wantFields: true,
+		},
+		{
+			name: "plan not named by roadmap",
+			roadmap: "# Roadmap — Other delivery\n\n" +
+				"- [ ] 1. Prepare release → plans/release.md\n",
+		},
+		{name: "no roadmap"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			if tc.roadmap != "" {
+				if err := os.WriteFile(filepath.Join(f.root, ".batuta", "roadmap.md"), []byte(tc.roadmap), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				f.run(t, "add", ".batuta/roadmap.md")
+				f.run(t, "commit", "-q", "-m", "chore: add roadmap")
+			}
+
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("default", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := r.open(); err != nil {
+				t.Fatal(err)
+			}
+			records := readJournal(t, f, r.Delivery())
+			var detail map[string]any
+			if err := json.Unmarshal(records[0].Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantFields {
+				if detail["roadmap"] != "Greetings delivery" || detail["phase"] != float64(1) || detail["phase_title"] != "Build greetings" {
+					t.Fatalf("opened detail = %#v", detail)
+				}
+				return
+			}
+			for _, field := range []string{"roadmap", "phase", "phase_title"} {
+				if _, ok := detail[field]; ok {
+					t.Errorf("opened detail unexpectedly contains %s: %#v", field, detail)
+				}
+			}
+		})
+	}
+}
+
+func TestTrailPrintsThePhase(t *testing.T) {
+	f := setup(t)
+	roadmap := "# Roadmap — Greetings delivery\n\n" +
+		"- [ ] 1. Build greetings → plans/greetings.md\n"
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "roadmap.md"), []byte(roadmap), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/roadmap.md")
+	f.run(t, "commit", "-q", "-m", "chore: add roadmap")
+
+	var loopOut bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &loopOut))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	var trailOut bytes.Buffer
+	if err := Trail(f.root, r.Delivery(), &trailOut); err != nil {
+		t.Fatal(err)
+	}
+	if got := trailOut.String(); !strings.Contains(got, "phase 1 · Build greetings") {
+		t.Fatalf("trail does not show phase:\n%s", got)
+	}
+}
