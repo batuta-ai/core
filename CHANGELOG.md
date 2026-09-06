@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.11](https://github.com/batuta-ai/core/compare/v1.1.0-beta.10...v1.1.0-beta.11) (2026-09-06)
+
+
+### Bug Fixes
+
+* **gates:** the verifier honours the proofs the conductor already ran ([#44](https://github.com/batuta-ai/core/issues/44)) ([160858a](https://github.com/batuta-ai/core/commit/160858ab6e9446fed9605898d3a7a5e58380b9e4))
+
 ## [1.1.0-beta.10](https://github.com/batuta-ai/core/compare/v1.1.0-beta.9...v1.1.0-beta.10) (2026-09-06)
 
 
