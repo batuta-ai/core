@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"strings"
 	"testing"
 	"time"
@@ -198,6 +199,7 @@ func (f fixture) snapshot() inventory.InventorySnapshot {
 
 func (f fixture) options(scenario string, out *bytes.Buffer) Options {
 	clock := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
+	var clockMu sync.Mutex
 	return Options{
 		Workspace: f.root, Skills: f.skills, Plan: "greetings", Stdout: out,
 		Inventory:   func(context.Context) (inventory.InventorySnapshot, error) { return f.snapshot(), nil },
@@ -205,7 +207,12 @@ func (f fixture) options(scenario string, out *bytes.Buffer) Options {
 		TaskTimeout: 2 * time.Minute, TestTimeout: time.Minute,
 		LimitWaitDefault: time.Second, LimitBuffer: time.Millisecond,
 		Sleep: func(context.Context, time.Duration) error { return nil },
-		Now:   func() time.Time { clock = clock.Add(time.Second); return clock },
+		Now: func() time.Time {
+			clockMu.Lock()
+			defer clockMu.Unlock()
+			clock = clock.Add(time.Second)
+			return clock
+		},
 	}
 }
 
