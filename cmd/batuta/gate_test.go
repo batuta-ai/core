@@ -3,15 +3,110 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/batuta-ai/core/publication"
 )
+
+func TestGateTests(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell commands")
+	}
+	repo := committedGitRepository(t, mustGit(t))
+	tests := []struct {
+		name       string
+		args       []string
+		wantOutput string
+		wantCode   int
+	}{
+		{
+			name:       "passing command",
+			args:       []string{"gate", "tests", "--command", "printf 'ok\\n'", "--dir", repo},
+			wantOutput: "{\"name\":\"tests\",\"pass\":true,\"signal\":\"`printf 'ok\\\\n'` passed\",\"detail\":\"ok\"}\n",
+		},
+		{
+			name:       "failing command",
+			args:       []string{"gate", "tests", "--command", "printf 'boom\\n' >&2; exit 3", "--dir", repo},
+			wantOutput: "{\"name\":\"tests\",\"pass\":false,\"signal\":\"`printf 'boom\\\\n' \\u003e\\u00262; exit 3` exited 3\",\"detail\":\"boom\"}\n",
+			wantCode:   2,
+		},
+		{
+			name:     "missing command",
+			args:     []string{"gate", "tests", "--dir", repo},
+			wantCode: 1,
+		},
+		{
+			name:     "empty command",
+			args:     []string{"gate", "tests", "--command", "  ", "--dir", repo},
+			wantCode: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(tt.args, &stdout, &stderr)
+			if tt.wantCode == 0 && err != nil {
+				t.Fatalf("run(%v) error = %v; stderr = %q", tt.args, err, stderr.String())
+			}
+			if tt.wantCode == 1 && err == nil {
+				t.Fatalf("run(%v) succeeded, want usage error", tt.args)
+			}
+			if tt.wantCode == 2 {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != "tests failed" {
+					t.Fatalf("run(%v) error = %v, want tests failed exit 2", tt.args, err)
+				}
+			}
+			if got := stdout.String(); got != tt.wantOutput {
+				t.Fatalf("run(%v) stdout = %q, want %q", tt.args, got, tt.wantOutput)
+			}
+		})
+	}
+}
+
+func TestGateTestsTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell commands")
+	}
+	repo := committedGitRepository(t, mustGit(t))
+	started := time.Now()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"gate", "tests", "--command", "sleep 5", "--timeout", "50ms", "--dir", repo}, &stdout, &stderr)
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("gate tests timeout error = %v, want exit 2; stderr = %q", err, stderr.String())
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("gate tests timeout took %s, want under 2s", elapsed)
+	}
+	var verdict struct {
+		Pass   bool   `json:"pass"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &verdict); err != nil {
+		t.Fatalf("gate tests timeout output is not JSON: %v\n%s", err, stdout.String())
+	}
+	if verdict.Pass || !strings.Contains(verdict.Detail, "timed out after 50ms") {
+		t.Fatalf("gate tests timeout verdict = %+v", verdict)
+	}
+}
+
+func mustGit(t *testing.T) string {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	return git
+}
 
 func TestGateTree(t *testing.T) {
 	git, err := exec.LookPath("git")

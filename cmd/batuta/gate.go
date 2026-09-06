@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/publication"
@@ -15,12 +17,47 @@ import (
 
 func runGate(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("a gate name is required; tree is the only gate shipped")
+		return errors.New("a gate name is required; available gates: tests, tree")
 	}
-	if args[0] != "tree" {
-		return fmt.Errorf("unknown gate %q; tree is the only gate shipped", args[0])
+	switch args[0] {
+	case "tests":
+		return runGateTests(args[1:], stdout)
+	case "tree":
+		return runGateTree(args[1:], stdout)
+	default:
+		return fmt.Errorf("unknown gate %q; available gates: tests, tree", args[0])
 	}
-	return runGateTree(args[1:], stdout)
+}
+
+func runGateTests(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("gate tests", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	command := flags.String("command", "", "test command")
+	dir := flags.String("dir", "", "workspace (default: current directory)")
+	timeout := flags.Duration("timeout", 15*time.Minute, "command timeout")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(*command) == "" {
+		return errors.New("usage: batuta gate tests --command \"<cmd>\" [--dir <d>] [--timeout <duration>]")
+	}
+
+	root, err := workspaceRoot(*dir)
+	if err != nil {
+		return err
+	}
+	shell, err := gates.NewShellRunner(*timeout)
+	if err != nil {
+		return err
+	}
+	verdict := gates.Tests(context.Background(), shell, root, *command)
+	if err := json.NewEncoder(stdout).Encode(verdict); err != nil {
+		return err
+	}
+	if !verdict.Pass {
+		return &ExitError{Code: 2, State: "tests failed"}
+	}
+	return nil
 }
 
 func runGateTree(args []string, stdout io.Writer) error {
