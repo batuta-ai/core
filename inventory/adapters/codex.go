@@ -23,14 +23,16 @@ func NewCodex(executable string) (Adapter, error) {
 }
 
 // codexModelSlugs returns the safe slugs of a `codex debug models` payload,
-// or nil when the payload is absent or not the expected JSON.
+// or nil when the payload is absent, not JSON, or has no `models` array —
+// `{}` and `null` are not an authoritative empty list and must not
+// suppress the bundled fallback. A literal `"models": []` stays empty.
 func codexModelSlugs(raw []byte) []string {
 	var models struct {
 		Models []struct {
 			Slug string `json:"slug"`
 		} `json:"models"`
 	}
-	if len(raw) == 0 || json.Unmarshal(raw, &models) != nil {
+	if len(raw) == 0 || json.Unmarshal(raw, &models) != nil || models.Models == nil {
 		return nil
 	}
 	slugs := make([]string, 0, len(models.Models))
