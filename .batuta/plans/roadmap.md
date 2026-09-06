@@ -5,14 +5,14 @@
 **Created:** 2026-09-06 · **Status:** approved
 
 ## Tasks
-- [ ] 1. Parse `.batuta/roadmap.md` into phases with an optional plan slug — backend/medium
+- [x] 1. Parse `.batuta/roadmap.md` into phases with an optional plan slug — backend/medium
       Scope: routing/roadmap.go, routing/roadmap_test.go
       Accept: ParseRoadmap reads `# Roadmap — <title>` and `- [ ] N. <title> → plans/<slug>.md` lines into Roadmap{Title, Phases[]{Number, Title, Slug, Done}} keeping a phase without tail (Slug empty) and a ticked `- [x]` phase → go test ./routing -run TestParseRoadmapReadsPhasesInOrder -count=1; a duplicated or non-increasing phase number, a slug outside plans/, and a missing title line fail with ErrReauthoringRequired and the line number → go test ./routing -run TestParseRoadmapRejectsBrokenContractsWithTheLine -count=1; NewRoadmapLoader(root).Load reads .batuta/roadmap.md and reports a phase whose plan file is absent as Missing without failing → go test ./routing -run TestRoadmapLoaderReportsMissingPlans -count=1
-- [ ] 2. Archiving a plan ticks its phase in the roadmap — backend/medium
+- [x] 2. Archiving a plan ticks its phase in the roadmap — backend/medium
       Depends on: 1
       Scope: loop/report.go, loop/loop_test.go, routing/roadmap.go, routing/roadmap_test.go
       Accept: when the loop moves a finished plan to .batuta/plans/done/ and a roadmap names that slug, the roadmap line becomes `- [x]` and nothing else in the file changes → go test ./loop -run TestLoopTicksTheRoadmapPhaseWhenThePlanIsArchived -count=1; a workspace without a roadmap archives exactly as before → go test ./loop -run TestLoopArchivesTheFinishedPlan -count=1; routing exposes TickPhase(path, slug) that rewrites only that line → go test ./routing -run TestTickPhaseRewritesOnlyTheLine -count=1
-- [ ] 3. The opened record carries roadmap and phase — backend/medium
+- [x] 3. The opened record carries roadmap and phase — backend/medium
       Depends on: 1
       Scope: loop/runner.go, loop/report.go, loop/loop_test.go, loop/panel.go, loop/panel_test.go
       Accept: New writes roadmap title, phase number and phase title into the `opened` record's detail when a roadmap names the plan, and leaves the fields absent otherwise → go test ./loop -run TestLoopOpenedRecordCarriesTheRoadmapPhase -count=1; `batuta trail` and the dashboard header print `phase N · <title>` when present → go test ./loop -run 'TestTrailPrintsThePhase|TestPanelHeaderShowsThePhase' -count=1

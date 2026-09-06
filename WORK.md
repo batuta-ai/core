@@ -29,3 +29,6 @@
 - [x] executor and verifier sessions run with commit.gpgsign=false (core #49) → codex (codex/gpt-5.6-sol), primeira tentativa, commit 05b8a18 em fix/unsigned-executors (trail: .batuta/runs/2026-09-06-unsigned-executors.md)
 - [x] per-task blocks in a plan Decisions and context (core #53) → codex (codex/gpt-5.6-sol), primeira tentativa, commit db8031a em feat/task-decisions (trail: .batuta/runs/2026-09-06-task-decisions.md)
 - [x] conflicting candidate re-executes on the same runtime (core #18, SettleWave item) → codex (codex/gpt-5.6-sol), primeira tentativa, commit b90a737 em fix/settle-conflict (trail: .batuta/runs/2026-09-06-settle-conflict.md)
+- [x] Parse `.batuta/roadmap.md` into phases with an optional plan slug → codex (gpt-6-astra), escalated from codex after 2 fails, commit 6461d5c04f80 (trail: .batuta/runs/2026-09-06-roadmap-task-1.md, plan roadmap, 2026-09-06)
+- [x] Archiving a plan ticks its phase in the roadmap → codex (gpt-5.6-sol), commit 5cbec726e586 (trail: .batuta/runs/2026-09-06-roadmap-task-2.md, plan roadmap, 2026-09-06)
+- [x] The opened record carries roadmap and phase → codex (gpt-5.6-sol), commit 2258a9929465 (trail: .batuta/runs/2026-09-06-roadmap-task-3.md, plan roadmap, 2026-09-06)
