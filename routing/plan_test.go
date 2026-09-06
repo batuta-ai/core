@@ -41,6 +41,9 @@ func TestParsePlanReadsTheMachineContract(t *testing.T) {
 		plan.Goal != "Make checkout survive a payment timeout without losing the cart." {
 		t.Fatalf("header = %#v", plan)
 	}
+	if plan.Inputs != "profile.md@sha256:1a2b3c4d5e6f routing.md@sha256:0f0e0d0c0b0a" || plan.Context != "Free prose for a fresh session." {
+		t.Fatalf("inputs = %q, context = %q", plan.Inputs, plan.Context)
+	}
 	if len(plan.Tasks) != 3 || len(plan.Set.Tasks) != 3 || plan.Set.Digest == "" {
 		t.Fatalf("tasks = %d, set = %d, digest %q", len(plan.Tasks), len(plan.Set.Tasks), plan.Set.Digest)
 	}

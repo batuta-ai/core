@@ -61,6 +61,12 @@ type Plan struct {
 	Status  PlanStatus
 	Tasks   []PlanTask
 	Set     TaskSet
+	// Inputs is the stamp comment on line 2 (`profile.md@sha256:… routing.md@sha256:…`),
+	// empty when the plan carries none. Context is the prose under
+	// `## Decisions and context`: what a fresh session — or an executor's
+	// brief — needs to know. Neither is part of the task set digest.
+	Inputs  string
+	Context string
 }
 
 // PlanLoader reads plans from `.batuta/` under a trusted workspace root.
@@ -172,6 +178,8 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 		inGoal    bool
 		inFence   bool
 		inComment bool
+		inContext bool
+		context   strings.Builder
 		statusAt  int
 		pending   = map[int][]pendingDependency{}
 		flushTask = func() error {
@@ -210,13 +218,38 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 		}
 		if strings.HasPrefix(trimmed, "<!--") {
 			inComment = !strings.Contains(trimmed[4:], "-->")
+			if inner, found := strings.CutPrefix(strings.TrimSuffix(strings.TrimSpace(trimmed[4:]), "-->"), "inputs:"); found && plan.Inputs == "" {
+				plan.Inputs = strings.TrimSpace(inner)
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			inContext = strings.EqualFold(strings.TrimSpace(line[3:]), "Decisions and context")
+			if inContext {
+				if err := flushTask(); err != nil {
+					return Plan{}, err
+				}
+				continue
+			}
+		}
+		if inContext {
+			context.WriteString(line)
+			context.WriteString("\n")
 			continue
 		}
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			inFence = !inFence
+			if inContext {
+				context.WriteString(line)
+				context.WriteString("\n")
+			}
 			continue
 		}
 		if inFence {
+			if inContext {
+				context.WriteString(line)
+				context.WriteString("\n")
+			}
 			continue
 		}
 		if planMetaLine.MatchString(line) {
@@ -320,6 +353,7 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 	if err := flushTask(); err != nil {
 		return Plan{}, err
 	}
+	plan.Context = strings.TrimSpace(context.String())
 	if plan.Status == "" {
 		return Plan{}, fmt.Errorf("%w: header has no `**Status:**` (proposed | approved | in progress | done)", ErrReauthoringRequired)
 	}
