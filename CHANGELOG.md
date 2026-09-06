@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.0-beta.17](https://github.com/batuta-ai/core/compare/v1.1.0-beta.16...v1.1.0-beta.17) (2026-09-06)
+
+
+### Features
+
+* archiving a plan ticks its phase in the roadmap ([5cbec72](https://github.com/batuta-ai/core/commit/5cbec726e586382e53f7d33505a81ff45c0cd6b4))
+* batuta loop --roadmap runs the phases in order, one delivery per app ([700db08](https://github.com/batuta-ai/core/commit/700db08783decaf782fdfb7a64abe7ba1641ae15))
+* **loop:** roadmap — phases above plans, batuta loop --roadmap ([8715453](https://github.com/batuta-ai/core/commit/8715453bb104ac03d252aba1a139bfdd2a83d2cd))
+* parse `.batuta/roadmap.md` into phases with an optional plan slug ([6461d5c](https://github.com/batuta-ai/core/commit/6461d5c04f8096f82dd460ed1a15b1fe29466e40))
+* the opened record carries roadmap and phase ([2258a99](https://github.com/batuta-ai/core/commit/2258a99294654e4e6adbc5e44e9b27b5c51917d0))
+
 ## [1.1.0-beta.16](https://github.com/batuta-ai/core/compare/v1.1.0-beta.15...v1.1.0-beta.16) (2026-09-06)
 
 
