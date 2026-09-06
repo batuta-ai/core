@@ -742,11 +742,18 @@ func TestCodexPrefersTheAccountModelListOverTheBundledOne(t *testing.T) {
 		t.Fatalf("bundled evidence must say it is the fallback: %#v", bundled.Capabilities)
 	}
 
-	outputs[adapter.ProbeID("models")] = []byte("not json")
-	if fallback := adapter.Normalize(outputs); !strings.Contains(evidenceSource(fallback.Capabilities, "models"), "--bundled") {
-		t.Fatalf("malformed account list must fall back: %#v", fallback.Capabilities)
+	for _, shape := range []string{"not json", "{}", "null", `{"models":null}`, `{"other":[]}`} {
+		outputs[adapter.ProbeID("models")] = []byte(shape)
+		if fallback := adapter.Normalize(outputs); !strings.Contains(evidenceSource(fallback.Capabilities, "models"), "--bundled") {
+			t.Fatalf("account list %q must fall back to bundled: %#v", shape, fallback.Capabilities)
+		}
+	}
+	outputs[adapter.ProbeID("models")] = []byte(`{"models":[]}`)
+	if empty := adapter.Normalize(outputs); evidenceSource(empty.Capabilities, "models") != "codex debug models" || len(empty.ProviderBindings) != 1 {
+		t.Fatalf("a literal empty account list is authoritative: %#v", empty)
 	}
 
+	delete(outputs, adapter.ProbeID("models"))
 	delete(outputs, adapter.ProbeID("models_bundled"))
 	none := adapter.Normalize(outputs)
 	if !hasEvidenceState(none.Capabilities, "models", inventory.ResolutionUnknown) || len(none.ProviderBindings) != 1 {
