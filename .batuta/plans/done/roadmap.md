@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** Give the loop a level above the plan: `.batuta/roadmap.md` lists the phases of a delivery in order, each phase is one approved plan, `batuta loop --roadmap` runs them one after the other on the same branch, the roadmap line is ticked when a phase's plan is archived, and the journal carries roadmap and phase so the dashboard and `trail` can show them. Waves stay computed from `Depends on`, never written. Closes core #63.
-**Created:** 2026-09-06 · **Status:** approved
+**Created:** 2026-09-06 · **Status:** done
 
 ## Tasks
 - [x] 1. Parse `.batuta/roadmap.md` into phases with an optional plan slug — backend/medium
@@ -16,11 +16,11 @@
       Depends on: 1
       Scope: loop/runner.go, loop/report.go, loop/loop_test.go, loop/panel.go, loop/panel_test.go
       Accept: New writes roadmap title, phase number and phase title into the `opened` record's detail when a roadmap names the plan, and leaves the fields absent otherwise → go test ./loop -run TestLoopOpenedRecordCarriesTheRoadmapPhase -count=1; `batuta trail` and the dashboard header print `phase N · <title>` when present → go test ./loop -run 'TestTrailPrintsThePhase|TestPanelHeaderShowsThePhase' -count=1
-- [ ] 4. batuta loop --roadmap runs the phases in order, one delivery per approved plan — backend/high
+- [x] 4. batuta loop --roadmap runs the phases in order, one delivery per approved plan — backend/high
       Depends on: 2, 3
       Scope: loop/roadmap.go, loop/loop_test.go, loop/runner.go, cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: with two approved phases the run opens delivery 1, finishes it, archives the plan, ticks the phase, then opens delivery 2 on the new head and ends StateDone → go test ./loop -run TestRoadmapRunsApprovedPhasesInOrder -count=1; a next phase whose plan is missing or not approved ends the run with StateWaitingPlan and exit code 4 without opening a delivery → go test ./loop -run TestRoadmapStopsAtAPhaseWithoutAnApprovedPlan -count=1; a blocked delivery ends the chain with state blocked and is not resumable (recovery is a new roadmap run, which opens a new delivery for the same phase), while a waiting_input delivery ends the chain with waiting_input and --resume <delivery> --roadmap continues that same phase and then the chain → go test ./loop -run 'TestRoadmapStopsOnABlockedPhase|TestRoadmapResumeContinuesTheOpenPhase' -count=1; --dry-run --roadmap prints the chain of phases with their plans and states and runs nothing → go test ./cmd/batuta -run TestLoopRoadmapDryRunPrintsTheChain -count=1
-- [ ] 5. capabilities, usage and docs describe the roadmap — docs/low
+- [x] 5. capabilities, usage and docs describe the roadmap — docs/low
       Depends on: 4
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, docs/loop.md, README.md
       Accept: capabilities lists roadmap and usage shows `batuta loop --roadmap [--dry-run]` → go test ./cmd/batuta -run TestCapabilitiesListsRoadmap -count=1; docs/loop.md has a `## Roadmap` section naming the file contract, the exit code 4 and the ticking rule → grep -q '^## Roadmap' docs/loop.md

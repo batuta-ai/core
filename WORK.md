@@ -32,3 +32,8 @@
 - [x] Parse `.batuta/roadmap.md` into phases with an optional plan slug → codex (gpt-6-astra), escalated from codex after 2 fails, commit 6461d5c04f80 (trail: .batuta/runs/2026-09-06-roadmap-task-1.md, plan roadmap, 2026-09-06)
 - [x] Archiving a plan ticks its phase in the roadmap → codex (gpt-5.6-sol), commit 5cbec726e586 (trail: .batuta/runs/2026-09-06-roadmap-task-2.md, plan roadmap, 2026-09-06)
 - [x] The opened record carries roadmap and phase → codex (gpt-5.6-sol), commit 2258a9929465 (trail: .batuta/runs/2026-09-06-roadmap-task-3.md, plan roadmap, 2026-09-06)
+- [x] Parse `.batuta/roadmap.md` into phases with an optional plan slug → ticked in the plan before the run, commit 57e2b605ea73 (trail: .batuta/runs/2026-09-06-roadmap-task-1.md, plan roadmap, 2026-09-06)
+- [x] Archiving a plan ticks its phase in the roadmap → ticked in the plan before the run, commit 57e2b605ea73 (trail: .batuta/runs/2026-09-06-roadmap-task-2.md, plan roadmap, 2026-09-06)
+- [x] The opened record carries roadmap and phase → ticked in the plan before the run, commit 57e2b605ea73 (trail: .batuta/runs/2026-09-06-roadmap-task-3.md, plan roadmap, 2026-09-06)
+- [x] batuta loop --roadmap runs the phases in order, one delivery per approved plan → codex (gpt-6-astra), commit 700db08783de (trail: .batuta/runs/2026-09-06-roadmap-task-4.md, plan roadmap, 2026-09-06)
+- [x] capabilities, usage and docs describe the roadmap → codex (gpt-5.4-mini), commit 16d6f6f33e8e (trail: .batuta/runs/2026-09-06-roadmap-task-5.md, plan roadmap, 2026-09-06)
