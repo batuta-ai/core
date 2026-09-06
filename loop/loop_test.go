@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
 
@@ -52,6 +54,14 @@ case "${FAKE_SCENARIO:-default}" in
   fail-scope)
     if [ "$n" = 2 ] && [ "$retry" = 0 ]; then echo "drive-by" > outside.txt; echo "ok" > out/2.txt; exit 0; fi
     rm -f outside.txt; echo "ok" > out/$n.txt;;
+  fail-proof-done)
+    if [ "$n" = 1 ]; then
+      echo "BATUTA-PROGRESS 1 START"
+      echo "BATUTA-PROGRESS 1 DONE"
+      echo "changed" > shared.txt
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   always-broken)
     if [ "$n" = 1 ]; then echo "BROKEN by $model" > out/1.txt; exit 0; fi
     echo "ok" > out/$n.txt;;
@@ -71,6 +81,15 @@ case "${FAKE_SCENARIO:-default}" in
     if [ "$n" = 1 ]; then exit 0; fi
     echo "ok" > out/$n.txt;;
   *)
+    if [ "${FAKE_SCENARIO:-default}" = default ]; then
+      criteria=$(printf '%s\n' "$text" | sed -n '/^## Acceptance criteria$/,/^## /p' | grep -c '^[0-9][0-9]*\. ' || true)
+      i=1
+      while [ "$i" -le "$criteria" ]; do
+        echo "BATUTA-PROGRESS $i START"
+        echo "BATUTA-PROGRESS $i DONE"
+        i=$((i+1))
+      done
+    fi
     echo "ok" > out/$n.txt
     if [ "$n" = 2 ]; then git add -A >/dev/null; git commit -q -m "wip: task two"; fi;;
 esac
@@ -259,6 +278,65 @@ func TestDryRunShowsDependencySafeWaves(t *testing.T) {
 	}
 }
 
+type commandRunnerFunc func(context.Context, publication.Command) (publication.CommandResult, error)
+
+func (f commandRunnerFunc) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	return f(ctx, command)
+}
+
+func TestLoopJournalsProgressWhileTheExecutorRuns(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.Parallel = 1
+	var r *Runner
+	observed := 0
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+			for _, state := range []string{"START", "DONE"} {
+				if command.Observer == nil {
+					return publication.CommandResult{ExitCode: -1}, errors.New("executor has no stdout observer")
+				}
+				if _, err := fmt.Fprintf(command.Observer, "BATUTA-PROGRESS 1 %s\n", state); err != nil {
+					return publication.CommandResult{ExitCode: -1}, err
+				}
+				records, err := r.store.Read(r.Delivery())
+				if err != nil {
+					return publication.CommandResult{ExitCode: -1}, err
+				}
+				last := records[len(records)-1]
+				want := fmt.Sprintf(`{"criterion":1,"execution":1,"state":%q}`, state)
+				if last.Kind != journal.Kind("task_progress") || string(last.Detail) != want {
+					t.Errorf("before executor return: last record = %s %s, want task_progress %s", last.Kind, last.Detail, want)
+					continue
+				}
+				var graph routing.DeliveryGraph
+				if err := json.Unmarshal(last.Graph, &graph); err != nil {
+					return publication.CommandResult{ExitCode: -1}, err
+				}
+				task, found := graph.Task(last.TaskID)
+				if !found || task.State != routing.GraphTaskRunning || last.At.IsZero() {
+					t.Errorf("progress record lacks a running task graph or timestamp: %#v", last)
+				}
+				observed++
+			}
+		}
+		return (publication.ExecRunner{}).Run(ctx, command)
+	})
+	var err error
+	r, err = New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if observed != 6 {
+		t.Fatalf("observed %d progress records during execution, want 6", observed)
+	}
+}
+
 func TestLoopDeliversAThreeTaskPlanWithADependency(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer
@@ -301,6 +379,27 @@ func TestLoopDeliversAThreeTaskPlanWithADependency(t *testing.T) {
 	}
 	records := readJournal(t, f, r.Delivery())
 	counts := kinds(records)
+	progress := map[string][]string{}
+	running := map[string]bool{}
+	for _, record := range records {
+		switch record.Kind {
+		case KindStarted:
+			running[record.TaskID] = true
+		case KindFinished:
+			running[record.TaskID] = false
+		case journal.Kind("task_progress"):
+			if !running[record.TaskID] {
+				t.Fatalf("progress outside executor start/finish: %#v", record)
+			}
+			progress[record.TaskID] = append(progress[record.TaskID], string(record.Detail))
+		}
+	}
+	for _, taskID := range []string{"task_1", "task_2", "task_3"} {
+		want := `{"criterion":1,"execution":1,"state":"START"}|{"criterion":1,"execution":1,"state":"DONE"}`
+		if got := strings.Join(progress[taskID], "|"); got != want {
+			t.Errorf("%s progress = %s, want %s", taskID, got, want)
+		}
+	}
 	if counts[KindOpened] != 1 || counts[KindWave] != 2 || counts[KindCandidate] != 3 || counts[KindSettled] != 2 || counts[KindTerminal] != 1 || counts[KindFailure] != 0 {
 		t.Fatalf("journal kinds = %v", counts)
 	}
@@ -343,6 +442,9 @@ func TestLoopResumesAfterAStopBetweenWaves(t *testing.T) {
 	if commits := f.commitsSince(t, f.base); len(commits) != 2 {
 		t.Fatalf("after wave 1: commits = %q", commits)
 	}
+	if counts := kinds(readJournal(t, f, r.Delivery())); counts[journal.Kind("task_progress")] != 4 {
+		t.Fatalf("progress before resume = %d, want 4", counts[journal.Kind("task_progress")])
+	}
 	// A new delivery is refused while this one is open.
 	if _, err := New(context.Background(), f.options("default", &out)); err == nil || !strings.Contains(err.Error(), "--resume") {
 		t.Fatalf("New() with an open delivery error = %v", err)
@@ -370,6 +472,14 @@ func TestLoopResumesAnExecutorKilledMidRun(t *testing.T) {
 	var out bytes.Buffer
 	opts := f.options("slow", &out)
 	opts.Parallel = 1
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+			if _, err := fmt.Fprintln(command.Observer, "BATUTA-PROGRESS 1 START"); err != nil {
+				return publication.CommandResult{ExitCode: -1}, err
+			}
+		}
+		return (publication.ExecRunner{}).Run(ctx, command)
+	})
 	r, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -382,6 +492,9 @@ func TestLoopResumesAnExecutorKilledMidRun(t *testing.T) {
 	}
 	if status := f.run(t, "status", "--porcelain"); status != "" {
 		t.Fatalf("canceled run left the tree dirty:\n%s", status)
+	}
+	if counts := kinds(readJournal(t, f, r.Delivery())); counts[journal.Kind("task_progress")] != 1 {
+		t.Fatalf("progress before resume = %d, want 1", counts[journal.Kind("task_progress")])
 	}
 	resumeOpts := f.options("default", &out)
 	resumeOpts.Resume = r.Delivery()
@@ -436,6 +549,24 @@ func TestLoopRetriesInTheSameWorktreeThenSucceeds(t *testing.T) {
 	if !strings.Contains(string(work), "1 retry") {
 		t.Fatalf("WORK.md does not tell the retry story:\n%s", work)
 	}
+}
+
+func TestGateThreeNamesACriterionReportedDoneButFailing(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("fail-proof-done", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind == KindFailure && record.TaskID == "task_1" && strings.Contains(string(record.Detail), "criterion 1 was reported DONE but its proof failed: test -f out/1.txt") {
+			return
+		}
+	}
+	t.Fatalf("criterion reported DONE with a failed proof was not named in failure feedback\n%s", out.String())
 }
 
 func TestLoopEscalatesThenBlocksAndReportsExactly(t *testing.T) {

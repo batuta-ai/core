@@ -30,7 +30,7 @@ const methodLine = "Work test-first from the acceptance criteria. Investigate ro
 
 const testLaws = "1. Test the behavior, never the mock.\n2. A failing test means fix the code, not the test.\n3. No test-only flags or branches in production code."
 
-// Brief renders the eight sections of references/brief.md for one task.
+// Brief renders the executor instructions for one task.
 func Brief(input BriefInput) string {
 	var b strings.Builder
 	task := input.Task
@@ -100,6 +100,9 @@ func Brief(input BriefInput) string {
 		b.WriteString("Unknown — the plan lists no Accept line for this task.\n")
 	}
 	b.WriteString("\n")
+
+	b.WriteString("## Progress protocol\n\n")
+	b.WriteString("For each acceptance criterion n, print an isolated line `BATUTA-PROGRESS <n> START` before the first edit toward it and `BATUTA-PROGRESS <n> DONE` when its proof passes locally. Same shape as the `BATUTA-QUESTION:` line: plain text on stdout, nothing else on that line, no tool required. Criterion numbers are the 1-based positions of the `## Acceptance criteria` list.\n\n")
 
 	b.WriteString("## Boundaries\n\n")
 	b.WriteString("Do not touch CI configuration, licenses, lockfiles (except through an allowed dependency), `WORK.md` or anything under `.batuta/`. Do not push, do not merge, do not change branches.\n\n")

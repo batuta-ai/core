@@ -651,8 +651,22 @@ func recordSummary(record journal.Record) string {
 		return pick("execution", "executor", "model", "reasoning")
 	case KindFinished:
 		return pick("execution", "exit_code", "duration_ms", "tree_changed", "question")
+	case KindProgress:
+		return pick("execution", "criterion", "state")
 	case KindGates:
-		return pick("passed")
+		var report gates.Report
+		if json.Unmarshal(record.Detail, &report) != nil {
+			return ""
+		}
+		summary := fmt.Sprintf("e%d passed=%t", report.Execution, report.Passed)
+		var failures []string
+		for _, failure := range report.Failures() {
+			failures = append(failures, strings.Join(strings.Fields(strings.TrimPrefix(failure, "gate ")), " "))
+		}
+		if len(failures) > 0 {
+			summary += " (" + strings.Join(failures, "; ") + ")"
+		}
+		return summary
 	case KindCandidate:
 		return pick("execution", "commit")
 	case KindFailure:

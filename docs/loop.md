@@ -17,6 +17,14 @@ list, with the same invariants:
 5. **One commit per task**, integrated onto the branch that was checked out
    when the delivery opened.
 
+## Progress protocol
+
+An executor session may stream progress to the loop with plain-text lines on
+stdout. For each acceptance criterion `n`, the executor prints one isolated
+line `BATUTA-PROGRESS <n> START` before the first edit for that criterion and
+`BATUTA-PROGRESS <n> DONE` when the criterion's proof passes locally. The line
+must stand alone: no prefix, suffix, or extra text on the same line.
+
 ## Packages
 
 | Package | Role |
@@ -60,6 +68,10 @@ canceled · `1` an error before or during the run.
   source of truth for a delivery; `--resume` loads the last record's graph
   and verifies the chain. The routing ownership store
   (`routing/ownership.go`) stays the daemon's; the loop never writes it.
+- **Progress is journaled.** `task_progress` records capture streamed
+  progress from executor sessions with `execution`, `criterion`, and
+  `state` fields; the record timestamp is the event time, and the record
+  carries the same graph as every other journal entry.
 - **Routing comes from the table.** A plan's `→ executor/model` hint is
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task
@@ -103,6 +115,11 @@ canceled · `1` an error before or during the run.
   (no background work, quick synchronous commands only, `TASK n:
   DONE|INCOMPLETE` mandatory). Any tree change during the verifier round
   invalidates it.
+- **Dashboard watch.** `--dashboard` with `--watch` renders a live panel
+  every interval, clearing the screen before each redraw. The watch mode
+  follows the most recent open delivery when no delivery argument is given,
+  exits cleanly when there are no open deliveries, and stops at the terminal
+  record or on cancellation without writing to the journal.
 
 ## Files the loop writes
 

@@ -34,6 +34,7 @@ const (
 	KindAttempts    journal.Kind = "attempts_begun"
 	KindWorktree    journal.Kind = "worktree_attached"
 	KindStarted     journal.Kind = "executor_started"
+	KindProgress    journal.Kind = "task_progress"
 	KindFinished    journal.Kind = "executor_finished"
 	KindQuestion    journal.Kind = "question_recorded"
 	KindAnswer      journal.Kind = "answer_recorded"

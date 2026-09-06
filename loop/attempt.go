@@ -138,6 +138,17 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	}
 	fmt.Fprintf(r.out, "%s e%d → %s/%s in %s\n", taskID, ac.execution, adapter.Name, ac.runtime.Model, filepath.Base(ac.worktree.Root))
 
+	// Each parallel attempt owns its callback and journal error.
+	subprocess := r.subprocess
+	var progressErr error
+	subprocess.Progress = func(event executor.ProgressEvent) {
+		if progressErr == nil {
+			progressErr = r.locked(KindProgress, taskID, map[string]any{
+				"execution": ac.execution, "criterion": event.Criterion, "state": event.State,
+			}, nil)
+		}
+	}
+
 	// Invariant from the harness this loop descends from: a usage limit is
 	// not a failure. Wait for the reset and run the SAME attempt again; it
 	// consumes no retry, no escalation. The cap keeps a run from sleeping
@@ -148,7 +159,10 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		waits   int
 	)
 	for {
-		result, execErr = r.subprocess.Execute(ctx, adapter, invocation, r.opts.TaskTimeout)
+		result, execErr = subprocess.Execute(ctx, adapter, invocation, r.opts.TaskTimeout)
+		if progressErr != nil {
+			return progressErr
+		}
 		if execErr != nil || !result.RateLimited || waits >= r.opts.MaxLimitWaits {
 			break
 		}
@@ -236,9 +250,27 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 
 	if !report.Passed {
 		code := blockerCode(report, result, silent)
-		return r.recordFailure(ctx, ac, &result, code, report.Failures())
+		feedback := reportedDoneProofFailures(report.Failures(), criteria, report.Proofs, result.Progress)
+		return r.recordFailure(ctx, ac, &result, code, feedback)
 	}
 	return r.recordCandidate(ctx, ac, report, result)
+}
+
+func reportedDoneProofFailures(feedback []string, criteria []gates.Criterion, proofs []gates.Verdict, progress []executor.ProgressEvent) []string {
+	done := make(map[int]bool)
+	for _, event := range progress {
+		if event.State == "DONE" {
+			done[event.Criterion] = true
+		}
+	}
+	for index, proof := range proofs {
+		criterion := index + 1
+		if proof.Pass || !done[criterion] || index >= len(criteria) {
+			continue
+		}
+		feedback = append(feedback, fmt.Sprintf("criterion %d was reported DONE but its proof failed: %s", criterion, criteria[index].Proof))
+	}
+	return feedback
 }
 
 // limitDelay is how long to wait for a usage limit: until the reset the

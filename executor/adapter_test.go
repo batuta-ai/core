@@ -148,7 +148,7 @@ func TestSubprocessExecutesAndAppliesTheOutcomeRules(t *testing.T) {
 		}
 		return result
 	}
-	if result := run("ok", 0); !result.Finished || result.ExitCode != 0 || !strings.Contains(string(result.Stdout), "args: exec --cd") {
+	if result := run("ok", 0); !result.Finished || result.ExitCode != 0 || !strings.Contains(string(result.Stdout), "args: exec --cd") || len(result.Progress) != 0 {
 		t.Fatalf("ok = %#v", result)
 	}
 	if result := run("limit", 0); result.Finished || !result.RateLimited || result.ExitCode != 2 {

@@ -10,6 +10,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/loop"
+	"github.com/batuta-ai/core/routing"
 )
 
 func TestRunRequiresASubcommand(t *testing.T) {
@@ -137,5 +142,50 @@ func TestLoopSubcommandRefusesToRunOutsideAPreparedWorkspace(t *testing.T) {
 	}
 	if err := run([]string{"loop", "--workspace", root, "--dashboard"}, &stdout, &stderr); err != nil || !strings.Contains(stdout.String(), "no open deliveries") {
 		t.Fatalf("dashboard without journals = %v\n%s", err, stdout.String())
+	}
+}
+
+func TestRunLoopDashboard(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph := routing.DeliveryGraph{Tasks: []routing.GraphTask{{TaskID: "task_1", State: routing.GraphTaskIntegrated}}}
+	graphJSON, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendRecord := func(kind journal.Kind, detail string) {
+		t.Helper()
+		if _, err := store.Append("demo", journal.Record{Kind: kind, Detail: json.RawMessage(detail), Graph: graphJSON}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendRecord(loop.KindOpened, `{"slug":"demo"}`)
+	appendRecord(loop.KindTerminal, `{"state":"done"}`)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"dashboard remains TSV", []string{"loop", "--workspace", root, "--dashboard", "demo"}, "delivery  state"},
+		{"watch renders panel", []string{"loop", "--workspace", root, "--dashboard", "--watch", "--interval", time.Millisecond.String(), "demo"}, "\x1b[2J\x1b[Hdelivery demo"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			if err := run(tc.args, &stdout, &stderr); err != nil {
+				t.Fatalf("run() error = %v\nstderr: %s", err, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), tc.want)
+			}
+		})
 	}
 }
