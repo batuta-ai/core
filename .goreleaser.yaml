@@ -40,6 +40,9 @@ release:
     owner: batuta-ai
     name: core
   mode: keep-existing
+  # A re-run on a tag whose assets already exist (a failed or partial upload)
+  # replaces them instead of failing on duplicate names.
+  replace_existing_artifacts: true
   prerelease: auto
 
 changelog:
