@@ -52,8 +52,9 @@ type PlanTask struct {
 	Line     int
 }
 
-// Plan is a parsed `.batuta/plan-<slug>.md`.
+// Plan is a parsed plan with its workspace-relative source path.
 type Plan struct {
+	Path    string
 	Slug    string
 	Title   string
 	Goal    string
@@ -69,7 +70,7 @@ type Plan struct {
 	Context string
 }
 
-// PlanLoader reads plans from `.batuta/` under a trusted workspace root.
+// PlanLoader reads active and legacy plans under a trusted workspace root.
 type PlanLoader struct {
 	root string
 }
@@ -84,7 +85,12 @@ func NewPlanLoader(workspaceRoot string) (*PlanLoader, error) {
 
 // PlanPath is the plan file for a slug, relative to the workspace root.
 func PlanPath(slug string) string {
-	return filepath.Join(".batuta", "plan-"+slug+".md")
+	return filepath.Join(".batuta", "plans", slug+".md")
+}
+
+// PlanLocations lists active and legacy paths in lookup order.
+func PlanLocations(slug string) []string {
+	return []string{PlanPath(slug), filepath.Join(".batuta", "plan-"+slug+".md")}
 }
 
 func (l *PlanLoader) Load(slug string) (TaskSet, error) {
@@ -99,23 +105,62 @@ func (l *PlanLoader) LoadPlan(slug string) (Plan, error) {
 	if !canonicalSlug.MatchString(slug) {
 		return Plan{}, ErrInvalidSlug
 	}
-	path, err := (&ArtifactLoader{root: l.root}).resolveContained(PlanPath(slug))
-	if err != nil {
-		return Plan{}, err
+	for _, relative := range PlanLocations(slug) {
+		if _, err := os.Lstat(filepath.Join(l.root, relative)); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		path, err := (&ArtifactLoader{root: l.root}).resolveContained(relative)
+		if err != nil {
+			return Plan{}, err
+		}
+		payload, err := readBoundedFile(path, maxTaskArtifactBytes)
+		if err != nil {
+			return Plan{}, err
+		}
+		plan, err := ParsePlan(slug, payload)
+		if err != nil {
+			return Plan{}, err
+		}
+		plan.Path = relative
+		return plan, nil
 	}
-	payload, err := readBoundedFile(path, maxTaskArtifactBytes)
-	if err != nil {
-		return Plan{}, err
-	}
-	return ParsePlan(slug, payload)
+	return Plan{}, errors.New("routing: plan is unavailable")
 }
 
-// ListPlans returns the slugs of every plan under `.batuta/`, sorted.
+// ListPlans returns sorted, distinct active and legacy slugs, excluding done/.
 func (l *PlanLoader) ListPlans() ([]string, error) {
-	directory, err := (&ArtifactLoader{root: l.root}).resolveContained(".batuta")
-	if err != nil {
-		return nil, err
+	slugs := make([]string, 0)
+	for _, location := range []struct{ directory, prefix string }{
+		{filepath.Join(".batuta", "plans"), ""},
+		{".batuta", "plan-"},
+	} {
+		if _, err := os.Lstat(filepath.Join(l.root, location.directory)); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		directory, err := (&ArtifactLoader{root: l.root}).resolveContained(location.directory)
+		if err != nil {
+			return nil, err
+		}
+		entries, err := readPlanDirectory(directory)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasPrefix(name, location.prefix) || !strings.HasSuffix(name, ".md") {
+				continue
+			}
+			slug := strings.TrimSuffix(strings.TrimPrefix(name, location.prefix), ".md")
+			if canonicalSlug.MatchString(slug) {
+				slugs = append(slugs, slug)
+			}
+		}
 	}
+	slices.Sort(slugs)
+	return slices.Compact(slugs), nil
+}
+
+func readPlanDirectory(directory string) ([]os.DirEntry, error) {
 	handle, err := os.Open(directory)
 	if err != nil {
 		return nil, errors.New("routing: plan directory is unavailable")
@@ -126,20 +171,9 @@ func (l *PlanLoader) ListPlans() ([]string, error) {
 		return nil, errors.New("routing: plan directory is unavailable")
 	}
 	if len(entries) > maxPlanDirectoryEntries {
-		return nil, fmt.Errorf("%w: .batuta holds more than %d entries", ErrReauthoringRequired, maxPlanDirectoryEntries)
+		return nil, fmt.Errorf("%w: plan directory holds more than %d entries", ErrReauthoringRequired, maxPlanDirectoryEntries)
 	}
-	slugs := make([]string, 0)
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(name, "plan-") || !strings.HasSuffix(name, ".md") {
-			continue
-		}
-		slug := strings.TrimSuffix(strings.TrimPrefix(name, "plan-"), ".md")
-		if canonicalSlug.MatchString(slug) {
-			slugs = append(slugs, slug)
-		}
-	}
-	return slugs, nil
+	return entries, nil
 }
 
 var (

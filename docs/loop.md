@@ -151,7 +151,13 @@ exit `1` with the reason on stderr.
 | `.batuta/worktrees/<slug>-task-N-e<k>/` | no | per attempt; removed after integration or abort (`--keep-worktrees` keeps them) |
 | `.batuta/runs/<date>-<slug>-task-N.md` (+ `-e<k>.brief.md`, `-e<k>.out.log`) | no | per attempt |
 | `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` |
-| `WORK.md`, `.batuta/plan-<slug>.md` | yes | once, at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
+| `WORK.md`, `.batuta/plans/<slug>.md` | yes | once, at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
+| `.batuta/plans/done/<slug>.md` | yes | when all tasks are done; the bookkeeping commit carries the plan move |
+
+Legacy `.batuta/plan-<slug>.md` plans remain readable for one release. The
+active path takes precedence when both exist. Unfinished plans stay at their
+loaded location; finished plans move to `.batuta/plans/done/` and are excluded
+from plan discovery.
 
 ## Not in this release
 

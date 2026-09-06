@@ -10,8 +10,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -164,11 +164,11 @@ func setup(t *testing.T) fixture {
 	f.run(t, "config", "gc.auto", "0")
 	f.run(t, "config", "gc.autoDetach", "false")
 	f.run(t, "config", "maintenance.auto", "false")
-	os.MkdirAll(filepath.Join(root, ".batuta"), 0o755)
+	os.MkdirAll(filepath.Join(root, ".batuta", "plans"), 0o755)
 	os.WriteFile(filepath.Join(root, "tests.sh"), []byte("#!/bin/sh\nif grep -rl BROKEN out 2>/dev/null | grep -q .; then echo 'broken files'; exit 1; fi\necho all green\n"), 0o755)
 	os.WriteFile(filepath.Join(root, ".batuta", "profile.md"), []byte("# Batuta profile — demo\n\nTemplate: templates/generic.md\n\nStack: shell\nMethodology: tests first, conventional commits\nTest: sh ./tests.sh\nExecution: parallel\nWorktree: always\n"), 0o644)
 	os.WriteFile(filepath.Join(root, ".batuta", "routing.md"), []byte("# Routing — demo\n\n| Lane | Domain | Executor | Model | Cost |\n|---|---|---|---|---|\n| low | * | codex | fake-low | cents |\n| medium | * | codex | fake-mid | cents |\n| high | * | codex | fake-high | cents |\n| critical | * | self | session | host |\n"), 0o644)
-	os.WriteFile(filepath.Join(root, ".batuta", "plan-greetings.md"), []byte(testPlan), 0o644)
+	os.WriteFile(filepath.Join(root, ".batuta", "plans", "greetings.md"), []byte(testPlan), 0o644)
 	f.run(t, "add", "-A")
 	f.run(t, "commit", "-q", "-m", "chore: scaffold")
 	f.base = f.run(t, "rev-parse", "HEAD")
@@ -373,7 +373,7 @@ func TestLoopDeliversAThreeTaskPlanWithADependency(t *testing.T) {
 	if strings.Count(body, "Batuta-Task: task_") != 3 || !strings.Contains(body, "Plan greetings, task_3") {
 		t.Fatalf("commit bodies:\n%s", body)
 	}
-	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plan-greetings.md"))
+	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plans", "done", "greetings.md"))
 	if strings.Count(string(plan), "- [x]") != 3 || !strings.Contains(string(plan), "**Status:** done") {
 		t.Fatalf("plan after run:\n%s", plan)
 	}
@@ -425,15 +425,16 @@ func TestLoopDeliversAThreeTaskPlanWithADependency(t *testing.T) {
 	if err := Trail(f.root, "", &trailOut); err != nil || !strings.Contains(trailOut.String(), "delivery_terminal") {
 		t.Fatalf("Trail() = %v\n%s", err, trailOut.String())
 	}
-	// A second run finds nothing to do: every task is ticked.
-	r2, err := New(context.Background(), f.options("default", &out))
-	if err == nil {
-		preview, _ := r2.DryRun()
-		if len(preview.Waves) != 0 {
-			t.Fatalf("second dry run still has waves: %#v", preview.Waves)
-		}
-	} else if !strings.Contains(err.Error(), "Status: done") {
-		t.Fatalf("second New() error = %v", err)
+	// A finished plan is archived and no longer available for another run.
+	if _, err := New(context.Background(), f.options("default", &out)); err == nil || !strings.Contains(err.Error(), "plan is unavailable") {
+		t.Fatalf("second New() error = %v, want archived plan unavailable", err)
+	}
+	loader, err := routing.NewPlanLoader(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slugs, err := loader.ListPlans(); err != nil || len(slugs) != 0 {
+		t.Fatalf("plans after delivery = %v, %v", slugs, err)
 	}
 }
 
@@ -608,7 +609,7 @@ func TestLoopEscalatesThenBlocksAndReportsExactly(t *testing.T) {
 	if len(commits) != 2 || !strings.HasPrefix(commits[0], "feat: add greeting two") || !strings.HasPrefix(commits[1], "chore(batuta): greetings — loop blocked") {
 		t.Fatalf("commits = %q", commits)
 	}
-	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plan-greetings.md"))
+	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"))
 	if strings.Count(string(plan), "- [x]") != 1 || !strings.Contains(string(plan), "- [ ] 1.") || strings.Contains(string(plan), "**Status:** done") {
 		t.Fatalf("plan after blocked run:\n%s", plan)
 	}
@@ -734,7 +735,7 @@ func TestLoopTicksATaskAlreadySatisfiedOnTheBase(t *testing.T) {
 	if err != nil || state != StateBlocked {
 		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
 	}
-	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plan-greetings.md"))
+	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"))
 	if !strings.Contains(string(plan), "- [x] 1.") || !strings.Contains(string(plan), "- [x] 2.") || !strings.Contains(string(plan), "- [ ] 3.") {
 		t.Fatalf("plan after run:\n%s", plan)
 	}
@@ -769,7 +770,7 @@ func TestPreflightRefusesDirtyTreesUnapprovedPlansAndSelfRouting(t *testing.T) {
 	}
 	os.Remove(filepath.Join(f.root, "WORK.md"))
 
-	planPath := filepath.Join(f.root, ".batuta", "plan-greetings.md")
+	planPath := filepath.Join(f.root, ".batuta", "plans", "greetings.md")
 	original, _ := os.ReadFile(planPath)
 	os.WriteFile(planPath, bytes.Replace(original, []byte("**Status:** approved"), []byte("**Status:** proposed"), 1), 0o644)
 	f.run(t, "commit", "-q", "-am", "chore: unapprove")
@@ -800,7 +801,7 @@ func TestAbandonClosesAnOpenDelivery(t *testing.T) {
 	if state, err := Abandon(context.Background(), abandonOpts); err != nil || state != StateAbandoned {
 		t.Fatalf("Abandon() = %s, %v", state, err)
 	}
-	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plan-greetings.md"))
+	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"))
 	if strings.Count(string(plan), "- [x]") != 2 {
 		t.Fatalf("plan after abandon:\n%s", plan)
 	}
@@ -816,3 +817,63 @@ func TestAbandonClosesAnOpenDelivery(t *testing.T) {
 }
 
 func jsonUnmarshal(payload []byte, target any) error { return json.Unmarshal(payload, target) }
+
+func TestLoopMovesAFinishedPlanIntoDone(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(fmt.Sprintf("legacy=%t", legacy), func(t *testing.T) {
+			f := setup(t)
+			old := filepath.Join(".batuta", "plans", "greetings.md")
+			if legacy {
+				path := filepath.Join(".batuta", "plan-greetings.md")
+				if err := os.Rename(filepath.Join(f.root, old), filepath.Join(f.root, path)); err != nil {
+					t.Fatal(err)
+				}
+				old = path
+				f.run(t, "add", "-A")
+				f.run(t, "commit", "-q", "-m", "chore: legacy plan")
+			}
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("default", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+				t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+			}
+			done := filepath.Join(".batuta", "plans", "done", "greetings.md")
+			payload, err := os.ReadFile(filepath.Join(f.root, done))
+			if err != nil || !strings.Contains(string(payload), "**Status:** done") || strings.Count(string(payload), "- [x]") != 3 {
+				t.Fatalf("archived plan = %q, %v", payload, err)
+			}
+			if _, err := os.Stat(filepath.Join(f.root, old)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("old plan stat = %v, want not exist", err)
+			}
+			changes := f.run(t, "diff-tree", "--no-commit-id", "--name-status", "--no-renames", "-r", "HEAD")
+			if !strings.Contains(changes, "D\t"+filepath.ToSlash(old)) || !strings.Contains(changes, "A\t"+filepath.ToSlash(done)) {
+				t.Fatalf("bookkeeping commit must contain removal and archive:\n%s", changes)
+			}
+			if got := f.run(t, "show", "HEAD:"+filepath.ToSlash(done)); got != strings.TrimSpace(string(payload)) {
+				t.Fatalf("committed plan = %q, want %q", got, payload)
+			}
+			if status := f.run(t, "status", "--porcelain"); status != "" {
+				t.Fatalf("tree dirty after archive: %s", status)
+			}
+			found := false
+			for _, record := range readJournal(t, f, r.Delivery()) {
+				if record.Kind == KindOpened {
+					var detail openedDetail
+					if err := json.Unmarshal(record.Detail, &detail); err != nil {
+						t.Fatal(err)
+					}
+					if detail.PlanPath != old {
+						t.Fatalf("journal plan path = %q, want %q", detail.PlanPath, old)
+					}
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("missing delivery_opened record")
+			}
+		})
+	}
+}
