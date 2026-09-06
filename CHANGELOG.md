@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.10](https://github.com/batuta-ai/core/compare/v1.1.0-beta.9...v1.1.0-beta.10) (2026-09-06)
+
+
+### Features
+
+* **cli:** batuta gate tree, the tree gate as a standalone subcommand ([#38](https://github.com/batuta-ai/core/issues/38)) ([75bb633](https://github.com/batuta-ai/core/commit/75bb633aedf2b4335f790ce6662708d0ddf4ca2f))
+
 ## [1.1.0-beta.9](https://github.com/batuta-ai/core/compare/v1.1.0-beta.8...v1.1.0-beta.9) (2026-09-06)
 
 
