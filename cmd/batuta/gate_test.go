@@ -498,6 +498,7 @@ func committedGitRepository(t *testing.T, git string) string {
 		{"config", "user.name", "t"},
 		{"config", "user.email", "t@example.com"},
 		{"config", "commit.gpgsign", "false"},
+		{"config", "tag.gpgsign", "false"},
 		{"config", "gc.auto", "0"},
 		{"config", "gc.autoDetach", "false"},
 		{"config", "maintenance.auto", "false"},
