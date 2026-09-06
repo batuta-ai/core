@@ -56,13 +56,24 @@ func TestRunPrintsCapabilities(t *testing.T) {
 	if got.Version == "" {
 		t.Fatal("capabilities.version is empty")
 	}
-	for _, want := range []string{"capabilities", "doctor", "inventory", "loop", "trail", "version"} {
+	for _, want := range []string{"capabilities", "doctor", "gate", "inventory", "loop", "trail", "version"} {
 		if !slices.Contains(got.Commands, want) {
 			t.Fatalf("capabilities.commands = %v, missing %q", got.Commands, want)
 		}
 	}
-	if slices.Contains(got.Commands, "gate") {
-		t.Fatalf("capabilities.commands = %v advertises a subcommand run() does not implement", got.Commands)
+}
+
+func TestUsageListsEveryGateForm(t *testing.T) {
+	for _, want := range []string{
+		"batuta gate tree",
+		"batuta gate tests",
+		"batuta gate scope",
+		"batuta gate proofs",
+		"batuta gate verifier",
+	} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage is missing %q", want)
+		}
 	}
 }
 

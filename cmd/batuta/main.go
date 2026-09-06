@@ -1,8 +1,7 @@
-// Command batuta is the deterministic side of the Batuta conducting cycle.
-//
-// Subcommands: version, capabilities, inventory, doctor, loop, trail, and
-// standalone verification gates. Hosts probe `batuta capabilities` before
-// relying on the complete gate suite.
+// Command batuta provides the deterministic tools used by the Batuta
+// conducting cycle: capability discovery, environment inspection, delivery
+// execution and audit trails, and standalone verification gates. Hosts probe
+// `batuta capabilities` before relying on a command.
 package main
 
 import (
@@ -42,6 +41,10 @@ Usage:
   batuta trail     [<delivery>]
   batuta gate tree --snapshot [--dir <d>]
   batuta gate tree --before '<json>' [--dir <d>]
+  batuta gate tests --command "<cmd>" [--dir <d>] [--timeout <duration>]
+  batuta gate scope --base <sha-or-ref> --scope <a,b,c> [--dir <d>]
+  batuta gate proofs --accept "<criterion → proof>;..." [--dir <d>] [--timeout <duration>]
+  batuta gate verifier --criteria <n> [--proofs '<json array>'] < output
 
 capabilities  The subcommands this binary ships, as JSON. Skills probe it
            before calling gate or loop; an older binary fails the probe.
@@ -119,9 +122,9 @@ func version() string {
 	return "devel"
 }
 
-// commands lists every subcommand this binary ships. Append gate here when
-// it lands; skills read this list, never the usage text.
-var commands = []string{"capabilities", "doctor", "inventory", "loop", "trail", "version"}
+// commands lists every subcommand this binary ships; skills read this list,
+// never the usage text.
+var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "trail", "version"}
 
 type capabilities struct {
 	Version  string   `json:"version"`

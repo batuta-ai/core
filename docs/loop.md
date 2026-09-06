@@ -62,6 +62,28 @@ terminal    done | blocked | waiting_input | canceled | abandoned
 Exit codes: `0` done · `2` blocked · `3` waiting for an answer · `130`
 canceled · `1` an error before or during the run.
 
+## Standalone gates
+
+The interactive skill can run each verification gate independently. Every
+gate writes compact JSON followed by a newline and no other stdout. A passing
+verdict exits `0`, a failing verdict exits `2`, and usage or runtime errors
+exit `1` with the reason on stderr.
+
+- `batuta gate tree --snapshot [--dir <d>]` captures the current tree, while
+  `batuta gate tree --before '<json>' [--dir <d>]` compares it with a prior
+  snapshot. `--dir` defaults to the current directory.
+- `batuta gate tests --command "<cmd>" [--dir <d>] [--timeout <duration>]`
+  runs the test command with a default timeout of 15 minutes.
+- `batuta gate scope --base <sha-or-ref> --scope <a,b,c> [--dir <d>]`
+  checks changed paths against the comma-separated scope. An empty scope is
+  allowed, and the output also identifies outside and managed paths.
+- `batuta gate proofs --accept "<criterion → proof>;..." [--dir <d>] [--timeout <duration>]`
+  runs the declared proof commands and returns a JSON array of verdicts.
+  Criteria without an arrow are left to the verifier.
+- `batuta gate verifier --criteria <n> [--proofs '<json array>'] < output`
+  reads the verifier output from stdin and checks it against the criterion
+  count and optional proof verdicts.
+
 ## Decisions
 
 - **Journal authority.** On file hosts the delivery journal is the single
@@ -133,8 +155,6 @@ canceled · `1` an error before or during the run.
 
 ## Not in this release
 
-- `batuta gate <name>` for the interactive skill (verification.md keeps
-  running the gates by hand until it ships).
 - Token accounting: CLI executors do not report tokens, so the graph's
   budget is unused; the wall budget is `--task-timeout` per session.
 - Cross-review with lenses (the skill's `/batuta-review`); the loop runs the

@@ -473,7 +473,7 @@ func TestRunGateDispatch(t *testing.T) {
 	}
 }
 
-func TestGateIsNotAdvertisedByCapabilities(t *testing.T) {
+func TestGateIsAdvertisedByCapabilities(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"capabilities"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run(capabilities) error = %v", err)
@@ -482,8 +482,8 @@ func TestGateIsNotAdvertisedByCapabilities(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("capabilities is not JSON: %v", err)
 	}
-	if slices.Contains(got.Commands, "gate") {
-		t.Fatalf("capabilities.commands = %v, must not advertise gate yet", got.Commands)
+	if !slices.Contains(got.Commands, "gate") {
+		t.Fatalf("capabilities.commands = %v, missing gate", got.Commands)
 	}
 }
 
