@@ -34,6 +34,7 @@ type Result struct {
 	RateLimited bool      // the adapter's limit_regex matched the output tail
 	ResetAt     time.Time // when the limit lifts, if the output said; zero otherwise
 	Question    string    // a BATUTA-QUESTION line, when the executor asked one
+	Progress    []ProgressEvent
 }
 
 // Subprocess runs invocations through the publication runner, resolving
@@ -42,6 +43,7 @@ type Subprocess struct {
 	Runner      publication.CommandRunner
 	Lookup      func(string) (string, error)
 	Environment []string
+	Progress    func(ProgressEvent)
 }
 
 // NewSubprocess is the production runner: exec through PATH.
@@ -64,13 +66,18 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 	}
 	defer cancel()
 	started := time.Now()
+	var progress []ProgressEvent
+	observer := &progressObserver{events: &progress, callback: s.Progress}
 	raw, runErr := s.Runner.Run(runCtx, publication.Command{
 		Executable: executable, Args: invocation.Args, Directory: invocation.Dir,
 		Environment: s.Environment, StdoutLimit: outputLimit, StderrLimit: outputLimit,
+		Observer: observer,
 	})
+	observer.flush()
 	result := Result{
 		ExitCode: raw.ExitCode, Stdout: raw.Stdout, Stderr: raw.Stderr,
 		Truncated: raw.StdoutTruncated || raw.StderrTruncated, Duration: time.Since(started),
+		Progress: progress,
 	}
 	if runErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
