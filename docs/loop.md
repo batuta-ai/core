@@ -94,6 +94,11 @@ exit `1` with the reason on stderr.
   progress from executor sessions with `execution`, `criterion`, and
   `state` fields; the record timestamp is the event time, and the record
   carries the same graph as every other journal entry.
+- **Decisions may be task-scoped.** In `## Decisions and context`, a paragraph
+  beginning with `**Task N.**` belongs only to task N; `**Tasks N–M.**` (also
+  `N-M`, comma lists, and combinations) belongs to every named task. Unlabelled
+  paragraphs are shared. Each executor brief keeps shared and its own marked
+  paragraphs in plan order and drops paragraphs marked for other tasks.
 - **Routing comes from the table.** A plan's `→ executor/model` hint is
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task

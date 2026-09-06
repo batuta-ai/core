@@ -185,10 +185,135 @@ var (
 	planCreated    = regexp.MustCompile(`\*\*Created:\*\*\s*([^·*]+?)\s*(?:·|$)`)
 	planGoalLine   = regexp.MustCompile(`^\*\*Goal:\*\*\s*(.*)$`)
 	// - [ ] 1. Title — domain/complexity → executor/model
-	planTaskLine = regexp.MustCompile(`^- \[([ xX])\]\s+([0-9]+)\.\s+(.+?)\s+[—-]\s+([a-z]+)/([a-z]+)(?:\s+(?:→|->)\s+(\S+))?\s*$`)
-	planTaskBare = regexp.MustCompile(`^- \[[ xX]\]\s+[0-9]+\.`)
-	planFieldRe  = regexp.MustCompile(`^\s+(Scope|Accept|Depends on):\s*(.*)$`)
+	planTaskLine        = regexp.MustCompile(`^- \[([ xX])\]\s+([0-9]+)\.\s+(.+?)\s+[—-]\s+([a-z]+)/([a-z]+)(?:\s+(?:→|->)\s+(\S+))?\s*$`)
+	planTaskBare        = regexp.MustCompile(`^- \[[ xX]\]\s+[0-9]+\.`)
+	planFieldRe         = regexp.MustCompile(`^\s+(Scope|Accept|Depends on):\s*(.*)$`)
+	planContextTaskLine = regexp.MustCompile(`^(?:\*\*Task ([0-9]+)\.\*\*|\*\*Tasks ([0-9]+(?:\s*[–-]\s*[0-9]+)?(?:\s*,\s*[0-9]+(?:\s*[–-]\s*[0-9]+)?)*)\.\*\*)`)
+	planContextTaskItem = regexp.MustCompile(`^([0-9]+)(?:\s*[–-]\s*([0-9]+))?$`)
 )
+
+type contextTaskRange struct {
+	first int
+	last  int
+}
+
+type contextParagraph struct {
+	text        string
+	line        int
+	labelled    bool
+	invalidTask string
+	tasks       []contextTaskRange
+}
+
+// ContextFor returns the shared decisions and the decisions addressed to task.
+func (p Plan) ContextFor(task int) string {
+	context := strings.TrimSpace(p.Context)
+	if context == "" {
+		return ""
+	}
+	paragraphs := splitContextParagraphs(context, 1)
+	hasLabels := false
+	for _, paragraph := range paragraphs {
+		if paragraph.labelled {
+			hasLabels = true
+			break
+		}
+	}
+	if !hasLabels {
+		return context
+	}
+	selected := make([]string, 0, len(paragraphs))
+	for _, paragraph := range paragraphs {
+		if !paragraph.labelled || contextTargetsTask(paragraph.tasks, task) {
+			selected = append(selected, paragraph.text)
+		}
+	}
+	return strings.Join(selected, "\n\n")
+}
+
+func splitContextParagraphs(context string, firstLine int) []contextParagraph {
+	lines := strings.Split(context, "\n")
+	paragraphs := make([]contextParagraph, 0)
+	current := make([]string, 0)
+	line := firstLine
+	fence := ""
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		text := strings.Join(current, "\n")
+		tasks, labelled, invalidTask := contextTasks(strings.SplitN(text, "\n", 2)[0])
+		paragraphs = append(paragraphs, contextParagraph{
+			text:        text,
+			line:        line,
+			labelled:    labelled,
+			invalidTask: invalidTask,
+			tasks:       tasks,
+		})
+		current = current[:0]
+	}
+	for index, value := range lines {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" && fence == "" {
+			flush()
+			continue
+		}
+		if len(current) == 0 {
+			line = firstLine + index
+		}
+		current = append(current, value)
+		switch {
+		case fence == "" && strings.HasPrefix(trimmed, "```"):
+			fence = "```"
+		case fence == "" && strings.HasPrefix(trimmed, "~~~"):
+			fence = "~~~"
+		case fence != "" && strings.HasPrefix(trimmed, fence):
+			fence = ""
+		}
+	}
+	flush()
+	return paragraphs
+}
+
+func contextTasks(line string) ([]contextTaskRange, bool, string) {
+	match := planContextTaskLine.FindStringSubmatch(line)
+	if match == nil {
+		return nil, false, ""
+	}
+	items := match[1]
+	if items == "" {
+		items = match[2]
+	}
+	ranges := make([]contextTaskRange, 0)
+	for _, item := range strings.Split(items, ",") {
+		parts := planContextTaskItem.FindStringSubmatch(strings.TrimSpace(item))
+		if parts == nil {
+			return nil, true, strings.TrimSpace(item)
+		}
+		first, err := strconv.Atoi(parts[1])
+		if err != nil {
+			return nil, true, parts[1]
+		}
+		last := first
+		if parts[2] != "" {
+			last, err = strconv.Atoi(parts[2])
+			if err != nil {
+				return nil, true, parts[2]
+			}
+		}
+		ranges = append(ranges, contextTaskRange{first: first, last: last})
+	}
+	return ranges, true, ""
+}
+
+func contextTargetsTask(ranges []contextTaskRange, task int) bool {
+	for _, item := range ranges {
+		if task >= item.first && task <= item.last {
+			return true
+		}
+	}
+	return false
+}
 
 // ParsePlan parses the machine contract of a plan (batuta-plan/SKILL.md):
 // a task is a `- [ ] N. <title> — <domain>/<complexity> → <executor/model>`
@@ -205,18 +330,20 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(payload)))
 	scanner.Buffer(make([]byte, 1024), maxTaskArtifactBytes)
 	var (
-		current   *PlanTask
-		block     strings.Builder
-		numbers   = map[int]int{}
-		lineNo    int
-		inGoal    bool
-		inFence   bool
-		inComment bool
-		inContext bool
-		context   strings.Builder
-		statusAt  int
-		pending   = map[int][]pendingDependency{}
-		flushTask = func() error {
+		current      *PlanTask
+		block        strings.Builder
+		numbers      = map[int]int{}
+		lineNo       int
+		inGoal       bool
+		inFence      bool
+		inComment    bool
+		inContext    bool
+		context      strings.Builder
+		contextAt    int
+		contextFence string
+		statusAt     int
+		pending      = map[int][]pendingDependency{}
+		flushTask    = func() error {
 			if current == nil {
 				return nil
 			}
@@ -244,6 +371,15 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 			return Plan{}, fmt.Errorf("%w: line 1: expected `# Plan — <title>`", ErrReauthoringRequired)
 		}
 		trimmed := strings.TrimSpace(line)
+		if inContext && inFence {
+			context.WriteString(line)
+			context.WriteString("\n")
+			if strings.HasPrefix(trimmed, contextFence) {
+				inFence = false
+				contextFence = ""
+			}
+			continue
+		}
 		if inComment {
 			if strings.Contains(trimmed, "-->") {
 				inComment = false
@@ -257,33 +393,37 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 			}
 			continue
 		}
+		if inContext {
+			if strings.HasPrefix(line, "## ") {
+				inContext = false
+			} else {
+				context.WriteString(line)
+				context.WriteString("\n")
+				if strings.HasPrefix(trimmed, "```") {
+					inFence = true
+					contextFence = "```"
+				} else if strings.HasPrefix(trimmed, "~~~") {
+					inFence = true
+					contextFence = "~~~"
+				}
+				continue
+			}
+		}
 		if strings.HasPrefix(line, "## ") {
 			inContext = strings.EqualFold(strings.TrimSpace(line[3:]), "Decisions and context")
 			if inContext {
 				if err := flushTask(); err != nil {
 					return Plan{}, err
 				}
+				contextAt = lineNo + 1
 				continue
 			}
 		}
-		if inContext {
-			context.WriteString(line)
-			context.WriteString("\n")
-			continue
-		}
 		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
 			inFence = !inFence
-			if inContext {
-				context.WriteString(line)
-				context.WriteString("\n")
-			}
 			continue
 		}
 		if inFence {
-			if inContext {
-				context.WriteString(line)
-				context.WriteString("\n")
-			}
 			continue
 		}
 		if planMetaLine.MatchString(line) {
@@ -394,6 +534,19 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 	if len(plan.Tasks) == 0 {
 		return Plan{}, fmt.Errorf("%w: plan has no tasks", ErrReauthoringRequired)
 	}
+	for _, paragraph := range splitContextParagraphs(context.String(), contextAt) {
+		if paragraph.invalidTask != "" {
+			return Plan{}, fmt.Errorf("%w: line %d: context label names task %s, which does not exist", ErrReauthoringRequired, paragraph.line, paragraph.invalidTask)
+		}
+		for _, taskRange := range paragraph.tasks {
+			if taskRange.first > taskRange.last {
+				return Plan{}, fmt.Errorf("%w: line %d: context task range %d–%d must be ascending", ErrReauthoringRequired, paragraph.line, taskRange.first, taskRange.last)
+			}
+			if missing, found := firstMissingContextTask(taskRange, numbers); found {
+				return Plan{}, fmt.Errorf("%w: line %d: context label names task %d, which does not exist", ErrReauthoringRequired, paragraph.line, missing)
+			}
+		}
+	}
 	for number, dependencies := range pending {
 		for _, dependency := range dependencies {
 			if _, defined := numbers[dependency.number]; !defined {
@@ -416,6 +569,27 @@ func ParsePlan(slug string, payload []byte) (Plan, error) {
 	set.Digest = snapshot.Digest
 	plan.Set = set
 	return plan, nil
+}
+
+func firstMissingContextTask(taskRange contextTaskRange, numbers map[int]int) (int, bool) {
+	defined := make([]int, 0, len(numbers))
+	for number := range numbers {
+		if number >= taskRange.first && number <= taskRange.last {
+			defined = append(defined, number)
+		}
+	}
+	slices.Sort(defined)
+	expected := taskRange.first
+	for _, number := range defined {
+		if number > expected {
+			return expected, true
+		}
+		if number == taskRange.last {
+			return 0, false
+		}
+		expected = number + 1
+	}
+	return expected, true
 }
 
 type pendingDependency struct {
