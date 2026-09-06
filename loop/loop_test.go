@@ -38,6 +38,9 @@ done
 text=$1
 state="${FAKE_STATE:-/tmp}"
 if [ "$mode" = "verify" ]; then
+  if [ "${FAKE_SCENARIO:-default}" = unsigned-config ]; then
+    git config --show-origin commit.gpgsign > "$state/verifier-git-config"
+  fi
   n=$(printf '%s\n' "$text" | grep -c '^Criterion [0-9]*:' || true)
   i=1
   while [ "$i" -le "$n" ]; do echo "TASK $i: DONE"; i=$((i+1)); done
@@ -52,6 +55,10 @@ answered=""; answered=$(printf '%s\n' "$text" | sed -n 's/^The answer: //p' | he
 echo "fake executor: task $n model $model retry $retry scenario ${FAKE_SCENARIO:-default}"
 mkdir -p out
 case "${FAKE_SCENARIO:-default}" in
+  unsigned-config)
+    git config --show-origin commit.gpgsign
+    if [ "$n" = 3 ] && [ "$retry" = 0 ]; then exit 1; fi
+    echo "ok" > out/$n.txt;;
   fail-scope)
     if [ "$n" = 2 ] && [ "$retry" = 0 ]; then echo "drive-by" > outside.txt; echo "ok" > out/2.txt; exit 0; fi
     rm -f outside.txt; echo "ok" > out/$n.txt;;
@@ -479,6 +486,35 @@ func TestLoopDeliversAThreeTaskPlanWithADependency(t *testing.T) {
 	}
 	if slugs, err := loader.ListPlans(); err != nil || len(slugs) != 0 {
 		t.Fatalf("plans after delivery = %v, %v", slugs, err)
+	}
+}
+
+func TestLoopExecutorSessionsRunUnsigned(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("unsigned-config", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+
+	executorLog, err := os.ReadFile(filepath.Join(f.root, ".batuta", "runs", "2026-09-06-greetings-task-1-e1.out.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(executorLog), "command line:\tfalse") {
+		t.Errorf("executor log does not show the command-line override:\n%s", executorLog)
+	}
+
+	verifierEvidence, err := os.ReadFile(filepath.Join(f.state, "verifier-git-config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(verifierEvidence), "command line:\tfalse") {
+		t.Fatalf("verifier evidence does not show the command-line override:\n%s", verifierEvidence)
 	}
 }
 
