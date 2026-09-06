@@ -1,0 +1,31 @@
+ batuta watch · core · phase 2    feat/roadmap @ 4c1e9f2 · ✗ blocked · 00:41:10 
+ ✗ task_2 blocked · G2 Tests failed 3/3 · escalated gpt-5.6-sol → gpt-6-astra   
+┌─ Context ────────────────────────────────────────────────────────────────────┐
+│ codex gpt-5.6-sol · medium · go test ./... · workspace-write                 │
+│ 2 sessions · 0 retries · 0 escalations · PID 99573                           │
+│ Waves  1/4  [██████░░░░░░░░░░░░░░░░░░]  25%                                  │
+│ Tasks  1/5  [█████░░░░░░░░░░░░░░░░░░░]  20%                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─ Detail ─────────────────────────────────────────────────────────────────────┐
+│ task_2 · e1/4 · Archiving a plan ticks its phase in the roadmap              │
+│ Reason  G2 tests: TestTickPhaseRewritesOnlyTheLine fails after retry and es… │
+│ Last  task_blocked · 1m                                                      │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─ Waves and tasks ────────────────────────────────────────────────────────────┐
+│ ID      Wave / Task                           Status          Try   Gates    │
+│ W1      base 838d06a → integrated 4c1e9f2     ✓ 1/1                          │
+│ task_1    Parse .batuta/roadmap.md into phas… ✓ integrated    e1/4  ✓✓✓✓     │
+│ W2      base 4c1e9f2                          ✗ 0/1                          │
+│ task_2    Archiving a plan ticks its phase i… ✗ blocked       e3/4  ✓✓✗·     │
+│ W3      after task_1                          · 0/1                          │
+│ task_3    The opened record carries roadmap … · pending             ····     │
+│ W4      after task_2, task_3                  ✗ 0/2                          │
+│ task_4    batuta loop --roadmap runs the pha… · pending             ····     │
+│ task_5    capabilities, usage and docs descr… · pending             ····     │
+└──────────────────────────────────────────────────────────────────────────────┘
+ ^ 0 · v 0 · up/down PgUp/PgDn scroll · ? · q                                   
+┌─ Recent log · task-2-e1 ─────────────────────────────────────────────────────┐
+│ FAIL  github.com/batuta-ai/core/routing   0.412s                             …
+│ gate 2 tests: fail (exit 1)                                                  │
+│ attempt e3/4 blocked: tests_failed                                           │
+└──────────────────────────────────────────────────────────────────────────────┘

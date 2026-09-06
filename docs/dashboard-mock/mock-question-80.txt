@@ -1,0 +1,31 @@
+ batuta watch · core · pha…feat/roadmap @ 4c1e9f2 · ? waiting answer · 00:14:32 
+ ? task_2 waiting answer                                                        
+┌─ Context ────────────────────────────────────────────────────────────────────┐
+│ codex gpt-5.6-sol · medium · go test ./... · workspace-write                 │
+│ 2 sessions · 0 retries · 0 escalations · PID 99573                           │
+│ Waves  1/4  [██████░░░░░░░░░░░░░░░░░░]  25%                                  │
+│ Tasks  1/5  [█████░░░░░░░░░░░░░░░░░░░]  20%                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─ Detail ─────────────────────────────────────────────────────────────────────┐
+│ task_2 · e1/4 · Archiving a plan ticks its phase in the roadmap              │
+│ waiting answer  Should TickPhase also archive the phase when every task is … │
+│ Last  question · 3m                                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─ Waves and tasks ────────────────────────────────────────────────────────────┐
+│ ID      Wave / Task                           Status          Try   Gates    │
+│ W1      base 838d06a → integrated 4c1e9f2     ✓ 1/1                          │
+│ task_1    Parse .batuta/roadmap.md into phas… ✓ integrated    e1/4  ✓✓✓✓     │
+│ W2      base 4c1e9f2                          > 0/1                          │
+│ task_2    Archiving a plan ticks its phase i… ? waiting answ… e1/4  ····     │
+│ W3      after task_1                          · 0/1                          │
+│ task_3    The opened record carries roadmap … · pending             ····     │
+│ W4      after task_2, task_3                  · 0/2                          │
+│ task_4    batuta loop --roadmap runs the pha… · pending             ····     │
+│ task_5    capabilities, usage and docs descr… · pending             ····     │
+└──────────────────────────────────────────────────────────────────────────────┘
+ ^ 0 · v 0 · up/down PgUp/PgDn scroll · ? · q                                   
+┌─ Recent log · task-2-e1 ─────────────────────────────────────────────────────┐
+│ BATUTA-PROGRESS 1 DONE                                                       │
+│ BATUTA-PROGRESS 2 START                                                      │
+│ BATUTA-QUESTION: Should TickPhase also archive the phase when every task is… │
+└──────────────────────────────────────────────────────────────────────────────┘

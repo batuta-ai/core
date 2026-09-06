@@ -1,0 +1,19 @@
+ batuta watch                   ? waiting answer · 00:14:32 
+ ? task_2 waiting answer                                    
+┌─ Progress ───────────────────────────────────────────────┐
+│ Waves  1/4  [██████░░░░░░░░░░░░░░░░░░]  25%              │
+│ task_2 · e1/4 · Archiving a plan ticks its phase in the… │
+└──────────────────────────────────────────────────────────┘
+┌─ Waves and tasks ────────────────────────────────────────┐
+│ ID      Wave / Task                Status        Gates   │
+│ W1      base 838d06a → integrated… ✓ 1/1                 │
+│ task_1    Parse .batuta/roadmap.m… ✓ integrated  ✓✓✓✓    │
+│ W2      base 4c1e9f2               > 0/1                 │
+│ task_2    Archiving a plan ticks … ? waiting an… ····    │
+│ W3      after task_1               · 0/1                 │
+│ task_3    The opened record carri… · pending     ····    │
+│ W4      after task_2, task_3       · 0/2                 │
+│ task_4    batuta loop --roadmap r… · pending     ····    │
+│ task_5    capabilities, usage and… · pending     ····    │
+└──────────────────────────────────────────────────────────┘
+ ^ 0 · v 0 · up/down PgUp/PgDn scroll · ? · q               

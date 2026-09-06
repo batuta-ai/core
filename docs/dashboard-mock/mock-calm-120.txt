@@ -1,0 +1,34 @@
+ batuta watch · roadmap-20260906-215846 · core · phase 2                  feat/roadmap @ 4c1e9f2 · > running · 00:14:32 
+ needs you: no                                                                                                          
+┌─ Context ───────────────────────────────────────────────┐ ┌─ Progress ───────────────────────────────────────────────┐
+│ codex gpt-5.6-sol · medium · go test ./... · workspace… │ │ Waves  1/4  [██████░░░░░░░░░░░░░░░░░░]  25%              │
+│ 2 sessions · 0 retries · 0 escalations · PID 99573      │ │ Tasks  1/5  [█████░░░░░░░░░░░░░░░░░░░]  20%              │
+└─────────────────────────────────────────────────────────┘ └──────────────────────────────────────────────────────────┘
+┌─ Detail ─────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ task_2 · e1/4 · Archiving a plan ticks its phase in the roadmap                                                      │
+│ Criterion  2/3 · TickPhase rewrites only the line                                                                    │
+│ Last  task_progress 2 START · 12s                                                                                    │
+│ Worktree  .batuta/worktrees/roadmap-task-2-e1                                                                        │
+│ Log  .batuta/runs/2026-09-06-roadmap-task-2-e1.out.log                                                               │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+┌─ Waves and tasks ────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ID      Wave / Task                                                   Status            Attempt Gates  Commit        │
+│ W1      base 838d06a → integrated 4c1e9f2                             ✓ 1/1                                          │
+│ task_1    Parse .batuta/roadmap.md into phases with an optional plan… ✓ integrated      e1/4    ✓✓✓✓   4c1e9f2       │
+│ W2      base 4c1e9f2                                                  > 0/1                                          │
+│ task_2    Archiving a plan ticks its phase in the roadmap             > executor        e1/4    ····                 │
+│ W3      after task_1                                                  · 0/1                                          │
+│ task_3    The opened record carries roadmap and phase                 · pending                 ····                 │
+│ W4      after task_2, task_3                                          · 0/2                                          │
+│ task_4    batuta loop --roadmap runs the phases in order, one delive… · pending                 ····                 │
+│ task_5    capabilities, usage and docs describe the roadmap           · pending                 ····                 │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+ ^ 0 above · v 0 below     up/down PgUp/PgDn scroll · f follow active · r answer · o open log · ? legend · q quit watch 
+┌─ Recent log · task-2-e1 ─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ BATUTA-PROGRESS 1 DONE                                                                                               │
+│ BATUTA-PROGRESS 2 START                                                                                              │
+│ exec: go test ./routing -run TestTickPhaseRewritesOnlyTheLine -count=1                                               │
+│ --- FAIL: TestTickPhaseRewritesOnlyTheLine (0.00s)                                                                   │
+│     roadmap_test.go:88: TickPhase() rewrote 2 lines, want 1                                                          │
+│ codex: the rewrite must keep every other byte; switching to a line-indexed replace                                   │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
