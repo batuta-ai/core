@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0-beta.14](https://github.com/batuta-ai/core/compare/v1.1.0-beta.13...v1.1.0-beta.14) (2026-09-06)
+
+
+### Bug Fixes
+
+* **loop:** executor and verifier sessions run with commit.gpgsign=false ([1ca5173](https://github.com/batuta-ai/core/commit/1ca51732f962e2cf08cecb41d5d1385c5f608cb9))
+* **loop:** executor and verifier sessions run with commit.gpgsign=false ([05b8a18](https://github.com/batuta-ai/core/commit/05b8a18cfef56f557e9443be7b695f4bff7edd76)), closes [#49](https://github.com/batuta-ai/core/issues/49)
+
 ## [1.1.0-beta.13](https://github.com/batuta-ai/core/compare/v1.1.0-beta.12...v1.1.0-beta.13) (2026-09-06)
 
 
