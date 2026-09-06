@@ -70,6 +70,57 @@ func TestParsePlanReadsTheMachineContract(t *testing.T) {
 	}
 }
 
+func TestPlanContextForKeepsSharedAndOwnParagraphs(t *testing.T) {
+	t.Parallel()
+	payload := strings.Replace(planFixture, "## Decisions and context\nFree prose for a fresh session.", `- [ ] 4. Ship the change — backend/low
+      Accept: the change ships
+
+## Decisions and context
+Shared decision.
+
+**Task 1.** Only task one reads this.
+
+**Tasks 2–3.** Only tasks two and three read this.
+
+`+"```text"+`
+~~~ is content inside a backtick fence
+## Heading inside the fence
+
+shared fenced block
+`+"```"+``, 1)
+	plan, err := ParsePlan("checkout-hardening", []byte(payload))
+	if err != nil {
+		t.Fatalf("ParsePlan() error = %v", err)
+	}
+
+	shared := "Shared decision.\n\n```text\n~~~ is content inside a backtick fence\n## Heading inside the fence\n\nshared fenced block\n```"
+	for _, tc := range []struct {
+		task int
+		want string
+	}{
+		{task: 1, want: "Shared decision.\n\n**Task 1.** Only task one reads this.\n\n```text\n~~~ is content inside a backtick fence\n## Heading inside the fence\n\nshared fenced block\n```"},
+		{task: 2, want: "Shared decision.\n\n**Tasks 2–3.** Only tasks two and three read this.\n\n```text\n~~~ is content inside a backtick fence\n## Heading inside the fence\n\nshared fenced block\n```"},
+		{task: 4, want: shared},
+	} {
+		if got := plan.ContextFor(tc.task); got != tc.want {
+			t.Errorf("ContextFor(%d) = %q, want %q", tc.task, got, tc.want)
+		}
+	}
+}
+
+func TestParsePlanRejectsContextLabelsForUnknownTasks(t *testing.T) {
+	t.Parallel()
+	for _, task := range []string{"9", "999999999999999999999999999999999999"} {
+		marker := "**Task " + task + ".**"
+		payload := strings.Replace(planFixture, "Free prose for a fresh session.", "Free prose for a fresh session.\n\n"+marker+" This task does not exist.", 1)
+		line := strings.Count(payload[:strings.Index(payload, marker)], "\n") + 1
+		_, err := ParsePlan("checkout-hardening", []byte(payload))
+		if !errors.Is(err, ErrReauthoringRequired) || !strings.Contains(err.Error(), fmt.Sprintf("line %d", line)) || !strings.Contains(err.Error(), "task "+task) {
+			t.Errorf("error = %v, want ErrReauthoringRequired naming line %d and task %s", err, line, task)
+		}
+	}
+}
+
 func TestParsePlanRejectsBrokenContractsWithTheLine(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct {

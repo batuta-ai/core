@@ -26,3 +26,5 @@
 - [x] capabilities advertises gate; usage and docs list the five gates → codex (gpt-5.6-sol), commit 0bb2875be6a1 (trail: .batuta/runs/2026-09-06-followups-task-8.md, plan followups, 2026-09-06)
 - [x] Plans live under .batuta/plans and move to .batuta/plans/done when finished → codex (gpt-6-astra), commit 5b31c5f31c3d (trail: .batuta/runs/2026-09-06-followups-task-9.md, plan followups, 2026-09-06)
 - [x] loop aceita .batuta/plans/<slug>.md como argumento (lacuna da task 9) → codex (codex/gpt-5.4-mini), primeira tentativa, commit 45c9c09 em feat/followups
+- [x] executor and verifier sessions run with commit.gpgsign=false (core #49) → codex (codex/gpt-5.6-sol), primeira tentativa, commit 05b8a18 em fix/unsigned-executors (trail: .batuta/runs/2026-09-06-unsigned-executors.md)
+- [x] per-task blocks in a plan Decisions and context (core #53) → codex (codex/gpt-5.6-sol), primeira tentativa, commit db8031a em feat/task-decisions (trail: .batuta/runs/2026-09-06-task-decisions.md)

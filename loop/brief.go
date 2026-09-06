@@ -48,8 +48,8 @@ func Brief(input BriefInput) string {
 	b.WriteString("\n\n")
 
 	b.WriteString("## Context\n\n")
-	if strings.TrimSpace(input.Plan.Context) != "" {
-		b.WriteString(strings.TrimSpace(input.Plan.Context) + "\n\n")
+	if context := input.Plan.ContextFor(task.Number); context != "" {
+		b.WriteString(context + "\n\n")
 	} else {
 		b.WriteString("Unknown — the plan carries no decisions and context section; discover what you need inside the Scope.\n\n")
 	}
