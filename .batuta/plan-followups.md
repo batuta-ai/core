@@ -2,39 +2,39 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** Close the small core issues the dogfood run opened and finish `batuta gate` for the interactive skill: fixtures that neither race nor depend on the user's git config (#37, #39, #43), a doctor that names managed state (#35), the four remaining gate subcommands plus `gate` in `capabilities` (#29), and plans kept apart from finished plans (#41).
-**Created:** 2026-09-06 · **Status:** approved
+**Created:** 2026-09-06 · **Status:** done
 
 ## Tasks
-- [ ] 1. Git fixtures ignore background maintenance and the user's config — testing/low → codex/gpt-5.4-mini
+- [x] 1. Git fixtures ignore background maintenance and the user's config — testing/low → codex/gpt-5.4-mini
       Scope: loop/loop_test.go, worktree/git_test.go, integration/git_test.go, publication/git_test.go, repository/bootstrap_test.go, cmd/batuta/main_test.go, cmd/batuta/gate_test.go
       Accept: every test fixture that runs git init also sets gc.auto 0, gc.autoDetach false, maintenance.auto false, commit.gpgsign false, user.name and user.email → grep -q 'gc.autoDetach' loop/loop_test.go && grep -q 'gc.autoDetach' worktree/git_test.go && grep -q 'gc.autoDetach' integration/git_test.go && grep -q 'gc.autoDetach' cmd/batuta/gate_test.go; the suite passes with a global config that signs commits through a gpg program that always fails → printf '[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = /usr/bin/false\n' > /private/tmp/batuta-followups-gpg.gitconfig && GIT_CONFIG_GLOBAL=/private/tmp/batuta-followups-gpg.gitconfig go test ./loop ./worktree ./integration ./publication ./repository ./cmd/batuta; the suite passes unchanged otherwise → go test ./...
-- [ ] 2. The loop test fixture's clock is goroutine-safe — testing/low → codex/gpt-5.4-mini
+- [x] 2. The loop test fixture's clock is goroutine-safe — testing/low → codex/gpt-5.4-mini
       Depends on: 1
       Scope: loop/loop_test.go
       Accept: the race detector is clean on the tests that run parallel attempts → go test -race ./loop -run 'TestLoopDeliversAThreeTaskPlanWithADependency|TestLoopJournalsProgressWhileTheExecutorRuns|TestLoopReexecutesAConflictingCandidateOnTheNewBase'; the loop suite passes → go test ./loop
-- [ ] 3. doctor tells managed state apart from a dirty tree — backend/medium → codex/gpt-5.6-sol
+- [x] 3. doctor tells managed state apart from a dirty tree — backend/medium → codex/gpt-5.6-sol
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: a tree whose only changes are WORK.md and .batuta/ files reports git_state managed and prints the managed-state line → go test ./cmd/batuta -run TestInspectGitTellsManagedStateApart; clean and dirty trees keep their lines and git_clean keeps its meaning → go test ./cmd/batuta -run 'TestInspectGit|TestDoctor'; whole package → go test ./cmd/batuta
-- [ ] 4. batuta gate tests runs the test command and prints its verdict — backend/medium → codex/gpt-5.6-sol
+- [x] 4. batuta gate tests runs the test command and prints its verdict — backend/medium → codex/gpt-5.6-sol
       Scope: cmd/batuta/gate.go, cmd/batuta/gate_test.go
       Accept: gate tests --command with a passing command prints the verdict JSON and exits 0, a failing command prints pass false with the output tail and exits 2, a missing --command exits 1 with nothing on stdout → go test ./cmd/batuta -run TestGateTests; --timeout bounds the command → go test ./cmd/batuta -run TestGateTestsTimeout; package → go test ./cmd/batuta
-- [ ] 5. batuta gate scope compares changed paths against a Scope list — backend/medium → codex/gpt-5.6-sol
+- [x] 5. batuta gate scope compares changed paths against a Scope list — backend/medium → codex/gpt-5.6-sol
       Depends on: 4
       Scope: cmd/batuta/gate.go, cmd/batuta/gate_test.go
       Accept: gate scope --base <ref> --scope <a,b> prints pass, outside and managed and exits 0 when every change is inside, 2 when a path is outside → go test ./cmd/batuta -run TestGateScope; a base given as a ref name is resolved and an unknown ref exits 1 → go test ./cmd/batuta -run TestGateScopeResolvesRefs; package → go test ./cmd/batuta
-- [ ] 6. batuta gate proofs runs one proof per criterion — backend/medium → codex/gpt-5.6-sol
+- [x] 6. batuta gate proofs runs one proof per criterion — backend/medium → codex/gpt-5.6-sol
       Depends on: 5
       Scope: cmd/batuta/gate.go, cmd/batuta/gate_test.go
       Accept: gate proofs --accept with two criteria prints one verdict per criterion and exits 0 when both pass, 2 when one fails, and a criterion without an arrow is reported as left to the verifier → go test ./cmd/batuta -run TestGateProofs; package → go test ./cmd/batuta
-- [ ] 7. batuta gate verifier parses TASK lines from stdin — backend/medium → codex/gpt-5.6-sol
+- [x] 7. batuta gate verifier parses TASK lines from stdin — backend/medium → codex/gpt-5.6-sol
       Depends on: 6
       Scope: cmd/batuta/gate.go, cmd/batuta/gate_test.go
       Accept: gate verifier --criteria 2 reading stdin prints the verdict and exits 0 for two DONE lines, 2 for an INCOMPLETE or a missing line, and honours --proofs so an environment objection on a passing proof is set aside → go test ./cmd/batuta -run TestGateVerifier; package → go test ./cmd/batuta
-- [ ] 8. capabilities advertises gate; usage and docs list the five gates — backend/medium → codex/gpt-5.6-sol
+- [x] 8. capabilities advertises gate; usage and docs list the five gates — backend/medium → codex/gpt-5.6-sol
       Depends on: 7
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, cmd/batuta/gate_test.go, docs/loop.md
       Accept: capabilities lists gate → go run ./cmd/batuta capabilities | grep -q '"gate"'; the usage text names the five gate forms → test "$(go run ./cmd/batuta help | grep -c 'batuta gate')" -ge 5; docs/loop.md describes the gate subcommands and no longer lists them under Not in this release → grep -q 'batuta gate tests' docs/loop.md && test "$(grep -c 'Not in this release' docs/loop.md)" -le 1; package and suite → go test ./cmd/batuta && go test ./...
-- [ ] 9. Plans live under .batuta/plans and move to .batuta/plans/done when finished — backend/high → codex/gpt-6-astra
+- [x] 9. Plans live under .batuta/plans and move to .batuta/plans/done when finished — backend/high → codex/gpt-6-astra
       Depends on: 8
       Scope: routing/plan.go, routing/plan_test.go, loop/runner.go, loop/report.go, loop/loop_test.go, docs/loop.md
       Accept: a plan at .batuta/plans/<slug>.md loads and lists, and a legacy .batuta/plan-<slug>.md still loads and lists → go test ./routing -run TestPlanLoaderReadsBothLocations; a finished delivery moves its plan file into .batuta/plans/done and the bookkeeping commit carries the move → go test ./loop -run TestLoopMovesAFinishedPlanIntoDone; every existing loop scenario still passes with a plan in the new location → go test ./loop; whole suite → go test ./...
