@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0-beta.16](https://github.com/batuta-ai/core/compare/v1.1.0-beta.15...v1.1.0-beta.16) (2026-09-06)
+
+
+### Bug Fixes
+
+* **routing:** a conflicting candidate re-executes on the same runtime ([88e5f93](https://github.com/batuta-ai/core/commit/88e5f9390efce01974c5161b87078a578993ca93))
+* **routing:** a conflicting candidate re-executes on the same runtime ([b90a737](https://github.com/batuta-ai/core/commit/b90a737bfa16824300a51638a5b19fd0c869b224)), closes [#18](https://github.com/batuta-ai/core/issues/18)
+
 ## [1.1.0-beta.15](https://github.com/batuta-ai/core/compare/v1.1.0-beta.14...v1.1.0-beta.15) (2026-09-06)
 
 
