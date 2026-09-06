@@ -99,6 +99,114 @@ func TestGateTestsTimeout(t *testing.T) {
 	}
 }
 
+func TestGateScope(t *testing.T) {
+	git := mustGit(t)
+	tests := []struct {
+		name       string
+		prepare    func(t *testing.T, repo string)
+		scope      string
+		wantOutput string
+		wantCode   int
+	}{
+		{
+			name: "inside scope with managed state",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(repo, "cmd", "batuta"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				for path, content := range map[string]string{
+					"cmd/batuta/gate.go": "package main\n",
+					"WORK.md":            "managed\n",
+				} {
+					if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(path)), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+			scope:      "cmd/batuta/gate.go, docs",
+			wantOutput: `{"name":"scope","pass":true,"signal":"within Scope; managed state also touched: WORK.md","outside":[],"managed":["WORK.md"]}` + "\n",
+		},
+		{
+			name: "outside scope",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "outside.txt"), []byte("outside\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			scope:      "cmd/batuta",
+			wantOutput: `{"name":"scope","pass":false,"signal":"1 path(s) outside Scope","outside":["outside.txt"],"managed":[]}` + "\n",
+			wantCode:   2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := committedGitRepository(t, git)
+			base := strings.TrimSpace(runGit(t, git, repo, "rev-parse", "HEAD"))
+			tt.prepare(t, repo)
+
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"gate", "scope", "--base", base, "--scope", tt.scope, "--dir", repo}, &stdout, &stderr)
+			if tt.wantCode == 0 && err != nil {
+				t.Fatalf("gate scope error = %v; stderr = %q", err, stderr.String())
+			}
+			if tt.wantCode == 2 {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != "scope failed" {
+					t.Fatalf("gate scope error = %v, want scope failed exit 2", err)
+				}
+			}
+			if got := stdout.String(); got != tt.wantOutput {
+				t.Fatalf("gate scope stdout = %q, want %q", got, tt.wantOutput)
+			}
+		})
+	}
+}
+
+func TestGateScopeResolvesRefs(t *testing.T) {
+	git := mustGit(t)
+	repo := committedGitRepository(t, git)
+	runGit(t, git, repo, "tag", "scope-base")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"gate", "scope", "--base", "scope-base", "--scope", "tracked.txt", "--dir", repo}, &stdout, &stderr); err != nil {
+		t.Fatalf("gate scope with ref error = %v; stderr = %q", err, stderr.String())
+	}
+	want := `{"name":"scope","pass":true,"signal":"within Scope","outside":[],"managed":[]}` + "\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("gate scope with ref stdout = %q, want %q", got, want)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	err := run([]string{"gate", "scope", "--base", "unknown-ref", "--scope", "tracked.txt", "--dir", repo}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("gate scope with unknown ref succeeded, want runtime error")
+	}
+	var exit *ExitError
+	if errors.As(err, &exit) {
+		t.Fatalf("gate scope with unknown ref error = %v, want ordinary exit 1 error", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("gate scope with unknown ref stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestGateScopeRequiresScopeFlag(t *testing.T) {
+	repo := committedGitRepository(t, mustGit(t))
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"gate", "scope", "--base", "HEAD", "--dir", repo}, &stdout, &stderr); err == nil {
+		t.Fatal("gate scope without --scope succeeded, want usage error")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("gate scope without --scope stdout = %q, want empty", stdout.String())
+	}
+}
+
 func mustGit(t *testing.T) string {
 	t.Helper()
 	git, err := exec.LookPath("git")
@@ -257,4 +365,13 @@ func committedGitRepository(t *testing.T, git string) string {
 		}
 	}
 	return repo
+}
+
+func runGit(t *testing.T, git, repo string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command(git, append([]string{"-C", repo}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
 }
