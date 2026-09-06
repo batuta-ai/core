@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,8 +32,13 @@ type ProgressEvent struct {
 }
 
 type progressObserver struct {
-	pending  []byte
-	events   *[]ProgressEvent
+	pending []byte
+	sink    *progressSink
+}
+
+type progressSink struct {
+	mu       sync.Mutex
+	events   []ProgressEvent
 	callback func(ProgressEvent)
 }
 
@@ -63,9 +69,16 @@ func (o *progressObserver) parse(line string) {
 	if !ok {
 		return
 	}
+	o.sink.emit(criterion, state)
+}
+
+func (s *progressSink) emit(criterion int, state string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	event := ProgressEvent{Criterion: criterion, State: state, At: time.Now()}
-	*o.events = append(*o.events, event)
-	if o.callback != nil {
-		o.callback(event)
+	s.events = append(s.events, event)
+	if s.callback != nil {
+		s.callback(event)
 	}
 }

@@ -66,18 +66,20 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 	}
 	defer cancel()
 	started := time.Now()
-	var progress []ProgressEvent
-	observer := &progressObserver{events: &progress, callback: s.Progress}
+	sink := &progressSink{callback: s.Progress}
+	stdoutObserver := &progressObserver{sink: sink}
+	stderrObserver := &progressObserver{sink: sink}
 	raw, runErr := s.Runner.Run(runCtx, publication.Command{
 		Executable: executable, Args: invocation.Args, Directory: invocation.Dir,
 		Environment: s.Environment, StdoutLimit: outputLimit, StderrLimit: outputLimit,
-		Observer: observer,
+		Observer: stdoutObserver, StderrObserver: stderrObserver,
 	})
-	observer.flush()
+	stdoutObserver.flush()
+	stderrObserver.flush()
 	result := Result{
 		ExitCode: raw.ExitCode, Stdout: raw.Stdout, Stderr: raw.Stderr,
 		Truncated: raw.StdoutTruncated || raw.StderrTruncated, Duration: time.Since(started),
-		Progress: progress,
+		Progress: sink.events,
 	}
 	if runErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {

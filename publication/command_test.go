@@ -39,6 +39,29 @@ func TestExecRunnerTeesStdoutToObserver(t *testing.T) {
 	}
 }
 
+func TestExecRunnerTeesStderrToObserver(t *testing.T) {
+	t.Parallel()
+
+	var observer bytes.Buffer
+	command := helperCommand(t, tempDir(t), "stderr-observer-output")
+	command.StderrObserver = &observer
+	command.StderrLimit = 8
+
+	result, err := (ExecRunner{}).Run(context.Background(), command)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got, want := observer.String(), "first second third"; got != want {
+		t.Fatalf("stderr observer output = %q, want %q", got, want)
+	}
+	if got, want := string(result.Stderr), "first se"; got != want {
+		t.Fatalf("stderr = %q, want bounded output %q", got, want)
+	}
+	if !result.StderrTruncated {
+		t.Fatal("stderr truncated = false, want true")
+	}
+}
+
 func TestExecRunnerUsesExactExecutableArgvAndDirectory(t *testing.T) {
 	t.Parallel()
 
@@ -279,6 +302,8 @@ func TestExecRunnerHelper(t *testing.T) {
 		fmt.Fprintf(os.Stdout, "%s%s", payload, os.Getenv("BATUTA_TEST_VALUE"))
 	case "observer-output":
 		fmt.Fprint(os.Stdout, "first second third")
+	case "stderr-observer-output":
+		fmt.Fprint(os.Stderr, "first second third")
 	default:
 		fmt.Fprintf(os.Stderr, "unknown helper action %q\n", os.Args[marker+1])
 		os.Exit(2)

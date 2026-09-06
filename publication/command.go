@@ -18,14 +18,15 @@ const (
 )
 
 type Command struct {
-	Executable  string
-	Args        []string
-	Directory   string
-	Stdin       []byte
-	Environment []string
-	Observer    io.Writer
-	StdoutLimit int64
-	StderrLimit int64
+	Executable     string
+	Args           []string
+	Directory      string
+	Stdin          []byte
+	Environment    []string
+	Observer       io.Writer
+	StderrObserver io.Writer
+	StdoutLimit    int64
+	StderrLimit    int64
 }
 
 type CommandResult struct {
@@ -76,6 +77,9 @@ func (ExecRunner) Run(ctx context.Context, command Command) (CommandResult, erro
 		cmd.Stdout = io.MultiWriter(stdout, command.Observer)
 	}
 	cmd.Stderr = stderr
+	if command.StderrObserver != nil {
+		cmd.Stderr = io.MultiWriter(stderr, command.StderrObserver)
+	}
 	configureProcess(cmd)
 
 	err := cmd.Run()

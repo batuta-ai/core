@@ -2,11 +2,15 @@ package executor
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/batuta-ai/core/publication"
 )
 
 func TestParseProgress(t *testing.T) {
@@ -44,7 +48,7 @@ func TestParseProgress(t *testing.T) {
 	}
 }
 
-func TestSubprocessStreamsProgressEvents(t *testing.T) {
+func TestSubprocessStreamsProgressEventsFromBothStreams(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell fixture")
@@ -56,8 +60,8 @@ func TestSubprocessStreamsProgressEvents(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"echo 'BATUTA-PROGRESS 1 START'\n" +
 		"while [ ! -e \"$BATUTA_PROGRESS_RELEASE\" ]; do :; done\n" +
-		"echo 'ordinary output'\n" +
-		"printf 'BATUTA-PROGRESS 1 DONE'\n"
+		"printf 'BATUTA-PROGRESS 1 ' >&2\n" +
+		"printf 'DONE' >&2\n"
 	if err := os.WriteFile(executable, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -95,6 +99,49 @@ func TestSubprocessStreamsProgressEvents(t *testing.T) {
 			t.Errorf("callback event %d = %#v, result event = %#v", index, observed[index], result.Progress[index])
 		}
 	}
+}
+
+func TestSubprocessSerializesProgressFromBothStreams(t *testing.T) {
+	t.Parallel()
+
+	const eventsPerStream = 100
+	observed := 0
+	subprocess := Subprocess{
+		Runner: concurrentProgressRunner{eventsPerStream: eventsPerStream},
+		Progress: func(ProgressEvent) {
+			observed++
+		},
+	}
+
+	result, err := subprocess.Execute(context.Background(), Adapter{}, Invocation{Executable: "/progress-helper"}, 0)
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got, want := observed, 2*eventsPerStream; got != want {
+		t.Fatalf("callback events = %d, want %d", got, want)
+	}
+	if got, want := len(result.Progress), 2*eventsPerStream; got != want {
+		t.Fatalf("result progress events = %d, want %d", got, want)
+	}
+}
+
+type concurrentProgressRunner struct {
+	eventsPerStream int
+}
+
+func (r concurrentProgressRunner) Run(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+	var wait sync.WaitGroup
+	for _, observer := range []interface{ Write([]byte) (int, error) }{command.Observer, command.StderrObserver} {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			for criterion := 1; criterion <= r.eventsPerStream; criterion++ {
+				_, _ = fmt.Fprintf(observer, "BATUTA-PROGRESS %d START\n", criterion)
+			}
+		}()
+	}
+	wait.Wait()
+	return publication.CommandResult{}, nil
 }
 
 func assertProgressEvents(t *testing.T, got, want []ProgressEvent) {
