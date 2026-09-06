@@ -366,7 +366,7 @@ func Proofs(ctx context.Context, shell ShellRunner, dir string, criteria []Crite
 }
 
 // VerifierPrompt is the read-only verifier's brief: one line per criterion.
-func VerifierPrompt(taskTitle string, criteria []Criterion, base string) string {
+func VerifierPrompt(taskTitle string, criteria []Criterion, proofs []Verdict, base string) string {
 	var b strings.Builder
 	b.WriteString("You are an independent read-only verifier. Do not create, edit or delete any file. ")
 	b.WriteString("Do not run commands that change state: no git writes, no package managers, no mv, rm, > or >>. ")
@@ -378,6 +378,7 @@ func VerifierPrompt(taskTitle string, criteria []Criterion, base string) string 
 	b.WriteString("\nFor each criterion below, check it against the current tree and print exactly one line, in order, and nothing else after them:\n")
 	b.WriteString("  TASK <n>: DONE\n  TASK <n>: INCOMPLETE — <what is missing>\n\n")
 	b.WriteString("Rules: one TASK line per criterion, no grouping, no other text after them. Missing code, a TODO, a placeholder or a missing test is INCOMPLETE. In doubt, INCOMPLETE.\n")
+	b.WriteString("A criterion whose proof passed is INCOMPLETE only for something you can point at in the diff: missing code, a placeholder, a test that does not test the criterion. Never because a command could not run in your environment; the conductor already ran the proof.\n")
 	b.WriteString("You run headless: the process ends when this turn ends. Never start anything in the background or wait for a notification. ")
 	b.WriteString("Run only quick synchronous commands (grep, ls, a single test file); never the whole suite — judge suite-level criteria by the tests that exist and their content. ")
 	b.WriteString("Printing the TASK lines is the last thing you do and it is mandatory; a turn without them fails the task even when the code is right.\n\n")
@@ -386,17 +387,26 @@ func VerifierPrompt(taskTitle string, criteria []Criterion, base string) string 
 		if criterion.Proof != "" {
 			b.WriteString(" (proof: `" + criterion.Proof + "`)")
 		}
+		switch {
+		case criterion.Proof == "" || index >= len(proofs):
+			b.WriteString(" — no proof; judge it by reading")
+		case proofs[index].Pass:
+			b.WriteString(" — proof run by the conductor: passed")
+		default:
+			b.WriteString(" — proof run by the conductor: failed")
+		}
 		b.WriteString("\n")
 	}
 	return b.String()
 }
 
 var verifierLine = regexp.MustCompile(`(?m)^\s*TASK\s+([0-9]+)\s*:\s*(DONE|INCOMPLETE)\b\s*(?:[—:-]+\s*(.*))?$`)
+var verifierEnvironmentObjection = regexp.MustCompile(`(?i)sandbox|could not run|cannot run|unable to run|not permitted|permission|unverified|could not verify|cannot verify|unable to verify|not verified|no network`)
 
 // Verifier parses the read-only verifier's answer: exactly one line per
 // criterion, every one DONE. Zero lines, a wrong count or any INCOMPLETE
 // fails; the missing pieces go into the detail.
-func Verifier(output string, criteria int) Verdict {
+func Verifier(output string, criteria int, proofs []Verdict) Verdict {
 	verdict := Verdict{Name: "verifier", Pass: false}
 	matches := verifierLine.FindAllStringSubmatch(output, -1)
 	if len(matches) == 0 {
@@ -406,6 +416,7 @@ func Verifier(output string, criteria int) Verdict {
 	}
 	seen := map[int]bool{}
 	var incomplete []string
+	var environmentObjections []string
 	for _, match := range matches {
 		number, _ := strconv.Atoi(match[1])
 		seen[number] = true
@@ -413,6 +424,10 @@ func Verifier(output string, criteria int) Verdict {
 			what := strings.TrimSpace(match[3])
 			if what == "" {
 				what = "no detail given"
+			}
+			if number > 0 && number <= len(proofs) && proofs[number-1].Pass && verifierEnvironmentObjection.MatchString(what) {
+				environmentObjections = append(environmentObjections, fmt.Sprintf("criterion %d: environment objection set aside, its proof passed — %s", number, what))
+				continue
 			}
 			incomplete = append(incomplete, fmt.Sprintf("TASK %d: INCOMPLETE — %s", number, what))
 		}
@@ -431,11 +446,15 @@ func Verifier(output string, criteria int) Verdict {
 	}
 	if len(incomplete) > 0 {
 		verdict.Signal = fmt.Sprintf("%d criterion(s) INCOMPLETE", len(incomplete))
-		verdict.Detail = strings.Join(incomplete, "\n")
+		verdict.Detail = strings.Join(append(incomplete, environmentObjections...), "\n")
 		return verdict
 	}
 	verdict.Pass = true
 	verdict.Signal = fmt.Sprintf("%d/%d DONE", criteria, criteria)
+	if len(environmentObjections) > 0 {
+		verdict.Signal += fmt.Sprintf(" (%d environment objection(s) set aside)", len(environmentObjections))
+		verdict.Detail = strings.Join(environmentObjections, "\n")
+	}
 	return verdict
 }
 

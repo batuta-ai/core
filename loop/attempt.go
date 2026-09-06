@@ -201,7 +201,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		report.Scope = gates.Scope(changed, ac.plan.Scope)
 		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
 		if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution) && len(criteria) > 0 {
-			verdict := r.verify(ctx, ac, criteria)
+			verdict := r.verify(ctx, ac, criteria, report.Proofs)
 			report.Verifier = &verdict
 		}
 	} else if silent && report.Finished.Pass {
@@ -212,7 +212,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "nothing changed"}
 		if len(criteria) > 0 {
-			verdict := r.verify(ctx, ac, criteria)
+			verdict := r.verify(ctx, ac, criteria, report.Proofs)
 			report.Verifier = &verdict
 			if verdict.Pass && report.Tests.Pass {
 				report.Passed = true
@@ -337,7 +337,7 @@ func (r *Runner) attach(ac *attemptContext, wt attemptWorktree) error {
 // verify dispatches the independent read-only verifier: the `low` row's
 // executor when it differs from the one that wrote the diff, else the
 // task's own adapter on the task's model.
-func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates.Criterion) gates.Verdict {
+func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates.Criterion, proofs []gates.Verdict) gates.Verdict {
 	name, model := ac.adapter.Name, ac.runtime.Model
 	if row, found := r.table.Row(routing.ComplexityLow, ac.plan.Domain); found && row.Executor != routing.ExecutorSelf && string(row.Executor) != ac.adapter.Name {
 		if _, err := r.adapterLocked(string(row.Executor)); err == nil {
@@ -348,7 +348,7 @@ func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates
 	if err != nil {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "no verifier adapter: " + err.Error()}
 	}
-	prompt := gates.VerifierPrompt(ac.plan.Title, criteria, ac.base)
+	prompt := gates.VerifierPrompt(ac.plan.Title, criteria, proofs, ac.base)
 	invocation, err := adapter.ReadonlyCommand(executor.Request{Prompt: prompt, Cwd: ac.worktree.Root, Model: model})
 	if err != nil {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier invocation: " + err.Error()}
@@ -365,7 +365,7 @@ func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates
 	if err == nil && before != after {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: executor.Tail(result.Stdout, 10)}
 	}
-	verdict := gates.Verifier(string(result.Stdout), len(criteria))
+	verdict := gates.Verifier(string(result.Stdout), len(criteria), proofs)
 	verdict.Signal = name + "/" + model + ": " + verdict.Signal
 	return verdict
 }
