@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.9](https://github.com/batuta-ai/core/compare/v1.1.0-beta.8...v1.1.0-beta.9) (2026-09-06)
+
+
+### Bug Fixes
+
+* **release:** build the batuta binary on windows again ([#32](https://github.com/batuta-ai/core/issues/32)) ([29d3422](https://github.com/batuta-ai/core/commit/29d34222e479ba948d86632bb8323326b2504b02))
+
 ## [1.1.0-beta.8](https://github.com/batuta-ai/core/compare/v1.1.0-beta.7...v1.1.0-beta.8) (2026-09-06)
 
 
