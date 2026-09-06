@@ -167,6 +167,89 @@ func TestGateProofs(t *testing.T) {
 	}
 }
 
+func TestGateVerifier(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		proofs     string
+		wantOutput string
+		wantCode   int
+	}{
+		{
+			name:       "all criteria done",
+			input:      "TASK 1: DONE\nTASK 2: DONE\n",
+			wantOutput: `{"name":"verifier","pass":true,"signal":"2/2 DONE"}` + "\n",
+		},
+		{
+			name:       "criterion incomplete",
+			input:      "TASK 1: DONE\nTASK 2: INCOMPLETE — missing test\n",
+			wantOutput: `{"name":"verifier","pass":false,"signal":"1 criterion(s) INCOMPLETE","detail":"TASK 2: INCOMPLETE — missing test"}` + "\n",
+			wantCode:   2,
+		},
+		{
+			name:       "criterion missing",
+			input:      "TASK 1: DONE\n",
+			wantOutput: `{"name":"verifier","pass":false,"signal":"the verifier answered 1 of 2 criteria","detail":"TASK 1: DONE"}` + "\n",
+			wantCode:   2,
+		},
+		{
+			name:       "passing proof sets aside environment objection",
+			input:      "TASK 1: DONE\nTASK 2: INCOMPLETE — sandbox prevented verification\n",
+			proofs:     `[{"name":"proof 1","pass":true},{"name":"proof 2","pass":true}]`,
+			wantOutput: `{"name":"verifier","pass":true,"signal":"2/2 DONE (1 environment objection(s) set aside)","detail":"criterion 2: environment objection set aside, its proof passed — sandbox prevented verification"}` + "\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalStdin := stdin
+			stdin = strings.NewReader(tt.input)
+			t.Cleanup(func() { stdin = originalStdin })
+
+			args := []string{"gate", "verifier", "--criteria", "2"}
+			if tt.proofs != "" {
+				args = append(args, "--proofs", tt.proofs)
+			}
+			var stdout, stderr bytes.Buffer
+			err := run(args, &stdout, &stderr)
+			if tt.wantCode == 0 && err != nil {
+				t.Fatalf("run(%v) error = %v; stderr = %q", args, err, stderr.String())
+			}
+			if tt.wantCode == 2 {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != "verifier failed" {
+					t.Fatalf("run(%v) error = %v, want verifier failed exit 2", args, err)
+				}
+			}
+			if got := stdout.String(); got != tt.wantOutput {
+				t.Fatalf("run(%v) stdout = %q, want %q", args, got, tt.wantOutput)
+			}
+		})
+	}
+}
+
+func TestGateVerifierRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "missing criteria", args: []string{"gate", "verifier"}},
+		{name: "zero criteria", args: []string{"gate", "verifier", "--criteria", "0"}},
+		{name: "malformed proofs", args: []string{"gate", "verifier", "--criteria", "2", "--proofs", "["}},
+		{name: "positional argument", args: []string{"gate", "verifier", "--criteria", "2", "output.txt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(tt.args, &stdout, &stderr); err == nil {
+				t.Fatalf("run(%v) succeeded, want usage error", tt.args)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("run(%v) stdout = %q, want empty", tt.args, stdout.String())
+			}
+		})
+	}
+}
+
 func TestGateScope(t *testing.T) {
 	git := mustGit(t)
 	tests := []struct {

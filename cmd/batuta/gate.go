@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -16,9 +17,11 @@ import (
 	"github.com/batuta-ai/core/worktree"
 )
 
+var stdin io.Reader = os.Stdin
+
 func runGate(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("a gate name is required; available gates: proofs, scope, tests, tree")
+		return errors.New("a gate name is required; available gates: proofs, scope, tests, tree, verifier")
 	}
 	switch args[0] {
 	case "proofs":
@@ -29,8 +32,10 @@ func runGate(args []string, stdout io.Writer) error {
 		return runGateTests(args[1:], stdout)
 	case "tree":
 		return runGateTree(args[1:], stdout)
+	case "verifier":
+		return runGateVerifier(args[1:], stdout)
 	default:
-		return fmt.Errorf("unknown gate %q; available gates: proofs, scope, tests, tree", args[0])
+		return fmt.Errorf("unknown gate %q; available gates: proofs, scope, tests, tree, verifier", args[0])
 	}
 }
 
@@ -176,6 +181,44 @@ func runGateTests(args []string, stdout io.Writer) error {
 	}
 	if !verdict.Pass {
 		return &ExitError{Code: 2, State: "tests failed"}
+	}
+	return nil
+}
+
+func runGateVerifier(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("gate verifier", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	criteria := flags.Int("criteria", 0, "number of acceptance criteria")
+	proofsJSON := flags.String("proofs", "", "JSON array of proof verdicts")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *criteria < 1 {
+		return errors.New("usage: batuta gate verifier --criteria <n> [--proofs '<json array of gates.Verdict>'] < output")
+	}
+
+	var proofs []gates.Verdict
+	proofsSet := false
+	flags.Visit(func(current *flag.Flag) {
+		if current.Name == "proofs" {
+			proofsSet = true
+		}
+	})
+	if proofsSet {
+		if err := json.Unmarshal([]byte(*proofsJSON), &proofs); err != nil {
+			return fmt.Errorf("invalid --proofs JSON: %w", err)
+		}
+	}
+	output, err := io.ReadAll(stdin)
+	if err != nil {
+		return fmt.Errorf("read verifier output: %w", err)
+	}
+	verdict := gates.Verifier(string(output), *criteria, proofs)
+	if err := json.NewEncoder(stdout).Encode(verdict); err != nil {
+		return err
+	}
+	if !verdict.Pass {
+		return &ExitError{Code: 2, State: "verifier failed"}
 	}
 	return nil
 }
