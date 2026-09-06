@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0-beta.13](https://github.com/batuta-ai/core/compare/v1.1.0-beta.12...v1.1.0-beta.13) (2026-09-06)
+
+
+### Features
+
+* batuta gate proofs runs one proof per criterion ([848fc5b](https://github.com/batuta-ai/core/commit/848fc5bb0fe1a9e65c26806be10371df220f0268))
+* batuta gate scope compares changed paths against a Scope list ([d8e0db0](https://github.com/batuta-ai/core/commit/d8e0db0335ad25b5d6bff4439f21f1d753d550f8))
+* batuta gate tests runs the test command and prints its verdict ([7211ccd](https://github.com/batuta-ai/core/commit/7211ccd1a9a2510f7a8b4a6db6371a76e88346f9))
+* batuta gate verifier parses TASK lines from stdin ([c75790e](https://github.com/batuta-ai/core/commit/c75790e4caecb8a4690a083479b4945849ef6d8b))
+* capabilities advertises gate; usage and docs list the five gates ([98cdfd5](https://github.com/batuta-ai/core/commit/98cdfd57f6ae8b45f221b02b6f41309cd28a36b0))
+* **cli:** batuta gate subcommands, plan directories, test hygiene and doctor ([#29](https://github.com/batuta-ai/core/issues/29), [#35](https://github.com/batuta-ai/core/issues/35), [#37](https://github.com/batuta-ai/core/issues/37), [#39](https://github.com/batuta-ai/core/issues/39), [#41](https://github.com/batuta-ai/core/issues/41), [#43](https://github.com/batuta-ai/core/issues/43)) ([d380f35](https://github.com/batuta-ai/core/commit/d380f35759276223ab13081bf7b966e78e876758))
+* doctor tells managed state apart from a dirty tree ([d07270a](https://github.com/batuta-ai/core/commit/d07270a344be5b4b9c23bbea500c3f3dba91920e))
+* plans live under .batuta/plans and move to .batuta/plans/done when f ([31e61c3](https://github.com/batuta-ai/core/commit/31e61c343adb100b78aaede7d5a59f975de9801b))
+
+
+### Bug Fixes
+
+* **loop:** accept .batuta/plans/&lt;slug&gt;.md as the plan argument ([45c9c09](https://github.com/batuta-ai/core/commit/45c9c090e943c61aa0b6f9d9db3c7cae6068efcf))
+
 ## [1.1.0-beta.12](https://github.com/batuta-ai/core/compare/v1.1.0-beta.11...v1.1.0-beta.12) (2026-09-06)
 
 
