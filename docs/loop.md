@@ -103,6 +103,9 @@ exit `1` with the reason on stderr.
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
+- **Conflicts keep the same runtime.** A conflicting candidate re-executes on
+  the new base with the same executor, model, and reasoning; escalation is
+  reserved for verification failures.
 - **`self` has no seat in the loop.** A task whose selected row is `self`
   fails the preflight with the instruction to run it interactively through
   `/batuta` and tick it. A task that would *escalate* to `self` is aborted

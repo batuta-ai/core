@@ -960,8 +960,8 @@ func (g *DeliveryGraph) SettleWave(
 			IntegrationOperationID: settlement.OperationID, IntegrationHeadSHA: settlement.FinalHeadSHA,
 			CandidateCommitSHA: attempt.CandidateCommitSHA, EvidenceDigest: settlement.ConflictEvidenceDigest,
 		}
-		nextRuntime, eligible := nextRuntimeForTask(generation, *task, attempt.Runtime)
-		if !retryAllowed || !eligible || attempt.Execution == MaxTaskExecutions {
+		nextRuntime := attempt.Runtime
+		if !retryAllowed || attempt.Execution == MaxTaskExecutions {
 			attempt.State = GraphTaskBlocked
 			attempt.BlockerCode = "integration_conflict_exhausted"
 			task.State = GraphTaskBlocked
