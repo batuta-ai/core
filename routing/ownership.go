@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 const (
@@ -283,10 +282,10 @@ func (s *OwnershipStore) withWorkspaceLock(workspaceID string, action func() err
 	if err := lockFile.Chmod(0o600); err != nil {
 		return errors.New("routing: secure ownership journal lock failed")
 	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockExclusive(lockFile); err != nil {
 		return errors.New("routing: lock ownership journal failed")
 	}
-	defer func() { _ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN) }()
+	defer unlockFile(lockFile)
 	return action()
 }
 
