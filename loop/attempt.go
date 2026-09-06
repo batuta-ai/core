@@ -148,6 +148,17 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 			}, nil)
 		}
 	}
+	logPath := r.runLogPath(taskID, ac.execution)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o644)
+	if err != nil {
+		return fmt.Errorf("loop: open executor log: %w", err)
+	}
+	defer logFile.Close()
+	subprocess.Stdout = logFile
+	subprocess.Stderr = logFile
 
 	// Invariant from the harness this loop descends from: a usage limit is
 	// not a failure. Wait for the reset and run the SAME attempt again; it
@@ -178,6 +189,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	}
 	if invocation.UsedFile {
 		_ = os.Remove(briefPath)
+	}
+	if err := logFile.Close(); err != nil {
+		return fmt.Errorf("loop: close executor log: %w", err)
 	}
 	r.writeLog(taskID, ac.execution, result)
 	if execErr != nil {
@@ -594,7 +608,7 @@ func redactArgs(invocation executor.Invocation, brief string) []string {
 }
 
 func (r *Runner) writeLog(taskID string, execution int, result executor.Result) {
-	path := strings.TrimSuffix(r.trailPath(taskID), ".md") + "-e" + fmt.Sprint(execution) + ".out.log"
+	path := r.runLogPath(taskID, execution)
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	var b strings.Builder
 	fmt.Fprintf(&b, "# exit %d · finished %v · timed out %v · rate limited %v · %s\n\n## stdout\n\n", result.ExitCode, result.Finished, result.TimedOut, result.RateLimited, result.Duration.Round(time.Second))
@@ -602,6 +616,10 @@ func (r *Runner) writeLog(taskID string, execution int, result executor.Result) 
 	b.WriteString("\n\n## stderr\n\n")
 	b.Write(result.Stderr)
 	_ = os.WriteFile(path, []byte(b.String()), 0o644)
+}
+
+func (r *Runner) runLogPath(taskID string, execution int) string {
+	return strings.TrimSuffix(r.trailPath(taskID), ".md") + "-e" + fmt.Sprint(execution) + ".out.log"
 }
 
 func firstLine(value string) string {

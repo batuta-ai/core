@@ -88,6 +88,10 @@ case "${FAKE_SCENARIO:-default}" in
   satisfied)
     if [ "$n" = 1 ]; then exit 0; fi
     echo "ok" > out/$n.txt;;
+  stream-log)
+    echo "live stdout: task $n"
+    echo "live stderr: task $n" >&2
+    echo "ok" > out/$n.txt;;
   *)
     if [ "${FAKE_SCENARIO:-default}" = default ]; then
       criteria=$(printf '%s\n' "$text" | sed -n '/^## Acceptance criteria$/,/^## /p' | grep -c '^[0-9][0-9]*\. ' || true)
@@ -343,6 +347,65 @@ type commandRunnerFunc func(context.Context, publication.Command) (publication.C
 
 func (f commandRunnerFunc) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
 	return f(ctx, command)
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(payload []byte) (int, error) {
+	return f(payload)
+}
+
+func TestLoopStreamsExecutorOutputToTheRunLog(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("stream-log", &out)
+	opts.Parallel = 1
+	logPath := filepath.Join(f.root, ".batuta", "runs", "2026-09-06-greetings-task-1-e1.out.log")
+	stdoutObserved := false
+	stderrObserved := false
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" && !stdoutObserved {
+			stdoutObserver := command.Observer
+			stderrObserver := command.StderrObserver
+			command.Observer = writerFunc(func(payload []byte) (int, error) {
+				n, err := stdoutObserver.Write(payload)
+				content, readErr := os.ReadFile(logPath)
+				if readErr == nil && bytes.Contains(content, payload) {
+					stdoutObserved = true
+				}
+				return n, err
+			})
+			command.StderrObserver = writerFunc(func(payload []byte) (int, error) {
+				n, err := stderrObserver.Write(payload)
+				content, readErr := os.ReadFile(logPath)
+				if readErr == nil && bytes.Contains(content, payload) {
+					stderrObserved = true
+				}
+				return n, err
+			})
+		}
+		return (publication.ExecRunner{}).Run(ctx, command)
+	})
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if !stdoutObserved || !stderrObserved {
+		t.Fatalf("output observed while running: stdout=%v stderr=%v", stdoutObserved, stderrObserved)
+	}
+	content, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"# exit 0 · finished true · timed out false · rate limited false ·", "\n\n## stdout\n\n", "fake executor: task 1", "live stdout: task 1", "\n\n## stderr\n\n", "live stderr: task 1"} {
+		if !bytes.Contains(content, []byte(want)) {
+			t.Errorf("completed run log missing %q:\n%s", want, content)
+		}
+	}
 }
 
 func TestLoopJournalsProgressWhileTheExecutorRuns(t *testing.T) {
