@@ -1,4 +1,7 @@
-# batuta-ai/core
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/batuta-ai/.github/main/brand/readme-header-core-dark.png">
+  <img src="https://raw.githubusercontent.com/batuta-ai/.github/main/brand/readme-header-core-light.png" width="100%" alt="batuta-ai / core — Núcleo em Go: roteamento e coordenação de agentes. Go core: agent routing and coordination.">
+</picture>
 
 > *Quem rege não toca.* — The conductor does not play.
 
