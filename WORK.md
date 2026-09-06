@@ -25,3 +25,4 @@
 - [x] batuta gate verifier parses TASK lines from stdin → codex (gpt-5.6-sol), commit 904cddd0ca86 (trail: .batuta/runs/2026-09-06-followups-task-7.md, plan followups, 2026-09-06)
 - [x] capabilities advertises gate; usage and docs list the five gates → codex (gpt-5.6-sol), commit 0bb2875be6a1 (trail: .batuta/runs/2026-09-06-followups-task-8.md, plan followups, 2026-09-06)
 - [x] Plans live under .batuta/plans and move to .batuta/plans/done when finished → codex (gpt-6-astra), commit 5b31c5f31c3d (trail: .batuta/runs/2026-09-06-followups-task-9.md, plan followups, 2026-09-06)
+- [x] loop aceita .batuta/plans/<slug>.md como argumento (lacuna da task 9) → codex (codex/gpt-5.4-mini), primeira tentativa, commit 45c9c09 em feat/followups
