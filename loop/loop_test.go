@@ -764,6 +764,18 @@ func TestLoopReexecutesAConflictingCandidateOnTheNewBase(t *testing.T) {
 	if !reexecuted {
 		t.Fatalf("no conflict re-execution in the journal\n%s", out.String())
 	}
+	firstLog, err := os.ReadFile(filepath.Join(f.root, ".batuta", "runs", "2026-09-06-greetings-task-2-e1.out.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondLog, err := os.ReadFile(filepath.Join(f.root, ".batuta", "runs", "2026-09-06-greetings-task-2-e2.out.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const model = "model fake-low"
+	if !strings.Contains(string(firstLog), model) || !strings.Contains(string(secondLog), model) {
+		t.Fatalf("conflicting task changed model between executions:\ne1: %s\ne2: %s", firstLog, secondLog)
+	}
 	if commits := f.commitsSince(t, f.base); len(commits) != 4 {
 		t.Fatalf("commits = %q", commits)
 	}

@@ -869,7 +869,7 @@ func TestDeliveryGraphSettlesCanonicalPrefixAndReexecutesOnlyFirstConflict(t *te
 
 	result, err := graph.SettleWave(settlement, generation)
 	if err != nil || result.Replayed || result.Disposition != SettlementReexecuteConflict || result.TaskID != "task_02" ||
-		result.Wave.Number != 2 || result.Wave.BaseHeadSHA != integratedSHA || result.Runtime.Model != "gpt-5.6-terra" {
+		result.Wave.Number != 2 || result.Wave.BaseHeadSHA != integratedSHA || result.Runtime != selected {
 		t.Fatalf("SettleWave() = %#v, error=%v", result, err)
 	}
 	replayedCandidate, err := graph.RecordCandidate("task_02", 1, TaskCandidate{
@@ -889,7 +889,8 @@ func TestDeliveryGraphSettlesCanonicalPrefixAndReexecutesOnlyFirstConflict(t *te
 	third, _ := graph.Task("task_03")
 	if first.State != GraphTaskIntegrated || first.IntegratedCommitSHA != integratedSHA ||
 		second.State != GraphTaskPreparing || len(second.Attempts) != 2 || second.Attempts[0].Conflict == nil ||
-		second.Attempts[1].BaseHeadSHA != integratedSHA || third.State != GraphTaskCandidate || len(graph.Integrations) != 1 {
+		second.Attempts[1].BaseHeadSHA != integratedSHA || second.Attempts[1].Runtime != selected ||
+		third.State != GraphTaskCandidate || len(graph.Integrations) != 1 {
 		t.Fatalf("settled tasks first=%#v second=%#v third=%#v integrations=%#v", first, second, third, graph.Integrations)
 	}
 
@@ -925,8 +926,84 @@ func TestDeliveryGraphSettlesCanonicalPrefixAndReexecutesOnlyFirstConflict(t *te
 	}
 	replayedConflict, err := graph.SettleWave(settlement, generation)
 	if err != nil || !replayedConflict.Replayed || replayedConflict.Disposition != SettlementReexecuteConflict ||
-		replayedConflict.TaskID != "task_02" || replayedConflict.Wave.Number != 2 || replayedConflict.Runtime.Model != "gpt-5.6-terra" {
+		replayedConflict.TaskID != "task_02" || replayedConflict.Wave.Number != 2 || replayedConflict.Runtime != selected {
 		t.Fatalf("SettleWave(conflict after integration) = %#v, error=%v", replayedConflict, err)
+	}
+}
+
+func TestDeliveryGraphBlocksAConflictAtTheExecutionCap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		retryAllowed   bool
+		executionLimit int
+	}{
+		{name: "retry policy disabled", retryAllowed: false, executionLimit: 1},
+		{name: "execution cap reached", retryAllowed: true, executionLimit: MaxTaskExecutions},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			snapshot := graphSnapshotFixture(t, []TaskArtifact{
+				graphTaskArtifact("task_01", "pending", DomainBackend, ComplexityLow),
+			})
+			generation := graphGenerationFixture(t, snapshot)
+			base := graphGitSHA("conflict-exhaustion-base-" + test.name)
+			graph, err := NewDeliveryGraph(snapshot, generation, base)
+			if err != nil {
+				t.Fatalf("NewDeliveryGraph() error = %v", err)
+			}
+			wave, err := graph.AdmitReadyWave(ReadyWaveInput{
+				IntegrationHeadSHA: base, RemainingSlots: 1, ReachableCommits: map[string]bool{},
+			})
+			if err != nil {
+				t.Fatalf("AdmitReadyWave() error = %v", err)
+			}
+
+			var result WaveSettlementResult
+			for execution := 1; execution <= test.executionLimit; execution++ {
+				if err := graph.BeginWaveAttempts(wave.Number, generation); err != nil {
+					t.Fatalf("BeginWaveAttempts(execution %d) error = %v", execution, err)
+				}
+				if _, err := graph.AttachWorktree("task_01", execution, GraphWorktree{
+					ID: fmt.Sprintf("wt-task-01-%d", execution), Root: fmt.Sprintf("/managed/task-01-%d", execution), Ready: true,
+				}); err != nil {
+					t.Fatalf("AttachWorktree(execution %d) error = %v", execution, err)
+				}
+				candidateSHA := graphGitSHA(fmt.Sprintf("conflict-candidate-%s-%d", test.name, execution))
+				if _, err := graph.RecordCandidate("task_01", execution, TaskCandidate{
+					ChildRunID: fmt.Sprintf("run-task-01-%d", execution), BaseHeadSHA: base, CommitSHA: candidateSHA,
+					VerificationDigest: digestFixture(fmt.Sprintf("conflict-verification-%s-%d", test.name, execution)), TokensUsed: 10,
+				}); err != nil {
+					t.Fatalf("RecordCandidate(execution %d) error = %v", execution, err)
+				}
+				result, err = graph.SettleWave(WaveSettlement{
+					OperationID:   digestFixture(fmt.Sprintf("conflict-operation-%s-%d", test.name, execution)),
+					RequestDigest: digestFixture(fmt.Sprintf("conflict-request-%s-%d", test.name, execution)),
+					Wave:          wave.Number, StartingHeadSHA: base, OrderedTaskIDs: []string{"task_01"},
+					CandidateCommitSHAs: []string{candidateSHA}, FirstConflictTaskID: "task_01",
+					ConflictEvidenceDigest: digestFixture(fmt.Sprintf("conflict-evidence-%s-%d", test.name, execution)), FinalHeadSHA: base,
+				}, generation, test.retryAllowed)
+				if err != nil {
+					t.Fatalf("SettleWave(execution %d) error = %v", execution, err)
+				}
+				if execution < test.executionLimit {
+					if result.Disposition != SettlementReexecuteConflict {
+						t.Fatalf("SettleWave(execution %d) disposition = %s", execution, result.Disposition)
+					}
+					wave = result.Wave
+				}
+			}
+
+			task, _ := graph.Task("task_01")
+			if result.Disposition != SettlementBlocked || result.TaskID != "task_01" ||
+				task.State != GraphTaskBlocked || task.BlockerCode != "integration_conflict_exhausted" ||
+				task.Attempts[len(task.Attempts)-1].BlockerCode != "integration_conflict_exhausted" {
+				t.Fatalf("SettleWave() = %#v, task=%#v", result, task)
+			}
+		})
 	}
 }
 
