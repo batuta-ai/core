@@ -67,7 +67,7 @@ var ErrStopped = errors.New("loop: stopped after the requested number of waves")
 type Options struct {
 	Workspace     string
 	Skills        string
-	Plan          string // path (.batuta/plan-<slug>.md) or slug
+	Plan          string // path (.batuta/plans/<slug>.md or legacy .batuta/plan-<slug>.md) or slug
 	Resume        string // delivery to continue
 	Parallel      int    // 0 → the profile's Execution line
 	TaskTimeout   time.Duration
@@ -393,7 +393,8 @@ func (r *Runner) loadPlan(reference string) error {
 		}
 		slug = approved[0]
 	}
-	if base := filepath.Base(slug); strings.HasPrefix(base, "plan-") && strings.HasSuffix(base, ".md") {
+	if strings.HasSuffix(slug, ".md") {
+		base := filepath.Base(slug)
 		slug = strings.TrimSuffix(strings.TrimPrefix(base, "plan-"), ".md")
 	}
 	loader, err := routing.NewPlanLoader(r.root)

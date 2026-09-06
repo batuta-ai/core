@@ -288,6 +288,50 @@ func TestDryRunShowsDependencySafeWaves(t *testing.T) {
 	}
 }
 
+func TestLoopAcceptsEveryPlanArgumentForm(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		plan string
+	}{
+		{name: "active path", plan: filepath.Join(".batuta", "plans", "greetings.md")},
+		{name: "plans path", plan: filepath.Join("plans", "greetings.md")},
+		{name: "plain md", plan: "greetings.md"},
+		{name: "legacy path", plan: "plan-greetings.md"},
+		{name: "slug", plan: "greetings"},
+	} {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options("default", &out)
+			opts.Plan = tc.plan
+			r, err := New(context.Background(), opts)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			preview, err := r.DryRun()
+			if err != nil {
+				t.Fatalf("DryRun() error = %v", err)
+			}
+			if len(preview.Waves) != 2 || len(preview.Waves[0].Tasks) != 2 || len(preview.Waves[1].Tasks) != 1 {
+				t.Fatalf("waves = %#v", preview.Waves)
+			}
+			total := 0
+			for _, wave := range preview.Waves {
+				total += len(wave.Tasks)
+			}
+			if total != 3 {
+				t.Fatalf("preview tasks = %d, want 3", total)
+			}
+			if preview.Waves[1].Tasks[0].ID != "task_3" {
+				t.Fatalf("preview = %#v", preview.Waves)
+			}
+		})
+	}
+}
+
 type commandRunnerFunc func(context.Context, publication.Command) (publication.CommandResult, error)
 
 func (f commandRunnerFunc) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
