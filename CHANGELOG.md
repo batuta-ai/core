@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.7](https://github.com/batuta-ai/core/compare/v1.1.0-beta.6...v1.1.0-beta.7) (2026-09-06)
+
+
+### Bug Fixes
+
+* **inventory:** codex account list must carry a models array before it counts ([#27](https://github.com/batuta-ai/core/issues/27)) ([c6d2df6](https://github.com/batuta-ai/core/commit/c6d2df6a734cb814e5c98f3b04d1fbc382cf62a9))
+
 ## [1.1.0-beta.6](https://github.com/batuta-ai/core/compare/v1.1.0-beta.5...v1.1.0-beta.6) (2026-09-05)
 
 
