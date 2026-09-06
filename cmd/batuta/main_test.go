@@ -79,7 +79,15 @@ func TestInspectGit(t *testing.T) {
 	if top, clean := inspectGit(ctx, git, root); top != "" || clean != nil {
 		t.Fatalf("inspectGit(non-repo) = %q, %v; want empty", top, clean)
 	}
-	for _, args := range [][]string{{"init", "-q"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "t"}} {
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "gc.auto", "0"},
+		{"config", "gc.autoDetach", "false"},
+		{"config", "maintenance.auto", "false"},
+	} {
 		if out, err := exec.Command(git, append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -109,6 +117,18 @@ func TestInspectGitWithSpentContext(t *testing.T) {
 	root := t.TempDir()
 	if out, err := exec.Command(git, "-C", root, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v\n%s", err, out)
+	}
+	for _, args := range [][]string{
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "gc.auto", "0"},
+		{"config", "gc.autoDetach", "false"},
+		{"config", "maintenance.auto", "false"},
+	} {
+		if out, err := exec.Command(git, append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
 	}
 	spent, cancel := context.WithCancel(context.Background())
 	cancel()

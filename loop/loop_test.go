@@ -157,9 +157,12 @@ func setup(t *testing.T) fixture {
 
 	// The repository under test.
 	f.run(t, "init", "-q", "-b", "main")
-	f.run(t, "config", "user.email", "t@example.com")
 	f.run(t, "config", "user.name", "t")
+	f.run(t, "config", "user.email", "t@example.com")
 	f.run(t, "config", "commit.gpgsign", "false")
+	f.run(t, "config", "gc.auto", "0")
+	f.run(t, "config", "gc.autoDetach", "false")
+	f.run(t, "config", "maintenance.auto", "false")
 	os.MkdirAll(filepath.Join(root, ".batuta"), 0o755)
 	os.WriteFile(filepath.Join(root, "tests.sh"), []byte("#!/bin/sh\nif grep -rl BROKEN out 2>/dev/null | grep -q .; then echo 'broken files'; exit 1; fi\necho all green\n"), 0o755)
 	os.WriteFile(filepath.Join(root, ".batuta", "profile.md"), []byte("# Batuta profile — demo\n\nTemplate: templates/generic.md\n\nStack: shell\nMethodology: tests first, conventional commits\nTest: sh ./tests.sh\nExecution: parallel\nWorktree: always\n"), 0o644)

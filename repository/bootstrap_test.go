@@ -14,9 +14,12 @@ import (
 )
 
 func TestBootstrapInitializesSafeWorkspaceAndReplaysWithoutAnotherCommit(t *testing.T) {
-	t.Parallel()
-
 	root := tempDir(t)
+	globalConfig := filepath.Join(t.TempDir(), "gitconfig")
+	if err := os.WriteFile(globalConfig, nil, 0o600); err != nil {
+		t.Fatalf("write empty global git config: %v", err)
+	}
+	t.Setenv("GIT_CONFIG_GLOBAL", globalConfig)
 	writeBootstrapFile(t, root, ".gitignore", ".env\n")
 	writeBootstrapFile(t, root, ".env", "SECRET=not-committed\n")
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
@@ -84,6 +87,7 @@ func TestBootstrapPreservesExistingEmptyRepositoryWhenSensitivePathBlocksCommit(
 
 	root := tempDir(t)
 	runGit(t, root, "init", "--initial-branch=main", ".")
+	configureTestGit(t, root)
 	writeBootstrapFile(t, root, ".npmrc", "//registry.example/:_authToken=secret\n")
 
 	result, err := realBootstrapper(t).Bootstrap(context.Background(), root)
@@ -126,6 +130,7 @@ func TestBootstrapRejectsExistingHeadlessRepositoryOnNonMainBranch(t *testing.T)
 
 	root := tempDir(t)
 	runGit(t, root, "init", "--initial-branch=master", ".")
+	configureTestGit(t, root)
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 
 	_, err := realBootstrapper(t).Bootstrap(context.Background(), root)
@@ -179,6 +184,7 @@ func TestBootstrapDisablesHooksThatCouldChangeTheInspectedIndex(t *testing.T) {
 
 	root := tempDir(t)
 	runGit(t, root, "init", "--initial-branch=main", ".")
+	configureTestGit(t, root)
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 	hook := filepath.Join(root, ".git", "hooks", "prepare-commit-msg")
 	if err := os.WriteFile(hook, []byte("#!/bin/sh\nprintf 'SECRET=hooked\\n' > .env.hooked\ngit add .env.hooked\n"), 0o700); err != nil {
@@ -202,6 +208,7 @@ func TestBootstrapTreatsDetachedValidHeadAsInitialized(t *testing.T) {
 
 	root := tempDir(t)
 	runGit(t, root, "init", "--initial-branch=main", ".")
+	configureTestGit(t, root)
 	writeBootstrapFile(t, root, "README.md", "# Demo\n")
 	runGit(t, root, "add", "README.md")
 	runGit(t, root, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "chore: seed")
@@ -269,6 +276,20 @@ func runGit(t *testing.T, root string, args ...string) string {
 		t.Fatalf("git %v exited %d", args, result.exitCode)
 	}
 	return result.stdout
+}
+
+func configureTestGit(t *testing.T, root string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "gc.auto", "0"},
+		{"config", "gc.autoDetach", "false"},
+		{"config", "maintenance.auto", "false"},
+	} {
+		runGit(t, root, args...)
+	}
 }
 
 func runGitAllowFailure(t *testing.T, root string, args ...string) gitResult {

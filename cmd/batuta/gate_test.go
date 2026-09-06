@@ -141,9 +141,12 @@ func committedGitRepository(t *testing.T, git string) string {
 	}
 	commands := [][]string{
 		{"init", "-q"},
-		{"config", "user.email", "t@example.com"},
 		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
 		{"config", "commit.gpgsign", "false"},
+		{"config", "gc.auto", "0"},
+		{"config", "gc.autoDetach", "false"},
+		{"config", "maintenance.auto", "false"},
 	}
 	for _, args := range commands {
 		if out, err := exec.Command(git, append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
