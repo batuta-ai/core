@@ -3,15 +3,369 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/batuta-ai/core/publication"
 )
+
+func TestGateTests(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell commands")
+	}
+	repo := committedGitRepository(t, mustGit(t))
+	tests := []struct {
+		name       string
+		args       []string
+		wantOutput string
+		wantCode   int
+	}{
+		{
+			name:       "passing command",
+			args:       []string{"gate", "tests", "--command", "printf 'ok\\n'", "--dir", repo},
+			wantOutput: "{\"name\":\"tests\",\"pass\":true,\"signal\":\"`printf 'ok\\\\n'` passed\",\"detail\":\"ok\"}\n",
+		},
+		{
+			name:       "failing command",
+			args:       []string{"gate", "tests", "--command", "printf 'boom\\n' >&2; exit 3", "--dir", repo},
+			wantOutput: "{\"name\":\"tests\",\"pass\":false,\"signal\":\"`printf 'boom\\\\n' \\u003e\\u00262; exit 3` exited 3\",\"detail\":\"boom\"}\n",
+			wantCode:   2,
+		},
+		{
+			name:     "missing command",
+			args:     []string{"gate", "tests", "--dir", repo},
+			wantCode: 1,
+		},
+		{
+			name:     "empty command",
+			args:     []string{"gate", "tests", "--command", "  ", "--dir", repo},
+			wantCode: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(tt.args, &stdout, &stderr)
+			if tt.wantCode == 0 && err != nil {
+				t.Fatalf("run(%v) error = %v; stderr = %q", tt.args, err, stderr.String())
+			}
+			if tt.wantCode == 1 && err == nil {
+				t.Fatalf("run(%v) succeeded, want usage error", tt.args)
+			}
+			if tt.wantCode == 2 {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != "tests failed" {
+					t.Fatalf("run(%v) error = %v, want tests failed exit 2", tt.args, err)
+				}
+			}
+			if got := stdout.String(); got != tt.wantOutput {
+				t.Fatalf("run(%v) stdout = %q, want %q", tt.args, got, tt.wantOutput)
+			}
+		})
+	}
+}
+
+func TestGateTestsTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell commands")
+	}
+	repo := committedGitRepository(t, mustGit(t))
+	started := time.Now()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"gate", "tests", "--command", "sleep 5", "--timeout", "50ms", "--dir", repo}, &stdout, &stderr)
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("gate tests timeout error = %v, want exit 2; stderr = %q", err, stderr.String())
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("gate tests timeout took %s, want under 2s", elapsed)
+	}
+	var verdict struct {
+		Pass   bool   `json:"pass"`
+		Detail string `json:"detail"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &verdict); err != nil {
+		t.Fatalf("gate tests timeout output is not JSON: %v\n%s", err, stdout.String())
+	}
+	if verdict.Pass || !strings.Contains(verdict.Detail, "timed out after 50ms") {
+		t.Fatalf("gate tests timeout verdict = %+v", verdict)
+	}
+}
+
+func TestGateProofs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell commands")
+	}
+	repo := committedGitRepository(t, mustGit(t))
+	tests := []struct {
+		name       string
+		accept     string
+		wantPass   []bool
+		wantCode   int
+		wantSignal string
+	}{
+		{
+			name:     "two passing criteria",
+			accept:   "first works → true;second works → true",
+			wantPass: []bool{true, true},
+		},
+		{
+			name:     "one failing criterion",
+			accept:   "first works → true;second fails → false",
+			wantPass: []bool{true, false},
+			wantCode: 2,
+		},
+		{
+			name:       "criterion without proof",
+			accept:     "human checks the result",
+			wantPass:   []bool{true},
+			wantSignal: "left to the verifier",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"gate", "proofs", "--accept", tt.accept, "--dir", repo}, &stdout, &stderr)
+			if tt.wantCode == 0 && err != nil {
+				t.Fatalf("gate proofs error = %v; stderr = %q", err, stderr.String())
+			}
+			if tt.wantCode == 2 {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != "proofs failed" {
+					t.Fatalf("gate proofs error = %v, want proofs failed exit 2", err)
+				}
+			}
+			if strings.Count(stdout.String(), "\n") != 1 || !strings.HasSuffix(stdout.String(), "\n") {
+				t.Fatalf("gate proofs stdout = %q, want one newline-terminated line", stdout.String())
+			}
+			var verdicts []struct {
+				Pass   bool   `json:"pass"`
+				Signal string `json:"signal"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &verdicts); err != nil {
+				t.Fatalf("gate proofs output is not JSON: %v\n%s", err, stdout.String())
+			}
+			if len(verdicts) != len(tt.wantPass) {
+				t.Fatalf("gate proofs returned %d verdicts, want %d", len(verdicts), len(tt.wantPass))
+			}
+			for index, want := range tt.wantPass {
+				if verdicts[index].Pass != want {
+					t.Fatalf("gate proofs verdict %d pass = %v, want %v", index+1, verdicts[index].Pass, want)
+				}
+			}
+			if tt.wantSignal != "" && !strings.Contains(verdicts[0].Signal, tt.wantSignal) {
+				t.Fatalf("gate proofs signal = %q, want it to contain %q", verdicts[0].Signal, tt.wantSignal)
+			}
+		})
+	}
+}
+
+func TestGateVerifier(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		proofs     string
+		wantOutput string
+		wantCode   int
+	}{
+		{
+			name:       "all criteria done",
+			input:      "TASK 1: DONE\nTASK 2: DONE\n",
+			wantOutput: `{"name":"verifier","pass":true,"signal":"2/2 DONE"}` + "\n",
+		},
+		{
+			name:       "criterion incomplete",
+			input:      "TASK 1: DONE\nTASK 2: INCOMPLETE — missing test\n",
+			wantOutput: `{"name":"verifier","pass":false,"signal":"1 criterion(s) INCOMPLETE","detail":"TASK 2: INCOMPLETE — missing test"}` + "\n",
+			wantCode:   2,
+		},
+		{
+			name:       "criterion missing",
+			input:      "TASK 1: DONE\n",
+			wantOutput: `{"name":"verifier","pass":false,"signal":"the verifier answered 1 of 2 criteria","detail":"TASK 1: DONE"}` + "\n",
+			wantCode:   2,
+		},
+		{
+			name:       "passing proof sets aside environment objection",
+			input:      "TASK 1: DONE\nTASK 2: INCOMPLETE — sandbox prevented verification\n",
+			proofs:     `[{"name":"proof 1","pass":true},{"name":"proof 2","pass":true}]`,
+			wantOutput: `{"name":"verifier","pass":true,"signal":"2/2 DONE (1 environment objection(s) set aside)","detail":"criterion 2: environment objection set aside, its proof passed — sandbox prevented verification"}` + "\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			originalStdin := stdin
+			stdin = strings.NewReader(tt.input)
+			t.Cleanup(func() { stdin = originalStdin })
+
+			args := []string{"gate", "verifier", "--criteria", "2"}
+			if tt.proofs != "" {
+				args = append(args, "--proofs", tt.proofs)
+			}
+			var stdout, stderr bytes.Buffer
+			err := run(args, &stdout, &stderr)
+			if tt.wantCode == 0 && err != nil {
+				t.Fatalf("run(%v) error = %v; stderr = %q", args, err, stderr.String())
+			}
+			if tt.wantCode == 2 {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != "verifier failed" {
+					t.Fatalf("run(%v) error = %v, want verifier failed exit 2", args, err)
+				}
+			}
+			if got := stdout.String(); got != tt.wantOutput {
+				t.Fatalf("run(%v) stdout = %q, want %q", args, got, tt.wantOutput)
+			}
+		})
+	}
+}
+
+func TestGateVerifierRejectsInvalidInput(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "missing criteria", args: []string{"gate", "verifier"}},
+		{name: "zero criteria", args: []string{"gate", "verifier", "--criteria", "0"}},
+		{name: "malformed proofs", args: []string{"gate", "verifier", "--criteria", "2", "--proofs", "["}},
+		{name: "positional argument", args: []string{"gate", "verifier", "--criteria", "2", "output.txt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if err := run(tt.args, &stdout, &stderr); err == nil {
+				t.Fatalf("run(%v) succeeded, want usage error", tt.args)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("run(%v) stdout = %q, want empty", tt.args, stdout.String())
+			}
+		})
+	}
+}
+
+func TestGateScope(t *testing.T) {
+	git := mustGit(t)
+	tests := []struct {
+		name       string
+		prepare    func(t *testing.T, repo string)
+		scope      string
+		wantOutput string
+		wantCode   int
+	}{
+		{
+			name: "inside scope with managed state",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.MkdirAll(filepath.Join(repo, "cmd", "batuta"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				for path, content := range map[string]string{
+					"cmd/batuta/gate.go": "package main\n",
+					"WORK.md":            "managed\n",
+				} {
+					if err := os.WriteFile(filepath.Join(repo, filepath.FromSlash(path)), []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+			scope:      "cmd/batuta/gate.go, docs",
+			wantOutput: `{"name":"scope","pass":true,"signal":"within Scope; managed state also touched: WORK.md","outside":[],"managed":["WORK.md"]}` + "\n",
+		},
+		{
+			name: "outside scope",
+			prepare: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "outside.txt"), []byte("outside\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+			scope:      "cmd/batuta",
+			wantOutput: `{"name":"scope","pass":false,"signal":"1 path(s) outside Scope","outside":["outside.txt"],"managed":[]}` + "\n",
+			wantCode:   2,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := committedGitRepository(t, git)
+			base := strings.TrimSpace(runGit(t, git, repo, "rev-parse", "HEAD"))
+			tt.prepare(t, repo)
+
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"gate", "scope", "--base", base, "--scope", tt.scope, "--dir", repo}, &stdout, &stderr)
+			if tt.wantCode == 0 && err != nil {
+				t.Fatalf("gate scope error = %v; stderr = %q", err, stderr.String())
+			}
+			if tt.wantCode == 2 {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != "scope failed" {
+					t.Fatalf("gate scope error = %v, want scope failed exit 2", err)
+				}
+			}
+			if got := stdout.String(); got != tt.wantOutput {
+				t.Fatalf("gate scope stdout = %q, want %q", got, tt.wantOutput)
+			}
+		})
+	}
+}
+
+func TestGateScopeResolvesRefs(t *testing.T) {
+	git := mustGit(t)
+	repo := committedGitRepository(t, git)
+	runGit(t, git, repo, "tag", "scope-base")
+	if err := os.WriteFile(filepath.Join(repo, "tracked.txt"), []byte("changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"gate", "scope", "--base", "scope-base", "--scope", "tracked.txt", "--dir", repo}, &stdout, &stderr); err != nil {
+		t.Fatalf("gate scope with ref error = %v; stderr = %q", err, stderr.String())
+	}
+	want := `{"name":"scope","pass":true,"signal":"within Scope","outside":[],"managed":[]}` + "\n"
+	if got := stdout.String(); got != want {
+		t.Fatalf("gate scope with ref stdout = %q, want %q", got, want)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	err := run([]string{"gate", "scope", "--base", "unknown-ref", "--scope", "tracked.txt", "--dir", repo}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("gate scope with unknown ref succeeded, want runtime error")
+	}
+	var exit *ExitError
+	if errors.As(err, &exit) {
+		t.Fatalf("gate scope with unknown ref error = %v, want ordinary exit 1 error", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("gate scope with unknown ref stdout = %q, want empty", stdout.String())
+	}
+}
+
+func TestGateScopeRequiresScopeFlag(t *testing.T) {
+	repo := committedGitRepository(t, mustGit(t))
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"gate", "scope", "--base", "HEAD", "--dir", repo}, &stdout, &stderr); err == nil {
+		t.Fatal("gate scope without --scope succeeded, want usage error")
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("gate scope without --scope stdout = %q, want empty", stdout.String())
+	}
+}
+
+func mustGit(t *testing.T) string {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	return git
+}
 
 func TestGateTree(t *testing.T) {
 	git, err := exec.LookPath("git")
@@ -119,7 +473,7 @@ func TestRunGateDispatch(t *testing.T) {
 	}
 }
 
-func TestGateIsNotAdvertisedByCapabilities(t *testing.T) {
+func TestGateIsAdvertisedByCapabilities(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"capabilities"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run(capabilities) error = %v", err)
@@ -128,8 +482,8 @@ func TestGateIsNotAdvertisedByCapabilities(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("capabilities is not JSON: %v", err)
 	}
-	if slices.Contains(got.Commands, "gate") {
-		t.Fatalf("capabilities.commands = %v, must not advertise gate yet", got.Commands)
+	if !slices.Contains(got.Commands, "gate") {
+		t.Fatalf("capabilities.commands = %v, missing gate", got.Commands)
 	}
 }
 
@@ -141,9 +495,13 @@ func committedGitRepository(t *testing.T, git string) string {
 	}
 	commands := [][]string{
 		{"init", "-q"},
-		{"config", "user.email", "t@example.com"},
 		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
 		{"config", "commit.gpgsign", "false"},
+		{"config", "tag.gpgsign", "false"},
+		{"config", "gc.auto", "0"},
+		{"config", "gc.autoDetach", "false"},
+		{"config", "maintenance.auto", "false"},
 	}
 	for _, args := range commands {
 		if out, err := exec.Command(git, append([]string{"-C", repo}, args...)...).CombinedOutput(); err != nil {
@@ -159,4 +517,13 @@ func committedGitRepository(t *testing.T, git string) string {
 		}
 	}
 	return repo
+}
+
+func runGit(t *testing.T, git, repo string, args ...string) string {
+	t.Helper()
+	out, err := exec.Command(git, append([]string{"-C", repo}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
 }

@@ -180,6 +180,7 @@ func TestGitClientUpstreamHeadReturnsTheRemoteTrackingSHA(t *testing.T) {
 	repository := newTestRepository(t)
 	remote := filepath.Join(tempDir(t), "remote.git")
 	runCommand(t, repository.git, "", "init", "--bare", remote)
+	configureTestRepository(t, repository.git, remote)
 	repository.run(t, "remote", "add", "origin", remote)
 	repository.run(t, "push", "--set-upstream", "origin", "main")
 	want := repository.head(t)
@@ -370,14 +371,27 @@ func newTestRepository(t *testing.T) testRepository {
 	}
 	repository := testRepository{git: git, path: filepath.Join(tempDir(t), "repository with spaces")}
 	runCommand(t, git, "", "init", "--initial-branch=main", repository.path)
-	repository.run(t, "config", "user.email", "batuta@example.invalid")
-	repository.run(t, "config", "user.name", "Batuta Test")
+	configureTestRepository(t, git, repository.path)
 	if err := os.WriteFile(filepath.Join(repository.path, "tracked.txt"), []byte("initial\n"), 0o644); err != nil {
 		t.Fatalf("write tracked file: %v", err)
 	}
 	repository.run(t, "add", "tracked.txt")
 	repository.run(t, "commit", "-m", "initial")
 	return repository
+}
+
+func configureTestRepository(t *testing.T, git, path string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "gc.auto", "0"},
+		{"config", "gc.autoDetach", "false"},
+		{"config", "maintenance.auto", "false"},
+	} {
+		runCommand(t, git, path, args...)
+	}
 }
 
 func (r testRepository) run(t *testing.T, args ...string) string {

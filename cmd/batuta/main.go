@@ -1,8 +1,7 @@
-// Command batuta is the deterministic side of the Batuta conducting cycle.
-//
-// Subcommands: version, capabilities, inventory, doctor, loop, trail, and
-// standalone verification gates. Hosts probe `batuta capabilities` before
-// relying on the complete gate suite.
+// Command batuta provides the deterministic tools used by the Batuta
+// conducting cycle: capability discovery, environment inspection, delivery
+// execution and audit trails, and standalone verification gates. Hosts probe
+// `batuta capabilities` before relying on a command.
 package main
 
 import (
@@ -26,6 +25,7 @@ import (
 	"github.com/batuta-ai/core/inventory/adapters"
 	"github.com/batuta-ai/core/loop"
 	"github.com/batuta-ai/core/publication"
+	"github.com/batuta-ai/core/worktree"
 )
 
 const usage = `batuta — the conductor's deterministic tools
@@ -41,6 +41,10 @@ Usage:
   batuta trail     [<delivery>]
   batuta gate tree --snapshot [--dir <d>]
   batuta gate tree --before '<json>' [--dir <d>]
+  batuta gate tests --command "<cmd>" [--dir <d>] [--timeout <duration>]
+  batuta gate scope --base <sha-or-ref> --scope <a,b,c> [--dir <d>]
+  batuta gate proofs --accept "<criterion → proof>;..." [--dir <d>] [--timeout <duration>]
+  batuta gate verifier --criteria <n> [--proofs '<json array>'] < output
 
 capabilities  The subcommands this binary ships, as JSON. Skills probe it
            before calling gate or loop; an older binary fails the probe.
@@ -118,9 +122,9 @@ func version() string {
 	return "devel"
 }
 
-// commands lists every subcommand this binary ships. Append gate here when
-// it lands; skills read this list, never the usage text.
-var commands = []string{"capabilities", "doctor", "inventory", "loop", "trail", "version"}
+// commands lists every subcommand this binary ships; skills read this list,
+// never the usage text.
+var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "trail", "version"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
@@ -236,6 +240,7 @@ type doctorReport struct {
 	Workspace     string           `json:"workspace"`
 	GitRepository bool             `json:"git_repository"`
 	GitToplevel   string           `json:"git_toplevel,omitempty"`
+	GitState      string           `json:"git_state,omitempty"`
 	GitClean      *bool            `json:"git_clean,omitempty"`
 	GitExecutable string           `json:"git_executable,omitempty"`
 	Commands      []string         `json:"commands"`
@@ -277,7 +282,7 @@ func runDoctor(args []string, stdout io.Writer) error {
 		report.GitExecutable = git
 		// The probe context may already be spent by collect; git gets its own.
 		gitCtx, cancelGit := context.WithTimeout(context.Background(), 5*time.Second)
-		report.GitToplevel, report.GitClean = inspectGit(gitCtx, git, root)
+		report.GitToplevel, report.GitState, report.GitClean = inspectGit(gitCtx, git, root)
 		cancelGit()
 		report.GitRepository = report.GitToplevel != ""
 	}
@@ -325,19 +330,37 @@ func summarizeEvidence(executor inventory.ExecutorSnapshot) (string, int) {
 
 // inspectGit asks git itself whether root is inside a repository — a
 // worktree checkout has a .git file, a nested directory has none — and
-// whether the working tree is clean, which the conducting preflight needs.
-func inspectGit(ctx context.Context, git, root string) (toplevel string, clean *bool) {
+// distinguishes a clean tree from conductor-owned state and other changes.
+func inspectGit(ctx context.Context, git, root string) (toplevel, state string, clean *bool) {
 	out, err := exec.CommandContext(ctx, git, "-C", root, "rev-parse", "--show-toplevel").Output()
 	if err != nil {
-		return "", nil
+		return "", "", nil
 	}
 	toplevel = strings.TrimSpace(string(out))
 	status, err := exec.CommandContext(ctx, git, "-C", root, "status", "--porcelain").Output()
 	if err != nil {
-		return toplevel, nil
+		return toplevel, "", nil
 	}
-	isClean := len(bytes.TrimSpace(status)) == 0
-	return toplevel, &isClean
+	state = gitState(status)
+	isClean := state == "clean"
+	return toplevel, state, &isClean
+}
+
+func gitState(status []byte) string {
+	if len(bytes.TrimSpace(status)) == 0 {
+		return "clean"
+	}
+	for _, entry := range strings.Split(strings.TrimSpace(string(status)), "\n") {
+		if len(entry) <= 3 {
+			return "dirty"
+		}
+		for _, path := range strings.Split(strings.TrimSpace(entry[3:]), " -> ") {
+			if !worktree.IsManaged(path) {
+				return "dirty"
+			}
+		}
+	}
+	return "managed"
 }
 
 func findSkills(root string) string {
@@ -490,10 +513,19 @@ func printDoctor(w io.Writer, report doctorReport) {
 	fmt.Fprintf(w, "workspace   %s\n", report.Workspace)
 	if report.GitRepository {
 		state := "status unknown"
-		if report.GitClean != nil {
+		switch report.GitState {
+		case "clean":
+			state = "clean tree"
+		case "managed":
+			state = "managed state only (WORK.md, .batuta/) — fine for /batuta, commit before batuta loop"
+		case "dirty":
 			state = "dirty tree — commit or stash before delegating"
-			if *report.GitClean {
-				state = "clean tree"
+		default:
+			if report.GitClean != nil {
+				state = "dirty tree — commit or stash before delegating"
+				if *report.GitClean {
+					state = "clean tree"
+				}
 			}
 		}
 		fmt.Fprintf(w, "git         repository ✓ %s (%s)\n", state, report.GitToplevel)

@@ -665,8 +665,12 @@ func newIntegrationGitFixture(t *testing.T) *integrationGitFixture {
 	}
 	fixture := &integrationGitFixture{git: git, root: filepath.Join(tempDir(t), "integration")}
 	fixture.run(t, "", "init", "--initial-branch=main", fixture.root)
-	fixture.run(t, fixture.root, "config", "user.email", "batuta@example.invalid")
 	fixture.run(t, fixture.root, "config", "user.name", "Batuta Test")
+	fixture.run(t, fixture.root, "config", "user.email", "batuta@example.invalid")
+	fixture.run(t, fixture.root, "config", "commit.gpgsign", "false")
+	fixture.run(t, fixture.root, "config", "gc.auto", "0")
+	fixture.run(t, fixture.root, "config", "gc.autoDetach", "false")
+	fixture.run(t, fixture.root, "config", "maintenance.auto", "false")
 	writeIntegrationFile(t, filepath.Join(fixture.root, "README.md"), "base\n")
 	writeIntegrationFile(t, filepath.Join(fixture.root, "shared.txt"), "base\n")
 	fixture.run(t, fixture.root, "add", "README.md", "shared.txt")

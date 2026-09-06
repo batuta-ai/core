@@ -17,6 +17,7 @@ import (
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 	"github.com/batuta-ai/core/worktree"
 )
@@ -163,12 +164,19 @@ func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary)
 	if err := r.writeWork(summary, state); err != nil {
 		return err
 	}
-	paths := []string{"WORK.md"}
 	if planChanged {
-		paths = append(paths, routing.PlanPath(r.plan.Slug))
+		args := []string{"add", "-A", "--", r.plan.Path}
+		if r.planPath != filepath.Join(r.root, r.plan.Path) {
+			args = append(args, filepath.Join(".batuta", "plans"))
+		}
+		if _, err := r.git.Runner.Run(ctx, publication.Command{
+			Executable: r.git.Git, Args: args, Directory: r.root,
+		}); err != nil {
+			return fmt.Errorf("loop: stage plan bookkeeping: %w", err)
+		}
 	}
 	message := fmt.Sprintf("chore(batuta): %s — loop %s\n\n%d integrated, %d blocked. Delivery %s.\n", r.plan.Slug, state, len(summary.Integrated), len(summary.Blocked), r.delivery)
-	if _, err := r.git.Commit(ctx, message, paths...); err != nil {
+	if _, err := r.git.Commit(ctx, message, "WORK.md"); err != nil {
 		return fmt.Errorf("loop: bookkeeping commit: %w", err)
 	}
 	return nil
@@ -224,7 +232,20 @@ func (r *Runner) tickPlan(summary Summary) (bool, error) {
 	if !changed {
 		return false, nil
 	}
-	return true, os.WriteFile(r.planPath, []byte(strings.Join(lines, "\n")), 0o644)
+	if err := os.WriteFile(r.planPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+		return false, err
+	}
+	if allDone {
+		done := filepath.Join(r.root, ".batuta", "plans", "done", r.plan.Slug+".md")
+		if err := os.MkdirAll(filepath.Dir(done), 0o755); err != nil {
+			return false, err
+		}
+		if err := os.Rename(r.planPath, done); err != nil {
+			return false, err
+		}
+		r.planPath = done
+	}
+	return true, nil
 }
 
 func (r *Runner) writeWork(summary Summary, state string) error {

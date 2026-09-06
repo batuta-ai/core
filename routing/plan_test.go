@@ -2,6 +2,7 @@ package routing
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -170,5 +171,100 @@ func TestParsePlanIgnoresStatusInCommentsAndFencesAndOrdersForwardDependencies(t
 	}
 	if _, err := plan.Set.DeliverySnapshot(); err != nil {
 		t.Fatalf("DeliverySnapshot() on the ordered set error = %v", err)
+	}
+}
+
+func TestPlanLoaderReadsBothLocations(t *testing.T) {
+	t.Parallel()
+	for _, location := range []string{"active", "legacy", "both"} {
+		t.Run(location, func(t *testing.T) {
+			t.Parallel()
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			active := filepath.Join(".batuta", "plans", "checkout-hardening.md")
+			legacy := filepath.Join(".batuta", "plan-checkout-hardening.md")
+			write := func(path, payload string) {
+				t.Helper()
+				path = filepath.Join(root, path)
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			wantPath := active
+			if location != "legacy" {
+				write(active, planFixture)
+			}
+			if location != "active" {
+				write(legacy, strings.Replace(planFixture, "Checkout hardening", "Legacy checkout", 1))
+			}
+			if location == "legacy" {
+				wantPath = legacy
+			} else {
+				write(filepath.Join(".batuta", "plans", "done", "finished.md"), planFixture)
+				write(filepath.Join(".batuta", "plans", "Not A Slug.md"), planFixture)
+			}
+			loader, err := NewPlanLoader(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := loader.LoadPlan("checkout-hardening")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Path != wantPath || (location != "legacy" && plan.Title != "Checkout hardening") {
+				t.Fatalf("loaded plan = %#v, want path %q", plan, wantPath)
+			}
+			slugs, err := loader.ListPlans()
+			if err != nil || len(slugs) != 1 || slugs[0] != "checkout-hardening" {
+				t.Fatalf("ListPlans() = %v, %v", slugs, err)
+			}
+			if _, err := loader.LoadPlan("finished"); err == nil {
+				t.Fatal("archived plan should not load")
+			}
+			locations := PlanLocations("checkout-hardening")
+			if PlanPath("checkout-hardening") != active || len(locations) != 2 || locations[0] != active || locations[1] != legacy {
+				t.Fatalf("plan locations = %v", locations)
+			}
+		})
+	}
+}
+
+func TestPlanLoaderPreservesLimitsInBothLocations(t *testing.T) {
+	t.Parallel()
+	for _, path := range PlanLocations("checkout-hardening") {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+			root, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			directory := filepath.Join(root, filepath.Dir(path))
+			if err := os.MkdirAll(directory, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, path), []byte(strings.Repeat("x", int(maxTaskArtifactBytes)+1)), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			loader, err := NewPlanLoader(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := loader.LoadPlan("checkout-hardening"); err == nil || !strings.Contains(err.Error(), "byte budget exceeded") {
+				t.Fatalf("oversized plan error = %v", err)
+			}
+			for i := 0; i < maxPlanDirectoryEntries; i++ {
+				if err := os.WriteFile(filepath.Join(directory, fmt.Sprintf("entry-%d", i)), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := loader.ListPlans(); !errors.Is(err, ErrReauthoringRequired) {
+				t.Fatalf("oversized directory error = %v", err)
+			}
+		})
 	}
 }

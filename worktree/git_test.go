@@ -29,9 +29,12 @@ func initRepo(t *testing.T) (GitProvider, string) {
 		return strings.TrimSpace(string(out))
 	}
 	run("init", "-q", "-b", "main")
-	run("config", "user.email", "t@example.com")
 	run("config", "user.name", "t")
+	run("config", "user.email", "t@example.com")
 	run("config", "commit.gpgsign", "false")
+	run("config", "gc.auto", "0")
+	run("config", "gc.autoDetach", "false")
+	run("config", "maintenance.auto", "false")
 	os.WriteFile(filepath.Join(root, "README.md"), []byte("# demo\n"), 0o644)
 	run("add", "README.md")
 	run("commit", "-q", "-m", "chore: init")

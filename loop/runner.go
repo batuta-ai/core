@@ -67,7 +67,7 @@ var ErrStopped = errors.New("loop: stopped after the requested number of waves")
 type Options struct {
 	Workspace     string
 	Skills        string
-	Plan          string // path (.batuta/plan-<slug>.md) or slug
+	Plan          string // path (.batuta/plans/<slug>.md or legacy .batuta/plan-<slug>.md) or slug
 	Resume        string // delivery to continue
 	Parallel      int    // 0 → the profile's Execution line
 	TaskTimeout   time.Duration
@@ -393,7 +393,8 @@ func (r *Runner) loadPlan(reference string) error {
 		}
 		slug = approved[0]
 	}
-	if base := filepath.Base(slug); strings.HasPrefix(base, "plan-") && strings.HasSuffix(base, ".md") {
+	if strings.HasSuffix(slug, ".md") {
+		base := filepath.Base(slug)
 		slug = strings.TrimSuffix(strings.TrimPrefix(base, "plan-"), ".md")
 	}
 	loader, err := routing.NewPlanLoader(r.root)
@@ -405,7 +406,7 @@ func (r *Runner) loadPlan(reference string) error {
 		return fmt.Errorf("loop: plan %s: %w", slug, err)
 	}
 	r.plan = plan
-	r.planPath = filepath.Join(r.root, routing.PlanPath(slug))
+	r.planPath = filepath.Join(r.root, plan.Path)
 	return nil
 }
 
@@ -712,7 +713,7 @@ func (r *Runner) open() error {
 		tasks = append(tasks, taskSummary{ID: task.ID, Number: task.Number, Title: task.Title, Domain: string(task.Domain), Complexity: string(task.Complexity), Hint: hint})
 	}
 	detail := openedDetail{
-		Slug: r.plan.Slug, PlanPath: routing.PlanPath(r.plan.Slug), PlanDigest: r.plan.Set.Digest,
+		Slug: r.plan.Slug, PlanPath: r.plan.Path, PlanDigest: r.plan.Set.Digest,
 		Branch: r.branch, Head: r.openedHead, Parallel: r.parallel, Workspace: r.root,
 		Generation: r.generation, Tasks: tasks,
 	}
