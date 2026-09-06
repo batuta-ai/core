@@ -5,10 +5,10 @@
 **Created:** 2026-09-06 · **Status:** approved
 
 ## Tasks
-- [ ] 1. Tee the child's stdout to an observer in the publication runner — backend/medium → codex/gpt-5.6-sol
+- [x] 1. Tee the child's stdout to an observer in the publication runner — backend/medium → codex/gpt-5.6-sol
       Scope: publication/command.go, publication/command_test.go
       Accept: `Command` gains an optional `Observer io.Writer` and `ExecRunner.Run` writes every stdout chunk to it while the bounded buffer still keeps the output → go test ./publication -run TestExecRunnerTeesStdoutToObserver; existing runner behavior unchanged when Observer is nil → go test ./publication; whole module builds → go build ./...
-- [ ] 2. Parse BATUTA-PROGRESS lines while the executor runs — backend/medium → codex/gpt-5.6-sol
+- [x] 2. Parse BATUTA-PROGRESS lines while the executor runs — backend/medium → codex/gpt-5.6-sol
       Depends on: 1
       Scope: executor/run.go, executor/progress.go, executor/progress_test.go, executor/adapter_test.go
       Accept: `executor.ParseProgress(line)` returns (criterion int, state START|DONE, ok) only for a whole line of the form `BATUTA-PROGRESS <n> START` or `BATUTA-PROGRESS <n> DONE` and rejects everything else → go test ./executor -run TestParseProgress; `Subprocess` gains `Progress func(ProgressEvent)` and `Execute` feeds it one event per protocol line as the child prints it, through the runner's Observer, and appends the same events to `Result.Progress` → go test ./executor -run TestSubprocessStreamsProgressEvents; a partial last line without newline is still parsed at exit → go test ./executor -run TestSubprocessStreamsProgressEvents; nothing changes for output without protocol lines → go test ./executor
