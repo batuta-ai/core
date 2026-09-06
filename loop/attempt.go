@@ -250,9 +250,27 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 
 	if !report.Passed {
 		code := blockerCode(report, result, silent)
-		return r.recordFailure(ctx, ac, &result, code, report.Failures())
+		feedback := reportedDoneProofFailures(report.Failures(), criteria, report.Proofs, result.Progress)
+		return r.recordFailure(ctx, ac, &result, code, feedback)
 	}
 	return r.recordCandidate(ctx, ac, report, result)
+}
+
+func reportedDoneProofFailures(feedback []string, criteria []gates.Criterion, proofs []gates.Verdict, progress []executor.ProgressEvent) []string {
+	done := make(map[int]bool)
+	for _, event := range progress {
+		if event.State == "DONE" {
+			done[event.Criterion] = true
+		}
+	}
+	for index, proof := range proofs {
+		criterion := index + 1
+		if proof.Pass || !done[criterion] || index >= len(criteria) {
+			continue
+		}
+		feedback = append(feedback, fmt.Sprintf("criterion %d was reported DONE but its proof failed: %s", criterion, criteria[index].Proof))
+	}
+	return feedback
 }
 
 // limitDelay is how long to wait for a usage limit: until the reset the

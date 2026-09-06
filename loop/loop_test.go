@@ -54,6 +54,14 @@ case "${FAKE_SCENARIO:-default}" in
   fail-scope)
     if [ "$n" = 2 ] && [ "$retry" = 0 ]; then echo "drive-by" > outside.txt; echo "ok" > out/2.txt; exit 0; fi
     rm -f outside.txt; echo "ok" > out/$n.txt;;
+  fail-proof-done)
+    if [ "$n" = 1 ]; then
+      echo "BATUTA-PROGRESS 1 START"
+      echo "BATUTA-PROGRESS 1 DONE"
+      echo "changed" > shared.txt
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   always-broken)
     if [ "$n" = 1 ]; then echo "BROKEN by $model" > out/1.txt; exit 0; fi
     echo "ok" > out/$n.txt;;
@@ -541,6 +549,24 @@ func TestLoopRetriesInTheSameWorktreeThenSucceeds(t *testing.T) {
 	if !strings.Contains(string(work), "1 retry") {
 		t.Fatalf("WORK.md does not tell the retry story:\n%s", work)
 	}
+}
+
+func TestGateThreeNamesACriterionReportedDoneButFailing(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("fail-proof-done", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind == KindFailure && record.TaskID == "task_1" && strings.Contains(string(record.Detail), "criterion 1 was reported DONE but its proof failed: test -f out/1.txt") {
+			return
+		}
+	}
+	t.Fatalf("criterion reported DONE with a failed proof was not named in failure feedback\n%s", out.String())
 }
 
 func TestLoopEscalatesThenBlocksAndReportsExactly(t *testing.T) {
