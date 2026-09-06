@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** `batuta loop --dashboard --watch` redraws a live panel of the open delivery, and the loop sees inside an executor session through a text protocol: the brief asks for `BATUTA-PROGRESS <n> START|DONE` lines per acceptance criterion, `executor.Subprocess` streams stdout line by line, the loop journals `task_progress` records, gate 3 names criteria reported DONE whose proof failed.
-**Created:** 2026-09-06 · **Status:** approved
+**Created:** 2026-09-06 · **Status:** done
 
 ## Tasks
 - [x] 1. Tee the child's stdout to an observer in the publication runner — backend/medium → codex/gpt-5.6-sol
@@ -16,19 +16,19 @@
       Depends on: 2
       Scope: loop/attempt.go, loop/brief.go, loop/runner.go, loop/brief_test.go, loop/loop_test.go
       Accept: the brief carries a "## Progress protocol" section with the two line shapes verbatim → go test ./loop -run TestBriefCarriesTheProgressProtocol; the loop journals one `task_progress` record per event with detail {execution, criterion, state} while the executor is still running → go test ./loop -run TestLoopJournalsProgressWhileTheExecutorRuns; the fake executor's default scenario prints START and DONE for each criterion and the three-task delivery still integrates → go test ./loop -run TestLoopDeliversAThreeTaskPlanWithADependency; the journal chain verifies and --resume ignores task_progress records → go test ./loop -run 'TestLoopResumesAnExecutorKilledMidRun|TestLoopResumesAfterAStopBetweenWaves'; the whole suite passes → go test ./...
-- [ ] 4. Gate 3 names a criterion reported DONE whose proof failed — backend/medium → codex/gpt-5.6-sol
+- [x] 4. Gate 3 names a criterion reported DONE whose proof failed — backend/medium → codex/gpt-5.6-sol
       Depends on: 3
       Scope: loop/attempt.go, loop/loop_test.go
       Accept: when the executor printed `BATUTA-PROGRESS n DONE` and proof n fails, the failure feedback contains a line naming criterion n as reported done but failing its proof → go test ./loop -run TestGateThreeNamesACriterionReportedDoneButFailing; feedback unchanged when no progress lines were printed → go test ./loop -run TestLoopRetriesInTheSameWorktreeThenSucceeds; whole suite → go test ./...
-- [ ] 5. Render the live panel from a delivery's journal — backend/high → codex/gpt-6-astra
+- [x] 5. Render the live panel from a delivery's journal — backend/high → codex/gpt-6-astra
       Depends on: 3
       Scope: loop/panel.go, loop/panel_test.go, loop/report.go
       Accept: `loop.RenderPanel(records, now) string` prints the header line (delivery, branch @ head, wave x/y, elapsed), one row per task (task, lane, executor/model, exec, state, detail) and a `last` line with the latest record summary, in the layout given in Decisions → go test ./loop -run TestRenderPanelLayout; a running task's detail shows elapsed time and `d/t items` from task_progress records → go test ./loop -run TestRenderPanelShowsCriterionProgress; the pending row names what it waits on and the integrated row its commit → go test ./loop -run TestRenderPanelLayout; `Dashboard` TSV output is byte-for-byte unchanged → go test ./loop -run TestDashboardTSVUnchanged
-- [ ] 6. batuta loop --dashboard --watch redraws the panel until the delivery ends — backend/medium → codex/gpt-5.6-sol
+- [x] 6. batuta loop --dashboard --watch redraws the panel until the delivery ends — backend/medium → codex/gpt-5.6-sol
       Depends on: 5
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, loop/panel.go, loop/panel_test.go
       Accept: `loop.Watch(ctx, workspace, delivery, interval, w)` clears the screen and reprints the panel every interval and returns when the journal reaches a terminal state or ctx ends → go test ./loop -run TestWatchStopsAtTerminalState; `batuta loop --dashboard --watch [--interval 2s] [<delivery>]` wires it and `--dashboard` alone still prints the TSV → go test ./cmd/batuta -run TestRunLoopDashboard; usage documents --watch and --interval → go run ./cmd/batuta help | grep -q -- '--watch'; capabilities unchanged → go test ./cmd/batuta
-- [ ] 7. Document the protocol, the record and the panel — docs/low → codex/gpt-5.4-mini
+- [x] 7. Document the protocol, the record and the panel — docs/low → codex/gpt-5.4-mini
       Depends on: 6
       Scope: docs/loop.md
       Accept: docs/loop.md describes the BATUTA-PROGRESS protocol, the task_progress journal record and --dashboard --watch → grep -q 'BATUTA-PROGRESS' docs/loop.md && grep -q 'task_progress' docs/loop.md && grep -q -- '--watch' docs/loop.md; no other file changed → test "$(git diff --name-only HEAD | grep -vc '^docs/loop.md$')" = 0
