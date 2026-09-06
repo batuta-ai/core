@@ -2,10 +2,13 @@ name: release-binaries
 
 # release-please pushes the tag with the org PAT, which fires this workflow;
 # goreleaser builds the archives and attaches them to the release that
-# already exists for the tag.
+# already exists for the tag. Recovery for a partial upload: run it by hand
+# from the Actions tab with the tag selected as the ref; existing assets are
+# replaced (replace_existing_artifacts in .goreleaser.yaml).
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
