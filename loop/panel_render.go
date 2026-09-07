@@ -18,6 +18,7 @@ type Style struct {
 	Width        int
 	Lang, Glyphs string
 	Colour       bool
+	Frame        int
 }
 
 func StyleForWriter(w io.Writer) Style {
@@ -29,7 +30,7 @@ func StyleForWriter(w io.Writer) Style {
 	if lang == "" {
 		lang = locale
 	}
-	style := Style{Width: 120, Lang: "en", Glyphs: "ascii"}
+	style := Style{Width: 120, Lang: "en", Glyphs: "ascii", Frame: -1}
 	if strings.HasPrefix(strings.ToLower(lang), "pt") {
 		style.Lang = "pt"
 	}
@@ -119,7 +120,7 @@ func Render(model PanelView, style Style) string {
 	}
 	ctx := []string{strings.TrimSpace(c.Executor+" "+c.Model) + " · " + c.Reasoning + " · " + c.TestCommand + " · " + c.Sandbox, fmt.Sprintf("%d %s · %d %s · %d %s · PID %s", c.Sessions, labels["sessions"], c.Retries, labels["retries"], c.Escalations, labels["escalations"], pid)}
 	p := model.Progress
-	prog := []string{r.progress(labels["waves"], p.WavesDone, p.WavesTotal), r.progress(labels["tasks"], p.TasksDone, p.TasksTotal)}
+	prog := []string{r.progress(labels["waves"], p.WavesShown, p.WavesDone, p.WavesTotal), r.progress(labels["tasks"], p.TasksShown, p.TasksDone, p.TasksTotal)}
 	detail := r.detail(model.Detail)
 	var cols []int
 	var headings []string
@@ -310,6 +311,15 @@ func (r panelRenderer) stateGlyph(state string) string {
 		return "^"
 	case "pending", "":
 		return r.g.pend
+	case "running", "preparing":
+		if r.style.Frame < 0 {
+			return ">"
+		}
+		frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+		if r.style.Glyphs == "ascii" {
+			frames = []rune("|/-\\")
+		}
+		return string(frames[r.style.Frame%len(frames)])
 	default:
 		return ">"
 	}
@@ -335,11 +345,11 @@ func (r panelRenderer) status(state string, task bool) string {
 	}
 	return r.stateGlyph(state) + " " + label
 }
-func (r panelRenderer) progress(label string, done, total int) string {
+func (r panelRenderer) progress(label string, shown float64, done, total int) string {
 	if total <= 0 {
 		return fmt.Sprintf("%s  %d", label, done)
 	}
-	fraction := float64(max(0, min(done, total))) / float64(total)
+	fraction := max(0, min(shown, float64(total))) / float64(total)
 	full := int(math.RoundToEven(24 * fraction))
 	return fmt.Sprintf("%s  %d/%d  [%s%s]  %d%%", label, done, total, strings.Repeat(r.g.full, full), strings.Repeat(r.g.empty, 24-full), int(math.RoundToEven(100*fraction)))
 }

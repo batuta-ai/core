@@ -14,7 +14,7 @@ func renderFixture(state string) PanelView {
 		Header:    PanelHeader{Delivery: "roadmap-20260906-215846", Project: "core", Branch: "feat/roadmap", Head: "4c1e9f2", Phase: 2, State: "running", Elapsed: 14*time.Minute + 32*time.Second},
 		Attention: PanelAttention{Kind: "none"},
 		Context:   PanelContext{Executor: "codex", Model: "gpt-5.6-sol", Reasoning: "medium", TestCommand: "go test ./...", Sandbox: "workspace-write", Sessions: 2, PID: 99573},
-		Progress:  PanelProgress{WavesDone: 1, WavesTotal: 4, TasksDone: 1, TasksTotal: 5},
+		Progress:  PanelProgress{WavesDone: 1, WavesTotal: 4, TasksDone: 1, TasksTotal: 5, WavesShown: 1, TasksShown: 1},
 		Detail:    PanelDetail{Task: "task_2", Attempt: 1, AttemptLimit: 4, Title: "Archiving a plan ticks its phase in the roadmap", Criterion: 2, CriterionTotal: 3, CriterionTitle: "TickPhase rewrites only the line", LastRecord: "task_progress 2 START", LastAge: 12 * time.Second, Worktree: ".batuta/worktrees/roadmap-task-2-e1", LogPath: ".batuta/runs/2026-09-06-roadmap-task-2-e1.out.log"},
 		LogTitle:  "task-2-e1",
 		LogLines:  []string{"BATUTA-PROGRESS 1 DONE", "BATUTA-PROGRESS 2 START", "exec: go test ./routing -run TestTickPhaseRewritesOnlyTheLine -count=1", "--- FAIL: TestTickPhaseRewritesOnlyTheLine (0.00s)", "    roadmap_test.go:88: TickPhase() rewrote 2 lines, want 1", "codex: the rewrite must keep every other byte; switching to a line-indexed replace"},
@@ -94,13 +94,52 @@ func TestRenderMatchesGoldens(t *testing.T) {
 	for _, state := range []string{"calm", "question", "limit", "blocked", "conflict"} {
 		for _, width := range []int{120, 80, 60} {
 			t.Run(fmt.Sprintf("%s/%d", state, width), func(t *testing.T) {
-				assertRenderGolden(t, state, Style{Width: width, Lang: "en", Glyphs: "unicode"}, "")
+				assertRenderGolden(t, state, Style{Width: width, Lang: "en", Glyphs: "unicode", Frame: -1}, "")
 			})
 		}
 	}
 }
+
+func TestRenderSpinnerFrames(t *testing.T) {
+	for _, test := range []struct {
+		name, glyphs, frames string
+	}{
+		{name: "unicode", glyphs: "unicode", frames: "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"},
+		{name: "ascii", glyphs: "ascii", frames: "|/-\\"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := renderFixture("calm")
+			model.Attention = PanelAttention{Kind: "running", Task: "task_2", Text: "working"}
+			for frame, want := range []rune(test.frames) {
+				got := Render(model, Style{Width: 120, Lang: "en", Glyphs: test.glyphs, Frame: frame})
+				glyph := string(want)
+				for _, line := range []string{strings.SplitN(got, "\n", 2)[0], strings.Split(got, "\n")[1]} {
+					if !strings.Contains(line, glyph) {
+						t.Fatalf("frame %d missing %q in %q", frame, glyph, line)
+					}
+				}
+				if strings.Count(got, glyph) < 4 {
+					t.Fatalf("frame %d rendered %d running glyphs, want header, attention, wave, and task row:\n%s", frame, strings.Count(got, glyph), got)
+				}
+			}
+			static := Render(model, Style{Width: 120, Lang: "en", Glyphs: test.glyphs, Frame: -1})
+			if strings.Count(static, ">") < 4 {
+				t.Fatalf("static frame did not retain running marker:\n%s", static)
+			}
+		})
+	}
+}
+
+func TestRenderUsesShownProgress(t *testing.T) {
+	model := renderFixture("calm")
+	model.Progress.WavesShown = 1.5
+	got := Render(model, Style{Width: 120, Lang: "en", Glyphs: "ascii", Frame: -1})
+	if !strings.Contains(got, "Waves  1/4  [#########...............]  38%") {
+		t.Fatalf("renderer did not use eased progress:\n%s", got)
+	}
+}
 func TestRenderPortugueseLabels(t *testing.T) {
-	assertRenderGolden(t, "calm", Style{Width: 120, Lang: "pt", Glyphs: "unicode"}, "-pt-unicode")
+	assertRenderGolden(t, "calm", Style{Width: 120, Lang: "pt", Glyphs: "unicode", Frame: -1}, "-pt-unicode")
 	for _, key := range []string{"LANG", "LC_ALL", "BATUTA_LANG"} {
 		t.Run(key, func(t *testing.T) {
 			for _, k := range []string{"LANG", "LC_ALL", "BATUTA_LANG"} {
@@ -114,7 +153,7 @@ func TestRenderPortugueseLabels(t *testing.T) {
 	}
 }
 func TestRenderASCIIFallback(t *testing.T) {
-	assertRenderGolden(t, "calm", Style{Width: 120, Lang: "en", Glyphs: "ascii"}, "-en-ascii")
+	assertRenderGolden(t, "calm", Style{Width: 120, Lang: "en", Glyphs: "ascii", Frame: -1}, "-en-ascii")
 	t.Setenv("BATUTA_LANG", "en")
 	t.Setenv("LC_ALL", "C")
 	t.Setenv("LANG", "en_US.UTF-8")

@@ -53,6 +53,9 @@ func TestPanelModelSummarisesTheJournal(t *testing.T) {
 	if model.Progress.WavesDone != 1 || model.Progress.WavesTotal != 2 || model.Progress.TasksDone != 1 || model.Progress.TasksTotal != 3 {
 		t.Fatalf("progress: %+v", model.Progress)
 	}
+	if model.Progress.WavesShown != float64(model.Progress.WavesDone) || model.Progress.TasksShown != float64(model.Progress.TasksDone) {
+		t.Fatalf("shown progress: %+v", model.Progress)
+	}
 	if model.Waves[0].Number != 1 || model.Waves[0].Base != "initial" || model.Waves[0].Integrated != "commit-one" || model.Waves[0].Done != 1 || model.Waves[0].Total != 1 || model.Waves[0].State != "integrated" || model.Waves[0].Rows[0].Commit != "commit-one" {
 		t.Fatalf("wave: %+v", model.Waves[0])
 	}

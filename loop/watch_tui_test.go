@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -354,5 +355,87 @@ func TestWatchProgramAlreadyDone(t *testing.T) {
 	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second))
 	if final := tm.FinalModel(t).(watchModel); final.panel.Header.State != StateDone {
 		t.Fatalf("final state: %s", final.panel.Header.State)
+	}
+}
+
+func TestWatchSpinnerTicksOnlyWhileRunning(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	var durations []time.Duration
+	m := newWatchModel(t.TempDir(), records, Style{Width: 120, Lang: "en", Glyphs: "unicode"}, func() time.Time { return now })
+	m.ticker = immediateTicker(now, &durations)
+
+	if cmd := m.Init(); cmd == nil {
+		t.Fatal("running model did not start animation")
+	}
+	if !slices.Contains(durations, 80*time.Millisecond) {
+		t.Fatalf("initial tick durations = %v", durations)
+	}
+	before := m.style.Frame
+	m, cmd := updateWatch(t, m, spinnerTickMsg{})
+	if m.style.Frame != before+1 || cmd == nil {
+		t.Fatalf("spinner tick: frame=%d command=%v", m.style.Frame, cmd != nil)
+	}
+	if got := durations[len(durations)-1]; got != 80*time.Millisecond {
+		t.Fatalf("spinner rescheduled after %v", got)
+	}
+
+	graph.Tasks[1].State = routing.GraphTaskIntegrated
+	stopped := append(records, panelRecord(t, KindProgress, "task_2", now, map[string]any{"execution": 1, "criterion": 3, "state": "DONE"}, graph))
+	m, _ = updateWatch(t, m, journalMsg{records: stopped})
+	count := len(durations)
+	frame := m.style.Frame
+	m, cmd = updateWatch(t, m, spinnerTickMsg{})
+	if cmd != nil || len(durations) != count || m.style.Frame != frame {
+		t.Fatalf("idle spinner tick: frame=%d durations=%v command=%v", m.style.Frame, durations, cmd != nil)
+	}
+
+	idle := newWatchModel(t.TempDir(), nil, Style{Width: 120}, func() time.Time { return now })
+	idle.ticker = immediateTicker(now, &durations)
+	count = len(durations)
+	if cmd := idle.Init(); cmd == nil {
+		t.Fatal("idle model did not retain its clock command")
+	}
+	if slices.Contains(durations[count:], 80*time.Millisecond) {
+		t.Fatalf("idle model scheduled spinner: %v", durations[count:])
+	}
+	idle, cmd = updateWatch(t, idle, journalMsg{records: records})
+	if cmd == nil || durations[len(durations)-1] != 80*time.Millisecond {
+		t.Fatalf("running journal did not start spinner: durations=%v command=%v", durations, cmd != nil)
+	}
+}
+
+func TestWatchProgressEases(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	var durations []time.Duration
+	m := newWatchModel(t.TempDir(), records, Style{Width: 120}, func() time.Time { return now })
+	m.ticker = immediateTicker(now, &durations)
+	if m.panel.Progress.WavesShown != 1 || m.panel.Progress.TasksShown != 1 {
+		t.Fatalf("initial shown progress = %+v", m.panel.Progress)
+	}
+
+	graph.Tasks[1].State = routing.GraphTaskIntegrated
+	graph.Tasks[2].State = routing.GraphTaskRunning
+	graph.Tasks[2].Attempts = []routing.GraphTaskAttempt{{Execution: 1}}
+	fresh := append(records, panelRecord(t, KindStarted, "task_3", now, map[string]any{"execution": 1}, graph))
+	m, cmd := updateWatch(t, m, journalMsg{records: fresh})
+	if cmd == nil || durations[len(durations)-1] != 30*time.Millisecond {
+		t.Fatalf("progress change did not start easing: durations=%v command=%v", durations, cmd != nil)
+	}
+	if m.panel.Progress.WavesShown != 1 || m.panel.Progress.TasksShown != 1 {
+		t.Fatalf("progress jumped before first frame: %+v", m.panel.Progress)
+	}
+
+	for frame := 1; frame <= 12; frame++ {
+		m, cmd = updateWatch(t, m, progressTickMsg{})
+		want := 1 + float64(frame)/12
+		if m.panel.Progress.WavesShown != want || m.panel.Progress.TasksShown != want {
+			t.Fatalf("frame %d progress = %.12g/%.12g, want %.12g", frame, m.panel.Progress.WavesShown, m.panel.Progress.TasksShown, want)
+		}
+		if (frame < 12) != (cmd != nil) {
+			t.Fatalf("frame %d command present=%v", frame, cmd != nil)
+		}
+	}
+	if m.panel.Progress.WavesShown != float64(m.panel.Progress.WavesDone) || m.panel.Progress.TasksShown != float64(m.panel.Progress.TasksDone) {
+		t.Fatalf("final values are not exact: %+v", m.panel.Progress)
 	}
 }
