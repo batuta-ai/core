@@ -154,7 +154,7 @@ exit `1` with the reason on stderr.
   at `--interval` (2 seconds by default), follows the most recent open
   delivery when none is named, exits cleanly when there are no open
   deliveries, and stops at the terminal record or on cancellation without
-  writing to the journal. `--once` prints one non-interactive snapshot.
+  writing to the journal. `--once` prints one non-interactive frame of the same panel.
   The display has a delivery/branch/state header and attention line, Context
   and Progress panels (including completion bars), a Detail panel for the
   selected task, waves with task rows, and a live tail of that task's executor

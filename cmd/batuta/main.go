@@ -569,7 +569,7 @@ func runWatch(args []string, stdout, stderr io.Writer) error {
 		}
 	}
 	if *once {
-		return loop.Dashboard("", delivery, stdout)
+		return loop.Snapshot("", delivery, stdout)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

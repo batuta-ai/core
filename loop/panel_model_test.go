@@ -28,7 +28,7 @@ func modelFixture(t *testing.T) ([]journal.Record, routing.DeliveryGraph, time.T
 		panelRecord(t, KindStarted, "task_1", now.Add(-4*time.Minute), map[string]any{"execution": 1, "executor": "codex", "model": "small"}, graph),
 		panelRecord(t, KindSettled, "", now.Add(-3*time.Minute), map[string]any{"wave": 1, "final_head": "commit-one"}, graph),
 		panelRecord(t, KindWorktree, "task_2", now.Add(-2*time.Minute), map[string]any{"execution": 1, "worktree": attemptWorktree{Root: "/work/task_2"}}, graph),
-		panelRecord(t, KindStarted, "task_2", now.Add(-time.Minute), map[string]any{"execution": 1, "run_id": "demo-task-2-e1", "executor": "codex", "model": "small", "reasoning": "medium", "worktree": "/work/task_2"}, graph),
+		panelRecord(t, KindStarted, "task_2", now.Add(-time.Minute), map[string]any{"execution": 1, "run_id": "demo-task-2-e1", "log_path": ".batuta/runs/2026-09-06-demo-task-2-e1.out.log", "executor": "codex", "model": "small", "reasoning": "medium", "worktree": "/work/task_2"}, graph),
 		panelRecord(t, KindProgress, "task_2", now.Add(-10*time.Second), map[string]any{"execution": 1, "criterion": 2, "state": "START"}, graph),
 	}
 	return records, graph, now
@@ -127,7 +127,7 @@ func TestPanelModelSummarisesTheJournal(t *testing.T) {
 func TestPanelModelDetailFollowsTheSelection(t *testing.T) {
 	records, graph, now := modelFixture(t)
 	got := PanelModel(records, now, "")
-	if got.Detail.Task != "task_2" || got.Detail.Title != "View model" || got.Detail.Attempt != 1 || got.Detail.Criterion != 2 || got.Detail.CriterionState != "START" || got.Detail.Worktree != "/work/task_2" || got.Detail.LogPath != ".batuta/runs/demo-task-2-e1.out.log" || got.Detail.LastAge != 10*time.Second || !strings.Contains(got.Detail.LastRecord, "task_progress") {
+	if got.Detail.Task != "task_2" || got.Detail.Title != "View model" || got.Detail.Attempt != 1 || got.Detail.Criterion != 2 || got.Detail.CriterionState != "START" || got.Detail.Worktree != "/work/task_2" || got.Detail.LogPath != ".batuta/runs/2026-09-06-demo-task-2-e1.out.log" || got.Detail.LastAge != 10*time.Second || !strings.Contains(got.Detail.LastRecord, "task_progress") {
 		t.Fatalf("active detail: %+v", got.Detail)
 	}
 	selected := PanelModel(records, now, "task_1")
@@ -147,6 +147,38 @@ func TestPanelModelDetailFollowsTheSelection(t *testing.T) {
 	records = append(records, panelRecord(t, KindProgress, "task_2", now, map[string]any{"execution": 1, "criterion": 9, "state": "DONE"}, graph))
 	if got := PanelModel(records, now, ""); got.Detail.Criterion != 0 {
 		t.Fatalf("stale progress: %+v", got.Detail)
+	}
+}
+
+func TestPanelModelOlderJournalLeavesLogPathUnknown(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	records[4] = panelRecord(t, KindStarted, "task_2", now.Add(-time.Minute), map[string]any{"execution": 1, "run_id": "demo-task-2-e1"}, graph)
+	model := PanelModel(records, now, "")
+	if model.Detail.LogPath != "" {
+		t.Fatalf("guessed log path: %q", model.Detail.LogPath)
+	}
+	if err := loadPanelLog(t.TempDir(), &model); err != nil || len(model.LogLines) != 0 {
+		t.Fatalf("older journal log = %v, %v", model.LogLines, err)
+	}
+}
+
+func TestPanelModelGroupsTasksIntegratedBeforeRun(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	graph.Waves = graph.Waves[1:]
+	records = append(records, panelRecord(t, KindProgress, "task_2", now, map[string]any{"execution": 1, "criterion": 2, "state": "DONE"}, graph))
+	model := PanelModel(records, now, "")
+	if len(model.Waves) != 3 {
+		t.Fatalf("waves: %+v", model.Waves)
+	}
+	before, pending := model.Waves[1], model.Waves[2]
+	if before.State != "before_run" || before.Number != 0 || before.Total != 1 || before.Done != 1 || len(before.Rows) != 1 || before.Rows[0].Task != "task_1" {
+		t.Fatalf("before-run wave: %+v", before)
+	}
+	if pending.State != "pending" || pending.Total != 1 || pending.Done != 0 || len(pending.Rows) != 1 || pending.Rows[0].Task != "task_3" {
+		t.Fatalf("pending wave: %+v", pending)
+	}
+	if model.Progress.WavesTotal != 1 || model.Progress.WavesDone != 0 || model.Progress.TasksDone != 1 {
+		t.Fatalf("progress includes synthetic waves: %+v", model.Progress)
 	}
 }
 

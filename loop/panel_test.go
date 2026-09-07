@@ -177,6 +177,50 @@ func TestDashboardTSVUnchanged(t *testing.T) {
 	}
 }
 
+func TestPanelSnapshotSelectsOpenOrExplicitDoneDelivery(t *testing.T) {
+	t.Setenv("LC_ALL", "en_US.UTF-8")
+	t.Setenv("BATUTA_LANG", "en")
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	if err := Snapshot(root, "", &output); err != nil || output.String() != "no open deliveries\n" {
+		t.Fatalf("empty snapshot = %q, %v", output.String(), err)
+	}
+	records, graph, now := modelFixture(t)
+	for _, delivery := range []string{"done-demo", "open-demo"} {
+		opened := panelRecord(t, KindOpened, "", now, openedDetail{Slug: delivery, Workspace: root}, graph)
+		if _, err := store.Append(delivery, opened); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Append(delivery, records[4]); err != nil {
+			t.Fatal(err)
+		}
+		if delivery == "done-demo" {
+			if _, err := store.Append(delivery, panelRecord(t, KindTerminal, "", now, map[string]any{"state": StateDone}, graph)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	writePanelLogAt(t, root, "2026-09-06-demo-task-2-e1", []string{"snapshot log content"})
+	for _, delivery := range []string{"", "done-demo"} {
+		output.Reset()
+		if err := Snapshot(root, delivery, &output); err != nil {
+			t.Fatal(err)
+		}
+		want := delivery
+		if want == "" {
+			want = "open-demo"
+		}
+		got := output.String()
+		if strings.Count(got, "batuta watch ·") != 1 || !strings.Contains(got, want) || !strings.Contains(got, "snapshot log content") || strings.Contains(got, "\x1b[") {
+			t.Fatalf("snapshot %q = %q", delivery, got)
+		}
+	}
+}
+
 func TestWatchStopsAtTerminalState(t *testing.T) {
 	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -238,15 +282,15 @@ func TestWatchShowsTheRunLogTail(t *testing.T) {
 	t.Parallel()
 	records, graph, now := panelFixture(t)
 	records = append(records, panelRecord(t, KindStarted, "task_2", now, map[string]any{
-		"execution": 2, "run_id": "demo-task-2-e2",
+		"execution": 2, "run_id": "demo-task-2-e2", "log_path": ".batuta/runs/2026-09-06-demo-task-2-e2.out.log",
 	}, graph))
-	root := writePanelLog(t, "demo-task-2-e2", []string{"old 1", "old 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8"})
+	root := writePanelLog(t, "2026-09-06-demo-task-2-e2", []string{"old 1", "old 2", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8"})
 
 	got, err := renderWatchPanel(root, records, now, Style{Width: 120, Lang: "en", Glyphs: "unicode"}, 40)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"line 3", "line 4", "line 5", "line 6", "line 7", "line 8"} {
+	for _, want := range []string{"Log  .batuta/runs/2026-09-06-demo-task-2-e2.out.log", "line 3", "line 4", "line 5", "line 6", "line 7", "line 8"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("log tail missing %q:\n%s", want, got)
 		}
@@ -255,7 +299,7 @@ func TestWatchShowsTheRunLogTail(t *testing.T) {
 		t.Fatalf("log panel did not keep only the last six lines:\n%s", got)
 	}
 
-	writePanelLogAt(t, root, "demo-task-2-e2", []string{"fresh redraw"})
+	writePanelLogAt(t, root, "2026-09-06-demo-task-2-e2", []string{"fresh redraw"})
 	got, err = renderWatchPanel(root, records, now, Style{Width: 120, Lang: "en", Glyphs: "unicode"}, 40)
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +315,7 @@ func TestWatchLogPanelAfterIntegration(t *testing.T) {
 	graph.Tasks[1].State = routing.GraphTaskIntegrated
 	graph.Tasks[1].IntegratedCommitSHA = "7654321abcdef"
 	records = append(records,
-		panelRecord(t, KindStarted, "task_2", now, map[string]any{"execution": 2, "run_id": "demo-task-2-e2"}, graph),
+		panelRecord(t, KindStarted, "task_2", now, map[string]any{"execution": 2, "run_id": "demo-task-2-e2", "log_path": ".batuta/runs/demo-task-2-e2.out.log"}, graph),
 		panelRecord(t, KindTerminal, "", now.Add(time.Second), map[string]any{"state": StateDone}, graph),
 	)
 	root := writePanelLog(t, "demo-task-2-e2", []string{"executor finished", "final proof passed"})
@@ -304,7 +348,7 @@ func TestWatchShrinkOrder(t *testing.T) {
 	graph := routing.DeliveryGraph{Tasks: tasks, Waves: []routing.DeliveryWave{{Number: 1, TaskIDs: ids}}}
 	records := []journal.Record{
 		panelRecord(t, KindOpened, "", now.Add(-time.Minute), map[string]any{"slug": "demo", "workspace": "/projects/core", "tasks": summaries}, graph),
-		panelRecord(t, KindStarted, "task_1", now, map[string]any{"execution": 1, "run_id": "demo-task-1-e1"}, graph),
+		panelRecord(t, KindStarted, "task_1", now, map[string]any{"execution": 1, "run_id": "demo-task-1-e1", "log_path": ".batuta/runs/demo-task-1-e1.out.log"}, graph),
 	}
 	root := writePanelLog(t, "demo-task-1-e1", []string{"log 1", "log 2", "log 3", "log 4", "log 5", "log 6"})
 

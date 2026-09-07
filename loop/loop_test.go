@@ -397,6 +397,30 @@ func TestLoopStreamsExecutorOutputToTheRunLog(t *testing.T) {
 	if !stdoutObserved || !stderrObserved {
 		t.Fatalf("output observed while running: stdout=%v stderr=%v", stdoutObserved, stderrObserved)
 	}
+	started := 0
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind != KindStarted {
+			continue
+		}
+		started++
+		var detail struct {
+			Execution int    `json:"execution"`
+			LogPath   string `json:"log_path"`
+		}
+		if err := json.Unmarshal(record.Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		want, err := filepath.Rel(f.root, r.runLogPath(record.TaskID, detail.Execution))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if detail.LogPath != filepath.ToSlash(want) {
+			t.Errorf("%s log_path = %q, want %q", record.TaskID, detail.LogPath, filepath.ToSlash(want))
+		}
+	}
+	if started == 0 {
+		t.Fatal("missing executor_started records")
+	}
 	content, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatal(err)

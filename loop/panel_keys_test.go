@@ -242,7 +242,7 @@ func TestPanelKeysLegendLogAndAnswer(t *testing.T) {
 	if err := watchWithTerminal(context.Background(), root, "demo", time.Hour, output, terminal, pager); err != nil {
 		t.Fatal(err)
 	}
-	if opened != filepath.Join(root, ".batuta/runs/demo-task-2-e1.out.log") {
+	if opened != filepath.Join(root, ".batuta/runs/2026-09-06-demo-task-2-e1.out.log") {
 		t.Fatalf("opened %q", opened)
 	}
 	joined := strings.Join(frames, "\n")

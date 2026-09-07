@@ -129,10 +129,15 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 			return err
 		}
 	}
+	logPath := r.runLogPath(taskID, ac.execution)
+	relativeLogPath, err := filepath.Rel(r.root, logPath)
+	if err != nil {
+		return fmt.Errorf("loop: relative executor log path: %w", err)
+	}
 	if err := r.locked(KindStarted, taskID, map[string]any{
 		"execution": ac.execution, "run_id": ac.runID, "executor": adapter.Name, "model": ac.runtime.Model,
 		"reasoning": ac.runtime.Reasoning, "argv": redactArgs(invocation, brief), "worktree": ac.worktree.Root,
-		"brief_lines": strings.Count(brief, "\n") + 1, "via_file": invocation.UsedFile,
+		"brief_lines": strings.Count(brief, "\n") + 1, "via_file": invocation.UsedFile, "log_path": filepath.ToSlash(relativeLogPath),
 	}, func() error { r.started[attemptKey(taskID, ac.execution)] = true; return nil }); err != nil {
 		return err
 	}
@@ -148,7 +153,6 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 			}, nil)
 		}
 	}
-	logPath := r.runLogPath(taskID, ac.execution)
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
 		return err
 	}

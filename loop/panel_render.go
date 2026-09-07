@@ -77,10 +77,13 @@ func Render(model PanelView, style Style) string {
 	status := r.status(state, false) + " · " + renderElapsed(model.Header.Elapsed)
 	left := " batuta watch"
 	if width >= 76 {
-		left += " · " + model.Header.Project + fmt.Sprintf(" · %s %d", labels["phase"], model.Header.Phase)
+		left += " · " + model.Header.Project
 	}
 	if width >= 100 {
-		left = " batuta watch · " + model.Header.Delivery + " · " + model.Header.Project + fmt.Sprintf(" · %s %d", labels["phase"], model.Header.Phase)
+		left = " batuta watch · " + model.Header.Delivery + " · " + model.Header.Project
+	}
+	if width >= 76 && (model.Header.Roadmap != "" || model.Header.Phase > 0) {
+		left += fmt.Sprintf(" · %s %d", labels["phase"], model.Header.Phase)
 	}
 	right := status + " "
 	if width >= 76 {
@@ -96,7 +99,14 @@ func Render(model PanelView, style Style) string {
 	}
 	out = append(out, r.fit(" "+strings.Join(pieces, " · "), width))
 	c := model.Context
-	ctx := []string{strings.TrimSpace(c.Executor+" "+c.Model) + " · " + c.Reasoning + " · " + c.TestCommand + " · " + c.Sandbox, fmt.Sprintf("%d %s · %d %s · %d %s · PID %d", c.Sessions, labels["sessions"], c.Retries, labels["retries"], c.Escalations, labels["escalations"], c.PID)}
+	pid := "–"
+	if style.Glyphs == "ascii" {
+		pid = "-"
+	}
+	if c.PID != 0 {
+		pid = fmt.Sprint(c.PID)
+	}
+	ctx := []string{strings.TrimSpace(c.Executor+" "+c.Model) + " · " + c.Reasoning + " · " + c.TestCommand + " · " + c.Sandbox, fmt.Sprintf("%d %s · %d %s · %d %s · PID %s", c.Sessions, labels["sessions"], c.Retries, labels["retries"], c.Escalations, labels["escalations"], pid)}
 	p := model.Progress
 	prog := []string{r.progress(labels["waves"], p.WavesDone, p.WavesTotal), r.progress(labels["tasks"], p.TasksDone, p.TasksTotal)}
 	detail := r.detail(model.Detail)
@@ -137,6 +147,9 @@ func Render(model PanelView, style Style) string {
 		id := fmt.Sprintf("W%d", wave.Number)
 		if wave.Number == 0 {
 			id = labels["pending"]
+			if wave.State == "before_run" {
+				id, title = "", labels["before_run"]
+			}
 		}
 		table = append(table, r.tableRow([]string{id, title, fmt.Sprintf("%s %d/%d", r.stateGlyph(wave.State), wave.Done, wave.Total), "", "", ""}, cols))
 		for _, task := range wave.Rows {
@@ -272,7 +285,7 @@ func renderAge(d time.Duration) string {
 }
 func (r panelRenderer) stateGlyph(state string) string {
 	switch state {
-	case "integrated", "done", "pass":
+	case "integrated", "done", "pass", "before_run":
 		return r.g.ok
 	case "blocked", "fail", "failed":
 		return r.g.fail

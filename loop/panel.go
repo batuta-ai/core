@@ -17,6 +17,50 @@ import (
 
 const panelClearScreen = "\x1b[2J\x1b[H"
 
+// Snapshot writes one dashboard frame without entering interactive mode.
+func Snapshot(workspace, delivery string, w io.Writer) error {
+	root, store, err := openStore(workspace)
+	if err != nil {
+		return err
+	}
+	delivery, err = panelDelivery(store, delivery)
+	if err != nil {
+		return err
+	}
+	if delivery == "" {
+		_, err := fmt.Fprintln(w, "no open deliveries")
+		return err
+	}
+	records, err := store.Read(delivery)
+	if err != nil {
+		return err
+	}
+	style, height := watchPanelSize(w)
+	panel, err := renderWatchPanel(root, records, time.Now(), style, height)
+	if err != nil {
+		return err
+	}
+	_, err = io.WriteString(w, panel)
+	return err
+}
+
+func panelDelivery(store *journal.Store, delivery string) (string, error) {
+	if delivery != "" {
+		return delivery, nil
+	}
+	ids, err := store.List()
+	if err != nil {
+		return "", err
+	}
+	for _, id := range ids {
+		records, err := store.Read(id)
+		if err == nil && len(records) > 0 && records[0].Kind == KindOpened && terminalState(records) == "" {
+			return id, nil
+		}
+	}
+	return "", nil
+}
+
 // Watch redraws the most recent journal state until the delivery ends or
 // the context is canceled. It only reads the journal.
 func Watch(ctx context.Context, workspace, delivery string, interval time.Duration, w io.Writer) error {
@@ -30,22 +74,13 @@ func watchWithTerminal(ctx context.Context, workspace, delivery string, interval
 	if err != nil {
 		return err
 	}
+	delivery, err = panelDelivery(store, delivery)
+	if err != nil {
+		return err
+	}
 	if delivery == "" {
-		ids, err := store.List()
-		if err != nil {
-			return err
-		}
-		for _, id := range ids {
-			records, err := store.Read(id)
-			if err == nil && len(records) > 0 && records[0].Kind == KindOpened && terminalState(records) == "" {
-				delivery = id
-				break
-			}
-		}
-		if delivery == "" {
-			_, err := fmt.Fprintln(w, "no open deliveries")
-			return err
-		}
+		_, err := fmt.Fprintln(w, "no open deliveries")
+		return err
 	}
 	if interval <= 0 {
 		interval = 2 * time.Second

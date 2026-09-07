@@ -167,6 +167,33 @@ func TestTerminalSizeFallback(t *testing.T) {
 	}
 }
 
+func TestRenderUnknownContextAndBeforeRun(t *testing.T) {
+	for _, tc := range []struct {
+		lang, glyphs, pid, before, check string
+	}{
+		{"en", "unicode", "PID –", "before run", "✓ 1/1"},
+		{"pt", "unicode", "PID –", "antes do run", "✓ 1/1"},
+		{"en", "ascii", "PID -", "before run", "+ 1/1"},
+	} {
+		for _, width := range []int{80, 120} {
+			model := renderFixture("calm")
+			model.Header.Roadmap = ""
+			model.Header.Phase = 0
+			model.Context.PID = 0
+			model.Waves = []PanelWave{{State: "before_run", Done: 1, Total: 1}}
+			got := Render(model, Style{Width: width, Lang: tc.lang, Glyphs: tc.glyphs})
+			for _, want := range []string{tc.pid, tc.before, tc.check} {
+				if !strings.Contains(got, want) {
+					t.Errorf("%s/%s/%d missing %q:\n%s", tc.lang, tc.glyphs, width, want, got)
+				}
+			}
+			if header := strings.SplitN(got, "\n", 2)[0]; strings.Contains(header, "phase") || strings.Contains(header, "fase") || strings.Contains(got, "PID 0") {
+				t.Errorf("unknown context rendered as zero:\n%s", got)
+			}
+		}
+	}
+}
+
 func TestRenderUsesSuppliedValues(t *testing.T) {
 	model := renderFixture("calm")
 	model.Header.Delivery = "another-delivery"

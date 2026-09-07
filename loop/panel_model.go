@@ -104,7 +104,7 @@ type panelTaskView struct {
 
 type panelEvent struct {
 	Execution    int                  `json:"execution"`
-	RunID        string               `json:"run_id"`
+	LogPath      string               `json:"log_path"`
 	Executor     string               `json:"executor"`
 	Model        string               `json:"model"`
 	Reasoning    string               `json:"reasoning"`
@@ -129,7 +129,7 @@ type panelEvent struct {
 
 // PanelModel projects journal snapshots and events without consulting live state.
 // Wave totals count first admissions, folding retries into the original wave.
-// Number zero groups tasks not yet admitted.
+// Number zero groups tasks not yet admitted or integrated before the run.
 func PanelModel(records []journal.Record, now time.Time, selected string) PanelView {
 	model := PanelView{Attention: PanelAttention{Kind: "none"}}
 	if len(records) == 0 {
@@ -325,9 +325,14 @@ func (model *PanelView) groupWaves(graph routing.DeliveryGraph, tasks map[string
 		model.Waves = append(model.Waves, row)
 	}
 	model.Progress.WavesTotal = len(model.Waves)
+	before := PanelWave{}
 	pending := PanelWave{}
 	for _, task := range graph.Tasks {
 		if _, exists := assigned[task.TaskID]; !exists {
+			if task.State == routing.GraphTaskIntegrated {
+				before.Rows = append(before.Rows, tasks[task.TaskID].row())
+				continue
+			}
 			pending.Rows = append(pending.Rows, tasks[task.TaskID].row())
 			for _, dependency := range task.Dependencies {
 				found := false
@@ -342,6 +347,11 @@ func (model *PanelView) groupWaves(graph routing.DeliveryGraph, tasks map[string
 				}
 			}
 		}
+	}
+	if len(before.Rows) > 0 {
+		before.summarise()
+		before.State = "before_run"
+		model.Waves = append(model.Waves, before)
 	}
 	if len(pending.Rows) > 0 {
 		pending.summarise()
@@ -362,6 +372,7 @@ func (task *panelTaskView) apply(record journal.Record, event panelEvent, now ti
 	switch record.Kind {
 	case KindStarted:
 		task.context.Executor, task.context.Model, task.context.Reasoning = event.Executor, event.Model, event.Reasoning
+		task.detail.LogPath = event.LogPath
 		task.limit = nil
 		fallthrough
 	case KindWorktree:
@@ -402,9 +413,6 @@ func (task *panelTaskView) apply(record journal.Record, event panelEvent, now ti
 	case KindCandidate:
 		task.conflict = ""
 		task.escalation = ""
-	}
-	if event.RunID != "" {
-		task.detail.LogPath = filepath.Join(".batuta", "runs", event.RunID+".out.log")
 	}
 }
 

@@ -443,8 +443,8 @@ func TestWatchOncePrintsASnapshot(t *testing.T) {
 			if err := run(args, &stdout, &stderr); err != nil {
 				t.Fatalf("watch --once = %v\nstderr: %s", err, &stderr)
 			}
-			if got := stdout.String(); !strings.Contains(got, "delivery  state") || strings.Count(got, "task_1") != 1 || !strings.Contains(got, "demo") || strings.Contains(got, "\x1b[") {
-				t.Fatalf("want one TSV snapshot, got %q", got)
+			if got := stdout.String(); strings.Count(got, "batuta watch") != 1 || !strings.Contains(got, "task_1") || !strings.Contains(got, "demo") || strings.Contains(got, "\x1b[") {
+				t.Fatalf("want one panel snapshot, got %q", got)
 			}
 		})
 	}
