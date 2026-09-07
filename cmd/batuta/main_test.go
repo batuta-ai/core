@@ -110,7 +110,7 @@ func TestUsageListsEveryGateForm(t *testing.T) {
 }
 
 func TestUsageListsWatchFlagsAndKeys(t *testing.T) {
-	for _, want := range []string{"--interval", "--once", "--lang", "--ascii", "Keys: Up/Down and PgUp/PgDn scroll", "f follows", "r shows", "o opens", "l changes", "? shows", "q quits", "mouse wheel"} {
+	for _, want := range []string{"--interval", "--once", "--lang", "--ascii", "Keys: Up/Down and PgUp/PgDn scroll", "f follows", "r shows", "d picks", "o opens", "l changes", "? shows", "q quits", "mouse wheel"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage is missing watch option or key %q", want)
 		}
@@ -122,7 +122,7 @@ func TestWatchHelpListsFlagsAndKeys(t *testing.T) {
 	if err := run([]string{"watch", "--help"}, &stdout, &stderr); err != nil {
 		t.Fatalf("watch --help = %v", err)
 	}
-	for _, want := range []string{"batuta watch", "--interval", "--once", "--lang", "--ascii", "Keys: Up/Down and PgUp/PgDn scroll", "f follows", "r shows", "o opens", "l changes", "? shows", "q quits", "mouse wheel"} {
+	for _, want := range []string{"batuta watch", "--interval", "--once", "--lang", "--ascii", "Keys: Up/Down and PgUp/PgDn scroll", "f follows", "r shows", "d picks", "o opens", "l changes", "? shows", "q quits", "mouse wheel"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("watch --help is missing %q\n%s", want, &stderr)
 		}

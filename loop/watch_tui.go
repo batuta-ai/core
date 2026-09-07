@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/batuta-ai/core/journal"
@@ -49,6 +50,9 @@ type watchModel struct {
 	answerEditor   textarea.Model
 	answerQuestion string
 	answerTask     string
+
+	picking        bool
+	deliveryPicker list.Model
 }
 
 type progressAnimation struct {
@@ -108,6 +112,37 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.answerEditor, cmd = m.answerEditor.Update(msg)
 		}
 	}
+	if m.picking {
+		switch msg := msg.(type) {
+		case tea.KeyPressMsg:
+			switch msg.String() {
+			case "ctrl+c":
+				return m, tea.Quit
+			case "q":
+				if !m.deliveryPicker.SettingFilter() {
+					return m, tea.Quit
+				}
+			case "esc":
+				m.picking = false
+				m.refresh(true)
+				return m, nil
+			case "enter":
+				if !m.deliveryPicker.SettingFilter() {
+					item, ok := m.deliveryPicker.SelectedItem().(deliveryItem)
+					if !ok {
+						return m, nil
+					}
+					if err := m.switchDelivery(item.id); err != nil {
+						m.navigation.notice = err.Error()
+						return m, nil
+					}
+					return m, m.pollCmd()
+				}
+			}
+		}
+		m.deliveryPicker, cmd = m.deliveryPicker.Update(msg)
+		return m, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		key := msg.String()
@@ -122,6 +157,14 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key == "r" && m.canAnswer() {
 			cmd = m.openAnswer()
 			return m, cmd
+		}
+		if key == "d" && m.store != nil {
+			if err := m.openPicker(); err != nil {
+				m.navigation.notice = err.Error()
+				m.refresh(true)
+				return m, nil
+			}
+			return m, nil
 		}
 		if key == "l" {
 			if m.focus == focusLog {
@@ -158,6 +201,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.navigation.move(key, m.panel, max(1, len(panelTaskIDs(m.viewport))))
 	case tea.WindowSizeMsg:
 		m.style.Width, m.height = msg.Width, msg.Height
+		if m.picking {
+			m.resizePicker()
+		}
 	case journalMsg:
 		if msg.err != nil {
 			m.navigation.notice = msg.err.Error()
@@ -297,6 +343,9 @@ func (m watchModel) viewportHeight() int {
 	if m.navigation.legend {
 		height -= panelLineCount(panelLegend(m.style))
 	}
+	if m.picking {
+		height -= panelLineCount(m.deliveryPicker.View())
+	}
 	if m.navigation.notice != "" {
 		height--
 	}
@@ -357,6 +406,13 @@ func (m watchModel) View() tea.View {
 			content = strings.Join(lines[:height], "\n") + "\n"
 		}
 		content += m.answerView()
+	} else if m.picking {
+		lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+		content = ""
+		if height := min(len(lines), m.viewportHeight()); height > 0 {
+			content = strings.Join(lines[:height], "\n") + "\n"
+		}
+		content += m.deliveryPicker.View()
 	} else if m.navigation.legend {
 		content += panelLegend(style)
 	}
@@ -367,4 +423,47 @@ func (m watchModel) View() tea.View {
 		Content: content, AltScreen: true, MouseMode: tea.MouseModeCellMotion,
 		KeyboardEnhancements: tea.KeyboardEnhancements{ReportEventTypes: true},
 	}
+}
+
+func (m *watchModel) openPicker() error {
+	items, err := deliveryItems(m.workspace, m.store, m.currentTime)
+	if err != nil {
+		return err
+	}
+	m.deliveryPicker = list.New(items, list.NewDefaultDelegate(), m.style.Width, 1)
+	m.deliveryPicker.SetShowTitle(false)
+	m.deliveryPicker.SetFilteringEnabled(true)
+	m.deliveryPicker.DisableQuitKeybindings()
+	m.picking = true
+	m.resizePicker()
+	m.refresh(true)
+	return nil
+}
+
+func (m *watchModel) resizePicker() {
+	height := min(16, max(5, m.height/2))
+	m.deliveryPicker.SetSize(max(1, m.style.Width), height)
+}
+
+func (m *watchModel) switchDelivery(delivery string) error {
+	records, err := m.store.Read(delivery)
+	if err != nil {
+		return err
+	}
+	m.delivery = delivery
+	m.records = records
+	m.navigation = panelNavigation{}
+	m.focus = focusTable
+	m.logOffset = 0
+	m.progress = progressAnimation{}
+	m.progressSet = false
+	m.picking = false
+	m.refresh(true)
+	state, err := m.pollState(m.currentTime)
+	if err != nil {
+		return err
+	}
+	m.poll = state
+	m.refresh(false)
+	return nil
 }

@@ -74,23 +74,31 @@ func Watch(ctx context.Context, workspace, delivery string, interval time.Durati
 	if err != nil {
 		return err
 	}
-	if delivery == "" {
-		_, err := fmt.Fprintln(w, "no open deliveries")
-		return err
-	}
 	if interval <= 0 {
 		interval = 500 * time.Millisecond
 	}
 	if !isTerminal(os.Stdin.Fd()) {
+		if delivery == "" {
+			_, err := fmt.Fprintln(w, "no open deliveries")
+			return err
+		}
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		return watchPlain(ctx, root, delivery, store, w, ticker.C)
 	}
-	records, err := store.Read(delivery)
-	if err != nil {
-		return err
+	var records []journal.Record
+	if delivery != "" {
+		records, err = store.Read(delivery)
+		if err != nil {
+			return err
+		}
 	}
 	model := newPollingWatchModel(root, delivery, store, records, interval, StyleForWriter(w), nil, nil)
+	if delivery == "" {
+		if err := model.openPicker(); err != nil {
+			return err
+		}
+	}
 	_, err = newWatchProgram(model, tea.WithContext(ctx), tea.WithOutput(w)).Run()
 	if ctx.Err() != nil {
 		return nil
