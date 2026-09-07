@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -77,56 +76,23 @@ func Watch(ctx context.Context, workspace, delivery string, interval time.Durati
 // Journals currently omit delivery IDs, criterion totals and planned wave counts, so the
 // panel displays completed items and admitted waves without denominators.
 func RenderPanel(records []journal.Record, now time.Time) string {
-	if len(records) == 0 {
-		return "no records\n"
-	}
-	last := records[len(records)-1]
-	var graph routing.DeliveryGraph
-	if err := json.Unmarshal(last.Graph, &graph); err != nil {
-		return "invalid graph\n"
-	}
-	var opened openedDetail
-	var started time.Time
-	for _, record := range records {
-		if record.Kind == KindOpened {
-			if json.Unmarshal(record.Detail, &opened) == nil {
-				started = record.At
-			}
-			break
-		}
-	}
-	head := opened.Head
-	for _, record := range records {
-		if record.Kind == KindSettled {
-			var detail struct {
-				Head string `json:"final_head"`
-			}
-			if json.Unmarshal(record.Detail, &detail) == nil && detail.Head != "" {
-				head = detail.Head
-			}
-		}
+	model := PanelModel(records, now, "")
+	if model.message != "" {
+		return model.message + "\n"
 	}
 	var b strings.Builder
 	phase := ""
-	if opened.Phase > 0 && opened.PhaseTitle != "" {
-		phase = fmt.Sprintf("   phase %d · %s", opened.Phase, opened.PhaseTitle)
+	if model.Header.Phase > 0 && model.Header.PhaseTitle != "" {
+		phase = fmt.Sprintf("   phase %d · %s", model.Header.Phase, model.Header.PhaseTitle)
 	}
-	fmt.Fprintf(&b, "delivery %s%s   branch %s @ %s   wave %d   elapsed %s\n", panelValue(opened.Slug), phase, panelValue(opened.Branch), panelCommit(head), len(graph.Waves), panelElapsed(started, now))
+	fmt.Fprintf(&b, "delivery %s%s   branch %s @ %s   wave %d   elapsed %s\n", panelValue(model.Header.Delivery), phase, panelValue(model.Header.Branch), panelCommit(model.Header.Head), model.engineWaves, model.elapsed)
 	table := tabwriter.NewWriter(&b, 0, 8, 2, ' ', 0)
 	fmt.Fprintln(table, "task\tlane\texecutor/model\texec\tstate\tdetail")
-	for _, task := range graph.Tasks {
-		runtime, execution := "-", "-"
-		var attempt routing.GraphTaskAttempt
-		if len(task.Attempts) > 0 {
-			attempt = task.Attempts[len(task.Attempts)-1]
-			runtime = attempt.Runtime.Provider + "/" + attempt.Runtime.Model
-			execution = strconv.Itoa(attempt.Execution)
-		}
-		detail := panelTaskDetail(task, attempt, records, now)
-		fmt.Fprintf(table, "%s\t%s/%s\t%s\t%s\t%s\t%s\n", task.TaskID, task.Domain, task.Complexity, runtime, execution, task.State, strings.Join(strings.Fields(detail), " "))
+	for _, row := range model.rows {
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n", row.task, row.lane, row.runtime, row.execution, row.state, strings.Join(strings.Fields(row.detail), " "))
 	}
 	_ = table.Flush()
-	fmt.Fprintf(&b, "last     %s\n", strings.Join(strings.Fields(string(last.Kind)+" "+last.TaskID+" "+recordSummary(last)), " "))
+	fmt.Fprintf(&b, "last     %s\n", model.last)
 	return b.String()
 }
 
