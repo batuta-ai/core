@@ -78,6 +78,23 @@ func TestCapabilitiesListsRoadmap(t *testing.T) {
 	}
 }
 
+func TestCapabilitiesListsWatch(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"capabilities"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var got capabilities
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Commands, "watch") {
+		t.Fatalf("capabilities.commands = %v, missing watch", got.Commands)
+	}
+	if !strings.Contains(usage, "batuta watch") {
+		t.Fatal("usage is missing batuta watch")
+	}
+}
+
 func TestUsageListsEveryGateForm(t *testing.T) {
 	for _, want := range []string{
 		"batuta gate tree",
@@ -340,7 +357,145 @@ func TestLoopRoadmapWaitingPlanExitCode(t *testing.T) {
 	}
 }
 
-func TestRunLoopDashboard(t *testing.T) {
+func watchDelivery(t *testing.T, root, delivery string) (*journal.Store, json.RawMessage) {
+	t.Helper()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := json.Marshal(routing.DeliveryGraph{Tasks: []routing.GraphTask{{TaskID: "task_1", State: routing.GraphTaskPending}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := json.Marshal(map[string]string{"slug": delivery, "workspace": root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append(delivery, journal.Record{Kind: loop.KindOpened, Detail: detail, Graph: graph}); err != nil {
+		t.Fatal(err)
+	}
+	return store, graph
+}
+
+type watchCompletionWriter struct {
+	buffer   bytes.Buffer
+	complete func() error
+}
+
+func (w *watchCompletionWriter) Write(p []byte) (int, error) {
+	if w.complete != nil {
+		complete := w.complete
+		w.complete = nil
+		if err := complete(); err != nil {
+			return 0, err
+		}
+	}
+	return w.buffer.Write(p)
+}
+
+func (w *watchCompletionWriter) String() string { return w.buffer.String() }
+
+func TestWatchOpensTheLiveDashboard(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"latest open delivery", []string{"watch", "--interval", "1ms"}},
+		{"delivery before flags", []string{"watch", "demo", "--interval", "1ms"}},
+		{"delivery after flags", []string{"watch", "--interval", "1ms", "demo"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BATUTA_LANG", "en")
+			root := t.TempDir()
+			t.Chdir(root)
+			store, graph := watchDelivery(t, root, "older")
+			old := time.Unix(1, 0)
+			if err := os.Chtimes(store.Path("older"), old, old); err != nil {
+				t.Fatal(err)
+			}
+			watchDelivery(t, root, "demo")
+			watchDelivery(t, root, "closed")
+			if _, err := store.Append("closed", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`), Graph: graph}); err != nil {
+				t.Fatal(err)
+			}
+			stdout := &watchCompletionWriter{complete: func() error {
+				_, err := store.Append("demo", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`), Graph: graph})
+				return err
+			}}
+			var stderr bytes.Buffer
+			if err := run(tc.args, stdout, &stderr); err != nil {
+				t.Fatalf("watch = %v\nstderr: %s", err, &stderr)
+			}
+			if got := stdout.String(); strings.Count(got, "\x1b[2J\x1b[H") != 2 || !strings.Contains(got, "batuta watch · demo") || strings.Contains(got, "batuta watch · older") || strings.Contains(got, "batuta watch · closed") {
+				t.Fatalf("watch must redraw the selected delivery through completion:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestWatchOncePrintsASnapshot(t *testing.T) {
+	for _, args := range [][]string{{"watch", "--once"}, {"watch", "demo", "--once"}, {"watch", "--once", "demo"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			root := t.TempDir()
+			t.Chdir(root)
+			watchDelivery(t, root, "demo")
+			var stdout, stderr bytes.Buffer
+			if err := run(args, &stdout, &stderr); err != nil {
+				t.Fatalf("watch --once = %v\nstderr: %s", err, &stderr)
+			}
+			if got := stdout.String(); strings.Count(got, "batuta watch") != 1 || !strings.Contains(got, "task_1") || !strings.Contains(got, "demo") || strings.Contains(got, "\x1b[") {
+				t.Fatalf("want one panel snapshot, got %q", got)
+			}
+		})
+	}
+}
+
+func TestWatchLanguageAndASCII(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		want   string
+		border string
+	}{
+		{"Portuguese ASCII", []string{"--lang", "pt", "--ascii"}, "Progresso", "+--"},
+		{"English Unicode", []string{"--lang", "en"}, "Progress", "┌─"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("BATUTA_LANG", "pt")
+			t.Setenv("LC_ALL", "en_US.UTF-8")
+			root := t.TempDir()
+			t.Chdir(root)
+			store, graph := watchDelivery(t, root, "demo")
+			if _, err := store.Append("demo", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`), Graph: graph}); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(append([]string{"watch", "demo"}, tc.args...), &stdout, &stderr); err != nil {
+				t.Fatalf("watch = %v\nstderr: %s", err, &stderr)
+			}
+			if got := stdout.String(); !strings.Contains(got, tc.want) || !strings.Contains(got, tc.border) {
+				t.Fatalf("missing %q or %q in panel:\n%s", tc.want, tc.border, got)
+			}
+		})
+	}
+}
+
+func TestWatchRejectsInvalidArguments(t *testing.T) {
+	for _, args := range [][]string{
+		{"watch", "--lang", "es"},
+		{"watch", "--lang", ""},
+		{"watch", "demo", "--interval", "invalid"},
+		{"watch", "demo", "extra"},
+		{"watch", "demo", "--unknown"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := run(args, &stdout, &stderr); err == nil {
+			t.Errorf("run(%q) accepted invalid arguments", args)
+		}
+	}
+}
+
+func TestLoopDashboardStillWorks(t *testing.T) {
 	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {

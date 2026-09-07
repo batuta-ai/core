@@ -3,6 +3,7 @@
 ## In progress
 
 ## Done
+- [x] dashboard polish: executor_started carries log_path, batuta watch --once renders the panel, unknown values as placeholders → codex (codex/gpt-5.6-sol), primeira tentativa (sessão morta por falta de memória perto do fim; conductor fechou a condição do header), commit em feat/dashboard (trail: .batuta/runs/2026-09-07-dashboard-polish.md)
 - [x] batuta gate tree (core #29, primeira das cinco gates) → codex (codex/gpt-5.6-sol), primeira tentativa, commit 75bb633 (PR #38) (trail: .batuta/runs/2026-09-06-gate-tree.md)
 - [x] Tee the child's stdout to an observer in the publication runner → codex (gpt-5.6-sol), commit d730398 (trail: .batuta/runs/2026-09-06-watch-task-1.md, plan watch, 2026-09-06)
 - [x] Parse BATUTA-PROGRESS lines while the executor runs → codex (gpt-5.6-sol), commit 448e7db (trail: .batuta/runs/2026-09-06-watch-task-2.md, plan watch, 2026-09-06)
@@ -37,3 +38,14 @@
 - [x] The opened record carries roadmap and phase → ticked in the plan before the run, commit 57e2b605ea73 (trail: .batuta/runs/2026-09-06-roadmap-task-3.md, plan roadmap, 2026-09-06)
 - [x] batuta loop --roadmap runs the phases in order, one delivery per approved plan → codex (gpt-6-astra), commit 700db08783de (trail: .batuta/runs/2026-09-06-roadmap-task-4.md, plan roadmap, 2026-09-06)
 - [x] capabilities, usage and docs describe the roadmap → codex (gpt-5.4-mini), commit 16d6f6f33e8e (trail: .batuta/runs/2026-09-06-roadmap-task-5.md, plan roadmap, 2026-09-06)
+- [x] Executor output streams to the run log while the session runs → codex (gpt-5.6-sol), commit 185dc5f33346 (trail: .batuta/runs/2026-09-06-dashboard-task-1.md, plan dashboard, 2026-09-06)
+- [x] Executor output streams to the run log while the session runs → ticked in the plan before the run, commit 344436c15fba (trail: .batuta/runs/2026-09-06-dashboard-task-1.md, plan dashboard, 2026-09-07)
+- [x] Executor output streams to the run log while the session runs → ticked in the plan before the run, commit 623c6615624d (trail: .batuta/runs/2026-09-07-dashboard-task-1.md, plan dashboard, 2026-09-07)
+- [x] A view model summarises the journal for the dashboard → codex (gpt-6-astra), commit 3cc1040691ac (trail: .batuta/runs/2026-09-07-dashboard-task-2.md, plan dashboard, 2026-09-07)
+- [x] Executor output streams to the run log while the session runs → ticked in the plan before the run, commit bc494a6e926c (trail: .batuta/runs/2026-09-07-dashboard-task-1.md, plan dashboard, 2026-09-07)
+- [x] A view model summarises the journal for the dashboard → ticked in the plan before the run, commit bc494a6e926c (trail: .batuta/runs/2026-09-07-dashboard-task-2.md, plan dashboard, 2026-09-07)
+- [x] The renderer draws boxed panels, bars and the wave table at the terminal width → codex (gpt-6-astra), commit f7401a8faa7d (trail: .batuta/runs/2026-09-07-dashboard-task-3.md, plan dashboard, 2026-09-07)
+- [x] The logs panel tails the active execution's run log → codex (gpt-5.6-sol), commit 83a470bef9fb (trail: .batuta/runs/2026-09-07-dashboard-task-4.md, plan dashboard, 2026-09-07)
+- [x] Keyboard navigation with a no-TTY fallback → codex (gpt-6-astra), commit 0901aebcba5a (trail: .batuta/runs/2026-09-07-dashboard-task-5.md, plan dashboard, 2026-09-07)
+- [x] batuta watch opens the live dashboard by default → codex (gpt-5.6-sol), commit 3483622988ed (trail: .batuta/runs/2026-09-07-dashboard-task-6.md, plan dashboard, 2026-09-07)
+- [x] Docs and help describe the dashboard → codex (gpt-5.6-sol), commit 343b2e8ab89c (trail: .batuta/runs/2026-09-07-dashboard-task-7.md, plan dashboard, 2026-09-07)

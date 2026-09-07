@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,8 @@ type Subprocess struct {
 	Lookup      func(string) (string, error)
 	Environment []string
 	Progress    func(ProgressEvent)
+	Stdout      io.Writer
+	Stderr      io.Writer
 }
 
 // NewSubprocess is the production runner: exec through PATH.
@@ -71,6 +74,14 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 	sink := &progressSink{callback: s.Progress}
 	stdoutObserver := &progressObserver{sink: sink}
 	stderrObserver := &progressObserver{sink: sink}
+	var stdoutWriter io.Writer = stdoutObserver
+	if s.Stdout != nil {
+		stdoutWriter = io.MultiWriter(stdoutObserver, s.Stdout)
+	}
+	var stderrWriter io.Writer = stderrObserver
+	if s.Stderr != nil {
+		stderrWriter = io.MultiWriter(stderrObserver, s.Stderr)
+	}
 	environment, err := unsignedGitEnvironment(s.Environment)
 	if err != nil {
 		return Result{ExitCode: -1}, err
@@ -78,7 +89,7 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 	raw, runErr := s.Runner.Run(runCtx, publication.Command{
 		Executable: executable, Args: invocation.Args, Directory: invocation.Dir,
 		Environment: environment, StdoutLimit: outputLimit, StderrLimit: outputLimit,
-		Observer: stdoutObserver, StderrObserver: stderrObserver,
+		Observer: stdoutWriter, StderrObserver: stderrWriter,
 	})
 	stdoutObserver.flush()
 	stderrObserver.flush()

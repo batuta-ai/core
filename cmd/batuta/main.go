@@ -39,6 +39,7 @@ Usage:
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
   batuta loop      --dashboard [--watch] [--interval 2s] [<delivery>]
+  batuta watch     [<delivery>] [--interval 2s] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
   batuta gate tree --snapshot [--dir <d>]
   batuta gate tree --before '<json>' [--dir <d>]
@@ -58,6 +59,12 @@ loop       The mechanical conductor over an approved plan
            journaled under .batuta/journal/. Exit 0 when every task
            integrated; 2 blocked; 3 waiting for an answer; 4 waiting for
            an approved roadmap plan; 130 canceled.
+watch      Live dashboard of a delivery (the most recent open one by
+           default). --interval sets the refresh period; --once prints a
+           snapshot; --lang selects labels; --ascii uses ASCII borders and
+           status glyphs. Keys: up/down and PgUp/PgDn scroll, f follows the
+           active task, r shows the answer command, o opens the log, ? shows
+           the legend, and q quits watch.
 trail      One line per journal record of a delivery (the latest by
            default).
 
@@ -97,6 +104,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runDoctor(args[1:], stdout)
 	case "loop":
 		return runLoop(args[1:], stdout, stderr)
+	case "watch":
+		return runWatch(args[1:], stdout, stderr)
 	case "trail":
 		return runTrail(args[1:], stdout)
 	case "gate":
@@ -126,7 +135,7 @@ func version() string {
 
 // commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "roadmap", "trail", "version"}
+var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "roadmap", "trail", "version", "watch"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
@@ -519,6 +528,52 @@ func loopExit(state string) error {
 	default:
 		return &ExitError{Code: 2, State: state}
 	}
+}
+
+func runWatch(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("watch", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	interval := flags.Duration("interval", 2*time.Second, "live dashboard redraw interval")
+	once := flags.Bool("once", false, "print one dashboard snapshot")
+	ascii := flags.Bool("ascii", false, "use ASCII borders and status glyphs")
+	var lang string
+	flags.Func("lang", "label language (en or pt)", func(value string) error {
+		if value != "en" && value != "pt" {
+			return errors.New("language must be en or pt")
+		}
+		lang = value
+		return nil
+	})
+	delivery := ""
+	for {
+		if err := flags.Parse(args); err != nil {
+			return err
+		}
+		rest := flags.Args()
+		if len(rest) == 0 {
+			break
+		}
+		if delivery != "" {
+			return errors.New("watch accepts at most one delivery")
+		}
+		delivery, args = rest[0], rest[1:]
+	}
+	if lang != "" {
+		if err := os.Setenv("BATUTA_LANG", lang); err != nil {
+			return err
+		}
+	}
+	if *ascii {
+		if err := os.Setenv("LC_ALL", "C"); err != nil {
+			return err
+		}
+	}
+	if *once {
+		return loop.Snapshot("", delivery, stdout)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	return loop.Watch(ctx, "", delivery, *interval, stdout)
 }
 
 func runTrail(args []string, stdout io.Writer) error {

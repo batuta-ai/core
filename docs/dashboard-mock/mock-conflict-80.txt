@@ -1,0 +1,31 @@
+ batuta watch · core · phase…feat/roadmap @ 4c1e9f2 · < re-executing · 00:22:05 
+ < task_2 conflict when integrating after task_3                                
+┌─ Context ────────────────────────────────────────────────────────────────────┐
+│ codex gpt-5.6-sol · medium · go test ./... · workspace-write                 │
+│ 2 sessions · 0 retries · 0 escalations · PID 99573                           │
+│ Waves  1/4  [██████░░░░░░░░░░░░░░░░░░]  25%                                  │
+│ Tasks  1/5  [█████░░░░░░░░░░░░░░░░░░░]  20%                                  │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─ Detail ─────────────────────────────────────────────────────────────────────┐
+│ task_2 · e2/4 · Archiving a plan ticks its phase in the roadmap              │
+│ Reason  candidate 7fa1e02 conflicted with loop/report.go on 9b2c4e1          │
+│ Last  settled reexecute_conflict · 20s                                       │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─ Waves and tasks ────────────────────────────────────────────────────────────┐
+│ ID      Wave / Task                           Status          Try   Gates    │
+│ W1      base 838d06a → integrated 4c1e9f2     ✓ 1/1                          │
+│ task_1    Parse .batuta/roadmap.md into phas… ✓ integrated    e1/4  ✓✓✓✓     │
+│ W2      base 4c1e9f2                          > 0/1                          │
+│ task_2    Archiving a plan ticks its phase i… < re-executing  e2/4  ✓✓✓✓     │
+│ W3      after task_1                          · 0/1                          │
+│ task_3    The opened record carries roadmap … · pending             ····     │
+│ W4      after task_2, task_3                  · 0/2                          │
+│ task_4    batuta loop --roadmap runs the pha… · pending             ····     │
+│ task_5    capabilities, usage and docs descr… · pending             ····     │
+└──────────────────────────────────────────────────────────────────────────────┘
+ ^ 0 · v 0 · up/down PgUp/PgDn scroll · ? · q                                   
+┌─ Recent log · task-2-e1 ─────────────────────────────────────────────────────┐
+│ --- FAIL: TestTickPhaseRewritesOnlyTheLine (0.00s)                           │
+│     roadmap_test.go:88: TickPhase() rewrote 2 lines, want 1                  │
+│ codex: the rewrite must keep every other byte; switching to a line-indexed … │
+└──────────────────────────────────────────────────────────────────────────────┘
