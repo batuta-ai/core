@@ -247,3 +247,18 @@ func TestPanelModelLifecycle(t *testing.T) {
 		}
 	})
 }
+
+func TestPanelModelCarriesPendingDependenciesWithoutInventingMetadata(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	graph.Tasks[2].Dependencies = []string{"task_1", "task_2"}
+	graph.Tasks = append(graph.Tasks, routing.GraphTask{TaskID: "task_4", State: routing.GraphTaskPending, Dependencies: []string{"task_2"}})
+	records = append(records, panelRecord(t, KindProgress, "task_2", now, map[string]any{"execution": 1, "criterion": 2, "state": "START"}, graph))
+	model := PanelModel(records, now, "")
+	pending := model.Waves[len(model.Waves)-1]
+	if pending.Number != 0 || !reflect.DeepEqual(pending.Dependencies, []string{"task_1", "task_2"}) {
+		t.Fatalf("pending dependencies: %+v", pending)
+	}
+	if model.Detail.AttemptLimit != 0 || model.Detail.CriterionTotal != 0 || model.Detail.CriterionTitle != "" || model.LogTitle != "" || len(model.LogLines) != 0 {
+		t.Fatalf("invented metadata: %+v", model)
+	}
+}

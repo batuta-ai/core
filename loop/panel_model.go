@@ -30,10 +30,14 @@ type PanelContext struct {
 }
 
 type PanelProgress struct {
+	Criterion, CriterionTotal                    int
+	CriterionTitle                               string
 	WavesDone, WavesTotal, TasksDone, TasksTotal int
 }
 
 type PanelDetail struct {
+	AttemptLimit, CriterionTotal                 int
+	CriterionTitle                               string
 	Task                                         string
 	Attempt                                      int
 	Title                                        string
@@ -44,6 +48,7 @@ type PanelDetail struct {
 }
 
 type PanelRow struct {
+	AttemptLimit       int
 	Task, Title, State string
 	Attempt            int
 	Gates              [4]string
@@ -51,6 +56,7 @@ type PanelRow struct {
 }
 
 type PanelWave struct {
+	Dependencies     []string
 	Number           int
 	Base, Integrated string
 	Done, Total      int
@@ -66,6 +72,9 @@ type PanelHealth struct {
 }
 
 type PanelView struct {
+	LogTitle               string
+	LogLines               []string
+	RowsAbove, RowsBelow   int
 	Header                 PanelHeader
 	Attention              PanelAttention
 	Context                PanelContext
@@ -310,6 +319,18 @@ func (model *PanelView) groupWaves(graph routing.DeliveryGraph, tasks map[string
 	for _, task := range graph.Tasks {
 		if _, exists := assigned[task.TaskID]; !exists {
 			pending.Rows = append(pending.Rows, tasks[task.TaskID].row())
+			for _, dependency := range task.Dependencies {
+				found := false
+				for _, existing := range pending.Dependencies {
+					if existing == dependency {
+						found = true
+						break
+					}
+				}
+				if !found {
+					pending.Dependencies = append(pending.Dependencies, dependency)
+				}
+			}
 		}
 	}
 	if len(pending.Rows) > 0 {
