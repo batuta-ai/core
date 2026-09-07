@@ -215,21 +215,59 @@ func TestPanelSnapshotSelectsOpenOrExplicitDoneDelivery(t *testing.T) {
 			want = "open-demo"
 		}
 		got := output.String()
+		if !strings.HasSuffix(got, "\n") || strings.HasSuffix(got, "\n\n") {
+			t.Fatalf("snapshot must end with exactly one newline: %q", got)
+		}
 		if strings.Count(got, "batuta watch ·") != 1 || !strings.Contains(got, want) || !strings.Contains(got, "snapshot log content") || strings.Contains(got, "\x1b[") {
 			t.Fatalf("snapshot %q = %q", delivery, got)
 		}
 	}
 }
 
-func TestFitPanelHeightPreservesLogHistory(t *testing.T) {
+func tallPanelFixture() PanelView {
 	model := renderFixture("calm")
-	model.LogLines = make([]string, 200)
+	model.Waves = []PanelWave{{Number: 1, State: "running", Total: 18}}
+	for i := 1; i <= 18; i++ {
+		model.Waves[0].Rows = append(model.Waves[0].Rows, PanelRow{Task: fmt.Sprintf("task_%d", i), State: "running"})
+	}
+	model.LogLines = make([]string, 40)
 	for i := range model.LogLines {
 		model.LogLines[i] = fmt.Sprintf("line %03d", i)
 	}
-	fitted := fitPanelHeight(model, Style{Width: 120}, 24)
-	if len(fitted.LogLines) != 200 {
-		t.Fatalf("fitPanelHeight retained %d log lines, want 200", len(fitted.LogLines))
+	return model
+}
+
+func TestFitPanelHeightShrinksLogFirst(t *testing.T) {
+	for _, width := range []int{80, 120} {
+		for _, offset := range []int{0, 5} {
+			model := tallPanelFixture()
+			style := Style{Width: width, LogOffset: offset}
+			fullHeight := panelLineCount(Render(model, style))
+			visible := 3
+			if width == 120 {
+				visible = 6
+			}
+			for shrink := 1; shrink <= visible; shrink++ {
+				height := fullHeight - shrink
+				fitted := fitPanelHeight(model, style, height)
+				if got := panelLineCount(Render(fitted, style)); got != height {
+					t.Errorf("width %d offset %d: height=%d, want %d", width, offset, got, height)
+				}
+				wantRows := panelTableRows(model) - max(0, shrink-(visible-2))
+				if got := panelTableRows(fitted); got != wantRows {
+					t.Errorf("width %d shrink %d: table rows=%d, want %d", width, shrink, got, wantRows)
+				}
+				if got := len(fitted.LogLines) - offset; got != max(2, visible-shrink) {
+					t.Errorf("visible log lines=%d, want %d", got, max(2, visible-shrink))
+				}
+				if !strings.Contains(Render(fitted, style), model.LogLines[len(model.LogLines)-offset-1]) {
+					t.Error("fitting lost the visible log tail")
+				}
+				if len(model.LogLines) != 40 || panelTableRows(model) != 19 {
+					t.Fatal("fitting modified the source model")
+				}
+			}
+		}
 	}
 }
 
@@ -275,6 +313,9 @@ func TestWatchStopsAtTerminalState(t *testing.T) {
 	}
 	if appendErr != nil {
 		t.Fatal(appendErr)
+	}
+	if !strings.HasSuffix(out.String(), "\n") || strings.HasSuffix(out.String(), "\n\n") {
+		t.Fatal("no-TTY watch must end with exactly one newline")
 	}
 	if got := strings.Count(out.String(), "batuta watch"); got != 2 || strings.Contains(out.String(), "\x1b") {
 		t.Fatalf("rendered %d frames, want 2 plain snapshots:\n%s", got, out.String())
@@ -398,7 +439,7 @@ func TestWatchShrinkOrder(t *testing.T) {
 		absent        []string
 	}{
 		{"wide", 120, 40, []string{"log 1", "log 6"}, nil},
-		{"short", 120, 31, []string{"log 1", "log 6"}, nil},
+		{"short", 120, 31, []string{"log 5", "log 6"}, []string{"log 1"}},
 		{"compact", 80, 31, []string{"log 4", "log 6"}, []string{"log 3", "Commit"}},
 		{"narrow", 60, 31, nil, []string{"Recent log", "log 6"}},
 	} {

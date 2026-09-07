@@ -3,6 +3,7 @@
 ## In progress
 
 ## Done
+- [x] watch renders inside the terminal: narrow selection marker ❯, honest emoji widths, hard height cap → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/watch-tui (trail: .batuta/runs/2026-09-07-watch-render-fix.md)
 - [x] dashboard polish: executor_started carries log_path, batuta watch --once renders the panel, unknown values as placeholders → codex (codex/gpt-5.6-sol), primeira tentativa (sessão morta por falta de memória perto do fim; conductor fechou a condição do header), commit em feat/dashboard (trail: .batuta/runs/2026-09-07-dashboard-polish.md)
 - [x] batuta gate tree (core #29, primeira das cinco gates) → codex (codex/gpt-5.6-sol), primeira tentativa, commit 75bb633 (PR #38) (trail: .batuta/runs/2026-09-06-gate-tree.md)
 - [x] Tee the child's stdout to an observer in the publication runner → codex (gpt-5.6-sol), commit d730398 (trail: .batuta/runs/2026-09-06-watch-task-1.md, plan watch, 2026-09-06)

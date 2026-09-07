@@ -236,7 +236,8 @@ func TestWatchModelViewMatchesRender(t *testing.T) {
 						suffix = panelLegend(interactiveStyle) + m.navigation.notice + "\n"
 						height -= panelLineCount(panelLegend(interactiveStyle)) + 1
 					}
-					want := Render(nav.viewport(panel, interactiveStyle, height), interactiveStyle) + suffix
+					panelLines := strings.Split(strings.TrimSuffix(Render(nav.viewport(panel, interactiveStyle, height), interactiveStyle), "\n"), "\n")
+					want := strings.TrimRight(strings.Join(panelLines[:min(len(panelLines), height)], "\n")+"\n"+suffix, "\n")
 					got := m.View()
 					if !got.AltScreen || got.Content != want {
 						t.Fatalf("width %d legend %v: View differs from Render\ngot:\n%s\nwant:\n%s", width, legend, got.Content, want)
@@ -268,7 +269,7 @@ func TestWatchModelJournalFollowsAndPreservesSelection(t *testing.T) {
 		t.Fatal("follow did not resume")
 	}
 	m, _ = updateWatch(t, m, journalMsg{})
-	if m.View().Content != Render(PanelModel(nil, now, ""), m.renderStyle()) {
+	if m.View().Content != strings.TrimSuffix(Render(PanelModel(nil, now, ""), m.renderStyle()), "\n") {
 		t.Fatal("empty journal retained stale view")
 	}
 }
@@ -561,6 +562,58 @@ func TestWatchStaysOpenOnTerminalStateWithoutTaskAttention(t *testing.T) {
 			}
 			if (state == StateDone || state == StateAbandoned) && !strings.Contains(banner, panelLabels[lang]["pick"]) {
 				t.Errorf("%s/%s lacks delivery hint: %q", lang, state, banner)
+			}
+		}
+	}
+}
+
+func TestWatchViewNeverExceedsWindowHeight(t *testing.T) {
+	for _, size := range [][2]int{{120, 30}, {120, 24}, {80, 20}, {60, 12}, {120, 1}} {
+		for _, legend := range []bool{false, true} {
+			for _, notice := range []bool{false, true} {
+				for _, answer := range []bool{false, true} {
+					t.Run(fmt.Sprintf("%dx%d/legend=%v/notice=%v/answer=%v", size[0], size[1], legend, notice, answer), func(t *testing.T) {
+						m := newWatchModel(t.TempDir(), nil, Style{Width: size[0], Lang: "en", Glyphs: "unicode", Colour: true}, time.Now)
+						m.height = size[1]
+						if answer {
+							m.openAnswer()
+							m.answerQuestion = strings.Repeat("Which format? ", 15)
+							m.answerEditor.SetValue("Use JSON.\nKeep the keys.")
+						}
+						m.navigation.legend = legend
+						if notice {
+							m.navigation.notice = "Please check the answer."
+						}
+						if answer {
+							m.resizeAnswer()
+						}
+						m.panel = tallPanelFixture()
+						m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
+						content := m.View().Content
+						if strings.HasSuffix(content, "\n") {
+							t.Error("View has a trailing newline")
+						}
+						lines := strings.Split(content, "\n")
+						if len(lines) > m.height {
+							t.Errorf("View has %d lines, window has %d", len(lines), m.height)
+						}
+						header := strings.SplitN(Render(m.panel, m.renderStyle()), "\n", 2)[0]
+						if lines[0] != header {
+							t.Error("View lost the header")
+						}
+						if m.height >= 20 {
+							if answer && !strings.Contains(content, "Use JSON.") {
+								t.Error("answer editor missing")
+							}
+							if legend && !answer && !strings.Contains(content, "Legend") {
+								t.Error("legend missing")
+							}
+							if notice && !strings.Contains(content, m.navigation.notice) {
+								t.Error("notice missing")
+							}
+						}
+					})
+				}
 			}
 		}
 	}

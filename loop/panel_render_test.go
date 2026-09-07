@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"regexp"
@@ -108,7 +109,8 @@ func TestRenderMatchesColourGoldens(t *testing.T) {
 			path := fmt.Sprintf("testdata/mock-%s-120-en-colour.txt", state)
 			got := Render(renderFixture(state), style)
 			want, err := os.ReadFile(path)
-			if os.IsNotExist(err) {
+			update := flag.Lookup("update")
+			if os.IsNotExist(err) || update != nil && update.Value.String() == "true" {
 				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
 					t.Fatal(err)
 				}
@@ -241,7 +243,7 @@ func TestRenderColours(t *testing.T) {
 			}
 		}
 		style.Colour = false
-		plain := strings.ReplaceAll(sgr.ReplaceAllString(got, ""), "│▶", "│ ")
+		plain := strings.ReplaceAll(sgr.ReplaceAllString(got, ""), "│❯", "│ ")
 		if plain != Render(renderFixture(state), style) {
 			t.Fatal("colour changed layout beyond the selection marker")
 		}
@@ -343,7 +345,7 @@ func TestStyleForWriterTerminalColour(t *testing.T) {
 }
 
 func TestPanelWidthIgnoresSGR(t *testing.T) {
-	for _, text := range []string{"hello", "宽字", "▶task_2"} {
+	for _, text := range []string{"hello", "宽字", "❯task_2"} {
 		for _, codes := range []string{"7", "2;7", "1;31", "94"} {
 			if got, want := panelWidth("\x1b["+codes+"m"+text+"\x1b[0m"), panelWidth(text); got != want {
 				t.Errorf("%q: width=%d, want %d", text, got, want)
@@ -424,7 +426,7 @@ func testPaintSelection(t *testing.T, focus string, dim bool) {
 				model := renderFixture("calm")
 				model.Detail.Task = selected
 				got := Render(model, Style{Width: width, Glyphs: glyphs, Colour: true, Focus: focus, Frame: -1})
-				marker, border := "▶", "│"
+				marker, border := "❯", "│"
 				if glyphs == "ascii" {
 					marker, border = ">", "|"
 				}
@@ -502,7 +504,7 @@ func TestPaintStates(t *testing.T) {
 			for _, location := range []struct{ line, token string }{
 				{strings.Split(got, "\n")[0], r.status(tc.state, false)},
 				{strings.Split(got, "\n")[1], r.stateGlyph(tc.state)},
-				{paintLineContaining(t, got, "│▶task_2"), visibleStatus},
+				{paintLineContaining(t, got, "│❯task_2"), visibleStatus},
 				{paintLineContaining(t, got, "│ W2"), r.stateGlyph(tc.state) + " 0/1"},
 			} {
 				cells := paintedCells(t, location.line)
@@ -554,7 +556,7 @@ func TestPaintGates(t *testing.T) {
 		model := renderFixture("calm")
 		model.Waves[1].Rows[0].Gates = [4]string{"pass", "fail", "pending", "silent"}
 		got := Render(model, Style{Width: 120, Glyphs: glyphs, Colour: true, Frame: -1})
-		marker, gates := "│▶task_2", "✓✗·✓"
+		marker, gates := "│❯task_2", "✓✗·✓"
 		if glyphs == "ascii" {
 			marker, gates = "|>task_2", "+x.+"
 		}
@@ -813,6 +815,50 @@ func TestRenderPresence(t *testing.T) {
 				model.Header.Loops = 1
 				if got := Render(model, Style{Width: width, Lang: lang}); strings.Contains(strings.Split(got, "\n")[0], "1 loops") {
 					t.Fatal("single loop count rendered")
+				}
+			}
+		}
+	}
+}
+
+func TestPanelRuneWidthEmoji(t *testing.T) {
+	for _, c := range "▶◀◻◼◽◾⬅⬆⬇⬛⬜⭐⭕☀☔⚠⚡✅✨❌❓❤➕➰➿😀🚀🫿" {
+		if got := panelRuneWidth(c); got != 2 {
+			t.Errorf("%U: width=%d, want 2", c, got)
+		}
+	}
+	for _, c := range "❯>✓✗·→┌│└⠋" {
+		if got := panelRuneWidth(c); got != 1 {
+			t.Errorf("%U: width=%d, want 1", c, got)
+		}
+	}
+}
+
+func TestRenderLinesFitTheWidth(t *testing.T) {
+	sgr := regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	for _, state := range []string{"calm", "question", "limit", "blocked", "conflict"} {
+		for _, width := range []int{60, 80, 120} {
+			for _, glyphs := range []string{"unicode", "ascii"} {
+				for _, task := range panelTaskIDs(renderFixture(state)) {
+					t.Run(fmt.Sprintf("%s/%d/%s/%s", state, width, glyphs, task), func(t *testing.T) {
+						model := renderFixture(state)
+						model.Detail.Task = task
+						style := Style{Width: width, Lang: "en", Glyphs: glyphs, Colour: true, Focus: "table"}
+						plain := sgr.ReplaceAllString(Render(model, style), "")
+						marker, border := "❯", "│"
+						if glyphs == "ascii" {
+							marker, border = ">", "|"
+						}
+						if !strings.Contains(plain, border+marker+task) {
+							t.Errorf("missing selection marker for %s", task)
+						}
+						for i, line := range strings.Split(strings.TrimSuffix(plain, "\n"), "\n") {
+							box := strings.HasPrefix(line, "+") || strings.HasPrefix(line, "|") || strings.HasPrefix(line, "┌") || strings.HasPrefix(line, "│") || strings.HasPrefix(line, "└")
+							if got := panelWidth(line); got > width || box && got != width {
+								t.Errorf("line %d: width=%d, want <=%d (box=%v)", i+1, got, width, box)
+							}
+						}
+					})
 				}
 			}
 		}

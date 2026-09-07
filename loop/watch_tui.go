@@ -336,20 +336,25 @@ func (m *watchModel) refresh(loadLog bool) {
 }
 
 func (m watchModel) viewportHeight() int {
-	height := m.height
+	return max(0, m.height-panelLineCount(m.supplementView()))
+}
+
+// Measure and compose the same rendered content, including wrapped answer text
+// and overlays (such as the picker) that do not end with a newline.
+func (m watchModel) supplementView() string {
 	if m.answering {
-		return max(0, height-panelLineCount(m.answerView()))
+		return m.answerView()
 	}
-	if m.navigation.legend {
-		height -= panelLineCount(panelLegend(m.style))
-	}
+	var content string
 	if m.picking {
-		height -= panelLineCount(m.deliveryPicker.View())
+		content = strings.TrimRight(m.deliveryPicker.View(), "\n") + "\n"
+	} else if m.navigation.legend {
+		content = panelLegend(m.renderStyle())
 	}
 	if m.navigation.notice != "" {
-		height--
+		content += m.navigation.notice + "\n"
 	}
-	return height
+	return content
 }
 
 func (m watchModel) renderStyle() Style {
@@ -397,28 +402,17 @@ func (m *watchModel) scrollLog(key string) bool {
 }
 
 func (m watchModel) View() tea.View {
-	style := m.renderStyle()
-	content := Render(m.viewport, style)
-	if m.answering {
-		lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
-		content = ""
-		if height := min(len(lines), m.viewportHeight()); height > 0 {
-			content = strings.Join(lines[:height], "\n") + "\n"
-		}
-		content += m.answerView()
-	} else if m.picking {
-		lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
-		content = ""
-		if height := min(len(lines), m.viewportHeight()); height > 0 {
-			content = strings.Join(lines[:height], "\n") + "\n"
-		}
-		content += m.deliveryPicker.View()
-	} else if m.navigation.legend {
-		content += panelLegend(style)
+	lines := strings.Split(strings.TrimRight(Render(m.viewport, m.renderStyle()), "\n"), "\n")
+	var supplement []string
+	if content := strings.TrimRight(m.supplementView(), "\n"); content != "" {
+		supplement = strings.Split(content, "\n")
 	}
-	if !m.answering && m.navigation.notice != "" {
-		content += m.navigation.notice + "\n"
-	}
+	// Keep the header even when an overlay consumes the entire window. The
+	// final cap also covers windows smaller than the panel's minimum layout.
+	budget := max(1, m.height-len(supplement))
+	lines = append(lines[:min(len(lines), budget)], supplement...)
+	lines = lines[:min(len(lines), max(0, m.height))]
+	content := strings.TrimRight(strings.Join(lines, "\n"), "\n")
 	return tea.View{
 		Content: content, AltScreen: true, MouseMode: tea.MouseModeCellMotion,
 		KeyboardEnhancements: tea.KeyboardEnhancements{ReportEventTypes: true},

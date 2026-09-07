@@ -194,6 +194,19 @@ func fitPanelHeight(model PanelView, style Style, height int) PanelView {
 	if height <= 0 || style.Width < 76 {
 		return model
 	}
+	if panelLineCount(Render(model, style)) > height {
+		// Keep the current scroll position and trim only the viewport's history.
+		// The watch model retains the complete log for subsequent scrolling.
+		visible := 3
+		if style.Width >= 100 {
+			visible = 6
+		}
+		offset := max(0, style.LogOffset)
+		model.LogLines = model.LogLines[max(0, len(model.LogLines)-offset-visible):]
+		for len(model.LogLines) > offset+2 && panelLineCount(Render(model, style)) > height {
+			model.LogLines = model.LogLines[1:]
+		}
+	}
 	for panelTableRows(model) > 2 && panelLineCount(Render(model, style)) > height {
 		model = limitPanelRows(model, panelTableRows(model)-1)
 	}
@@ -201,7 +214,10 @@ func fitPanelHeight(model PanelView, style Style, height int) PanelView {
 }
 
 func panelLineCount(rendered string) int {
-	return strings.Count(rendered, "\n")
+	if rendered == "" {
+		return 0
+	}
+	return strings.Count(strings.TrimSuffix(rendered, "\n"), "\n") + 1
 }
 
 func panelTableRows(model PanelView) int {

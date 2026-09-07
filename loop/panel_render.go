@@ -601,7 +601,7 @@ func (r panelRenderer) boxLines(title string, rows []panelLine, width int, focus
 	for _, row := range rows {
 		padding := " "
 		if r.style.Colour && (row.kind == lineKind(paintSelected) || row.kind == lineKind(paintSelectedUnfocused)) {
-			padding = "▶"
+			padding = "❯"
 			if r.style.Glyphs == "ascii" {
 				padding = ">"
 			}
@@ -684,12 +684,50 @@ func panelWidth(s string) int {
 	return n
 }
 func panelRuneWidth(c rune) int {
+	// Emoji-capable symbols can use emoji presentation in terminal fonts. Count
+	// them conservatively even without a variation selector; ordinary dingbats
+	// such as the selection marker U+276F remain one cell.
+	if c >= 0x2600 && c <= 0x27bf && panelEmojiSymbol(c) ||
+		c == 0x25b6 || c == 0x25c0 || c >= 0x25fb && c <= 0x25fe ||
+		c >= 0x2b05 && c <= 0x2b07 || c >= 0x2b1b && c <= 0x2b1c || c == 0x2b50 || c == 0x2b55 {
+		return 2
+	}
 	// Fullwidth forms, CJK, Hangul and wide emoji occupy two terminal cells.
 	if c >= 0x1100 && (c <= 0x115f || c == 0x2329 || c == 0x232a || c >= 0x2e80 && c <= 0xa4cf && c != 0x303f || c >= 0xac00 && c <= 0xd7a3 || c >= 0xf900 && c <= 0xfaff || c >= 0xfe10 && c <= 0xfe19 || c >= 0xfe30 && c <= 0xfe6f || c >= 0xff01 && c <= 0xff60 || c >= 0xffe0 && c <= 0xffe6 || c >= 0x1f300 && c <= 0x1faff || c >= 0x20000 && c <= 0x3fffd) {
 		return 2
 	}
 	return 1
 }
+
+// Emoji-capable code points in the Miscellaneous Symbols and Dingbats blocks.
+func panelEmojiSymbol(c rune) bool {
+	switch {
+	case c >= 0x2600 && c <= 0x2604, c >= 0x2614 && c <= 0x2615,
+		c >= 0x2622 && c <= 0x2623, c >= 0x262e && c <= 0x262f,
+		c >= 0x2638 && c <= 0x263a, c >= 0x2648 && c <= 0x2653,
+		c >= 0x265f && c <= 0x2660, c >= 0x2665 && c <= 0x2666,
+		c >= 0x267e && c <= 0x267f, c >= 0x2692 && c <= 0x2697,
+		c >= 0x269b && c <= 0x269c, c >= 0x26a0 && c <= 0x26a1,
+		c >= 0x26aa && c <= 0x26ab, c >= 0x26b0 && c <= 0x26b1,
+		c >= 0x26bd && c <= 0x26be, c >= 0x26c4 && c <= 0x26c5,
+		c >= 0x26ce && c <= 0x26cf, c >= 0x26d3 && c <= 0x26d4,
+		c >= 0x26e9 && c <= 0x26ea, c >= 0x26f0 && c <= 0x26f5,
+		c >= 0x26f7 && c <= 0x26fa, c >= 0x2708 && c <= 0x270d,
+		c >= 0x2733 && c <= 0x2734, c >= 0x2753 && c <= 0x2755,
+		c >= 0x2763 && c <= 0x2764, c >= 0x2795 && c <= 0x2797:
+		return true
+	}
+	switch c {
+	case 0x260e, 0x2611, 0x2618, 0x261d, 0x2620, 0x2626, 0x262a,
+		0x2640, 0x2642, 0x2663, 0x2668, 0x267b, 0x2699, 0x26a7,
+		0x26c8, 0x26d1, 0x26fd, 0x2702, 0x2705, 0x270f, 0x2712,
+		0x2714, 0x2716, 0x271d, 0x2721, 0x2728, 0x2744, 0x2747,
+		0x274c, 0x274e, 0x2757, 0x27a1, 0x27b0, 0x27bf:
+		return true
+	}
+	return false
+}
+
 func expandPanelTabs(s string) string {
 	return expandLineTabs(textLine(s)).text()
 }
