@@ -38,6 +38,8 @@ type watchModel struct {
 	height      int
 	panel       PanelView
 	viewport    PanelView
+	focus       panelFocus
+	logOffset   int
 	progress    progressAnimation
 	progressSet bool
 }
@@ -47,6 +49,13 @@ type progressAnimation struct {
 	frame        int
 	active       bool
 }
+
+type panelFocus string
+
+const (
+	focusTable panelFocus = "table"
+	focusLog   panelFocus = "log"
+)
 
 var _ tea.Model = watchModel{}
 
@@ -65,7 +74,7 @@ func newPollingWatchModel(workspace, delivery string, store *journal.Store, reco
 		ticker = tea.Tick
 	}
 	style.Frame = 0
-	m := watchModel{workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker}
+	m := watchModel{workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker, focus: focusTable}
 	m.refresh(true)
 	if store != nil && delivery != "" {
 		if state, err := m.pollState(); err == nil {
@@ -95,12 +104,39 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pgdown":
 			key = "pageDown"
 		}
+		if key == "l" {
+			if m.focus == focusLog {
+				m.focus = focusTable
+			} else {
+				m.focus = focusLog
+			}
+			m.logOffset = 0
+			m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
+			return m, nil
+		}
+		if m.focus == focusLog && m.scrollLog(key) {
+			m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
+			return m, nil
+		}
 		m.navigation.move(key, m.panel, max(1, len(panelTaskIDs(m.viewport))))
 		path := panelKeyAction(key, m.workspace, m.panel, &m.navigation)
 		if pager := strings.Fields(os.Getenv("PAGER")); path != "" && len(pager) > 0 {
 			process := exec.Command(pager[0], append(pager[1:], path)...)
 			cmd = tea.ExecProcess(process, func(err error) tea.Msg { return pagerDoneMsg{err: err} })
 		}
+	case tea.MouseWheelMsg:
+		key := "down"
+		if msg.Button == tea.MouseWheelUp {
+			key = "up"
+		} else if msg.Button != tea.MouseWheelDown {
+			return m, nil
+		}
+		if m.focus == focusLog {
+			m.scrollLog(key)
+			m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
+			return m, nil
+		}
+		m.navigation.move(key, m.panel, max(1, len(panelTaskIDs(m.viewport))))
 	case tea.WindowSizeMsg:
 		m.style.Width, m.height = msg.Width, msg.Height
 	case journalMsg:
@@ -114,7 +150,8 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh(!msg.logLoaded)
 		if msg.logLoaded {
 			m.panel.LogLines, m.panel.LogTitle = msg.logLines, msg.logTitle
-			m.viewport = m.navigation.viewport(m.panel, m.style, m.viewportHeight())
+			m.logOffset = min(m.logOffset, m.maxLogOffset())
+			m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
 		}
 		if state := terminalState(m.records); state != "" && state != StateBlocked {
 			return m, tea.Quit
@@ -153,7 +190,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.panel.Progress.TasksShown = float64(m.panel.Progress.TasksDone)
 			m.progress.active = false
 		}
-		m.viewport = m.navigation.viewport(m.panel, m.style, m.viewportHeight())
+		m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
 		return m, m.progressCmd()
 	case pagerDoneMsg:
 		if msg.err != nil {
@@ -213,7 +250,8 @@ func (m *watchModel) refresh(loadLog bool) {
 	} else if previous.Detail.LogPath == m.panel.Detail.LogPath {
 		m.panel.LogLines, m.panel.LogTitle = previous.LogLines, previous.LogTitle
 	}
-	m.viewport = m.navigation.viewport(m.panel, m.style, m.viewportHeight())
+	m.logOffset = min(m.logOffset, m.maxLogOffset())
+	m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
 	m.progressSet = m.panel.message == ""
 }
 
@@ -228,13 +266,55 @@ func (m watchModel) viewportHeight() int {
 	return height
 }
 
+func (m watchModel) renderStyle() Style {
+	style := m.style
+	style.Focus = string(m.focus)
+	style.LogOffset = m.logOffset
+	return style
+}
+
+func (m watchModel) visibleLogLines() int {
+	if m.style.Width >= 100 {
+		return 6
+	}
+	if m.style.Width >= 76 {
+		return 3
+	}
+	return 0
+}
+
+func (m watchModel) maxLogOffset() int {
+	return max(0, len(m.panel.LogLines)-m.visibleLogLines())
+}
+
+func (m *watchModel) scrollLog(key string) bool {
+	page := max(1, m.visibleLogLines())
+	switch key {
+	case "up":
+		m.logOffset++
+	case "down":
+		m.logOffset--
+	case "pageUp":
+		m.logOffset += page
+	case "pageDown":
+		m.logOffset -= page
+	case "end":
+		m.logOffset = 0
+	default:
+		return false
+	}
+	m.logOffset = max(0, min(m.logOffset, m.maxLogOffset()))
+	return true
+}
+
 func (m watchModel) View() tea.View {
-	content := Render(m.viewport, m.style)
+	style := m.renderStyle()
+	content := Render(m.viewport, style)
 	if m.navigation.legend {
-		content += panelLegend(m.style)
+		content += panelLegend(style)
 	}
 	if m.navigation.notice != "" {
 		content += m.navigation.notice + "\n"
 	}
-	return tea.View{Content: content, AltScreen: true}
+	return tea.View{Content: content, AltScreen: true, MouseMode: tea.MouseModeCellMotion}
 }

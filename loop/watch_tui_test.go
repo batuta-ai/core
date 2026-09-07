@@ -117,6 +117,80 @@ func TestWatchModelKeys(t *testing.T) {
 	}
 }
 
+func TestWatchLogFocusScrolls(t *testing.T) {
+	records, _, now := modelFixture(t)
+	m := newWatchModel(t.TempDir(), records, Style{Width: 120, Lang: "en", Glyphs: "unicode"}, func() time.Time { return now })
+	m.panel.LogLines = []string{"one", "two", "three", "four", "five", "six", "seven", "eight"}
+	m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
+
+	if got := m.View().Content; !strings.Contains(got, "Waves and tasks ·") || strings.Contains(got, "Recent log · task-2-e1 ·") {
+		t.Fatalf("initial focus marker is not on the table:\n%s", got)
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if got := m.View().Content; m.focus != focusLog || !strings.Contains(got, "Recent log ·") {
+		t.Fatalf("log focus missing: focus=%q\n%s", m.focus, got)
+	}
+
+	for _, step := range []struct {
+		key  tea.KeyPressMsg
+		want int
+	}{
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 1},
+		{tea.KeyPressMsg{Code: tea.KeyPgUp}, 2},
+		{tea.KeyPressMsg{Code: tea.KeyDown}, 1},
+		{tea.KeyPressMsg{Code: tea.KeyPgDown}, 0},
+		{tea.KeyPressMsg{Code: tea.KeyUp}, 1},
+		{tea.KeyPressMsg{Code: tea.KeyEnd}, 0},
+	} {
+		m, _ = updateWatch(t, m, step.key)
+		if m.logOffset != step.want {
+			t.Fatalf("%s offset=%d, want %d", step.key, m.logOffset, step.want)
+		}
+	}
+
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	if m.focus != focusTable || m.logOffset != 0 {
+		t.Fatalf("table focus=%q offset=%d", m.focus, m.logOffset)
+	}
+}
+
+func TestWatchLogFollowsTailUntilScrolled(t *testing.T) {
+	records, _, now := modelFixture(t)
+	m := newWatchModel(t.TempDir(), records, Style{Width: 120}, func() time.Time { return now })
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	m, _ = updateWatch(t, m, journalMsg{records: records, logLoaded: true, logLines: []string{"one", "two", "three", "four", "five", "old", "tail"}})
+	if m.logOffset != 0 || !strings.Contains(m.View().Content, "tail") {
+		t.Fatal("tail-following journal update did not show the new tail")
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	m, _ = updateWatch(t, m, journalMsg{records: records, logLoaded: true, logLines: []string{"zero", "one", "two", "three", "four", "five", "old", "tail", "new"}})
+	if m.logOffset != 1 || strings.Contains(m.View().Content, "new") {
+		t.Fatalf("journal update lost scroll position: offset=%d\n%s", m.logOffset, m.View().Content)
+	}
+}
+
+func TestWatchMouseWheel(t *testing.T) {
+	records, _, now := modelFixture(t)
+	m := newWatchModel(t.TempDir(), records, Style{Width: 120}, func() time.Time { return now })
+	if m.View().MouseMode != tea.MouseModeCellMotion {
+		t.Fatalf("mouse mode=%v", m.View().MouseMode)
+	}
+	m, _ = updateWatch(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.panel.Detail.Task != "task_3" {
+		t.Fatalf("table wheel selected %q", m.panel.Detail.Task)
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
+	m.panel.LogLines = []string{"one", "two", "three", "four", "five", "six", "seven"}
+	m, _ = updateWatch(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+	if m.logOffset != 1 {
+		t.Fatalf("log wheel offset=%d", m.logOffset)
+	}
+	m, _ = updateWatch(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
+	if m.logOffset != 0 {
+		t.Fatalf("log wheel down offset=%d", m.logOffset)
+	}
+}
+
 func TestWatchModelViewMatchesRender(t *testing.T) {
 	for _, state := range []string{"calm", "question", "limit", "blocked", "conflict"} {
 		t.Run(state, func(t *testing.T) {
@@ -150,6 +224,7 @@ func TestWatchModelViewMatchesRender(t *testing.T) {
 						m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: '?', Text: "?"})
 						m, _ = updateWatch(t, m, pagerDoneMsg{err: errors.New("pager failed")})
 					}
+					interactiveStyle := m.renderStyle()
 					nav := panelNavigation{}
 					panel := PanelModel(records, now, "")
 					if err := loadPanelLog(root, &panel); err != nil {
@@ -157,10 +232,10 @@ func TestWatchModelViewMatchesRender(t *testing.T) {
 					}
 					height, suffix := 40, ""
 					if legend {
-						suffix = panelLegend(style) + m.navigation.notice + "\n"
-						height -= panelLineCount(panelLegend(style)) + 1
+						suffix = panelLegend(interactiveStyle) + m.navigation.notice + "\n"
+						height -= panelLineCount(panelLegend(interactiveStyle)) + 1
 					}
-					want := Render(nav.viewport(panel, style, height), style) + suffix
+					want := Render(nav.viewport(panel, interactiveStyle, height), interactiveStyle) + suffix
 					got := m.View()
 					if !got.AltScreen || got.Content != want {
 						t.Fatalf("width %d legend %v: View differs from Render\ngot:\n%s\nwant:\n%s", width, legend, got.Content, want)
@@ -192,7 +267,7 @@ func TestWatchModelJournalFollowsAndPreservesSelection(t *testing.T) {
 		t.Fatal("follow did not resume")
 	}
 	m, _ = updateWatch(t, m, journalMsg{})
-	if m.View().Content != Render(PanelModel(nil, now, ""), m.style) {
+	if m.View().Content != Render(PanelModel(nil, now, ""), m.renderStyle()) {
 		t.Fatal("empty journal retained stale view")
 	}
 }

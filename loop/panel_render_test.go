@@ -140,6 +140,10 @@ func TestRenderUsesShownProgress(t *testing.T) {
 }
 func TestRenderPortugueseLabels(t *testing.T) {
 	assertRenderGolden(t, "calm", Style{Width: 120, Lang: "pt", Glyphs: "unicode", Frame: -1}, "-pt-unicode")
+	focused := Render(renderFixture("calm"), Style{Width: 120, Lang: "pt", Glyphs: "unicode", Focus: string(focusLog)})
+	if !strings.Contains(focused, "l log") || !strings.Contains(focused, "Log recente ·") || !strings.Contains(panelLegend(Style{Width: 120, Lang: "pt", Glyphs: "unicode"}), "· foco") {
+		t.Fatal("Portuguese focus labels are incomplete")
+	}
 	for _, key := range []string{"LANG", "LC_ALL", "BATUTA_LANG"} {
 		t.Run(key, func(t *testing.T) {
 			for _, k := range []string{"LANG", "LC_ALL", "BATUTA_LANG"} {
@@ -150,6 +154,27 @@ func TestRenderPortugueseLabels(t *testing.T) {
 				t.Fatalf("style: %+v", got)
 			}
 		})
+	}
+}
+
+func TestRenderKeyLine(t *testing.T) {
+	for _, width := range []int{120, 80} {
+		got := Render(renderFixture("calm"), Style{Width: width, Lang: "en", Glyphs: "unicode", Focus: string(focusTable)})
+		if !strings.Contains(got, "l log") {
+			t.Fatalf("width %d key line omitted l log:\n%s", width, got)
+		}
+	}
+	if got := panelLegend(Style{Width: 120, Lang: "en", Glyphs: "unicode"}); !strings.Contains(got, "· focused") {
+		t.Fatalf("legend omitted focus marker:\n%s", got)
+	}
+}
+
+func TestRenderLogOffset(t *testing.T) {
+	model := renderFixture("calm")
+	model.LogLines = []string{"one", "two", "three", "four", "five", "six", "seven"}
+	got := Render(model, Style{Width: 120, Lang: "en", Glyphs: "unicode", LogOffset: 1})
+	if !strings.Contains(got, "one") || strings.Contains(got, "seven") {
+		t.Fatalf("offset did not move the six-line window:\n%s", got)
 	}
 }
 func TestRenderASCIIFallback(t *testing.T) {

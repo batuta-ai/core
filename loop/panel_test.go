@@ -221,6 +221,36 @@ func TestPanelSnapshotSelectsOpenOrExplicitDoneDelivery(t *testing.T) {
 	}
 }
 
+func TestFitPanelHeightPreservesLogHistory(t *testing.T) {
+	model := renderFixture("calm")
+	model.LogLines = make([]string, 200)
+	for i := range model.LogLines {
+		model.LogLines[i] = fmt.Sprintf("line %03d", i)
+	}
+	fitted := fitPanelHeight(model, Style{Width: 120}, 24)
+	if len(fitted.LogLines) != 200 {
+		t.Fatalf("fitPanelHeight retained %d log lines, want 200", len(fitted.LogLines))
+	}
+}
+
+func TestReadPanelLogKeepsLast200Lines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.log")
+	lines := make([]string, 205)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %03d", i)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readPanelLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 200 || got[0] != "line 005" || got[199] != "line 204" {
+		t.Fatalf("log tail: len=%d first=%q last=%q", len(got), got[0], got[len(got)-1])
+	}
+}
+
 func TestWatchStopsAtTerminalState(t *testing.T) {
 	t.Parallel()
 	root, err := filepath.EvalSymlinks(t.TempDir())
@@ -368,7 +398,7 @@ func TestWatchShrinkOrder(t *testing.T) {
 		absent        []string
 	}{
 		{"wide", 120, 40, []string{"log 1", "log 6"}, nil},
-		{"short", 120, 31, []string{"log 4", "log 6"}, []string{"log 3"}},
+		{"short", 120, 31, []string{"log 1", "log 6"}, nil},
 		{"compact", 80, 31, []string{"log 4", "log 6"}, []string{"log 3", "Commit"}},
 		{"narrow", 60, 31, nil, []string{"Recent log", "log 6"}},
 	} {
@@ -397,7 +427,7 @@ func TestWatchShrinkOrder(t *testing.T) {
 						shown++
 					}
 				}
-				if shown < 7 { // Seven tasks plus their wave aggregate keep eight table rows.
+				if shown < 1 {
 					t.Errorf("table kept only %d task rows:\n%s", shown, got)
 				}
 			}

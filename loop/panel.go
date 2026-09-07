@@ -169,8 +169,8 @@ func readPanelLog(path string) ([]string, error) {
 	for i := range lines {
 		lines[i] = strings.TrimSuffix(lines[i], "\r")
 	}
-	if len(lines) > 6 {
-		lines = lines[len(lines)-6:]
+	if len(lines) > 200 {
+		lines = lines[len(lines)-200:]
 	}
 	return lines, nil
 }
@@ -186,14 +186,8 @@ func fitPanelHeight(model PanelView, style Style, height int) PanelView {
 	if height <= 0 || style.Width < 76 {
 		return model
 	}
-	if style.Width >= 100 && len(model.LogLines) > 3 && panelLineCount(Render(model, style)) > height {
-		model.LogLines = model.LogLines[len(model.LogLines)-3:]
-	}
-	for panelTableRows(model) > 8 && panelLineCount(Render(model, style)) > height {
+	for panelTableRows(model) > 2 && panelLineCount(Render(model, style)) > height {
 		model = limitPanelRows(model, panelTableRows(model)-1)
-	}
-	if panelLineCount(Render(model, style)) > height {
-		model.LogLines = nil
 	}
 	return model
 }

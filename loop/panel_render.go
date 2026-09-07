@@ -19,6 +19,8 @@ type Style struct {
 	Lang, Glyphs string
 	Colour       bool
 	Frame        int
+	Focus        string
+	LogOffset    int
 }
 
 func StyleForWriter(w io.Writer) Style {
@@ -187,12 +189,24 @@ func Render(model PanelView, style Style) string {
 			table = append(table, r.tableRow([]string{task.Task, "  " + task.Title, r.status(state, true), renderAttempt(task.Attempt, task.AttemptLimit), gates, commit}, cols))
 		}
 	}
-	out = append(out, r.box(labels["table"], table, width)...)
+	tableTitle := labels["table"]
+	if style.Focus == string(focusTable) {
+		tableTitle += " ·"
+	}
+	out = append(out, r.box(tableTitle, table, width)...)
 	keys := labels["keys"]
+	if style.Focus != "" {
+		keys = labels["keys_focus"]
+	}
 	if width >= 100 {
 		out = append(out, r.fit(fmt.Sprintf(" ^ %d %s · v %d %s", model.RowsAbove, labels["above"], model.RowsBelow, labels["below"]), width-panelWidth(keys)-1)+keys+" ")
 	} else {
-		out = append(out, r.fit(fmt.Sprintf(" ^ %d · v %d · ", model.RowsAbove, model.RowsBelow)+strings.Split(keys, " · ")[0]+" · ? · q", width))
+		keyParts := strings.Split(keys, " · ")
+		compactKeys := keyParts[0]
+		if style.Focus != "" && len(keyParts) > 1 {
+			compactKeys += " · " + keyParts[1]
+		}
+		out = append(out, r.fit(fmt.Sprintf(" ^ %d · v %d · ", model.RowsAbove, model.RowsBelow)+compactKeys+" · ? · q", width))
 	}
 	if width >= 76 {
 		count := 3
@@ -203,7 +217,12 @@ func Render(model PanelView, style Style) string {
 		if model.LogTitle != "" {
 			title += " · " + model.LogTitle
 		}
-		out = append(out, r.box(title, model.LogLines[max(0, len(model.LogLines)-count):], width)...)
+		if style.Focus == string(focusLog) {
+			title += " ·"
+		}
+		end := max(0, len(model.LogLines)-max(0, style.LogOffset))
+		start := max(0, end-count)
+		out = append(out, r.box(title, model.LogLines[start:end], width)...)
 	}
 	for i, line := range out {
 		line = r.fit(expandPanelTabs(line), width)

@@ -130,8 +130,8 @@ func (n *panelNavigation) viewport(model PanelView, style Style, height int) Pan
 }
 
 var panelLegendLabels = map[string][]string{
-	"en": {"Legend", "pass / integrated", "failed / blocked", "pending", "> running   ? waiting answer", "~ usage limit   < re-executing   ^ escalated", "G0 executor finished   G1 tree change", "G2 tests   G3 scope, proofs and verification"},
-	"pt": {"Legenda", "passou / integrada", "falhou / bloqueada", "pendente", "> em execução   ? aguarda resposta", "~ limite de uso   < reexecutando   ^ escalada", "G0 executor terminou   G1 alteração na árvore", "G2 testes   G3 escopo, provas e verificação"},
+	"en": {"Legend", "pass / integrated", "failed / blocked", "pending", "· focused box", "> running   ? waiting answer", "~ usage limit   < re-executing   ^ escalated", "G0 executor finished   G1 tree change", "G2 tests   G3 scope, proofs and verification"},
+	"pt": {"Legenda", "passou / integrada", "falhou / bloqueada", "pendente", "· foco", "> em execução   ? aguarda resposta", "~ limite de uso   < reexecutando   ^ escalada", "G0 executor terminou   G1 alteração na árvore", "G2 testes   G3 escopo, provas e verificação"},
 }
 
 func panelLegend(style Style) string {
@@ -140,8 +140,8 @@ func panelLegend(style Style) string {
 		labels = panelLegendLabels["en"]
 	}
 	r := panelRenderer{style: style, g: glyphsFor(style), labels: panelLabels[style.Lang]}
-	rows := []string{r.g.ok + " " + labels[1] + "   " + r.g.fail + " " + labels[2], r.g.pend + " " + labels[3]}
-	rows = append(rows, labels[4:]...)
+	rows := []string{r.g.ok + " " + labels[1] + "   " + r.g.fail + " " + labels[2], r.g.pend + " " + labels[3], labels[4]}
+	rows = append(rows, labels[5:]...)
 	return strings.Join(r.box(labels[0], rows, style.Width), "\n") + "\n"
 }
 
