@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.0-beta.18](https://github.com/batuta-ai/core/compare/v1.1.0-beta.17...v1.1.0-beta.18) (2026-09-07)
+
+
+### Features
+
+* a view model summarises the journal for the dashboard ([3cc1040](https://github.com/batuta-ai/core/commit/3cc1040691ace646eb3c9c9742f2acef27856f6b))
+* batuta watch opens the live dashboard by default ([3483622](https://github.com/batuta-ai/core/commit/3483622988edac78c547ef02ad2c0df97a525454))
+* executor output streams to the run log while the session runs ([e78879b](https://github.com/batuta-ai/core/commit/e78879bf23d240bcb4fc9da17af0ea21faf6b0e5))
+* keyboard navigation with a no-TTY fallback ([0901aeb](https://github.com/batuta-ai/core/commit/0901aebcba5a7f9b318993791867a83edbd5b809))
+* **loop:** dashboard v2 — boxed panels, waves, gates, live log, keyboard; batuta watch ([a3b75ae](https://github.com/batuta-ai/core/commit/a3b75ae7e02eedcb73bba159350f92eba78ae322))
+* the logs panel tails the active execution's run log ([83a470b](https://github.com/batuta-ai/core/commit/83a470bef9fb086f371c4e4c37bc87341a4324e6))
+* the renderer draws boxed panels, bars and the wave table at the term ([f7401a8](https://github.com/batuta-ai/core/commit/f7401a8faa7d11f3cda5a45f695a54416631da29))
+
+
+### Bug Fixes
+
+* **loop:** dashboard reads the real run log; watch --once renders the panel ([30858b3](https://github.com/batuta-ai/core/commit/30858b3866627273b004f1e97bb4acb80301cd62)), closes [#64](https://github.com/batuta-ai/core/issues/64)
+
 ## [1.1.0-beta.17](https://github.com/batuta-ai/core/compare/v1.1.0-beta.16...v1.1.0-beta.17) (2026-09-06)
 
 
