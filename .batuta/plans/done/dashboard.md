@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** Replace the TSV panel of `batuta loop --dashboard --watch` with a terminal dashboard in the style of the maintainer's reference: a header, four boxed panels (execution, engine, progress with bars, current work), a task table grouped by wave with status, attempt and gates G0–G3, a live tail of the active executor's log, and keyboard navigation. Standard library only, ANSI 16 colours with an ASCII fallback, labels in English or Portuguese from the locale, golden-tested against the approved mocks; `batuta watch` opens it with watch by default. Closes core #64.
-**Created:** 2026-09-06 · **Status:** approved
+**Created:** 2026-09-06 · **Status:** done
 
 ## Tasks
 - [x] 1. Executor output streams to the run log while the session runs — backend/medium
@@ -11,23 +11,23 @@
 - [x] 2. A view model summarises the journal for the dashboard — backend/high
       Scope: loop/panel_model.go, loop/panel_model_test.go, loop/panel.go
       Accept: PanelModel(records, now, selected) returns Header{Delivery, Project, Branch, Head, Elapsed, State, Roadmap, Phase}, Attention{Kind (none|question|limit|blocked|conflict|escalated), Task, Text, Hint}, Context{Executor, Model, Reasoning, TestCommand, Sandbox, Sessions, Retries, Escalations, PID}, Progress{WavesDone, WavesTotal, TasksDone, TasksTotal}, Detail{Task, Attempt, Title, Criterion, Question, Reason, LastRecord, LastAge, Worktree, LogPath}, Waves[]{Number, Base, Integrated, Done, Total, State, Rows[]{Task, Title, State, Attempt, Gates[4], Commit}} from journals in five states (calm, waiting_input, limit_wait, blocked after escalation, conflict re-execution) → go test ./loop -run TestPanelModelSummarisesTheJournal -count=1; Detail describes the selected task and, with selected empty, the active one → go test ./loop -run TestPanelModelDetailFollowsTheSelection -count=1; gates read the latest attempt's report (G0 finished, G1 tree, G2 tests, G3 verify) as pass, fail, silent or pending → go test ./loop -run TestPanelModelGateColumns -count=1; RenderPanel keeps printing the current TSV from the model until task 3 replaces it → go test ./loop -run TestPanel -count=1
-- [ ] 3. The renderer draws boxed panels, bars and the wave table at the terminal width — backend/high
+- [x] 3. The renderer draws boxed panels, bars and the wave table at the terminal width — backend/high
       Depends on: 2
       Scope: loop/panel_render.go, loop/panel_render_test.go, loop/panel_labels.go, loop/panel.go, loop/panel_model.go, loop/panel_model_test.go, loop/termsize_unix.go, loop/termsize_windows.go, loop/testdata/*.txt, docs/dashboard-mock/*.txt
       Accept: Render(model, Style{Width, Lang, Glyphs, Colour}) draws the header, the attention line, Context and Progress side by side at 120, one box at 80, Progress only at 60, the Detail box, the wave-grouped table with one Gates column and the key line, byte-identical to the goldens docs/dashboard-mock/mock-<state>-<width>.txt for the five states at 120 and for calm, question and blocked at 80 and 60, colour off → go test ./loop -run TestRenderMatchesGoldens -count=1; Lang pt (LANG, LC_ALL or BATUTA_LANG starting with pt) renders the Portuguese labels of mock-calm-120-pt-unicode.txt and Glyphs ascii (locale without UTF-8) renders mock-calm-120-en-ascii.txt → go test ./loop -run 'TestRenderPortugueseLabels|TestRenderASCIIFallback' -count=1; colour on uses only ANSI 16-colour SGR codes (blue active, green ok, red error) and NO_COLOR=1 or a non-TTY writer disables them → go test ./loop -run TestRenderColours -count=1; the terminal width comes from a per-platform TerminalSize with a 120-column fallback and cmd/batuta builds for linux, darwin and windows → GOOS=windows go build ./... && GOOS=linux go build ./...
-- [ ] 4. The logs panel tails the active execution's run log — backend/medium
+- [x] 4. The logs panel tails the active execution's run log — backend/medium
       Depends on: 1, 3
       Scope: loop/panel.go, loop/panel_model.go, loop/panel_test.go
       Accept: Watch reads the last lines of the selected task's .out.log on every redraw and the log box shows them (6 lines at 120, 3 at 80, hidden at 60) → go test ./loop -run TestWatchShowsTheRunLogTail -count=1; with no running task the box shows the last integrated task's final lines → go test ./loop -run TestWatchLogPanelAfterIntegration -count=1; when the terminal is short, the table keeps at least 8 rows and the log box shrinks to 3 lines, then the panels take the 80-column form, then the log box hides → go test ./loop -run TestWatchShrinkOrder -count=1
-- [ ] 5. Keyboard navigation with a no-TTY fallback — backend/high
+- [x] 5. Keyboard navigation with a no-TTY fallback — backend/high
       Depends on: 3
       Scope: loop/panel.go, loop/panel_keys.go, loop/panel_keys_test.go, loop/rawmode_unix.go, loop/rawmode_windows.go, cmd/batuta/main.go
       Accept: with a TTY, q ends the watch (never the loop), ↑/↓ and PgUp/PgDn move the selection and scroll the table, f re-locks the selection on the active task, ? toggles a legend box (glyphs, gates, states), o prints the selected task's log path and opens it in $PAGER when set, r on a waiting_input task prints the exact `batuta loop --answer` command; the raw mode is restored on exit and on cancellation → go test ./loop -run 'TestPanelKeysScrollAndQuit|TestPanelKeysLegendLogAndAnswer' -count=1; when stdin is not a TTY the watch auto-follows the active task and never blocks on input → go test ./loop -run TestWatchWithoutATTYAutoFollows -count=1; cmd/batuta builds for windows → GOOS=windows go build ./...
-- [ ] 6. batuta watch opens the live dashboard by default — backend/medium
+- [x] 6. batuta watch opens the live dashboard by default — backend/medium
       Depends on: 4, 5
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: `batuta watch [<delivery>] [--interval 2s]` runs the live dashboard on the most recent open delivery and exits 0 when it ends, and `batuta watch --once` prints one snapshot and exits → go test ./cmd/batuta -run 'TestWatchOpensTheLiveDashboard|TestWatchOncePrintsASnapshot' -count=1; `batuta loop --dashboard [--watch]` keeps working and capabilities lists watch → go test ./cmd/batuta -run 'TestLoopDashboardStillWorks|TestCapabilitiesListsWatch' -count=1
-- [ ] 7. Docs and help describe the dashboard — docs/medium
+- [x] 7. Docs and help describe the dashboard — docs/medium
       Depends on: 6
       Scope: docs/loop.md, cmd/batuta/main.go, README.md
       Accept: docs/loop.md replaces the dashboard paragraph with the panel layout, the gate columns, the keys, the no-TTY behaviour and `batuta watch` → grep -q 'batuta watch' docs/loop.md; usage names `watch`, --once, --interval and the keys → go test ./cmd/batuta -run TestUsageMentionsTheDashboardKeys -count=1
