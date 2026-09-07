@@ -76,8 +76,6 @@ func TestAdaptersUseOnlyClosedCommandShapes(t *testing.T) {
 				{"--version"},
 				{"status"},
 				{"models"},
-				{"mcp", "list"},
-				{"mcp", "list-tools", "browser"},
 			},
 		},
 		{
@@ -120,6 +118,27 @@ func TestAdaptersUseOnlyClosedCommandShapes(t *testing.T) {
 	}
 }
 
+func TestCursorAdapterDoesNotProbeMCP(t *testing.T) {
+	t.Parallel()
+
+	adapter := mustNewCursor(t, filepath.Join(t.TempDir(), "agent"))
+	if got, want := specArgs(adapter.StaticSpecs()), [][]string{
+		{"--version"}, {"status"}, {"models"},
+	}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+		t.Fatalf("Cursor static specs = %#v, want %#v", got, want)
+	}
+
+	specs, err := adapter.DynamicSpecs(map[inventory.ProbeID][]byte{
+		"cursor.mcp": []byte("browser connected\n"),
+	})
+	if err != nil {
+		t.Fatalf("DynamicSpecs() error = %v", err)
+	}
+	if len(specs) != 0 {
+		t.Fatalf("Cursor dynamic specs = %#v, want none", specs)
+	}
+}
+
 func TestClaudeAdapterUsesOnlyReadOnlyBoundedCommands(t *testing.T) {
 	t.Parallel()
 	assertStaticCommandShapes(t, mustNewClaude(t, "/opt/bin/claude"), [][]string{{"--version"}, {"plugin", "list", "--json"}})
@@ -157,17 +176,6 @@ func TestAdaptersRejectUnlistedOrUnsafeDynamicIdentifiers(t *testing.T) {
 		t.Fatalf("OpenCode dynamic specs = %#v, want %#v", got, want)
 	}
 
-	cursor := mustNewCursor(t, "/opt/bin/agent")
-	outputs = map[inventory.ProbeID][]byte{
-		cursor.ProbeID("mcp"): []byte("browser connected\nmy server connected\n../../escape connected\nfigma disconnected\n"),
-	}
-	specs, err = cursor.DynamicSpecs(outputs)
-	if err != nil {
-		t.Fatalf("DynamicSpecs() error = %v", err)
-	}
-	if got, want := specArgs(specs), [][]string{{"mcp", "list-tools", "browser"}, {"mcp", "list-tools", "my server"}}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
-		t.Fatalf("Cursor dynamic specs = %#v, want %#v", got, want)
-	}
 }
 
 func TestAdaptersNormalizeInstalledMissingMalformedPartialAndSkewed(t *testing.T) {
