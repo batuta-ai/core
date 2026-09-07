@@ -4,6 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +25,21 @@ func answerWatch(t *testing.T) (watchModel, *journal.Store) {
 	records = append(records, panelRecord(t, KindQuestion, "task_2", now, map[string]any{"execution": 1, "question": "Which format?"}, graph))
 	root, store := keyStore(t, records)
 	return newWatchModel(root, records, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time { return now }), store
+}
+
+func resumableAnswerWatch(t *testing.T) watchModel {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("ask", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("park question: %s, %v", state, err)
+	}
+	records := readJournal(t, f, r.Delivery())
+	return newPollingWatchModel(f.root, r.Delivery(), r.store, records, time.Second, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, time.Now, nil)
 }
 
 func TestAnswerOverlayOpens(t *testing.T) {
@@ -91,6 +110,7 @@ func TestAnswerOverlaySubmits(t *testing.T) {
 			}
 			records := readJournal(t, f, r.Delivery())
 			m := newWatchModel(f.root, records, Style{Width: 120, Lang: "en"}, nil)
+			m.spawn = func([]string, string, string) error { return nil }
 			m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
 			m, _ = updateWatch(t, m, tea.PasteMsg{Content: "  first line\nsecond line  \n"})
 			m, _ = updateWatch(t, m, key)
@@ -99,13 +119,76 @@ func TestAnswerOverlaySubmits(t *testing.T) {
 			}
 			after := readJournal(t, f, r.Delivery())
 			if len(after) != len(records)+1 || after[len(after)-1].Kind != KindAnswer {
-				t.Fatal("submission must append exactly one answer without resuming")
+				t.Fatal("submission must append exactly one answer before resuming")
 			}
 			var detail struct{ Answer string }
 			if err := json.Unmarshal(after[len(after)-1].Detail, &detail); err != nil || detail.Answer != "first line\nsecond line" {
 				t.Fatalf("recorded answer = %q, %v", detail.Answer, err)
 			}
 		})
+	}
+}
+
+func TestAnswerResumesDetached(t *testing.T) {
+	m := resumableAnswerWatch(t)
+	var argv []string
+	var dir, logPath string
+	m.spawn = func(gotArgv []string, gotDir, gotLogPath string) error {
+		argv = append([]string(nil), gotArgv...)
+		dir, logPath = gotDir, gotLogPath
+		return nil
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m, _ = updateWatch(t, m, tea.PasteMsg{Content: "use JSON"})
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{exe, "loop", "--resume", m.delivery}; !slices.Equal(argv, want) {
+		t.Fatalf("argv = %q, want %q (answering=%v notice=%q)", argv, want, m.answering, m.navigation.notice)
+	}
+	if dir != m.workspace {
+		t.Fatalf("cwd = %q, want %q", dir, m.workspace)
+	}
+	if want := filepath.Join(m.workspace, ".batuta", "runs", "loop-"+m.delivery+".log"); logPath != want {
+		t.Fatalf("log path = %q, want %q", logPath, want)
+	}
+}
+
+func TestAnswerResumeErrorNotice(t *testing.T) {
+	m := resumableAnswerWatch(t)
+	m.spawn = func([]string, string, string) error { return errors.New("spawn denied") }
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m, _ = updateWatch(t, m, tea.PasteMsg{Content: "use JSON"})
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCommand := strings.Join([]string{exe, "loop", "--resume", m.delivery}, " ")
+	if !m.answering || m.answerEditor.Value() != "use JSON" || !strings.Contains(m.navigation.notice, "spawn denied") || !strings.Contains(m.navigation.notice, wantCommand) {
+		t.Fatalf("spawn failure lost draft or manual command: %q", m.navigation.notice)
+	}
+}
+
+func TestWatchFollowsResumedLoop(t *testing.T) {
+	m := resumableAnswerWatch(t)
+	delivery := m.delivery
+	m.spawn = func([]string, string, string) error {
+		writePresenceFixture(t, m.workspace, delivery, m.currentTime)
+		return nil
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m, _ = updateWatch(t, m, tea.PasteMsg{Content: "use JSON"})
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	msg := m.pollCmd()()
+	m, _ = updateWatch(t, m, msg)
+
+	if m.delivery != delivery || m.panel.Header.Presence != "running" || !strings.Contains(m.View().Content, "loop ●") {
+		t.Fatalf("watch stopped following resumed delivery: delivery=%q header=%+v", m.delivery, m.panel.Header)
 	}
 }
 

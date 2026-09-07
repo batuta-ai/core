@@ -1,6 +1,11 @@
 package loop
 
 import (
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"charm.land/bubbles/v2/textarea"
@@ -46,16 +51,55 @@ func (m watchModel) updateAnswerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		text := strings.TrimSpace(m.answerEditor.Value())
 		if text == "" {
 			m.navigation.notice = m.answerLabel("answer_empty")
-		} else if _, err := Answer(m.workspace, m.answerTask, text); err != nil {
+		} else if delivery, err := Answer(m.workspace, m.answerTask, text); err != nil {
 			m.navigation.notice = err.Error()
 		} else {
-			m.closeAnswer()
+			exe, err := os.Executable()
+			if err != nil {
+				m.navigation.notice = fmt.Sprintf("loop: resume failed: %v; resume with: batuta loop --resume %s", err, delivery)
+			} else {
+				argv := []string{exe, "loop", "--resume", delivery}
+				logPath := filepath.Join(m.workspace, ".batuta", "runs", "loop-"+delivery+".log")
+				if err := m.spawn(argv, m.workspace, logPath); err != nil {
+					m.navigation.notice = fmt.Sprintf("loop: resume failed: %v; resume with: %s", err, strings.Join(argv, " "))
+				} else {
+					m.closeAnswer()
+				}
+			}
 		}
 	default:
 		m.answerEditor, cmd = m.answerEditor.Update(msg)
 	}
 	m.refresh(false)
 	return m, cmd
+}
+
+func spawnDetached(argv []string, dir, logPath string) error {
+	if len(argv) == 0 {
+		return errors.New("loop: resume command is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return err
+	}
+	input, err := os.Open(os.DevNull)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	log, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer log.Close()
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	cmd.Stdin = input
+	cmd.Stdout, cmd.Stderr = log, log
+	detachCommand(cmd)
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	return cmd.Process.Release()
 }
 
 func (m *watchModel) closeAnswer() {

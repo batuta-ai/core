@@ -43,6 +43,7 @@ type watchModel struct {
 	logOffset   int
 	progress    progressAnimation
 	progressSet bool
+	spawn       func(argv []string, dir, logPath string) error
 
 	answering      bool
 	answerEditor   textarea.Model
@@ -80,7 +81,7 @@ func newPollingWatchModel(workspace, delivery string, store *journal.Store, reco
 		ticker = tea.Tick
 	}
 	style.Frame = 0
-	m := watchModel{workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker, focus: focusTable}
+	m := watchModel{workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker, focus: focusTable, spawn: spawnDetached}
 	m.refresh(true)
 	if store != nil && delivery != "" {
 		if state, err := m.pollState(m.currentTime); err == nil {
