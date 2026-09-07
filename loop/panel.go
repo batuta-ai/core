@@ -3,10 +3,10 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -20,6 +20,12 @@ const panelClearScreen = "\x1b[2J\x1b[H"
 // Watch redraws the most recent journal state until the delivery ends or
 // the context is canceled. It only reads the journal.
 func Watch(ctx context.Context, workspace, delivery string, interval time.Duration, w io.Writer) error {
+	return watchWithTerminal(ctx, workspace, delivery, interval, w, newPanelTerminal(os.Stdin), func(ctx context.Context, path string) error {
+		return openPanelPager(ctx, path, w)
+	})
+}
+
+func watchWithTerminal(ctx context.Context, workspace, delivery string, interval time.Duration, w io.Writer, input panelTerminal, pager func(context.Context, string) error) (result error) {
 	root, store, err := openStore(workspace)
 	if err != nil {
 		return err
@@ -44,24 +50,54 @@ func Watch(ctx context.Context, workspace, delivery string, interval time.Durati
 	if interval <= 0 {
 		interval = 2 * time.Second
 	}
+	var session *panelKeySession
+	var keys <-chan panelKeyEvent
+	if input != nil {
+		session, err = startPanelKeys(ctx, input)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+		keys = session.keys
+	}
+	defer func() { result = errors.Join(result, session.stop()) }()
+	navigation := panelNavigation{}
+	var model, visible PanelView
 	redraw := func() (bool, error) {
 		records, err := store.Read(delivery)
 		if err != nil {
 			return false, err
 		}
 		now := time.Now()
+		model = navigation.model(records, now)
 		panel := RenderPanel(records, now)
+		style, height := watchPanelSize(w)
 		if panelJournalHasWorkspace(records) {
-			style, height := watchPanelSize(w)
-			panel, err = renderWatchPanel(root, records, now, style, height)
-			if err != nil {
+			if err := loadPanelLog(root, &model); err != nil {
 				return false, err
 			}
+			if navigation.legend {
+				height -= panelLineCount(panelLegend(style))
+			}
+			if navigation.notice != "" {
+				height--
+			}
+			visible = navigation.viewport(model, style, height)
+			panel = Render(visible, style)
+		}
+		if navigation.legend {
+			panel += panelLegend(style)
+		}
+		if navigation.notice != "" {
+			panel += navigation.notice + "\n"
 		}
 		if _, err := io.WriteString(w, panelClearScreen+panel); err != nil {
 			return false, err
 		}
-		return terminalState(records) != "", nil
+		state := terminalState(records)
+		return state != "" && (input == nil || (state != StateWaitingInput && state != StateBlocked)), nil
 	}
 	terminal, err := redraw()
 	if err != nil || terminal {
@@ -73,11 +109,52 @@ func Watch(ctx context.Context, workspace, delivery string, interval time.Durati
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-ticker.C:
-			terminal, err := redraw()
-			if err != nil || terminal {
-				return err
+		case event, ok := <-keys:
+			if !ok || event.err != nil {
+				if err := session.stop(); err != nil {
+					return err
+				}
+				keys = nil
+				input = nil
+				navigation.selected = ""
+				if event.err != nil && panelInputError(event.err) != nil {
+					return panelInputError(event.err)
+				}
+			} else {
+				if event.key == "q" || event.key == "interrupt" {
+					return nil
+				}
+				navigation.move(event.key, model, max(1, len(panelTaskIDs(visible))))
+				path := panelKeyAction(event.key, root, model, &navigation)
+				if path != "" && pager != nil {
+					if err := session.stop(); err != nil {
+						return err
+					}
+					if _, err := fmt.Fprintln(w, path); err != nil {
+						return err
+					}
+					pagerErr := pager(ctx, path)
+					if ctx.Err() != nil {
+						return nil
+					}
+					session, err = startPanelKeys(ctx, input)
+					if err != nil {
+						return err
+					}
+					keys = session.keys
+					if pagerErr != nil {
+						navigation.notice = path + ": " + pagerErr.Error()
+					}
+				}
 			}
+		case <-ticker.C:
+		}
+		if ctx.Err() != nil {
+			return nil
+		}
+		terminal, err = redraw()
+		if err != nil || terminal {
+			return err
 		}
 	}
 }
@@ -104,13 +181,8 @@ func watchPanelSize(w io.Writer) (Style, int) {
 
 func renderWatchPanel(workspace string, records []journal.Record, now time.Time, style Style, height int) (string, error) {
 	model := PanelModel(records, now, "")
-	if model.Detail.LogPath != "" {
-		lines, err := readPanelLog(filepath.Join(workspace, filepath.FromSlash(model.Detail.LogPath)))
-		if err != nil && !os.IsNotExist(err) {
-			return "", err
-		}
-		model.LogLines = lines
-		model.LogTitle = panelLogTitle(model.Detail)
+	if err := loadPanelLog(workspace, &model); err != nil {
+		return "", err
 	}
 	return Render(fitPanelHeight(model, style, height), style), nil
 }
