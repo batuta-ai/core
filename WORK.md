@@ -64,3 +64,6 @@
 - [x] Docs, help and usage describe the Bubble Tea watch → codex (gpt-5.6-sol), commit 47c5bffad760 (trail: .batuta/runs/2026-09-07-watch-tui-task-6.md, plan watch-tui, 2026-09-07)
 - [x] A paint layer in the renderer: segments, line kinds, one SGR table; selection, attention, waves, status and gates painted → codex (gpt-6-astra), commit 31a5ae3e7d2a (trail: .batuta/runs/2026-09-07-watch-style-task-1.md, plan watch-style, 2026-09-07)
 - [x] Bars, header, boxes, detail, keys and log painted → codex (gpt-6-astra), escalated from codex after 2 fails, commit 9dd08af0f745 (trail: .batuta/runs/2026-09-07-watch-style-task-2.md, plan watch-style, 2026-09-07)
+- [x] A paint layer in the renderer: segments, line kinds, one SGR table; selection, attention, waves, status and gates painted → ticked in the plan before the run, commit f5acdf19e83f (trail: .batuta/runs/2026-09-07-watch-style-task-1.md, plan watch-style, 2026-09-07)
+- [x] Bars, header, boxes, detail, keys and log painted → ticked in the plan before the run, commit f5acdf19e83f (trail: .batuta/runs/2026-09-07-watch-style-task-2.md, plan watch-style, 2026-09-07)
+- [x] A colour golden, the docs and the legend → codex (gpt-5.6-sol), commit 9fab6ba1ad2b (trail: .batuta/runs/2026-09-07-watch-style-task-3.md, plan watch-style, 2026-09-07)

@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** Give the watch a semantic style layer inside ANSI 16 plus bold, dim and reverse: the selected row stands out, every state has one colour used everywhere it appears, the attention line becomes a banner when a human is needed, waves and low-interest rows recede, the focused box is visible, the log is classified, keys read as chips. Goldens (colour off) stay byte-identical; colour on is covered by its own golden. Follows plan `watch-tui` on the same branch; refs core #64.
-**Created:** 2026-09-07 · **Status:** approved
+**Created:** 2026-09-07 · **Status:** done
 
 ## Tasks
 - [x] 1. A paint layer in the renderer: segments, line kinds, one SGR table; selection, attention, waves, status and gates painted — backend/high
@@ -12,7 +12,7 @@
       Depends on: 1
       Scope: loop/panel_render.go, loop/panel_render_test.go, loop/panel_labels.go, loop/panel.go, loop/panel_test.go
       Accept: progress bars paint filled cells in the state colour (green at 100 %, blue otherwise), the cell being eased bright blue, the percentage bold → go test ./loop -run TestPaintProgressBars -count=1; the header paints the delivery name bold, the branch dim, the elapsed dim; box titles bold; the focused box border blue and the others dim → go test ./loop -run 'TestPaintHeader|TestPaintFocusedBox' -count=1; Detail labels (Criterion, Last, Worktree, Log, Question, Reason) dim, a pending question yellow → go test ./loop -run TestPaintDetail -count=1; the key line paints each key as a reverse chip and its description dim, in both languages and both glyph sets → go test ./loop -run TestPaintKeyChips -count=1; log lines are classified: `BATUTA-PROGRESS` cyan bold, lines matching `(?i)\b(error|fail|failed|panic|fatal)\b` red, lines starting with `codex`, `claude` or `$ ` bold, the oldest third of the visible window dim → go test ./loop -run TestPaintLogLines -count=1; goldens unchanged → go test ./loop -run TestRenderMatchesGoldens -count=1 && git diff --quiet -- docs/dashboard-mock loop/testdata
-- [ ] 3. A colour golden, the docs and the legend — docs/medium
+- [x] 3. A colour golden, the docs and the legend — docs/medium
       Depends on: 2
       Scope: loop/panel_render_test.go, loop/testdata/mock-calm-120-en-colour.txt, loop/testdata/mock-question-120-en-colour.txt, loop/panel_labels.go, loop/panel_keys.go, loop/panel_keys_test.go, docs/loop.md
       Accept: two new goldens capture `Render` with colour on for the calm and the question states at 120 columns with the selection on the active task, and a test compares bytes → go test ./loop -run TestRenderMatchesColourGoldens -count=1; the legend (`?`) explains the colour semantics in one line per state and the selection marker, in English and Portuguese → go test ./loop -run TestRenderLegendMentionsColours -count=1; `docs/loop.md` keeps every heading and its dashboard section gains a "Colours" paragraph naming the state colours, the selection, the focus border, the log classes and `NO_COLOR` → test "$(grep -c '^## ' docs/loop.md)" -ge "$(git show HEAD:docs/loop.md | grep -c '^## ')" && grep -q 'NO_COLOR' docs/loop.md && grep -qi 'colour\|color' docs/loop.md
