@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -187,40 +188,33 @@ func TestRenderASCIIFallback(t *testing.T) {
 	}
 }
 func TestRenderColours(t *testing.T) {
-	t.Setenv("NO_COLOR", "")
+	t.Setenv("NO_COLOR", "1")
 	sgr := regexp.MustCompile("\x1b\\[[0-9;]*m")
 	for _, state := range []string{"calm", "blocked"} {
 		style := Style{Width: 120, Lang: "en", Glyphs: "unicode", Colour: true}
 		got := Render(renderFixture(state), style)
+		if !strings.Contains(got, "\x1b[") {
+			t.Fatal("Render did not honor explicit Colour")
+		}
 		for _, code := range sgr.FindAllString(got, -1) {
-			if code != "\x1b[0m" && code != "\x1b[31m" && code != "\x1b[32m" && code != "\x1b[34m" {
-				t.Fatalf("unexpected SGR %q", code)
+			for _, parameter := range strings.Split(code[2:len(code)-1], ";") {
+				n, err := strconv.Atoi(parameter)
+				if err != nil || !(n == 0 || n == 1 || n == 2 || n == 7 || n >= 30 && n <= 37 || n >= 90 && n <= 97) {
+					t.Fatalf("unexpected SGR %q", code)
+				}
 			}
 		}
-		colour := "\x1b[34m"
-		if state == "blocked" {
-			colour = "\x1b[31m"
-		}
-		if !strings.Contains(got, colour) || !strings.Contains(got, "\x1b[32m") {
-			t.Fatal("missing semantic colours")
-		}
 		style.Colour = false
-		if sgr.ReplaceAllString(got, "") != Render(renderFixture(state), style) {
-			t.Fatal("colour changed layout")
+		plain := strings.ReplaceAll(sgr.ReplaceAllString(got, ""), "│▶", "│ ")
+		if plain != Render(renderFixture(state), style) {
+			t.Fatal("colour changed layout beyond the selection marker")
 		}
-	}
-	ascii := Render(renderFixture("calm"), Style{Width: 120, Lang: "en", Glyphs: "ascii", Colour: true})
-	if !strings.Contains(ascii, "codex gpt-5.6-sol") || !strings.Contains(ascii, "+- Context") {
-		t.Fatal("coloured ordinary ASCII text or borders")
 	}
 	if StyleForWriter(&strings.Builder{}).Colour {
 		t.Fatal("non-TTY colour enabled")
 	}
-	t.Setenv("NO_COLOR", "1")
-	if strings.Contains(Render(renderFixture("calm"), Style{Width: 120, Colour: true}), "\x1b[") {
-		t.Fatal("NO_COLOR ignored")
-	}
 }
+
 func TestTerminalSizeFallback(t *testing.T) {
 	width, height := TerminalSize(^uintptr(0))
 	if width != 120 || height != 40 {
@@ -307,6 +301,242 @@ func TestStyleForWriterTerminalColour(t *testing.T) {
 			}
 			if StyleForWriter(&strings.Builder{}).Colour {
 				t.Fatal("writer without a descriptor gained colour")
+			}
+		}
+	}
+}
+
+func TestPanelWidthIgnoresSGR(t *testing.T) {
+	for _, text := range []string{"hello", "宽字", "▶task_2"} {
+		for _, codes := range []string{"7", "2;7", "1;31", "94"} {
+			if got, want := panelWidth("\x1b["+codes+"m"+text+"\x1b[0m"), panelWidth(text); got != want {
+				t.Errorf("%q: width=%d, want %d", text, got, want)
+			}
+		}
+	}
+}
+
+type paintedCell struct {
+	char               rune
+	colour             int
+	bold, dim, reverse bool
+}
+
+func paintedCells(t *testing.T, line string) []paintedCell {
+	t.Helper()
+	var cells []paintedCell
+	var state paintedCell
+	for len(line) > 0 {
+		if strings.HasPrefix(line, "\x1b[") {
+			end := strings.IndexByte(line, 'm')
+			if end < 0 {
+				t.Fatal("unterminated SGR")
+			}
+			for _, parameter := range strings.Split(line[2:end], ";") {
+				code, err := strconv.Atoi(parameter)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch code {
+				case 0:
+					state = paintedCell{}
+				case 1:
+					state.bold = true
+				case 2:
+					state.dim = true
+				case 7:
+					state.reverse = true
+				default:
+					state.colour = code
+				}
+			}
+			line = line[end+1:]
+			continue
+		}
+		for _, c := range line {
+			state.char = c
+			cells = append(cells, state)
+			line = line[len(string(c)):]
+			break
+		}
+	}
+	if state.colour != 0 || state.bold || state.dim || state.reverse {
+		t.Fatal("paint leaked past end of line")
+	}
+	return cells
+}
+
+func paintLineContaining(t *testing.T, output, text string) string {
+	t.Helper()
+	sgr := regexp.MustCompile("\x1b\\[[0-9;]*m")
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(sgr.ReplaceAllString(line, ""), text) {
+			return line
+		}
+	}
+	t.Fatalf("missing line %q", text)
+	return ""
+}
+
+func TestPaintSelectedRow(t *testing.T)         { testPaintSelection(t, "table", false) }
+func TestPaintSelectedRowLogFocus(t *testing.T) { testPaintSelection(t, "log", true) }
+func testPaintSelection(t *testing.T, focus string, dim bool) {
+	t.Helper()
+	for _, glyphs := range []string{"unicode", "ascii"} {
+		for _, width := range []int{60, 80, 120} {
+			for _, selected := range []string{"task_1", "task_2"} {
+				model := renderFixture("calm")
+				model.Detail.Task = selected
+				got := Render(model, Style{Width: width, Glyphs: glyphs, Colour: true, Focus: focus, Frame: -1})
+				marker, border := "▶", "│"
+				if glyphs == "ascii" {
+					marker, border = ">", "|"
+				}
+				line := paintLineContaining(t, got, border+marker+selected)
+				cells := paintedCells(t, line)
+				if len(cells) != width {
+					t.Fatalf("row width=%d, want %d", len(cells), width)
+				}
+				for i, cell := range cells {
+					if !cell.reverse || dim && !cell.dim {
+						t.Fatalf("selection lost at column %d: %+v", i, cell)
+					}
+				}
+				for _, other := range []string{"task_1", "task_2", "task_3"} {
+					if other == selected {
+						continue
+					}
+					for _, cell := range paintedCells(t, paintLineContaining(t, got, border+" "+other)) {
+						if cell.reverse {
+							t.Fatalf("unselected row %s reversed", other)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPaintAttentionBanner(t *testing.T) {
+	for _, tc := range []struct {
+		state   string
+		colour  int
+		reverse bool
+	}{
+		{"calm", 0, false}, {"question", 33, true}, {"limit", 33, true}, {"blocked", 31, true}, {"conflict", 31, true},
+	} {
+		for _, width := range []int{30, 60, 120} {
+			got := Render(renderFixture(tc.state), Style{Width: width, Colour: true, Frame: -1})
+			cells := paintedCells(t, strings.Split(got, "\n")[1])
+			if len(cells) != width {
+				t.Fatalf("banner width=%d", len(cells))
+			}
+			for _, cell := range cells {
+				if cell.colour != tc.colour || cell.reverse != tc.reverse || tc.state == "calm" && !cell.dim {
+					t.Fatalf("%s banner: %+v", tc.state, cell)
+				}
+			}
+		}
+	}
+}
+
+func TestPaintStates(t *testing.T) {
+	for _, tc := range []struct {
+		state     string
+		colour    int
+		bold, dim bool
+	}{
+		{"integrated", 32, false, false}, {"running", 34, false, false}, {"executor", 34, false, false},
+		{"preparing", 34, false, false}, {"candidate", 34, false, false}, {"blocked", 31, true, false},
+		{"failed", 31, true, false}, {"conflict", 31, true, false}, {"waiting_input", 33, true, false},
+		{"pending", 0, false, true},
+	} {
+		for _, lang := range []string{"en", "pt"} {
+			model := renderFixture("calm")
+			model.Header.State = tc.state
+			model.Attention = PanelAttention{Kind: tc.state, Task: "task_2", Text: "attention"}
+			model.Waves[1].State = tc.state
+			model.Waves[1].Rows[0].State = tc.state
+			got := Render(model, Style{Width: 120, Lang: lang, Colour: true, Frame: -1})
+			r := panelRenderer{style: Style{Frame: -1}, g: glyphsFor(Style{}), labels: panelLabels[lang]}
+			visibleStatus := r.status(tc.state, true)
+			if lang == "pt" && tc.state == "waiting_input" {
+				visibleStatus = "? aguarda respos…"
+			}
+			for _, location := range []struct{ line, token string }{
+				{strings.Split(got, "\n")[0], r.status(tc.state, false)},
+				{strings.Split(got, "\n")[1], r.stateGlyph(tc.state)},
+				{paintLineContaining(t, got, "│▶task_2"), visibleStatus},
+				{paintLineContaining(t, got, "│ W2"), r.stateGlyph(tc.state) + " 0/1"},
+			} {
+				cells := paintedCells(t, location.line)
+				var plain strings.Builder
+				for _, cell := range cells {
+					plain.WriteRune(cell.char)
+				}
+				start := strings.Index(plain.String(), location.token)
+				if start < 0 {
+					t.Fatalf("missing %q", location.token)
+				}
+				start = len([]rune(plain.String()[:start]))
+				for _, cell := range cells[start : start+len([]rune(location.token))] {
+					if cell.colour != tc.colour || tc.bold && !cell.bold || tc.dim && !cell.dim {
+						t.Fatalf("%s/%s %q: %+v", tc.state, lang, location.token, cell)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPaintWaves(t *testing.T) {
+	model := renderFixture("calm")
+	model.Waves = append(model.Waves, PanelWave{State: "before_run", Done: 1, Total: 1, Rows: []PanelRow{{Task: "task_0", Title: "previous work", State: "integrated"}}}, PanelWave{State: "pending", Dependencies: []string{"task_4"}})
+	got := Render(model, Style{Width: 120, Colour: true, Frame: -1})
+	for _, tc := range []struct {
+		text      string
+		bold, dim bool
+		colour    int
+	}{
+		{"│ W1", true, false, 0}, {"│ W2", true, false, 34}, {"│ W3", true, false, 0},
+		{"before run", false, true, 0}, {"│ task_0", false, true, 0}, {"│ pending", false, true, 0},
+	} {
+		cells := paintedCells(t, paintLineContaining(t, got, tc.text))
+		for _, cell := range cells {
+			if tc.bold && !cell.bold || tc.dim && !cell.dim {
+				t.Fatalf("%s: %+v", tc.text, cell)
+			}
+		}
+		if tc.colour != 0 && cells[2].colour != tc.colour {
+			t.Fatalf("active wave not blue: %+v", cells[2])
+		}
+	}
+}
+
+func TestPaintGates(t *testing.T) {
+	for _, glyphs := range []string{"unicode", "ascii"} {
+		model := renderFixture("calm")
+		model.Waves[1].Rows[0].Gates = [4]string{"pass", "fail", "pending", "silent"}
+		got := Render(model, Style{Width: 120, Glyphs: glyphs, Colour: true, Frame: -1})
+		marker, gates := "│▶task_2", "✓✗·✓"
+		if glyphs == "ascii" {
+			marker, gates = "|>task_2", "+x.+"
+		}
+		line := paintLineContaining(t, got, marker)
+		cells := paintedCells(t, line)
+		var plain strings.Builder
+		for _, cell := range cells {
+			plain.WriteRune(cell.char)
+		}
+		start := strings.Index(plain.String(), gates)
+		if start < 0 {
+			t.Fatalf("missing gates %q", gates)
+		}
+		start = len([]rune(plain.String()[:start]))
+		for i, colour := range []int{32, 31, 0, 32} {
+			cell := cells[start+i]
+			if cell.colour != colour || i == 1 && !cell.bold || i == 2 && !cell.dim || !cell.reverse {
+				t.Fatalf("gate %d: %+v", i, cell)
 			}
 		}
 	}
