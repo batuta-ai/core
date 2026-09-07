@@ -77,17 +77,15 @@ func newPollingWatchModel(workspace, delivery string, store *journal.Store, reco
 	m := watchModel{workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker, focus: focusTable}
 	m.refresh(true)
 	if store != nil && delivery != "" {
-		if state, err := m.pollState(); err == nil {
+		if state, err := m.pollState(m.currentTime); err == nil {
 			m.poll = state
+			m.refresh(false)
 		}
 	}
 	return m
 }
 
 func (m watchModel) Init() tea.Cmd {
-	if state := terminalState(m.records); state != "" && state != StateBlocked {
-		return tea.Quit
-	}
 	return tea.Batch(m.pollCmd(), m.clockCmd(), m.spinnerCmd())
 }
 
@@ -152,9 +150,6 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.panel.LogLines, m.panel.LogTitle = msg.logLines, msg.logTitle
 			m.logOffset = min(m.logOffset, m.maxLogOffset())
 			m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
-		}
-		if state := terminalState(m.records); state != "" && state != StateBlocked {
-			return m, tea.Quit
 		}
 		var spinner, progress tea.Cmd
 		if !wasRunning && panelHasRunningTask(m.panel) {
@@ -231,6 +226,21 @@ func panelHasRunningTask(panel PanelView) bool {
 func (m *watchModel) refresh(loadLog bool) {
 	previous := m.panel
 	m.panel = m.navigation.model(m.records, m.currentTime)
+	if m.store != nil && m.delivery != "" {
+		m.panel.Header.Presence, m.panel.Header.Loops = m.poll.presence, m.poll.loops
+	}
+	switch m.panel.Header.State {
+	case StateDone, StateAbandoned, StateCanceled:
+		m.panel.Attention = PanelAttention{Kind: "stopped", Hint: "d picks another delivery"}
+	case StateWaitingInput:
+		if m.panel.Attention.Kind != "question" {
+			m.panel.Attention = PanelAttention{Kind: "question", Hint: "r answers"}
+		}
+	case StateBlocked:
+		if m.panel.Attention.Kind == "none" {
+			m.panel.Attention = PanelAttention{Kind: "blocked"}
+		}
+	}
 	if m.progressSet {
 		changed := previous.Progress.WavesDone != m.panel.Progress.WavesDone || previous.Progress.TasksDone != m.panel.Progress.TasksDone
 		if changed {

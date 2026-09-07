@@ -120,3 +120,54 @@ func TestWatchClockAdvancesElapsed(t *testing.T) {
 		t.Fatalf("clock durations = %v", durations)
 	}
 }
+
+func TestWatchPollPresenceChanges(t *testing.T) {
+	records, _, now := modelFixture(t)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = storePanelRecords(t, store, "dashboard", records)
+	var durations []time.Duration
+	m := newPollingWatchModel(root, "dashboard", store, records, time.Second, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+	if m.panel.Header.Presence != "none" {
+		t.Fatalf("initial presence: %+v", m.panel.Header)
+	}
+	check := func(state string, loops int) {
+		t.Helper()
+		msg := m.pollCmd()()
+		if _, ok := msg.(journalMsg); !ok {
+			t.Fatalf("presence change emitted %T", msg)
+		}
+		m, _ = updateWatch(t, m, msg)
+		if m.panel.Header.Presence != state || m.panel.Header.Loops != loops || m.viewport.Header.Presence != state {
+			t.Fatalf("header = %+v, want %s, %d", m.panel.Header, state, loops)
+		}
+		m, _ = updateWatch(t, m, clockMsg{at: now})
+		if m.panel.Header.Presence != state || m.panel.Header.Loops != loops {
+			t.Fatal("clock lost presence")
+		}
+	}
+	path := writePresenceFixture(t, root, "dashboard", now)
+	check("running", 1)
+	other := writePresenceFixture(t, root, "other", now)
+	check("running", 2)
+	if err := os.Chtimes(path, now.Add(time.Second), now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	check("running", 2)
+	m.ticker = immediateTicker(now.Add(17*time.Second), &durations)
+	check("stale", 0)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	check("none", 0)
+	if err := os.Remove(other); err != nil {
+		t.Fatal(err)
+	}
+	check("none", 0)
+	if _, ok := m.pollCmd()().(watchPollMsg); !ok {
+		t.Fatal("unchanged locks redrew")
+	}
+}

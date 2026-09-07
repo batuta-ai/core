@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"maps"
 	"os"
 	"time"
 
@@ -15,8 +16,11 @@ type watchFileStamp struct {
 }
 
 type watchPollState struct {
-	journal watchFileStamp
-	logSize int64
+	locks    map[string]watchFileStamp
+	presence string
+	loops    int
+	journal  watchFileStamp
+	logSize  int64
 }
 
 type watchPollMsg struct {
@@ -38,7 +42,7 @@ func statWatchFile(path string) (watchFileStamp, error) {
 	return watchFileStamp{size: info.Size(), modTime: info.ModTime()}, nil
 }
 
-func (m watchModel) pollState() (watchPollState, error) {
+func (m watchModel) pollState(at time.Time) (watchPollState, error) {
 	journalStamp, err := statWatchFile(m.store.Path(m.delivery))
 	if err != nil {
 		return watchPollState{}, err
@@ -47,26 +51,27 @@ func (m watchModel) pollState() (watchPollState, error) {
 	if err != nil && !os.IsNotExist(err) {
 		return watchPollState{}, err
 	}
-	return watchPollState{journal: journalStamp, logSize: logStamp.size}, nil
+	presence, loops := Presence(m.workspace, m.delivery, at)
+	return watchPollState{journal: journalStamp, logSize: logStamp.size, locks: presenceFiles(m.workspace), presence: presence, loops: loops}, nil
 }
 
 func (m watchModel) pollCmd() tea.Cmd {
 	if m.store == nil || m.delivery == "" || m.ticker == nil {
 		return nil
 	}
-	return m.ticker(m.interval, func(time.Time) tea.Msg {
-		state, err := m.pollState()
+	return m.ticker(m.interval, func(at time.Time) tea.Msg {
+		state, err := m.pollState(at)
 		if err != nil {
 			return journalMsg{err: err}
 		}
-		if state.journal.size == m.poll.journal.size && state.journal.modTime.Equal(m.poll.journal.modTime) && state.logSize == m.poll.logSize {
+		if state.journal.size == m.poll.journal.size && state.journal.modTime.Equal(m.poll.journal.modTime) && state.logSize == m.poll.logSize && maps.Equal(state.locks, m.poll.locks) && state.presence == m.poll.presence && state.loops == m.poll.loops {
 			return watchPollMsg{state: state}
 		}
 		records, err := m.store.Read(m.delivery)
 		if err != nil {
 			return journalMsg{err: err, poll: state}
 		}
-		panel := m.navigation.model(records, m.currentTime)
+		panel := m.navigation.model(records, at)
 		if err := loadPanelLog(m.workspace, &panel); err != nil {
 			return journalMsg{err: err, poll: state}
 		}

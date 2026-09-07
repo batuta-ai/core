@@ -317,13 +317,15 @@ func TestWatchProgramPager(t *testing.T) {
 	}
 }
 
-func TestWatchQuitsOnTerminalState(t *testing.T) {
+func TestWatchStaysOpenOnTerminalState(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		state     string
 		attention string
 	}{
-		{name: "done", state: StateDone},
+		{name: "done", state: StateDone, attention: "loop stopped · d picks another delivery"},
+		{name: "abandoned", state: StateAbandoned, attention: "loop stopped · d picks another delivery"},
+		{name: "canceled", state: StateCanceled, attention: "loop stopped · d picks another delivery"},
 		{name: "waiting input", state: StateWaitingInput, attention: "Which format?"},
 		{name: "blocked", state: StateBlocked, attention: "G2 tests failed"},
 	} {
@@ -340,22 +342,23 @@ func TestWatchQuitsOnTerminalState(t *testing.T) {
 				records = append(records, panelRecord(t, KindFailure, "task_2", now, map[string]any{"execution": 1, "blocked": true, "feedback": []string{test.attention}}, graph))
 			}
 			records = append(records, panelRecord(t, KindTerminal, "", now, map[string]any{"state": test.state}, graph))
-			m := newWatchModel(t.TempDir(), nil, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time { return now })
+			m := newWatchModel(t.TempDir(), nil, Style{Width: 120, Lang: "en", Glyphs: "unicode"}, func() time.Time { return now })
 			m, cmd := updateWatch(t, m, journalMsg{records: records})
 
-			if test.attention == "" {
-				if cmd == nil {
-					t.Fatal("terminal journal did not quit")
-				}
-				if _, ok := cmd().(tea.QuitMsg); !ok {
-					t.Fatalf("terminal journal command emitted %T", cmd())
-				}
-				return
-			}
 			if cmd != nil {
 				if _, quit := cmd().(tea.QuitMsg); quit {
 					t.Fatalf("%s journal quit", test.state)
 				}
+			}
+			initial := newWatchModel(t.TempDir(), records, m.style, func() time.Time { return now })
+			initial.ticker = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+			if cmd := initial.Init(); cmd != nil {
+				if _, quit := cmd().(tea.QuitMsg); quit {
+					t.Fatal("terminal initial state quit")
+				}
+			}
+			if test.state == StateWaitingInput && !strings.Contains(m.View().Content, "r answers") {
+				t.Fatal("waiting input lacks answer hint")
 			}
 			if !strings.Contains(m.View().Content, test.attention) {
 				t.Fatalf("attention line missing from view:\n%s", m.View().Content)
@@ -427,6 +430,7 @@ func TestWatchProgramAlreadyDone(t *testing.T) {
 	model.ticker = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(120, 40))
 	t.Cleanup(func() { _ = tm.Quit() })
+	tm.Send(tea.KeyPressMsg{Code: 'q', Text: "q"})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second))
 	if final := tm.FinalModel(t).(watchModel); final.panel.Header.State != StateDone {
 		t.Fatalf("final state: %s", final.panel.Header.State)
@@ -512,5 +516,51 @@ func TestWatchProgressEases(t *testing.T) {
 	}
 	if m.panel.Progress.WavesShown != float64(m.panel.Progress.WavesDone) || m.panel.Progress.TasksShown != float64(m.panel.Progress.TasksDone) {
 		t.Fatalf("final values are not exact: %+v", m.panel.Progress)
+	}
+}
+
+func TestWatchQuitsOnlyOnKey(t *testing.T) {
+	records, _, now := modelFixture(t)
+	m := newWatchModel(t.TempDir(), records, Style{Width: 120}, func() time.Time { return now })
+	m.ticker = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+	for _, key := range []tea.KeyPressMsg{{Code: 'q', Text: "q"}, {Code: 'c', Mod: tea.ModCtrl}, {Code: tea.KeyEsc}, {Code: 'x', Text: "x"}, {Code: tea.KeyEnter}} {
+		_, cmd := updateWatch(t, m, key)
+		quit := false
+		if cmd != nil {
+			_, quit = cmd().(tea.QuitMsg)
+		}
+		if want := key.String() == "q" || key.String() == "ctrl+c"; quit != want {
+			t.Fatalf("key %s quit = %v, want %v", key, quit, want)
+		}
+	}
+}
+
+func TestWatchStaysOpenOnTerminalStateWithoutTaskAttention(t *testing.T) {
+	for _, lang := range []string{"en", "pt"} {
+		for _, state := range []string{StateDone, StateAbandoned, StateWaitingInput, StateBlocked} {
+			records, graph, now := modelFixture(t)
+			records = append(records, panelRecord(t, KindTerminal, "", now, map[string]any{"state": state}, graph))
+			m := newWatchModel(t.TempDir(), records, Style{Width: 120, Lang: lang, Glyphs: "unicode"}, func() time.Time { return now })
+			m.ticker = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+			if cmd := m.Init(); cmd != nil {
+				if _, quit := cmd().(tea.QuitMsg); quit {
+					t.Fatal("terminal state quit")
+				}
+			}
+			label := "loop_stop"
+			if state == StateWaitingInput {
+				label = "answer"
+			}
+			if state == StateBlocked {
+				label = "blocked"
+			}
+			banner := strings.Split(m.View().Content, "\n")[1]
+			if !strings.Contains(banner, panelLabels[lang][label]) {
+				t.Errorf("%s/%s banner = %q", lang, state, banner)
+			}
+			if (state == StateDone || state == StateAbandoned) && !strings.Contains(banner, panelLabels[lang]["pick"]) {
+				t.Errorf("%s/%s lacks delivery hint: %q", lang, state, banner)
+			}
+		}
 	}
 }

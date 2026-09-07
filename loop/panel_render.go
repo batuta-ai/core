@@ -193,6 +193,22 @@ func Render(model PanelView, style Style) string {
 	if width >= 76 {
 		right.segments = append([]segment{{model.Header.Branch + " @ " + panelCommit(model.Header.Head) + " · ", paintDim}}, right.segments...)
 	}
+	if model.Header.Presence != "" {
+		presence := panelLine{}
+		switch model.Header.Presence {
+		case "running":
+			presence.segments = append(presence.segments, segment{labels["loop_run"], paintStateIntegrated})
+		case "none":
+			presence.segments = append(presence.segments, segment{labels["loop_none"], paintDim})
+		case "stale":
+			presence.segments = append(presence.segments, segment{labels["loop_stale"], paintStateWaiting})
+		}
+		if model.Header.Loops > 1 {
+			presence.segments = append(presence.segments, segment{text: " · "}, segment{fmt.Sprintf(labels["loops"], model.Header.Loops), paintStateWaiting})
+		}
+		presence.segments = append(presence.segments, segment{text: " · "})
+		right.segments = append(presence.segments, right.segments...)
+	}
 	if panelWidth(right.text()) > width {
 		right = r.fitLine(right, width)
 	}
@@ -361,6 +377,8 @@ func (r panelRenderer) attention(a PanelAttention) panelLine {
 	}
 	text := r.stateGlyph(a.Kind) + " "
 	switch a.Kind {
+	case "stopped":
+		text = r.labels["loop_stop"]
 	case "question":
 		text += a.Task + " " + r.labels["question"] + " · \"" + a.Text + "\""
 	case "blocked":
@@ -377,6 +395,8 @@ func (r panelRenderer) attention(a PanelAttention) panelLine {
 	if a.Hint != "" {
 		hint := a.Hint
 		switch hint {
+		case "d picks another delivery":
+			hint = r.labels["pick"]
 		case "r answers":
 			hint = r.labels["answer"]
 		case "o opens the log":

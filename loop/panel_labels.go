@@ -2,6 +2,12 @@ package loop
 
 var panelLabels = map[string]map[string]string{
 	"en": {
+		"loop_run":    "loop ●",
+		"loop_none":   "loop ○",
+		"loop_stale":  "loop ○ stale",
+		"loops":       "%d loops",
+		"loop_stop":   "loop stopped",
+		"pick":        "d picks another delivery",
 		"context":     "Context",
 		"progress":    "Progress",
 		"detail":      "Detail",
@@ -54,6 +60,12 @@ var panelLabels = map[string]map[string]string{
 		"color_pick":  "reverse · selected task",
 	},
 	"pt": {
+		"loop_run":    "loop ●",
+		"loop_none":   "loop ○",
+		"loop_stale":  "loop ○ stale",
+		"loops":       "%d loops",
+		"loop_stop":   "loop parado",
+		"pick":        "d escolhe outra entrega",
 		"context":     "Contexto",
 		"progress":    "Progresso",
 		"detail":      "Detalhe",

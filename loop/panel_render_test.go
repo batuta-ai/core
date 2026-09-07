@@ -780,3 +780,28 @@ func TestPaintLogLines(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderPresence(t *testing.T) {
+	for _, lang := range []string{"en", "pt"} {
+		for _, width := range []int{60, 80, 120} {
+			for _, tc := range []struct {
+				presence, token string
+				colour          int
+				dim             bool
+			}{
+				{"running", "loop ●", 32, false}, {"none", "loop ○", 0, true}, {"stale", "loop ○ stale", 33, false},
+			} {
+				model := renderFixture("calm")
+				model.Header.Presence, model.Header.Loops = tc.presence, 2
+				got := Render(model, Style{Width: width, Lang: lang, Glyphs: "unicode", Colour: true})
+				header := strings.Split(got, "\n")[0]
+				assertTokenPaint(t, header, tc.token, func(c paintedCell) bool { return c.colour == tc.colour && c.dim == tc.dim })
+				assertTokenPaint(t, header, "2 loops", func(c paintedCell) bool { return c.colour == 33 && c.bold })
+				model.Header.Loops = 1
+				if got := Render(model, Style{Width: width, Lang: lang}); strings.Contains(strings.Split(got, "\n")[0], "1 loops") {
+					t.Fatal("single loop count rendered")
+				}
+			}
+		}
+	}
+}

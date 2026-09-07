@@ -13,6 +13,8 @@ import (
 )
 
 type PanelHeader struct {
+	Presence                        string
+	Loops                           int
 	Delivery, Project, Branch, Head string
 	Elapsed                         time.Duration
 	State, Roadmap                  string
