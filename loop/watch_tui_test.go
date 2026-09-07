@@ -239,3 +239,57 @@ func TestWatchProgramPager(t *testing.T) {
 		t.Fatalf("pager error missing: %q", notice)
 	}
 }
+
+func TestWatchQuitsOnTerminalState(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		state     string
+		attention string
+	}{
+		{name: "done", state: StateDone},
+		{name: "waiting input", state: StateWaitingInput, attention: "Which format?"},
+		{name: "blocked", state: StateBlocked, attention: "G2 tests failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			records, graph, now := modelFixture(t)
+			switch test.state {
+			case StateWaitingInput:
+				graph.Tasks[1].State = routing.GraphTaskWaitingInput
+				graph.Tasks[1].Attempts[0].Question = &routing.TaskQuestion{Prompt: test.attention}
+				records = append(records, panelRecord(t, KindQuestion, "task_2", now, map[string]any{"execution": 1, "question": test.attention}, graph))
+			case StateBlocked:
+				graph.Tasks[1].State = routing.GraphTaskBlocked
+				graph.Tasks[1].BlockerCode = "gates_failed"
+				records = append(records, panelRecord(t, KindFailure, "task_2", now, map[string]any{"execution": 1, "blocked": true, "feedback": []string{test.attention}}, graph))
+			}
+			records = append(records, panelRecord(t, KindTerminal, "", now, map[string]any{"state": test.state}, graph))
+			m := newWatchModel(t.TempDir(), nil, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time { return now })
+			m, cmd := updateWatch(t, m, journalMsg{records: records})
+
+			if test.attention == "" {
+				if cmd == nil {
+					t.Fatal("terminal journal did not quit")
+				}
+				if _, ok := cmd().(tea.QuitMsg); !ok {
+					t.Fatalf("terminal journal command emitted %T", cmd())
+				}
+				return
+			}
+			if cmd != nil {
+				if _, quit := cmd().(tea.QuitMsg); quit {
+					t.Fatalf("%s journal quit", test.state)
+				}
+			}
+			if !strings.Contains(m.View().Content, test.attention) {
+				t.Fatalf("attention line missing from view:\n%s", m.View().Content)
+			}
+			_, cmd = updateWatch(t, m, tea.KeyPressMsg{Code: 'q', Text: "q"})
+			if cmd == nil {
+				t.Fatal("q did not quit")
+			}
+			if _, ok := cmd().(tea.QuitMsg); !ok {
+				t.Fatalf("q command emitted %T", cmd())
+			}
+		})
+	}
+}
