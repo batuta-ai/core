@@ -223,6 +223,16 @@ func PanelModel(records []journal.Record, now time.Time, selected string) PanelV
 	}
 	if selected == "" {
 		selected = active
+		if selected == "" {
+			var integratedAt time.Time
+			for _, task := range graph.Tasks {
+				view := tasks[task.TaskID]
+				if task.State == routing.GraphTaskIntegrated && (selected == "" || !view.lastAt.Before(integratedAt)) {
+					selected = task.TaskID
+					integratedAt = view.lastAt
+				}
+			}
+		}
 	}
 	if view := tasks[selected]; view != nil {
 		model.Detail = view.detail

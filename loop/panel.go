@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -18,7 +20,7 @@ const panelClearScreen = "\x1b[2J\x1b[H"
 // Watch redraws the most recent journal state until the delivery ends or
 // the context is canceled. It only reads the journal.
 func Watch(ctx context.Context, workspace, delivery string, interval time.Duration, w io.Writer) error {
-	_, store, err := openStore(workspace)
+	root, store, err := openStore(workspace)
 	if err != nil {
 		return err
 	}
@@ -47,7 +49,16 @@ func Watch(ctx context.Context, workspace, delivery string, interval time.Durati
 		if err != nil {
 			return false, err
 		}
-		if _, err := io.WriteString(w, panelClearScreen+RenderPanel(records, time.Now())); err != nil {
+		now := time.Now()
+		panel := RenderPanel(records, now)
+		if panelJournalHasWorkspace(records) {
+			style, height := watchPanelSize(w)
+			panel, err = renderWatchPanel(root, records, now, style, height)
+			if err != nil {
+				return false, err
+			}
+		}
+		if _, err := io.WriteString(w, panelClearScreen+panel); err != nil {
 			return false, err
 		}
 		return terminalState(records) != "", nil
@@ -69,6 +80,115 @@ func Watch(ctx context.Context, workspace, delivery string, interval time.Durati
 			}
 		}
 	}
+}
+
+func panelJournalHasWorkspace(records []journal.Record) bool {
+	for _, record := range records {
+		if record.Kind != KindOpened {
+			continue
+		}
+		var detail openedDetail
+		return json.Unmarshal(record.Detail, &detail) == nil && detail.Workspace != ""
+	}
+	return false
+}
+
+func watchPanelSize(w io.Writer) (Style, int) {
+	style := StyleForWriter(w)
+	height := 40
+	if file, ok := w.(interface{ Fd() uintptr }); ok {
+		_, height = TerminalSize(file.Fd())
+	}
+	return style, height
+}
+
+func renderWatchPanel(workspace string, records []journal.Record, now time.Time, style Style, height int) (string, error) {
+	model := PanelModel(records, now, "")
+	if model.Detail.LogPath != "" {
+		lines, err := readPanelLog(filepath.Join(workspace, filepath.FromSlash(model.Detail.LogPath)))
+		if err != nil && !os.IsNotExist(err) {
+			return "", err
+		}
+		model.LogLines = lines
+		model.LogTitle = panelLogTitle(model.Detail)
+	}
+	return Render(fitPanelHeight(model, style, height), style), nil
+}
+
+func readPanelLog(path string) ([]string, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimSuffix(string(content), "\n")
+	if text == "" {
+		return nil, nil
+	}
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	}
+	if len(lines) > 6 {
+		lines = lines[len(lines)-6:]
+	}
+	return lines, nil
+}
+
+func panelLogTitle(detail PanelDetail) string {
+	if detail.Task == "" || detail.Attempt <= 0 {
+		return ""
+	}
+	return strings.ReplaceAll(detail.Task, "_", "-") + "-e" + fmt.Sprint(detail.Attempt)
+}
+
+func fitPanelHeight(model PanelView, style Style, height int) PanelView {
+	if height <= 0 || style.Width < 76 {
+		return model
+	}
+	if style.Width >= 100 && len(model.LogLines) > 3 && panelLineCount(Render(model, style)) > height {
+		model.LogLines = model.LogLines[len(model.LogLines)-3:]
+	}
+	for panelTableRows(model) > 8 && panelLineCount(Render(model, style)) > height {
+		model = limitPanelRows(model, panelTableRows(model)-1)
+	}
+	if panelLineCount(Render(model, style)) > height {
+		model.LogLines = nil
+	}
+	return model
+}
+
+func panelLineCount(rendered string) int {
+	return strings.Count(rendered, "\n")
+}
+
+func panelTableRows(model PanelView) int {
+	rows := 0
+	for _, wave := range model.Waves {
+		rows += 1 + len(wave.Rows)
+	}
+	return rows
+}
+
+func limitPanelRows(model PanelView, limit int) PanelView {
+	waves := make([]PanelWave, 0, len(model.Waves))
+	remaining := limit
+	for _, wave := range model.Waves {
+		if remaining <= 0 {
+			break
+		}
+		copyWave := wave
+		copyWave.Rows = nil
+		remaining--
+		if remaining > 0 {
+			count := min(len(wave.Rows), remaining)
+			copyWave.Rows = append(copyWave.Rows, wave.Rows[:count]...)
+			remaining -= count
+		}
+		waves = append(waves, copyWave)
+	}
+	model.RowsBelow = panelTableRows(model) - panelTableRows(PanelView{Waves: waves})
+	model.Waves = waves
+	return model
 }
 
 // RenderPanel renders one delivery from its journal without reading or writing
