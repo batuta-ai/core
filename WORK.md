@@ -62,3 +62,5 @@
 - [x] Animation: spinner on running work, eased progress bars → ticked in the plan before the run, commit 7ca6ae55bc16 (trail: .batuta/runs/2026-09-07-watch-tui-task-4.md, plan watch-tui, 2026-09-07)
 - [x] Log panel scrolling and mouse wheel → codex (gpt-5.6-sol), commit 261c32b9760a (trail: .batuta/runs/2026-09-07-watch-tui-task-5.md, plan watch-tui, 2026-09-07)
 - [x] Docs, help and usage describe the Bubble Tea watch → codex (gpt-5.6-sol), commit 47c5bffad760 (trail: .batuta/runs/2026-09-07-watch-tui-task-6.md, plan watch-tui, 2026-09-07)
+- [x] A paint layer in the renderer: segments, line kinds, one SGR table; selection, attention, waves, status and gates painted → codex (gpt-6-astra), commit 31a5ae3e7d2a (trail: .batuta/runs/2026-09-07-watch-style-task-1.md, plan watch-style, 2026-09-07)
+- [x] Bars, header, boxes, detail, keys and log painted → codex (gpt-6-astra), escalated from codex after 2 fails, commit 9dd08af0f745 (trail: .batuta/runs/2026-09-07-watch-style-task-2.md, plan watch-style, 2026-09-07)
