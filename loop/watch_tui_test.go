@@ -2,6 +2,7 @@ package loop
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -291,5 +292,67 @@ func TestWatchQuitsOnTerminalState(t *testing.T) {
 				t.Fatalf("q command emitted %T", cmd())
 			}
 		})
+	}
+}
+
+func TestWatchRunsTheProgram(t *testing.T) {
+	records, _, _ := modelFixture(t)
+	root, store := keyStore(t, records)
+	previousTerminal, previousProgram := isTerminal, newWatchProgram
+	t.Cleanup(func() { isTerminal, newWatchProgram = previousTerminal, previousProgram })
+	isTerminal = func(fd uintptr) bool { return fd == os.Stdin.Fd() }
+	for _, exit := range []string{"q", "ctrl+c", "context"} {
+		t.Run(exit, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var buf bytes.Buffer
+			started, handled := false, false
+			newWatchProgram = func(model tea.Model, options ...tea.ProgramOption) *tea.Program {
+				started = true
+				m, ok := model.(watchModel)
+				if !ok || m.store == nil || m.delivery != "demo" || !strings.Contains(m.View().Content, "View model") {
+					t.Fatalf("program model: %#v", model)
+				}
+				input := "q"
+				if exit == "ctrl+c" {
+					input = "\x03"
+				}
+				options = append(options, tea.WithInput(strings.NewReader(input)), tea.WithOutput(&buf), tea.WithoutRenderer(),
+					tea.WithFilter(func(_ tea.Model, msg tea.Msg) tea.Msg {
+						if _, ok := msg.(tea.KeyPressMsg); ok {
+							handled = true
+							if exit == "context" {
+								cancel()
+								return nil
+							}
+						}
+						return msg
+					}))
+				return tea.NewProgram(model, options...)
+			}
+			if err := Watch(ctx, root, "demo", time.Hour, &buf); err != nil {
+				t.Fatal(err)
+			}
+			if !started || !handled {
+				t.Fatal("Watch did not run the program and process input")
+			}
+		})
+	}
+	after, err := store.Read("demo")
+	if err != nil || len(after) != len(records) {
+		t.Fatalf("watch changed journal: %v", err)
+	}
+}
+
+func TestWatchProgramAlreadyDone(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	records = append(records, panelRecord(t, KindTerminal, "", now, map[string]any{"state": StateDone}, graph))
+	model := newWatchModel(t.TempDir(), records, Style{Width: 120}, func() time.Time { return now })
+	model.ticker = func(time.Duration, func(time.Time) tea.Msg) tea.Cmd { return nil }
+	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(120, 40))
+	t.Cleanup(func() { _ = tm.Quit() })
+	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second))
+	if final := tm.FinalModel(t).(watchModel); final.panel.Header.State != StateDone {
+		t.Fatalf("final state: %s", final.panel.Header.State)
 	}
 }

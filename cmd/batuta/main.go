@@ -38,8 +38,8 @@ Usage:
   batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [<plan>]
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
-  batuta loop      --dashboard [--watch] [--interval 2s] [<delivery>]
-  batuta watch     [<delivery>] [--interval 2s] [--once] [--lang en|pt] [--ascii]
+  batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
+  batuta watch     [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
   batuta gate tree --snapshot [--dir <d>]
   batuta gate tree --before '<json>' [--dir <d>]
@@ -60,7 +60,7 @@ loop       The mechanical conductor over an approved plan
            integrated; 2 blocked; 3 waiting for an answer; 4 waiting for
            an approved roadmap plan; 130 canceled.
 watch      Live dashboard of a delivery (the most recent open one by
-           default). --interval sets the refresh period; --once prints a
+           default). --interval sets the journal poll interval; --once prints a
            snapshot; --lang selects labels; --ascii uses ASCII borders and
            status glyphs. Keys: up/down and PgUp/PgDn scroll, f follows the
            active task, r shows the answer command, o opens the log, ? shows
@@ -403,7 +403,7 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
 	dashboard := flags.Bool("dashboard", false, "print the state of the open deliveries as TSV")
 	watch := flags.Bool("watch", false, "redraw a live dashboard until the delivery ends")
-	interval := flags.Duration("interval", 2*time.Second, "live dashboard redraw interval")
+	interval := flags.Duration("interval", 500*time.Millisecond, "journal poll interval")
 	parallel := flags.Int("parallel", 0, "executors per wave, at most 4 (default: the profile's Execution line)")
 	taskTimeout := flags.Duration("task-timeout", 45*time.Minute, "time budget per executor session")
 	testTimeout := flags.Duration("test-timeout", 15*time.Minute, "time budget for the test command and each proof")
@@ -533,7 +533,7 @@ func loopExit(state string) error {
 func runWatch(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("watch", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	interval := flags.Duration("interval", 2*time.Second, "live dashboard redraw interval")
+	interval := flags.Duration("interval", 500*time.Millisecond, "journal poll interval")
 	once := flags.Bool("once", false, "print one dashboard snapshot")
 	ascii := flags.Bool("ascii", false, "use ASCII borders and status glyphs")
 	var lang string

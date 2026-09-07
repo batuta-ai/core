@@ -4,50 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
+	"github.com/charmbracelet/x/term"
 )
-
-type keyTerminal struct {
-	keys             chan string
-	raw              bool
-	starts, restores int
-	reading          atomic.Int32
-	restoredReading  bool
-}
-
-func (t *keyTerminal) enterRaw() (func() error, error) {
-	t.raw = true
-	t.starts++
-	return func() error {
-		t.restoredReading = t.reading.Load() != 0
-		t.raw = false
-		t.restores++
-		return nil
-	}, nil
-}
-
-func (t *keyTerminal) readKey(ctx context.Context) (string, error) {
-	t.reading.Add(1)
-	defer t.reading.Add(-1)
-	select {
-	case <-ctx.Done():
-		return "", ctx.Err()
-	case key, ok := <-t.keys:
-		if !ok {
-			return "", io.EOF
-		}
-		return key, nil
-	}
-}
 
 func keyRecords(t *testing.T) ([]journal.Record, routing.DeliveryGraph, time.Time) {
 	t.Helper()
@@ -113,154 +79,9 @@ func TestPanelKeysScrollAndQuit(t *testing.T) {
 	if state.model(records, now).Detail.Task != "task_2" {
 		t.Fatal("follow did not relock")
 	}
-	root, store := keyStore(t, records)
-	before, _ := store.Read("demo")
-	for _, exit := range []string{"q", "cancel", "write error", "panic", "EOF"} {
-		t.Run(exit, func(t *testing.T) {
-			terminal := &keyTerminal{keys: make(chan string, 1)}
-			ctx, cancel := context.WithCancel(context.Background())
-			defer cancel()
-			output := &panelCallbackWriter{fn: func() {
-				if !terminal.raw {
-					t.Error("watch did not enter raw mode")
-				}
-				switch exit {
-				case "q":
-					terminal.keys <- "q"
-				case "cancel":
-					cancel()
-				case "panic":
-					panic("writer panic")
-				case "EOF":
-					close(terminal.keys)
-					cancel()
-				}
-			}}
-			var writer io.Writer = output
-			failure := errors.New("write failed")
-			if exit == "write error" {
-				writer = keyErrorWriter{failure}
-			}
-			var err error
-			var caught any
-			func() {
-				defer func() { caught = recover() }()
-				err = watchWithTerminal(ctx, root, "demo", time.Hour, writer, terminal, nil)
-			}()
-			if exit == "panic" && caught != "writer panic" || exit != "panic" && caught != nil {
-				t.Fatalf("unexpected panic: %v", caught)
-			}
-			if exit == "write error" {
-				if !errors.Is(err, failure) {
-					t.Fatal(err)
-				}
-			} else if err != nil {
-				t.Fatal(err)
-			}
-			if terminal.raw || terminal.starts != 1 || terminal.restores != 1 || terminal.restoredReading {
-				t.Fatalf("terminal not restored: %+v", terminal)
-			}
-		})
-	}
-	after, _ := store.Read("demo")
-	if len(before) != len(after) {
-		t.Fatal("watch modified the delivery")
-	}
 }
 
-func TestPanelKeysReaderExitRestoresTerminal(t *testing.T) {
-	terminal := &keyTerminal{keys: make(chan string)}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	session, err := startPanelKeys(ctx, terminal)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer session.stop()
-	close(terminal.keys)
-	if event := <-session.keys; !errors.Is(event.err, io.EOF) {
-		t.Fatalf("reader exit: %+v", event)
-	}
-	<-session.done
-	if terminal.raw || terminal.restores != 1 || terminal.restoredReading {
-		t.Fatal("reader exited without restoring terminal mode")
-	}
-}
-
-func TestPanelKeySequences(t *testing.T) {
-	for _, test := range []struct{ input, want string }{
-		{"\x1b[A", "up"}, {"\x1bOA", "up"}, {"\x1b[B", "down"}, {"\x1bOB", "down"},
-		{"\x1b[5~", "pageUp"}, {"\x1b[6~", "pageDown"}, {"\x03", "interrupt"},
-		{"q", "q"}, {"f", "f"}, {"?", "?"}, {"o", "o"}, {"r", "r"},
-		{"\x1b[Zq", "q"},
-	} {
-		var sequence, got string
-		for i := range test.input {
-			key := decodePanelKey(&sequence, test.input[i])
-			if key != "" {
-				if got != "" {
-					t.Fatalf("%q decoded multiple keys", test.input)
-				}
-				got = key
-			}
-		}
-		if got != test.want || sequence != "" {
-			t.Fatalf("%q decoded as %q, pending %q", test.input, got, sequence)
-		}
-	}
-}
-
-type keyErrorWriter struct{ err error }
-
-func (w keyErrorWriter) Write([]byte) (int, error) { return 0, w.err }
-
-func TestPanelKeysLegendLogAndAnswer(t *testing.T) {
-	records, graph, now := modelFixture(t)
-	graph.Tasks[1].State = routing.GraphTaskWaitingInput
-	graph.Tasks[1].Attempts[0].Question = &routing.TaskQuestion{Prompt: "Which format?"}
-	records = append(records, panelRecord(t, KindQuestion, "task_2", now, map[string]any{"execution": 1, "question": "Which format?"}, graph),
-		panelRecord(t, KindTerminal, "", now, map[string]any{"state": StateWaitingInput}, graph))
-	root, _ := keyStore(t, records)
-	terminal := &keyTerminal{keys: make(chan string, 1)}
-	steps := []string{"?", "?", "o", "r", "q"}
-	var frames []string
-	output := &keyFrameWriter{write: func(frame string) {
-		frames = append(frames, frame)
-		if len(steps) > 0 {
-			terminal.keys <- steps[0]
-			steps = steps[1:]
-		}
-	}}
-	opened := ""
-	pager := func(ctx context.Context, path string) error {
-		if terminal.raw {
-			t.Error("pager inherited raw mode")
-		}
-		opened = path
-		return nil
-	}
-	if err := watchWithTerminal(context.Background(), root, "demo", time.Hour, output, terminal, pager); err != nil {
-		t.Fatal(err)
-	}
-	if opened != filepath.Join(root, ".batuta/runs/2026-09-06-demo-task-2-e1.out.log") {
-		t.Fatalf("opened %q", opened)
-	}
-	joined := strings.Join(frames, "\n")
-	command := "batuta loop --workspace " + panelShellQuote(root) + " --answer 'task_2' \"<text>\""
-	if !strings.Contains(joined, command) || !strings.Contains(joined, opened) {
-		t.Fatalf("missing actions:\n%s", joined)
-	}
-	if len(frames) < 3 || !strings.Contains(frames[1], "Legend") || strings.Contains(frames[2], "Legend") {
-		t.Fatal("legend did not toggle")
-	}
-	for _, gate := range []string{"G0", "G1", "G2", "G3"} {
-		if !strings.Contains(frames[1], gate) {
-			t.Fatal("legend missing " + gate)
-		}
-	}
-	if terminal.raw || terminal.starts != 2 || terminal.restores != 2 {
-		t.Fatalf("raw lifecycle: %+v", terminal)
-	}
+func TestPanelKeysLegendStyles(t *testing.T) {
 	for _, style := range []Style{{Width: 60, Lang: "pt", Glyphs: "ascii"}, {Width: 120, Lang: "en", Glyphs: "unicode"}} {
 		legend := panelLegend(style)
 		if style.Lang == "pt" && !strings.Contains(legend, "Legenda") {
@@ -283,7 +104,7 @@ func TestWatchWithoutATTYAutoFollows(t *testing.T) {
 	}
 	defer input.Close()
 	defer writer.Close()
-	if newPanelTerminal(input) != nil {
+	if term.IsTerminal(input.Fd()) {
 		t.Fatal("pipe was treated as a terminal")
 	}
 	previous := os.Stdin
@@ -304,14 +125,91 @@ func TestWatchWithoutATTYAutoFollows(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-		} else {
-			cancel()
+		} else if len(frames) == 2 {
+			if _, err := store.Append("demo", panelRecord(t, KindTerminal, "", now, map[string]any{"state": StateDone}, graph)); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}}
 	if err := Watch(ctx, root, "demo", time.Nanosecond, output); err != nil {
 		t.Fatal(err)
 	}
-	if len(frames) != 2 || !strings.Contains(frames[0], "View model") || !strings.Contains(frames[1], "Renderer") {
+	for i, frame := range frames {
+		if strings.Contains(frame, "\x1b") {
+			t.Fatal("plain watch emitted escape sequences")
+		}
+		if i > 0 && !strings.HasPrefix(frame, "\n") {
+			t.Fatal("frames need a blank line separator")
+		}
+	}
+	if len(frames) != 3 || !strings.Contains(frames[0], "View model") || !strings.Contains(frames[1], "Renderer") {
 		t.Fatalf("did not follow: %v", frames)
+	}
+}
+
+func TestWatchPlainSkipsUnchangedJournal(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	root, store := keyStore(t, records)
+	ticks := make(chan time.Time)
+	frames := make(chan string, 8)
+	done := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	output := &keyFrameWriter{write: func(frame string) { frames <- frame }}
+	go func() { done <- watchPlain(ctx, root, "demo", store, output, ticks) }()
+	select {
+	case <-frames:
+	case <-ctx.Done():
+		t.Fatal("missing first frame")
+	}
+	writePanelLogAt(t, root, "2026-09-06-demo-task-2-e1", []string{"changed log only"})
+	for range 2 {
+		select {
+		case ticks <- now:
+		case <-ctx.Done():
+			t.Fatal("poll did not finish")
+		}
+	}
+	select {
+	case frame := <-frames:
+		t.Fatalf("unchanged journal rendered again: %s", frame)
+	default:
+	}
+	if _, err := store.Append("demo", panelRecord(t, KindTerminal, "", now, map[string]any{"state": StateDone}, graph)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case ticks <- now:
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("terminal journal did not stop watch")
+	}
+	if ctx.Err() != nil {
+		t.Fatal("watch waited for cancellation instead of stopping on completion")
+	}
+	if len(frames) != 1 {
+		t.Fatalf("want one changed frame, got %d", len(frames))
+	}
+	if frame := <-frames; !strings.HasPrefix(frame, "\n") || strings.Contains(frame, "\x1b") {
+		t.Fatalf("not a plain separated frame: %q", frame)
+	}
+}
+
+type panelErrorWriter struct{ err error }
+
+func (w panelErrorWriter) Write([]byte) (int, error) { return 0, w.err }
+
+func TestWatchPlainReturnsWriteError(t *testing.T) {
+	records, _, _ := modelFixture(t)
+	root, store := keyStore(t, records)
+	failure := errors.New("write failed")
+	if err := watchPlain(context.Background(), root, "demo", store, panelErrorWriter{failure}, nil); !errors.Is(err, failure) {
+		t.Fatalf("got %v, want write error", err)
 	}
 }

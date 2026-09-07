@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/charmbracelet/x/term"
 )
 
 // Style fixes the layout independently of the process environment. Use
@@ -36,9 +38,18 @@ func StyleForWriter(w io.Writer) Style {
 	}
 	if file, ok := w.(interface{ Fd() uintptr }); ok {
 		style.Width, _ = TerminalSize(file.Fd())
-		style.Colour = terminalIsTTY(file.Fd()) && os.Getenv("NO_COLOR") == ""
+		style.Colour = isTerminal(file.Fd()) && os.Getenv("NO_COLOR") == ""
 	}
 	return style
+}
+
+// TerminalSize reports the visible terminal size, falling back to 120 by 40.
+func TerminalSize(fd uintptr) (width, height int) {
+	width, height, err := term.GetSize(fd)
+	if err != nil || width <= 0 || height <= 0 {
+		return 120, 40
+	}
+	return width, height
 }
 
 type panelGlyphs struct{ h, v, tl, tr, bl, br, ok, fail, pend, full, empty, ell, arrow string }

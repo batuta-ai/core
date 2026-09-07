@@ -225,3 +225,25 @@ func TestRenderUsesSuppliedValues(t *testing.T) {
 		}
 	}
 }
+
+func TestStyleForWriterTerminalColour(t *testing.T) {
+	previous := isTerminal
+	t.Cleanup(func() { isTerminal = previous })
+	file, err := os.CreateTemp(t.TempDir(), "output")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	for _, terminal := range []bool{false, true} {
+		isTerminal = func(fd uintptr) bool { return terminal && fd == file.Fd() }
+		for _, noColour := range []string{"", "1"} {
+			t.Setenv("NO_COLOR", noColour)
+			if got := StyleForWriter(file).Colour; got != (terminal && noColour == "") {
+				t.Fatalf("terminal=%v NO_COLOR=%q: colour=%v", terminal, noColour, got)
+			}
+			if StyleForWriter(&strings.Builder{}).Colour {
+				t.Fatal("writer without a descriptor gained colour")
+			}
+		}
+	}
+}

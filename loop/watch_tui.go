@@ -64,7 +64,12 @@ func newPollingWatchModel(workspace, delivery string, store *journal.Store, reco
 	return m
 }
 
-func (m watchModel) Init() tea.Cmd { return tea.Batch(m.pollCmd(), m.clockCmd()) }
+func (m watchModel) Init() tea.Cmd {
+	if state := terminalState(m.records); state != "" && state != StateBlocked {
+		return tea.Quit
+	}
+	return tea.Batch(m.pollCmd(), m.clockCmd())
+}
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd

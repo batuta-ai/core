@@ -246,10 +246,19 @@ func TestWatchStopsAtTerminalState(t *testing.T) {
 	if appendErr != nil {
 		t.Fatal(appendErr)
 	}
-	if got := strings.Count(out.String(), "\x1b[2J\x1b[H"); got < 2 {
-		t.Fatalf("screen cleared %d times, want at least 2 redraws:\n%s", got, out.String())
+	if got := strings.Count(out.String(), "batuta watch"); got != 2 || strings.Contains(out.String(), "\x1b") {
+		t.Fatalf("rendered %d frames, want 2 plain snapshots:\n%s", got, out.String())
 	}
-	if !strings.Contains(strings.Join(strings.Fields(out.String()), " "), "last delivery_terminal state=done") {
+	finalRecords, err := store.Read("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, height := watchPanelSize(out)
+	expected, err := renderWatchPanel(root, finalRecords, now.Add(time.Second), style, height)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out.String(), expected) {
 		t.Fatalf("terminal panel was not rendered:\n%s", out.String())
 	}
 }

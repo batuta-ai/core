@@ -3,7 +3,6 @@ package loop
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -11,11 +10,14 @@ import (
 	"text/tabwriter"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
+	"github.com/charmbracelet/x/term"
 )
 
-const panelClearScreen = "\x1b[2J\x1b[H"
+var isTerminal = term.IsTerminal
+var newWatchProgram = tea.NewProgram
 
 // Snapshot writes one dashboard frame without entering interactive mode.
 func Snapshot(workspace, delivery string, w io.Writer) error {
@@ -61,15 +63,9 @@ func panelDelivery(store *journal.Store, delivery string) (string, error) {
 	return "", nil
 }
 
-// Watch redraws the most recent journal state until the delivery ends or
-// the context is canceled. It only reads the journal.
+// Watch follows the journal until the delivery ends or the context is canceled.
+// Interactive terminals use Bubble Tea; other inputs receive plain snapshots.
 func Watch(ctx context.Context, workspace, delivery string, interval time.Duration, w io.Writer) error {
-	return watchWithTerminal(ctx, workspace, delivery, interval, w, newPanelTerminal(os.Stdin), func(ctx context.Context, path string) error {
-		return openPanelPager(ctx, path, w)
-	})
-}
-
-func watchWithTerminal(ctx context.Context, workspace, delivery string, interval time.Duration, w io.Writer, input panelTerminal, pager func(context.Context, string) error) (result error) {
 	root, store, err := openStore(workspace)
 	if err != nil {
 		return err
@@ -83,126 +79,64 @@ func watchWithTerminal(ctx context.Context, workspace, delivery string, interval
 		return err
 	}
 	if interval <= 0 {
-		interval = 2 * time.Second
+		interval = 500 * time.Millisecond
 	}
-	var session *panelKeySession
-	var keys <-chan panelKeyEvent
-	if input != nil {
-		session, err = startPanelKeys(ctx, input)
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		keys = session.keys
+	if !isTerminal(os.Stdin.Fd()) {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		return watchPlain(ctx, root, delivery, store, w, ticker.C)
 	}
-	defer func() { result = errors.Join(result, session.stop()) }()
-	navigation := panelNavigation{}
-	var model, visible PanelView
-	redraw := func() (bool, error) {
-		records, err := store.Read(delivery)
-		if err != nil {
-			return false, err
-		}
-		now := time.Now()
-		model = navigation.model(records, now)
-		panel := RenderPanel(records, now)
-		style, height := watchPanelSize(w)
-		if panelJournalHasWorkspace(records) {
-			if err := loadPanelLog(root, &model); err != nil {
-				return false, err
-			}
-			if navigation.legend {
-				height -= panelLineCount(panelLegend(style))
-			}
-			if navigation.notice != "" {
-				height--
-			}
-			visible = navigation.viewport(model, style, height)
-			panel = Render(visible, style)
-		}
-		if navigation.legend {
-			panel += panelLegend(style)
-		}
-		if navigation.notice != "" {
-			panel += navigation.notice + "\n"
-		}
-		if _, err := io.WriteString(w, panelClearScreen+panel); err != nil {
-			return false, err
-		}
-		state := terminalState(records)
-		return state != "" && (input == nil || (state != StateWaitingInput && state != StateBlocked)), nil
-	}
-	terminal, err := redraw()
-	if err != nil || terminal {
+	records, err := store.Read(delivery)
+	if err != nil {
 		return err
 	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	model := newPollingWatchModel(root, delivery, store, records, interval, StyleForWriter(w), nil, nil)
+	_, err = newWatchProgram(model, tea.WithContext(ctx), tea.WithOutput(w)).Run()
+	if ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+func watchPlain(ctx context.Context, root, delivery string, store *journal.Store, w io.Writer, ticks <-chan time.Time) error {
+	style, height := watchPanelSize(w)
+	style.Colour = false
+	var previous watchFileStamp
+	first := true
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case event, ok := <-keys:
-			if !ok || event.err != nil {
-				if err := session.stop(); err != nil {
-					return err
-				}
-				keys = nil
-				input = nil
-				navigation.selected = ""
-				if event.err != nil && panelInputError(event.err) != nil {
-					return panelInputError(event.err)
-				}
-			} else {
-				if event.key == "q" || event.key == "interrupt" {
-					return nil
-				}
-				navigation.move(event.key, model, max(1, len(panelTaskIDs(visible))))
-				path := panelKeyAction(event.key, root, model, &navigation)
-				if path != "" && pager != nil {
-					if err := session.stop(); err != nil {
-						return err
-					}
-					if _, err := fmt.Fprintln(w, path); err != nil {
-						return err
-					}
-					pagerErr := pager(ctx, path)
-					if ctx.Err() != nil {
-						return nil
-					}
-					session, err = startPanelKeys(ctx, input)
-					if err != nil {
-						return err
-					}
-					keys = session.keys
-					if pagerErr != nil {
-						navigation.notice = path + ": " + pagerErr.Error()
-					}
-				}
-			}
-		case <-ticker.C:
-		}
 		if ctx.Err() != nil {
 			return nil
 		}
-		terminal, err = redraw()
-		if err != nil || terminal {
+		stamp, err := statWatchFile(store.Path(delivery))
+		if err != nil {
 			return err
 		}
-	}
-}
-
-func panelJournalHasWorkspace(records []journal.Record) bool {
-	for _, record := range records {
-		if record.Kind != KindOpened {
-			continue
+		if first || stamp != previous {
+			records, err := store.Read(delivery)
+			if err != nil {
+				return err
+			}
+			panel, err := renderWatchPanel(root, records, time.Now(), style, height)
+			if err != nil {
+				return err
+			}
+			if !first {
+				panel = "\n" + panel
+			}
+			if _, err := io.WriteString(w, panel); err != nil {
+				return err
+			}
+			if terminalState(records) != "" {
+				return nil
+			}
+			previous, first = stamp, false
 		}
-		var detail openedDetail
-		return json.Unmarshal(record.Detail, &detail) == nil && detail.Workspace != ""
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticks:
+		}
 	}
-	return false
 }
 
 func watchPanelSize(w io.Writer) (Style, int) {

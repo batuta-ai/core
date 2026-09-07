@@ -426,7 +426,7 @@ func TestWatchOpensTheLiveDashboard(t *testing.T) {
 			if err := run(tc.args, stdout, &stderr); err != nil {
 				t.Fatalf("watch = %v\nstderr: %s", err, &stderr)
 			}
-			if got := stdout.String(); strings.Count(got, "\x1b[2J\x1b[H") != 2 || !strings.Contains(got, "batuta watch · demo") || strings.Contains(got, "batuta watch · older") || strings.Contains(got, "batuta watch · closed") {
+			if got := stdout.String(); strings.Count(got, "batuta watch") != 2 || strings.Contains(got, "\x1b") || !strings.Contains(got, "batuta watch · demo") || strings.Contains(got, "batuta watch · older") || strings.Contains(got, "batuta watch · closed") {
 				t.Fatalf("watch must redraw the selected delivery through completion:\n%s", got)
 			}
 		})
@@ -525,7 +525,7 @@ func TestLoopDashboardStillWorks(t *testing.T) {
 		want string
 	}{
 		{"dashboard remains TSV", []string{"loop", "--workspace", root, "--dashboard", "demo"}, "delivery  state"},
-		{"watch renders panel", []string{"loop", "--workspace", root, "--dashboard", "--watch", "--interval", time.Millisecond.String(), "demo"}, "\x1b[2J\x1b[Hdelivery demo"},
+		{"watch renders panel", []string{"loop", "--workspace", root, "--dashboard", "--watch", "--interval", time.Millisecond.String(), "demo"}, "batuta watch · demo"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
