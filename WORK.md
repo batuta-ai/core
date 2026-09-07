@@ -67,3 +67,8 @@
 - [x] A paint layer in the renderer: segments, line kinds, one SGR table; selection, attention, waves, status and gates painted → ticked in the plan before the run, commit f5acdf19e83f (trail: .batuta/runs/2026-09-07-watch-style-task-1.md, plan watch-style, 2026-09-07)
 - [x] Bars, header, boxes, detail, keys and log painted → ticked in the plan before the run, commit f5acdf19e83f (trail: .batuta/runs/2026-09-07-watch-style-task-2.md, plan watch-style, 2026-09-07)
 - [x] A colour golden, the docs and the legend → codex (gpt-5.6-sol), commit 9fab6ba1ad2b (trail: .batuta/runs/2026-09-07-watch-style-task-3.md, plan watch-style, 2026-09-07)
+- [x] The watch never quits by itself and shows loop presence from a lock file the loop maintains → codex (gpt-6-astra), commit a32623a7539c (trail: .batuta/runs/2026-09-07-watch-answer-task-1.md, plan watch-answer, 2026-09-07)
+- [x] The answer editor: r opens a textarea overlay, ctrl+enter, alt+enter or ctrl+s submit → codex (gpt-6-astra), commit c6cbca194b46 (trail: .batuta/runs/2026-09-07-watch-answer-task-2.md, plan watch-answer, 2026-09-07)
+- [x] Submitting an answer resumes the loop detached; the watch keeps following → codex (gpt-5.6-sol), commit 75cb914cfe58 (trail: .batuta/runs/2026-09-07-watch-answer-task-3.md, plan watch-answer, 2026-09-07)
+- [x] The delivery picker: d opens a list of deliveries; the watch without an open delivery opens it instead of exiting → codex (gpt-5.6-sol), commit 40df23fb2ad1 (trail: .batuta/runs/2026-09-07-watch-answer-task-4.md, plan watch-answer, 2026-09-07)
+- [x] Docs, help, legend and key line describe presence, the answer editor and the picker → codex (gpt-5.6-sol), commit e9a60afdaa4a (trail: .batuta/runs/2026-09-07-watch-answer-task-5.md, plan watch-answer, 2026-09-07)
