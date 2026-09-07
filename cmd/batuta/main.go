@@ -60,8 +60,11 @@ loop       The mechanical conductor over an approved plan
            integrated; 2 blocked; 3 waiting for an answer; 4 waiting for
            an approved roadmap plan; 130 canceled.
 watch      Live dashboard of a delivery (the most recent open one by
-           default). --once prints a snapshot; --lang selects labels;
-           --ascii uses ASCII borders and status glyphs.
+           default). --interval sets the refresh period; --once prints a
+           snapshot; --lang selects labels; --ascii uses ASCII borders and
+           status glyphs. Keys: up/down and PgUp/PgDn scroll, f follows the
+           active task, r shows the answer command, o opens the log, ? shows
+           the legend, and q quits watch.
 trail      One line per journal record of a delivery (the latest by
            default).
 

@@ -149,11 +149,25 @@ exit `1` with the reason on stderr.
   `commit.gpgsign=false` through Git's command-line configuration environment.
   The loop's integration commit does not receive that override and therefore
   keeps the user's signing configuration.
-- **Dashboard watch.** `--dashboard` with `--watch` renders a live panel
-  every interval, clearing the screen before each redraw. The watch mode
-  follows the most recent open delivery when no delivery argument is given,
-  exits cleanly when there are no open deliveries, and stops at the terminal
-  record or on cancellation without writing to the journal.
+- **Dashboard watch.** `batuta watch [<delivery>]` opens the live dashboard;
+  `batuta loop --dashboard --watch` is the equivalent loop form. It redraws
+  at `--interval` (2 seconds by default), follows the most recent open
+  delivery when none is named, exits cleanly when there are no open
+  deliveries, and stops at the terminal record or on cancellation without
+  writing to the journal. `--once` prints one non-interactive snapshot.
+  The display has a delivery/branch/state header and attention line, Context
+  and Progress panels (including completion bars), a Detail panel for the
+  selected task, waves with task rows, and a live tail of that task's executor
+  log. Each task row shows status, attempt, the four gate results in one Gates
+  column (`G0` executor finished, `G1` tree changed, `G2` tests, `G3` scope,
+  proofs, and independent verification), and its commit. Use Up/Down and
+  PgUp/PgDn to scroll, `f` to follow the active task, `r` to show the answer
+  command, `o` to open the selected log with `$PAGER`, `?` for the legend,
+  and `q` to quit. On a non-TTY input the keys are disabled and selection
+  automatically follows the active task; on non-TTY output colour is
+  disabled. `NO_COLOR` also disables ANSI colour, and a non-UTF-8 locale uses
+  ASCII borders and status glyphs. Labels default to English and switch to
+  Portuguese when `BATUTA_LANG`, `LC_ALL`, or `LANG` starts with `pt`.
 
 ## Roadmap
 

@@ -49,9 +49,19 @@ batuta loop [<plan>]                    run the approved plan to a terminal stat
 batuta loop --resume <delivery>         continue after an interruption
 batuta loop --answer <task> "<text>"    answer a parked task and continue
 batuta loop --abandon <delivery>        close a delivery; ticks what integrated
-batuta loop --dashboard [<delivery>]    TSV state of the open deliveries
+batuta loop --dashboard [<delivery>]    one TSV snapshot of delivery state
+batuta watch [<delivery>]               live panel dashboard (watch by default)
 batuta trail [<delivery>]               one line per journal record
 ```
+
+The dashboard groups tasks by wave and shows execution context, progress
+bars, selected-task detail, attempts, gates G0–G3, commits, and the active
+executor log. Up/Down and PgUp/PgDn scroll; `f` follows the active task, `r`
+shows how to answer it, `o` opens its log, `?` shows the legend, and `q`
+quits. Use `--once` for a single non-interactive snapshot or `--interval` to
+change the live refresh period. Without a TTY, keyboard input is disabled and
+the active task is followed automatically; `NO_COLOR` and non-UTF-8 locale
+fallbacks keep redirected output readable.
 
 ## Roadmap
 
