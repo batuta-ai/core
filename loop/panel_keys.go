@@ -182,6 +182,10 @@ func panelKeyAction(key, workspace string, model PanelView, n *panelNavigation) 
 	switch key {
 	case "?":
 		n.legend = !n.legend
+	case "R":
+		if model.Detail.Task != "" {
+			n.notice = panelAnswerCommand(workspace, model.Detail.Task)
+		}
 	case "r":
 		for _, wave := range model.Waves {
 			for _, row := range wave.Rows {

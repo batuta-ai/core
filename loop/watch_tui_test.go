@@ -82,9 +82,10 @@ func TestWatchModelKeys(t *testing.T) {
 	records = append(records, panelRecord(t, KindQuestion, "task_2", now, map[string]any{"execution": 1, "question": "Which format?"}, graph))
 	m, _ = updateWatch(t, m, journalMsg{records: records})
 	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
-	if want := panelAnswerCommand(root, "task_2"); m.navigation.notice != want {
-		t.Fatalf("notice = %q, want %q", m.navigation.notice, want)
+	if !m.answering {
+		t.Fatal("answer editor did not open")
 	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	t.Setenv("PAGER", "")
 	m, cmd := updateWatch(t, m, tea.KeyPressMsg{Code: 'o', Text: "o"})
 	path := filepath.Join(root, ".batuta/runs/2026-09-06-demo-task-2-e1.out.log")

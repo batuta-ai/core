@@ -2,6 +2,10 @@ package loop
 
 var panelLabels = map[string]map[string]string{
 	"en": {
+		"answer_placeholder": "Type your answer...",
+		"answer_keys":        "ctrl+enter / alt+enter / ctrl+s send · esc cancel · enter newline",
+		"answer_empty":       "The answer is empty.",
+
 		"loop_run":    "loop ●",
 		"loop_none":   "loop ○",
 		"loop_stale":  "loop ○ stale",
@@ -60,6 +64,10 @@ var panelLabels = map[string]map[string]string{
 		"color_pick":  "reverse · selected task",
 	},
 	"pt": {
+		"answer_placeholder": "Digite sua resposta...",
+		"answer_keys":        "ctrl+enter / alt+enter / ctrl+s envia · esc cancela · enter nova linha",
+		"answer_empty":       "A resposta está vazia.",
+
 		"loop_run":    "loop ●",
 		"loop_none":   "loop ○",
 		"loop_stale":  "loop ○ stale",

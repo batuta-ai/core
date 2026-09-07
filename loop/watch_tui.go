@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"github.com/batuta-ai/core/journal"
 )
@@ -42,6 +43,11 @@ type watchModel struct {
 	logOffset   int
 	progress    progressAnimation
 	progressSet bool
+
+	answering      bool
+	answerEditor   textarea.Model
+	answerQuestion string
+	answerTask     string
 }
 
 type progressAnimation struct {
@@ -91,6 +97,16 @@ func (m watchModel) Init() tea.Cmd {
 
 func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
+	if m.answering {
+		switch msg := msg.(type) {
+		case tea.KeyPressMsg:
+			return m.updateAnswerKey(msg)
+		case tea.MouseWheelMsg:
+			return m, nil
+		default:
+			m.answerEditor, cmd = m.answerEditor.Update(msg)
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		key := msg.String()
@@ -101,6 +117,10 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			key = "pageUp"
 		case "pgdown":
 			key = "pageDown"
+		}
+		if key == "r" && m.canAnswer() {
+			cmd = m.openAnswer()
+			return m, cmd
 		}
 		if key == "l" {
 			if m.focus == focusLog {
@@ -192,7 +212,7 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.navigation.notice = msg.err.Error()
 		}
 	default:
-		return m, nil
+		return m, cmd
 	}
 	m.refresh(true)
 	return m, cmd
@@ -224,6 +244,9 @@ func panelHasRunningTask(panel PanelView) bool {
 }
 
 func (m *watchModel) refresh(loadLog bool) {
+	if m.answering {
+		m.resizeAnswer()
+	}
 	previous := m.panel
 	m.panel = m.navigation.model(m.records, m.currentTime)
 	if m.store != nil && m.delivery != "" {
@@ -267,6 +290,9 @@ func (m *watchModel) refresh(loadLog bool) {
 
 func (m watchModel) viewportHeight() int {
 	height := m.height
+	if m.answering {
+		return max(0, height-panelLineCount(m.answerView()))
+	}
 	if m.navigation.legend {
 		height -= panelLineCount(panelLegend(m.style))
 	}
@@ -279,6 +305,9 @@ func (m watchModel) viewportHeight() int {
 func (m watchModel) renderStyle() Style {
 	style := m.style
 	style.Focus = string(m.focus)
+	if m.answering {
+		style.Focus = ""
+	}
 	style.LogOffset = m.logOffset
 	return style
 }
@@ -320,11 +349,21 @@ func (m *watchModel) scrollLog(key string) bool {
 func (m watchModel) View() tea.View {
 	style := m.renderStyle()
 	content := Render(m.viewport, style)
-	if m.navigation.legend {
+	if m.answering {
+		lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+		content = ""
+		if height := min(len(lines), m.viewportHeight()); height > 0 {
+			content = strings.Join(lines[:height], "\n") + "\n"
+		}
+		content += m.answerView()
+	} else if m.navigation.legend {
 		content += panelLegend(style)
 	}
-	if m.navigation.notice != "" {
+	if !m.answering && m.navigation.notice != "" {
 		content += m.navigation.notice + "\n"
 	}
-	return tea.View{Content: content, AltScreen: true, MouseMode: tea.MouseModeCellMotion}
+	return tea.View{
+		Content: content, AltScreen: true, MouseMode: tea.MouseModeCellMotion,
+		KeyboardEnhancements: tea.KeyboardEnhancements{ReportEventTypes: true},
+	}
 }
