@@ -150,11 +150,19 @@ exit `1` with the reason on stderr.
   The loop's integration commit does not receive that override and therefore
   keeps the user's signing configuration.
 - **Dashboard watch.** `batuta watch [<delivery>]` opens the live dashboard;
-  `batuta loop --dashboard --watch` is the equivalent loop form. It redraws
-  at `--interval` (2 seconds by default), follows the most recent open
-  delivery when none is named, exits cleanly when there are no open
-  deliveries, and stops at the terminal record or on cancellation without
-  writing to the journal. `--once` prints one non-interactive frame of the same panel.
+  `batuta loop --dashboard --watch` is the equivalent loop form. `PanelModel`
+  is the pure journal-to-view projection and `Render` is the pure
+  view-to-frame renderer. The Bubble Tea program owns terminal size, focus,
+  navigation and animation, and its poller checks the journal and selected
+  task's run log for changes. `--interval` sets that journal and run-log poll
+  interval (500ms by default); unchanged polls do not redraw. The program also
+  redraws for keys, window-size events, the one-second clock, and active
+  animation ticks. It follows the most recent open delivery when none is
+  named, exits cleanly when there are no open deliveries, and stops at the
+  terminal record or on cancellation without writing to the journal. `--once`
+  calls `Render` directly for one non-interactive frame. When stdin is not a
+  TTY, watch falls back to plain, colourless snapshots on journal changes and
+  never starts Bubble Tea.
   The display has a delivery/branch/state header and attention line, Context
   and Progress panels (including completion bars), a Detail panel for the
   selected task, waves with task rows, and a live tail of that task's executor
@@ -163,11 +171,15 @@ exit `1` with the reason on stderr.
   proofs, and independent verification), and its commit. Use Up/Down and
   PgUp/PgDn to scroll, `f` to follow the active task, `r` to show the answer
   command, `o` to open the selected log with `$PAGER`, `?` for the legend,
-  and `q` to quit. On a non-TTY input the keys are disabled and selection
-  automatically follows the active task; on non-TTY output colour is
-  disabled. `NO_COLOR` also disables ANSI colour, and a non-UTF-8 locale uses
-  ASCII borders and status glyphs. Labels default to English and switch to
-  Portuguese when `BATUTA_LANG`, `LC_ALL`, or `LANG` starts with `pt`.
+  `l` to move focus between the task table and run log, and `q` (or Ctrl+C) to
+  quit. The mouse wheel scrolls whichever panel has focus; Up/Down and
+  PgUp/PgDn do the same, and End returns the focused log to its live tail.
+  Running work has an animated spinner, and progress bars ease to new totals
+  when a journal update lands. On a non-TTY input the keys are disabled and
+  selection automatically follows the active task; on non-TTY output colour
+  is disabled. `NO_COLOR` also disables ANSI colour, and a non-UTF-8 locale
+  uses ASCII borders and status glyphs. Labels default to English and switch
+  to Portuguese when `BATUTA_LANG`, `LC_ALL`, or `LANG` starts with `pt`.
 
 ## Roadmap
 

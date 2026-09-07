@@ -62,9 +62,10 @@ loop       The mechanical conductor over an approved plan
 watch      Live dashboard of a delivery (the most recent open one by
            default). --interval sets the journal poll interval; --once prints a
            snapshot; --lang selects labels; --ascii uses ASCII borders and
-           status glyphs. Keys: up/down and PgUp/PgDn scroll, f follows the
-           active task, r shows the answer command, o opens the log, ? shows
-           the legend, and q quits watch.
+           status glyphs. Keys: Up/Down and PgUp/PgDn scroll, f follows the
+           active task, r shows the answer command, o opens the log, l changes
+           focus, ? shows the legend, q quits, and the mouse wheel scrolls the
+           focused panel.
 trail      One line per journal record of a delivery (the latest by
            default).
 
@@ -544,9 +545,17 @@ func runWatch(args []string, stdout, stderr io.Writer) error {
 		lang = value
 		return nil
 	})
+	flags.Usage = func() {
+		fmt.Fprintln(stderr, "Usage: batuta watch [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]")
+		flags.PrintDefaults()
+		fmt.Fprintln(stderr, "Keys: Up/Down and PgUp/PgDn scroll; f follows; r shows the answer command; o opens the log; l changes focus; ? shows the legend; q quits; the mouse wheel scrolls the focused panel.")
+	}
 	delivery := ""
 	for {
 		if err := flags.Parse(args); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
 			return err
 		}
 		rest := flags.Args()
