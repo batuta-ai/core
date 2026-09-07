@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** Replace the hand-rolled watch loop (clear screen + full redraw every tick, own raw mode, own key decoder, own terminal size) with a Bubble Tea v2 program: alternate screen, diffed rendering, keys and window size from the framework, redraw only when the journal, the run log, a key or the clock changes, a spinner on running work and eased progress bars. The pure layers stay: `PanelModel` (journal → view) and `Render` (view → frame) keep their goldens byte-identical. Closes the flicker report of 2026-09-07; refs core #64.
-**Created:** 2026-09-07 · **Status:** approved
+**Created:** 2026-09-07 · **Status:** done
 
 ## Tasks
 - [x] 1. The watch is a Bubble Tea model over PanelModel and Render — backend/high
@@ -20,11 +20,11 @@
       Depends on: 3
       Scope: loop/watch_tui.go, loop/watch_tui_test.go, loop/panel_render.go, loop/panel_render_test.go, loop/panel_model.go, loop/panel_model_test.go, loop/panel_labels.go
       Accept: `Style.Frame` (−1 = static) selects the glyph drawn for the running state in the header, the attention line and the table rows from a ten-frame Unicode set (⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏) or a four-frame ASCII set (| / - \); with Frame −1 the glyph is `>` as today and every golden is unchanged → go test ./loop -run 'TestRenderSpinnerFrames|TestRenderMatchesGoldens' -count=1 && git diff --quiet -- docs/dashboard-mock loop/testdata; the program advances Frame every 80 ms only while a task is running and stops the tick when nothing runs → go test ./loop -run TestWatchSpinnerTicksOnlyWhileRunning -count=1; `PanelProgress` gains `WavesShown` and `TasksShown` floats the renderer uses for the bar cells and the percentage, the program eases them toward the integer counts over 12 frames of 30 ms and the last frame equals the exact values, so a golden built from integer counts renders identically → go test ./loop -run 'TestWatchProgressEases|TestRenderMatchesGoldens' -count=1
-- [ ] 5. Log panel scrolling and mouse wheel — backend/medium
+- [x] 5. Log panel scrolling and mouse wheel — backend/medium
       Depends on: 3
       Scope: loop/watch_tui.go, loop/watch_tui_test.go, loop/panel_keys.go, loop/panel_keys_test.go, loop/panel_render.go, loop/panel_render_test.go, loop/panel_labels.go, loop/panel.go, loop/panel_test.go, loop/panel_model.go, loop/panel_model_test.go
       Accept: l toggles focus between the table and the log box (the focused box title carries the `·` marker `Recent log ·` / the wave table title likewise); with the log focused, up, down, pgup, pgdown scroll the log lines and `end` re-follows the tail; a new `journalMsg` keeps the scroll offset unless the log was following the tail → go test ./loop -run 'TestWatchLogFocusScrolls|TestWatchLogFollowsTailUntilScrolled' -count=1; the view enables `tea.MouseModeCellMotion` and `tea.MouseWheelMsg` up/down moves the selection or scrolls the log according to focus → go test ./loop -run TestWatchMouseWheel -count=1; the key line lists `l log` and the legend explains the focus marker in both languages → go test ./loop -run 'TestRenderKeyLine|TestRenderPortugueseLabels' -count=1 && git diff --quiet -- docs/dashboard-mock loop/testdata
-- [ ] 6. Docs, help and usage describe the Bubble Tea watch — docs/medium
+- [x] 6. Docs, help and usage describe the Bubble Tea watch — docs/medium
       Depends on: 4, 5
       Scope: docs/loop.md, cmd/batuta/main.go, cmd/batuta/main_test.go, README.md, README.pt-BR.md
       Accept: `docs/loop.md` keeps every existing `## ` heading and its dashboard section describes the architecture (PanelModel, Render, the Bubble Tea program, the poller), the keys including l and the mouse wheel, `--interval` as the journal poll interval, the no-TTY fallback and the animation → test "$(grep -c '^## ' docs/loop.md)" -ge "$(git show HEAD:docs/loop.md | grep -c '^## ')" && grep -q 'Bubble Tea' docs/loop.md && grep -q 'poll' docs/loop.md; `batuta watch --help` and the usage line name every flag and the keys → go test ./cmd/batuta -run 'TestUsage|TestWatchHelp' -count=1; both READMEs mention `batuta watch` once in their usage section → grep -q 'batuta watch' README.md && grep -q 'batuta watch' README.pt-BR.md
