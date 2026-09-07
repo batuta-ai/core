@@ -39,3 +39,5 @@
 - [x] capabilities, usage and docs describe the roadmap → codex (gpt-5.4-mini), commit 16d6f6f33e8e (trail: .batuta/runs/2026-09-06-roadmap-task-5.md, plan roadmap, 2026-09-06)
 - [x] Executor output streams to the run log while the session runs → codex (gpt-5.6-sol), commit 185dc5f33346 (trail: .batuta/runs/2026-09-06-dashboard-task-1.md, plan dashboard, 2026-09-06)
 - [x] Executor output streams to the run log while the session runs → ticked in the plan before the run, commit 344436c15fba (trail: .batuta/runs/2026-09-06-dashboard-task-1.md, plan dashboard, 2026-09-07)
+- [x] Executor output streams to the run log while the session runs → ticked in the plan before the run, commit 623c6615624d (trail: .batuta/runs/2026-09-07-dashboard-task-1.md, plan dashboard, 2026-09-07)
+- [x] A view model summarises the journal for the dashboard → codex (gpt-6-astra), commit 3cc1040691ac (trail: .batuta/runs/2026-09-07-dashboard-task-2.md, plan dashboard, 2026-09-07)
