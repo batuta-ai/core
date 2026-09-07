@@ -49,3 +49,6 @@
 - [x] Keyboard navigation with a no-TTY fallback → codex (gpt-6-astra), commit 0901aebcba5a (trail: .batuta/runs/2026-09-07-dashboard-task-5.md, plan dashboard, 2026-09-07)
 - [x] batuta watch opens the live dashboard by default → codex (gpt-5.6-sol), commit 3483622988ed (trail: .batuta/runs/2026-09-07-dashboard-task-6.md, plan dashboard, 2026-09-07)
 - [x] Docs and help describe the dashboard → codex (gpt-5.6-sol), commit 343b2e8ab89c (trail: .batuta/runs/2026-09-07-dashboard-task-7.md, plan dashboard, 2026-09-07)
+- [x] The watch is a Bubble Tea model over PanelModel and Render → codex (gpt-6-astra), commit c739380a6ca2 (trail: .batuta/runs/2026-09-07-watch-tui-task-1.md, plan watch-tui, 2026-09-07)
+- [x] The program redraws only on change: journal poller, log tail, clock tick, terminal exit → codex (gpt-5.6-sol), commit a1b05751e49e (trail: .batuta/runs/2026-09-07-watch-tui-task-2.md, plan watch-tui, 2026-09-07)
+- [x] loop.Watch runs the program; the hand-rolled terminal code goes → codex (gpt-6-astra), 1 retry, already satisfied on the base, no commit (trail: .batuta/runs/2026-09-07-watch-tui-task-3.md, plan watch-tui, 2026-09-07)
