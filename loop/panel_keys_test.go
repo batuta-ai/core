@@ -112,6 +112,25 @@ func TestRenderLegendMentionsColours(t *testing.T) {
 	}
 }
 
+func TestRenderLegendMentionsPresence(t *testing.T) {
+	for _, test := range []struct {
+		lang string
+		want []string
+	}{
+		{lang: "en", want: []string{"loop ● shown delivery running", "loop ○ no loop", "loop ○ stale lock expired", "N loops = fresh locks in workspace"}},
+		{lang: "pt", want: []string{"loop ● entrega exibida em execução", "loop ○ sem loop", "loop ○ stale lock expirado", "N loops = locks recentes no workspace"}},
+	} {
+		t.Run(test.lang, func(t *testing.T) {
+			legend := panelLegend(Style{Width: 120, Lang: test.lang, Glyphs: "unicode"})
+			for _, want := range test.want {
+				if !strings.Contains(legend, want) {
+					t.Errorf("legend is missing %q:\n%s", want, legend)
+				}
+			}
+		})
+	}
+}
+
 type keyFrameWriter struct{ write func(string) }
 
 func (w *keyFrameWriter) Write(p []byte) (int, error) { w.write(string(p)); return len(p), nil }

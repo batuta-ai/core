@@ -328,6 +328,13 @@ func Render(model PanelView, style Style) string {
 	if style.Focus != "" {
 		keys = labels["keys_focus"]
 	}
+	if style.Frame >= 0 {
+		if style.Lang == "pt" {
+			keys = strings.Replace(keys, "r responde", "d entregas · r responde", 1)
+		} else {
+			keys = strings.Replace(keys, "r answer", "d deliveries · r answer", 1)
+		}
+	}
 	if width >= 100 {
 		keyLine := r.fitLine(textLine(fmt.Sprintf(" ^ %d %s · v %d %s", model.RowsAbove, labels["above"], model.RowsBelow, labels["below"])), width-panelWidth(keys)-1)
 		keyLine.segments = append(keyLine.segments, r.keyLine(keys+" ").segments...)

@@ -19,8 +19,14 @@ batuta trail [<entrega>]               mostra os registros do diário
 ```
 
 O painel mostra contexto, progresso, tarefas, verificações, commits e a saída
-do executor. Use `--once` para imprimir um único quadro e `--interval` para
-definir a frequência de consulta ao diário.
+do executor. Ele mostra a presença do loop, abre um editor de resposta com
+várias linhas usando `r`, retoma uma resposta enviada em segundo plano, abre o
+seletor de entregas com `d` e nunca sai sozinho. Use `?` para ver a legenda
+completa de teclas e presença, `--once` para imprimir um único quadro ou
+`--interval` para definir a frequência de consulta ao diário. Sem um TTY, a
+entrada pelo teclado fica desativada e a task ativa é seguida automaticamente;
+`NO_COLOR` e o fallback para locales sem UTF-8 mantêm legível a saída
+redirecionada.
 
 ## Desenvolvimento
 

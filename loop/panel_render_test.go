@@ -191,6 +191,19 @@ func TestRenderKeyLine(t *testing.T) {
 	if got := panelLegend(Style{Width: 120, Lang: "en", Glyphs: "unicode"}); !strings.Contains(got, "· focused") {
 		t.Fatalf("legend omitted focus marker:\n%s", got)
 	}
+	for _, test := range []struct {
+		lang       string
+		deliveries string
+		answer     string
+	}{
+		{lang: "en", deliveries: "d deliveries", answer: "r answer"},
+		{lang: "pt", deliveries: "d entregas", answer: "r responde"},
+	} {
+		got := Render(renderFixture("calm"), Style{Width: 120, Lang: test.lang, Glyphs: "unicode", Focus: string(focusTable)})
+		if !strings.Contains(got, test.deliveries) || !strings.Contains(got, test.answer) {
+			t.Errorf("%s key line omitted delivery or answer key:\n%s", test.lang, got)
+		}
+	}
 }
 
 func TestRenderLogOffset(t *testing.T) {

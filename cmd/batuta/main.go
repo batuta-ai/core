@@ -63,9 +63,11 @@ watch      Live dashboard of a delivery (the most recent open one by
            default). --interval sets the journal poll interval; --once prints a
            snapshot; --lang selects labels; --ascii uses ASCII borders and
            status glyphs. Keys: Up/Down and PgUp/PgDn scroll, f follows the
-           active task, r shows the answer command, d picks a delivery, o opens
-           the log, l changes focus, ? shows the legend, q quits, and the
-           mouse wheel scrolls the focused panel.
+           active task, r opens the answer editor, R shows the answer command,
+           d opens the delivery picker, o opens the log, l changes focus,
+           ? shows the legend, q quits, and the mouse wheel scrolls the
+           focused panel. In the editor, ctrl+enter, alt+enter or ctrl+s
+           submits.
 trail      One line per journal record of a delivery (the latest by
            default).
 
@@ -548,7 +550,7 @@ func runWatch(args []string, stdout, stderr io.Writer) error {
 	flags.Usage = func() {
 		fmt.Fprintln(stderr, "Usage: batuta watch [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]")
 		flags.PrintDefaults()
-		fmt.Fprintln(stderr, "Keys: Up/Down and PgUp/PgDn scroll; f follows; r shows the answer command; d picks a delivery; o opens the log; l changes focus; ? shows the legend; q quits; the mouse wheel scrolls the focused panel.")
+		fmt.Fprintln(stderr, "Keys: Up/Down and PgUp/PgDn scroll; f follows; r opens the answer editor; R shows the answer command; d opens the delivery picker; o opens the log; l changes focus; ? shows the legend; q quits; the mouse wheel scrolls the focused panel. In the editor, ctrl+enter, alt+enter or ctrl+s submits; enter inserts a newline; esc cancels.")
 	}
 	delivery := ""
 	for {

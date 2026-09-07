@@ -130,8 +130,8 @@ func (n *panelNavigation) viewport(model PanelView, style Style, height int) Pan
 }
 
 var panelLegendLabels = map[string][]string{
-	"en": {"Legend", "pass / integrated", "failed / blocked", "pending", "· focused box", "> running   ? waiting answer", "~ usage limit   < re-executing   ^ escalated", "G0 executor finished   G1 tree change", "G2 tests   G3 scope, proofs and verification"},
-	"pt": {"Legenda", "passou / integrada", "falhou / bloqueada", "pendente", "· foco", "> em execução   ? aguarda resposta", "~ limite de uso   < reexecutando   ^ escalada", "G0 executor terminou   G1 alteração na árvore", "G2 testes   G3 escopo, provas e verificação"},
+	"en": {"Legend", "pass / integrated", "failed / blocked", "pending", "· focused box", "loop ● shown delivery running   loop ○ no loop   loop ○ stale lock expired", "N loops = fresh locks in workspace", "> running   ? waiting answer", "~ usage limit   < re-executing   ^ escalated", "G0 executor finished   G1 tree change", "G2 tests   G3 scope, proofs and verification"},
+	"pt": {"Legenda", "passou / integrada", "falhou / bloqueada", "pendente", "· foco", "loop ● entrega exibida em execução   loop ○ sem loop   loop ○ stale lock expirado", "N loops = locks recentes no workspace", "> em execução   ? aguarda resposta", "~ limite de uso   < reexecutando   ^ escalada", "G0 executor terminou   G1 alteração na árvore", "G2 testes   G3 escopo, provas e verificação"},
 }
 
 func panelLegend(style Style) string {
