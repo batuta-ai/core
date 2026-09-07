@@ -101,6 +101,29 @@ func TestRenderMatchesGoldens(t *testing.T) {
 	}
 }
 
+func TestRenderMatchesColourGoldens(t *testing.T) {
+	for _, state := range []string{"calm", "question"} {
+		t.Run(state, func(t *testing.T) {
+			style := Style{Width: 120, Lang: "en", Glyphs: "unicode", Colour: true, Focus: string(focusTable), Frame: -1}
+			path := fmt.Sprintf("testdata/mock-%s-120-en-colour.txt", state)
+			got := Render(renderFixture(state), style)
+			want, err := os.ReadFile(path)
+			if os.IsNotExist(err) {
+				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != string(want) {
+				t.Fatalf("%s does not match Render output", path)
+			}
+		})
+	}
+}
+
 func TestRenderSpinnerFrames(t *testing.T) {
 	for _, test := range []struct {
 		name, glyphs, frames string

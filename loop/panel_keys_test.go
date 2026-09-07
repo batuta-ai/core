@@ -93,6 +93,25 @@ func TestPanelKeysLegendStyles(t *testing.T) {
 	}
 }
 
+func TestRenderLegendMentionsColours(t *testing.T) {
+	for _, test := range []struct {
+		lang string
+		want []string
+	}{
+		{lang: "en", want: []string{"green · integrated", "blue · running", "red · blocked", "yellow · waiting answer", "dim · pending", "reverse · selected task"}},
+		{lang: "pt", want: []string{"verde · integrada", "azul · em execução", "vermelho · bloqueada", "amarelo · aguarda resposta", "atenuado · pendente", "invertido · task selecionada"}},
+	} {
+		t.Run(test.lang, func(t *testing.T) {
+			legend := panelLegend(Style{Width: 120, Lang: test.lang, Glyphs: "unicode"})
+			for _, want := range test.want {
+				if strings.Count(legend, want) != 1 {
+					t.Errorf("legend contains %q %d times, want once:\n%s", want, strings.Count(legend, want), legend)
+				}
+			}
+		})
+	}
+}
+
 type keyFrameWriter struct{ write func(string) }
 
 func (w *keyFrameWriter) Write(p []byte) (int, error) { w.write(string(p)); return len(p), nil }

@@ -181,6 +181,12 @@ exit `1` with the reason on stderr.
   uses ASCII borders and status glyphs. Labels default to English and switch
   to Portuguese when `BATUTA_LANG`, `LC_ALL`, or `LANG` starts with `pt`.
 
+  **Colours.** Integrated states are green, running states are blue, blocked
+  states are bold red, waiting states are bold yellow, and pending states are
+  dim. The selected task uses reverse video, with dim reverse when focus is on
+  the log; the focused box has a blue border. Log progress is bold cyan, log
+  errors are red, and prompts are bold. `NO_COLOR` disables all ANSI styling.
+
 ## Roadmap
 
 A roadmap is the level above the plan: the delivery as a whole, split into
