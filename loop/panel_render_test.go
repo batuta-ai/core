@@ -541,3 +541,219 @@ func TestPaintGates(t *testing.T) {
 		}
 	}
 }
+
+func assertTokenPaint(t *testing.T, line, token string, check func(paintedCell) bool) {
+	t.Helper()
+	cells := paintedCells(t, line)
+	var plain strings.Builder
+	for _, cell := range cells {
+		plain.WriteRune(cell.char)
+	}
+	start := strings.Index(plain.String(), token)
+	if start < 0 {
+		t.Fatalf("missing token %q in %q", token, plain.String())
+	}
+	start = len([]rune(plain.String()[:start]))
+	for _, cell := range cells[start : start+len([]rune(token))] {
+		if !check(cell) {
+			t.Fatalf("token %q: unexpected paint %+v", token, cell)
+		}
+	}
+}
+
+func TestPaintProgressBars(t *testing.T) {
+	for _, glyphs := range []string{"unicode", "ascii"} {
+		for _, tc := range []struct {
+			name                                string
+			shown                               float64
+			done, full, easing, colour, percent int
+		}{
+			{"empty", 0, 0, 0, -1, 34, 0},
+			{"steady", 1, 1, 6, -1, 34, 25},
+			{"easing empty cell", 1.2, 2, 7, 7, 34, 30},
+			{"easing filled cell", 1.3, 2, 8, 7, 34, 32},
+			{"done while easing", 3.8, 4, 23, 22, 34, 95},
+			{"complete", 4, 4, 24, -1, 32, 100},
+			{"clamped high", 5, 4, 24, -1, 32, 100},
+			{"clamped low", -1, 0, 0, -1, 34, 0},
+		} {
+			t.Run(glyphs+"/"+tc.name, func(t *testing.T) {
+				style := Style{Glyphs: glyphs, Colour: true}
+				r := panelRenderer{style: style, g: glyphsFor(style)}
+				got := r.paint(r.progress("Tasks", tc.shown, tc.done, 4))
+				want := fmt.Sprintf("Tasks  %d/4  [%s%s]  %d%%", tc.done, strings.Repeat(r.g.full, tc.full), strings.Repeat(r.g.empty, 24-tc.full), tc.percent)
+				if plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(got, ""); plain != want {
+					t.Fatalf("geometry: got %q, want %q", plain, want)
+				}
+				cells := paintedCells(t, got)
+				start := strings.Index(want, "[") + 1
+				for i, cell := range cells[start : start+24] {
+					colour := 0
+					if i < tc.full {
+						colour = tc.colour
+					}
+					if i == tc.easing {
+						colour = 94
+					}
+					if cell.colour != colour {
+						t.Fatalf("cell %d: %+v, want colour %d", i, cell, colour)
+					}
+				}
+				assertTokenPaint(t, got, fmt.Sprintf("%d%%", tc.percent), func(c paintedCell) bool { return c.bold })
+				if got := r.paint(r.progress("Tasks", 1, 1, 0)); got != "Tasks  1" {
+					t.Fatalf("unknown total: %q", got)
+				}
+			})
+		}
+	}
+}
+
+func TestPaintHeader(t *testing.T) {
+	model := renderFixture("calm")
+	got := Render(model, Style{Width: 160, Colour: true})
+	header := strings.Split(got, "\n")[0]
+	assertTokenPaint(t, header, model.Header.Delivery, func(c paintedCell) bool { return c.bold })
+	assertTokenPaint(t, header, model.Header.Branch, func(c paintedCell) bool { return c.dim })
+	assertTokenPaint(t, header, "00:14:32", func(c paintedCell) bool { return c.dim })
+}
+
+func TestPaintFocusedBox(t *testing.T) {
+	for _, glyphs := range []string{"unicode", "ascii"} {
+		for _, focus := range []string{"", "table", "log"} {
+			for _, lang := range []string{"en", "pt"} {
+				style := Style{Width: 120, Colour: true, Glyphs: glyphs, Focus: focus, Lang: lang}
+				got := Render(renderFixture("calm"), style)
+				for _, key := range []string{"context", "progress", "detail", "table", "logs"} {
+					title := panelLabels[lang][key]
+					line := paintLineContaining(t, got, title)
+					assertTokenPaint(t, line, title, func(c paintedCell) bool { return c.bold })
+				}
+				active := ""
+				g := glyphsFor(style)
+				for _, line := range strings.Split(got, "\n") {
+					cells := paintedCells(t, line)
+					plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(line, "")
+					if strings.HasPrefix(plain, g.tl+g.h+" ") {
+						active = ""
+						if strings.Contains(plain, panelLabels[lang]["table"]) {
+							active = "table"
+						}
+						if strings.Contains(plain, panelLabels[lang]["logs"]) {
+							active = "log"
+						}
+					}
+					if len(cells) == 0 || !(strings.HasPrefix(plain, g.tl) || strings.HasPrefix(plain, g.v) || strings.HasPrefix(plain, g.bl)) {
+						continue
+					}
+					for _, c := range []paintedCell{cells[0], cells[len(cells)-1]} {
+						if focus != "" && active == focus {
+							if c.colour != 34 {
+								t.Fatalf("%s focused border: %+v", active, c)
+							}
+						} else if !c.dim || c.colour != 0 {
+							t.Fatalf("%s inactive border: %+v", active, c)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestPaintDetail(t *testing.T) {
+	for _, lang := range []string{"en", "pt"} {
+		for _, state := range []string{"calm", "question", "blocked"} {
+			model := renderFixture(state)
+			r := panelRenderer{style: Style{Colour: true}, labels: panelLabels[lang]}
+			lines := r.detail(model.Detail)
+			label := "criterion"
+			if state == "question" {
+				label = "question"
+			}
+			if state == "blocked" {
+				label = "reason"
+			}
+			for i, key := range []string{label, "last", "worktree", "log"} {
+				assertTokenPaint(t, r.paint(lines[i+1]), r.labels[key], func(c paintedCell) bool { return c.dim })
+			}
+			if state == "question" {
+				assertTokenPaint(t, r.paint(lines[1]), model.Detail.Question, func(c paintedCell) bool { return c.colour == 33 })
+			}
+		}
+	}
+}
+
+func TestPaintKeyChips(t *testing.T) {
+	for _, lang := range []string{"en", "pt"} {
+		for _, glyphs := range []string{"unicode", "ascii"} {
+			for _, focus := range []string{"", "table", "log"} {
+				for _, width := range []int{60, 80, 160} {
+					got := Render(renderFixture("calm"), Style{Width: width, Lang: lang, Glyphs: glyphs, Colour: true, Focus: focus})
+					line := paintLineContaining(t, got, "PgUp/PgDn")
+					keys := []string{"PgUp/PgDn", "?", "q"}
+					if lang == "en" {
+						keys = append(keys, "up/down")
+					} else {
+						keys = append(keys, "↑↓")
+					}
+					if focus != "" {
+						keys = append(keys, "l")
+					}
+					if width >= 100 {
+						keys = append(keys, "f", "r", "o")
+					}
+					for _, key := range keys {
+						chip := "\x1b[7m" + key + "\x1b[0m"
+						if !strings.Contains(line, chip) {
+							t.Fatalf("lang=%s glyphs=%s focus=%q width=%d: missing chip %q in %q", lang, glyphs, focus, width, chip, line)
+						}
+					}
+					description := "scroll"
+					if lang == "pt" {
+						description = "rolam"
+					}
+					assertTokenPaint(t, line, description, func(c paintedCell) bool { return c.dim && !c.reverse })
+				}
+			}
+		}
+	}
+}
+
+func TestPaintLogLines(t *testing.T) {
+	for _, tc := range []struct {
+		text   string
+		colour int
+		bold   bool
+	}{
+		{"BATUTA-PROGRESS 1 START", 36, true},
+		{"error: broken", 31, false}, {"FAIL", 31, false}, {"tests Failed today", 31, false}, {"panic: broken", 31, false}, {"FATAL issue", 31, false},
+		{"codex: working", 0, true}, {"claude: working", 0, true}, {"$ go test ./...", 0, true},
+		{"failure errorless tests_failed", 0, false}, {"ordinary output", 0, false},
+		{"codex: fatal issue", 31, false}, {"BATUTA-PROGRESS error", 36, true},
+	} {
+		for _, width := range []int{80, 120} {
+			for _, offset := range []int{0, 1} {
+				model := renderFixture("calm")
+				model.LogLines = []string{tc.text, tc.text, tc.text, tc.text, tc.text, tc.text, "outside window"}
+				got := Render(model, Style{Width: width, Colour: true, LogOffset: offset})
+				count := 3
+				if width >= 100 {
+					count = 6
+				}
+				seen := 0
+				for _, line := range strings.Split(got, "\n") {
+					plain := regexp.MustCompile("\x1b\\[[0-9;]*m").ReplaceAllString(line, "")
+					if !strings.HasPrefix(plain, "│ "+tc.text) {
+						continue
+					}
+					dim := seen < count/3
+					assertTokenPaint(t, line, tc.text, func(c paintedCell) bool { return c.colour == tc.colour && c.bold == tc.bold && c.dim == dim })
+					seen++
+				}
+				if seen != count-(1-offset) {
+					t.Fatalf("log window: got %d matching lines", seen)
+				}
+			}
+		}
+	}
+}
