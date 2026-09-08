@@ -85,12 +85,14 @@ type Options struct {
 	LimitWaitDefault time.Duration
 	LimitBuffer      time.Duration
 	LimitHorizon     time.Duration
-	Sleep            func(context.Context, time.Duration) error
-	Stdout           io.Writer
-	Inventory        func(context.Context) (inventory.InventorySnapshot, error)
-	Runner           publication.CommandRunner
-	Environment      []string // extra environment for executors (tests)
-	Now              func() time.Time
+	// Sleep handles foreground waits and presence heartbeats; injected callbacks
+	// must support concurrent calls and context cancellation.
+	Sleep       func(context.Context, time.Duration) error
+	Stdout      io.Writer
+	Inventory   func(context.Context) (inventory.InventorySnapshot, error)
+	Runner      publication.CommandRunner
+	Environment []string // extra environment for executors (tests)
+	Now         func() time.Time
 }
 
 // Runner holds one delivery in flight.
@@ -261,7 +263,7 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 	if !journal.ValidDeliveryID(opts.Resume) {
 		return nil, fmt.Errorf("loop: %q is not a delivery id", opts.Resume)
 	}
-	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now())
+	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
 	if err != nil {
 		return nil, err
 	}
@@ -734,7 +736,7 @@ func PrintPreview(w io.Writer, preview Preview) {
 // --max-waves ended it early.
 func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 	if r.ownership == nil {
-		ownership, err := acquireDeliveryOwnership(ctx, r.root, r.delivery, r.now())
+		ownership, err := acquireDeliveryOwnership(ctx, r.root, r.delivery, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
 		if err != nil {
 			return "", err
 		}

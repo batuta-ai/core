@@ -290,6 +290,21 @@ func (f fixture) snapshot() inventory.InventorySnapshot {
 	return snapshot
 }
 
+// These fixtures advance foreground waits immediately. Heartbeats stay parked
+// until cancellation; dedicated presence tests explicitly drive their ticks.
+func fixtureSleep(waited func(time.Duration)) func(context.Context, time.Duration) error {
+	return func(ctx context.Context, delay time.Duration) error {
+		if delay == presenceRefresh {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		if waited != nil {
+			waited(delay)
+		}
+		return nil
+	}
+}
+
 func (f fixture) options(scenario string, out *bytes.Buffer) Options {
 	clock := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
 	var clockMu sync.Mutex
@@ -299,7 +314,7 @@ func (f fixture) options(scenario string, out *bytes.Buffer) Options {
 		Environment: []string{"FAKE_SCENARIO=" + scenario, "FAKE_STATE=" + f.state},
 		TaskTimeout: 2 * time.Minute, TestTimeout: time.Minute,
 		LimitWaitDefault: time.Second, LimitBuffer: time.Millisecond,
-		Sleep: func(context.Context, time.Duration) error { return nil },
+		Sleep: fixtureSleep(nil),
 		Now: func() time.Time {
 			clockMu.Lock()
 			defer clockMu.Unlock()
@@ -907,7 +922,7 @@ func TestRunPreservesCompletedCandidateWhenSiblingBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if state, err := r.Run(ctx); state != StateBlocked || err != nil {
 		t.Fatalf("Run() = %s, %v\n%s", state, err, &out)
@@ -920,13 +935,17 @@ func TestRunPreservesCompletedCandidateWhenSiblingBlocks(t *testing.T) {
 func TestLoopResumesAnExecutorKilledMidRun(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer
-	opts := f.options("slow", &out)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := f.options("default", &out)
 	opts.Parallel = 1
 	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
 		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
 			if _, err := fmt.Fprintln(command.Observer, "BATUTA-PROGRESS 1 START"); err != nil {
 				return publication.CommandResult{ExitCode: -1}, err
 			}
+			cancel()
+			return publication.CommandResult{ExitCode: -1}, ctx.Err()
 		}
 		return (publication.ExecRunner{}).Run(ctx, command)
 	})
@@ -934,8 +953,6 @@ func TestLoopResumesAnExecutorKilledMidRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 	state, err := r.Run(ctx)
 	if err != nil || state != StateCanceled {
 		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
@@ -1508,7 +1525,7 @@ func testLoopLimitBudget(t *testing.T, scenario string, resetAfter time.Duration
 	opts.MaxLimitWaits = 2
 	opts.Environment = append(opts.Environment, fmt.Sprintf("FAKE_RESET_AT=%d", resetAt.Unix()))
 	var slept []time.Duration
-	opts.Sleep = func(_ context.Context, delay time.Duration) error { slept = append(slept, delay); return nil }
+	opts.Sleep = fixtureSleep(func(delay time.Duration) { slept = append(slept, delay) })
 	r, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -1603,7 +1620,7 @@ func TestLoopWaitsOutAUsageLimitWithoutSpendingARetry(t *testing.T) {
 	var slept []time.Duration
 	opts := f.options("limit", &out)
 	opts.LimitHorizon = 24 * time.Hour
-	opts.Sleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
+	opts.Sleep = fixtureSleep(func(d time.Duration) { slept = append(slept, d) })
 	r, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -2750,8 +2767,31 @@ func TestLoopDeletesIntegratedParkedRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	deletions := 0
+	resumed.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		if len(cmd.Args) > 1 && cmd.Args[0] == "update-ref" && cmd.Args[1] == "-d" {
+			deletions++
+			records := readJournal(t, f, resumed.Delivery())
+			if kinds(records)[KindTerminal] == 0 {
+				t.Error("ref deleted before terminal")
+			}
+			var detail terminalDetail
+			if err := json.Unmarshal(records[len(records)-1].Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			for _, kept := range detail.Summary.Parked {
+				if kept.Ref == cmd.Args[2] {
+					t.Error("terminal retained list includes deleted ref")
+				}
+			}
+		}
+		return (publication.ExecRunner{}).Run(ctx, cmd)
+	})
 	if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
 		t.Fatalf("resume = %s, %v\n%s", state, err, &out)
+	}
+	if deletions == 0 {
+		t.Fatal("no parked deletions exercised")
 	}
 	if got := f.run(t, "for-each-ref", "--format=%(refname)", ref); got != "" {
 		t.Fatalf("integrated parked ref retained: %s", got)

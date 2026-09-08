@@ -25,6 +25,13 @@ type presenceLock struct {
 	RefreshedAt time.Time `json:"refreshed_at"`
 }
 
+// presenceTiming shares the runner's clock and cancellable sleep. Standalone
+// answer/presence callers use the same timer implementation with wall time.
+type presenceTiming struct {
+	now   func() time.Time
+	sleep func(context.Context, time.Duration) error
+}
+
 type deliveryOwnership struct {
 	path              string
 	info              os.FileInfo
@@ -32,7 +39,8 @@ type deliveryOwnership struct {
 	owner             presenceLock
 	takenOver         *presenceLock
 	takeoverJournaled bool
-	done              chan struct{}
+	cancel            context.CancelFunc
+	done              <-chan struct{}
 	finished          chan error
 	stopOnce          sync.Once
 	stopErr           error
@@ -180,9 +188,9 @@ func (lock presenceLock) writeAtomic(path string) (os.FileInfo, error) {
 	return info, nil
 }
 
-func acquireDeliveryOwnership(ctx context.Context, workspace, delivery string, now time.Time) (*deliveryOwnership, error) {
+func acquireDeliveryOwnership(ctx context.Context, workspace, delivery string, now time.Time, timing ...presenceTiming) (*deliveryOwnership, error) {
 	path := filepath.Join(workspace, journal.Dir, delivery+".lock")
-	ownership, err := takePresence(ctx, path, delivery, now)
+	ownership, err := takePresence(ctx, path, delivery, now, timing...)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +204,7 @@ func acquireDeliveryOwnership(ctx context.Context, workspace, delivery string, n
 	return ownership, nil
 }
 
-func takePresence(ctx context.Context, path, delivery string, now time.Time) (*deliveryOwnership, error) {
+func takePresence(ctx context.Context, path, delivery string, now time.Time, timing ...presenceTiming) (*deliveryOwnership, error) {
 	release, err := guardPresence(path)
 	if err != nil {
 		return nil, err
@@ -204,7 +212,7 @@ func takePresence(ctx context.Context, path, delivery string, now time.Time) (*d
 	defer release()
 	owner, info, err := inspectPresenceGuarded(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return acquirePresenceGuarded(ctx, path, now)
+		return acquirePresenceGuarded(ctx, path, now, timing...)
 	}
 	// Only parse errors return an inode; never recover symlinks or I/O failures.
 	if err != nil && (info == nil || now.Sub(info.ModTime()) <= presenceFresh) {
@@ -216,7 +224,7 @@ func takePresence(ctx context.Context, path, delivery string, now time.Time) (*d
 	if err := removeStalePresence(path, owner, info, now); err != nil {
 		return nil, fmt.Errorf("loop: remove stale presence lock: %w", err)
 	}
-	ownership, err := acquirePresenceGuarded(ctx, path, now)
+	ownership, err := acquirePresenceGuarded(ctx, path, now, timing...)
 	if err != nil {
 		return nil, err
 	}
@@ -297,16 +305,16 @@ func samePresenceOwner(left, right presenceLock) bool {
 	return left.PID == right.PID && left.StartedAt.Equal(right.StartedAt)
 }
 
-func acquirePresence(ctx context.Context, path string, now time.Time) (*deliveryOwnership, error) {
+func acquirePresence(ctx context.Context, path string, now time.Time, timing ...presenceTiming) (*deliveryOwnership, error) {
 	release, err := guardPresence(path)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
-	return acquirePresenceGuarded(ctx, path, now)
+	return acquirePresenceGuarded(ctx, path, now, timing...)
 }
 
-func acquirePresenceGuarded(ctx context.Context, path string, now time.Time) (*deliveryOwnership, error) {
+func acquirePresenceGuarded(ctx context.Context, path string, now time.Time, timing ...presenceTiming) (*deliveryOwnership, error) {
 	host, err := os.Hostname()
 	if err != nil {
 		return nil, fmt.Errorf("loop: presence host: %w", err)
@@ -322,24 +330,30 @@ func acquirePresenceGuarded(ctx context.Context, path string, now time.Time) (*d
 	if err != nil {
 		return nil, fmt.Errorf("loop: presence lock: %w", err)
 	}
-	ownership := &deliveryOwnership{path: path, info: info, owner: lock, done: make(chan struct{}), finished: make(chan error, 1)}
-	ticker := time.NewTicker(presenceRefresh)
+	clock := presenceTiming{now: func() time.Time { return time.Now().UTC() }, sleep: (&Runner{}).sleep}
+	if len(timing) > 0 {
+		clock = timing[0]
+	}
+	heartbeatCtx, cancel := context.WithCancel(ctx)
+	ownership := &deliveryOwnership{path: path, info: info, owner: lock, cancel: cancel, done: heartbeatCtx.Done(), finished: make(chan error, 1)}
 	go func() {
-		defer ticker.Stop()
+		defer cancel()
 		for {
-			select {
-			case <-ctx.Done():
-				ownership.finished <- nil
-				return
-			case <-ownership.done:
-				ownership.finished <- nil
-				return
-			case at := <-ticker.C:
-				lock.RefreshedAt = at.UTC()
-				if err := ownership.refresh(lock); err != nil {
-					ownership.finished <- fmt.Errorf("loop: refresh presence: %w", err)
-					return
+			if err := clock.sleep(heartbeatCtx, presenceRefresh); err != nil {
+				if heartbeatCtx.Err() != nil {
+					err = nil
 				}
+				ownership.finished <- err
+				return
+			}
+			if heartbeatCtx.Err() != nil {
+				ownership.finished <- nil
+				return
+			}
+			lock.RefreshedAt = clock.now().UTC()
+			if err := ownership.refresh(lock); err != nil {
+				ownership.finished <- fmt.Errorf("loop: refresh presence: %w", err)
+				return
 			}
 		}
 	}()
@@ -380,7 +394,7 @@ func (ownership *deliveryOwnership) ownsPath() (bool, error) {
 
 func (ownership *deliveryOwnership) stop() error {
 	ownership.stopOnce.Do(func() {
-		close(ownership.done)
+		ownership.cancel()
 		refreshErr := <-ownership.finished
 		ownership.mu.Lock()
 		defer ownership.mu.Unlock()

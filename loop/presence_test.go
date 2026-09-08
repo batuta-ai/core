@@ -458,3 +458,45 @@ func TestTakeoverWithEmptyJournalFails(t *testing.T) {
 		t.Fatalf("journal changed: %v, %v", records, err)
 	}
 }
+
+func TestPresenceHeartbeatUsesInjectedClockAndSleep(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.lock")
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	ticks := make(chan time.Time)
+	waiting := make(chan struct{})
+	timing := presenceTiming{
+		now: func() time.Time { return now },
+		sleep: func(ctx context.Context, delay time.Duration) error {
+			if delay != presenceRefresh {
+				t.Errorf("delay = %s", delay)
+			}
+			select {
+			case waiting <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			select {
+			case now = <-ticks:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	owner, err := acquirePresence(context.Background(), path, now, timing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.stop()
+	<-waiting
+	first := readPresenceLock(t, path)
+	ticks <- first.RefreshedAt.Add(presenceRefresh)
+	<-waiting
+	got := readPresenceLock(t, path)
+	if !got.RefreshedAt.Equal(first.RefreshedAt.Add(presenceRefresh)) {
+		t.Fatalf("heartbeat = %+v", got)
+	}
+	if err := owner.stop(); err != nil {
+		t.Fatal(err)
+	}
+}

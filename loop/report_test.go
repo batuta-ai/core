@@ -339,3 +339,86 @@ func TestBookkeepingDoesNotHideAnotherDelivery(t *testing.T) {
 		t.Fatalf("new delivery was suppressed: %s", work)
 	}
 }
+
+func TestParkedDeletionFailureIsJournaled(t *testing.T) {
+	f, r, out := finishedTasksForBookkeeping(t)
+	ref := "refs/batuta/parked/greetings/task_1-e1"
+	f.run(t, "update-ref", ref, "HEAD")
+	deleted := false
+	r.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		if len(cmd.Args) > 1 && cmd.Args[0] == "update-ref" && cmd.Args[1] == "-d" {
+			deleted = true
+			records := readJournal(t, f, r.Delivery())
+			if kinds(records)[KindTerminal] == 0 {
+				t.Error("deleted parked ref before terminal record")
+			}
+			return publication.CommandResult{ExitCode: 1}, errors.New("injected parked deletion failure")
+		}
+		return (publication.ExecRunner{}).Run(ctx, cmd)
+	})
+	if state, err := r.Run(context.Background()); err == nil || state != StateDone {
+		t.Fatalf("finish = %s, %v", state, err)
+	}
+	records := readJournal(t, f, r.Delivery())
+	if !deleted || kinds(records)[KindTerminal] == 0 || records[len(records)-1].Kind == KindTerminal || !strings.Contains(string(records[len(records)-1].Detail), "injected parked deletion failure") {
+		t.Fatalf("deletion failure not journaled after terminal: %+v", records[len(records)-1])
+	}
+	if !strings.Contains(out.String(), "injected parked deletion failure") || !strings.Contains(out.String(), ref) {
+		t.Fatalf("missing cleanup report: %s", out)
+	}
+	opts := f.options("default", out)
+	opts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("retry = %s, %v", state, err)
+	}
+	if got := f.run(t, "for-each-ref", "--format=%(refname)", ref); got != "" {
+		t.Fatalf("ref retained: %s", got)
+	}
+}
+
+func TestBookkeepingRecoveryRefusesForeignStagedPaths(t *testing.T) {
+	f, r, out := finishedTasksForBookkeeping(t)
+	r.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		if len(cmd.Args) > 0 && cmd.Args[0] == "commit" {
+			return publication.CommandResult{ExitCode: 1}, errors.New("injected bookkeeping failure")
+		}
+		return (publication.ExecRunner{}).Run(ctx, cmd)
+	})
+	if _, err := r.Run(context.Background()); err == nil {
+		t.Fatal("expected bookkeeping failure")
+	}
+	foreign := "foreign\twork\n.txt"
+	if err := os.WriteFile(filepath.Join(f.root, foreign), []byte("user work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", "--", foreign)
+	head := f.run(t, "rev-parse", "HEAD")
+	index := f.run(t, "diff", "--cached", "--binary")
+	opts := f.options("default", out)
+	opts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resumed.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "staged path outside bookkeeping") {
+		t.Fatalf("retry error = %v", err)
+	}
+	if f.run(t, "rev-parse", "HEAD") != head || f.run(t, "diff", "--cached", "--binary") != index {
+		t.Fatal("retry changed user index or HEAD")
+	}
+	f.run(t, "reset", "-q", "HEAD", "--", foreign)
+	resumed, err = Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("retry = %s, %v", state, err)
+	}
+	if got := f.run(t, "ls-files", "--", foreign); got != "" {
+		t.Fatal("committed foreign path")
+	}
+}

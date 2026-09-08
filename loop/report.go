@@ -24,20 +24,22 @@ import (
 )
 
 const kindFinalizing journal.Kind = "delivery_finalizing"
+const kindCleanup journal.Kind = "delivery_cleanup"
 
 type terminalDetail struct {
-	BookkeepingPending bool              `json:"bookkeeping_pending,omitempty"`
-	BookkeepingError   string            `json:"bookkeeping_error,omitempty"`
-	PlanPath           string            `json:"plan_path,omitempty"`
-	State              string            `json:"state"`
-	Summary            Summary           `json:"summary"`
-	CleanupPending     bool              `json:"cleanup_pending,omitempty"`
-	CleanupError       string            `json:"cleanup_error,omitempty"`
-	Worktrees          []attemptWorktree `json:"retained_worktrees,omitempty"`
+	Deletions          []worktree.ParkedRef `json:"pending_ref_deletions,omitempty"`
+	BookkeepingPending bool                 `json:"bookkeeping_pending,omitempty"`
+	BookkeepingError   string               `json:"bookkeeping_error,omitempty"`
+	PlanPath           string               `json:"plan_path,omitempty"`
+	State              string               `json:"state"`
+	Summary            Summary              `json:"summary"`
+	CleanupPending     bool                 `json:"cleanup_pending,omitempty"`
+	CleanupError       string               `json:"cleanup_error,omitempty"`
+	Worktrees          []attemptWorktree    `json:"retained_worktrees,omitempty"`
 }
 
-// finish snapshots executor work before cleanup, then persists the retained
-// refs and bookkeeping result. Checkpoint before either destructive operation.
+// finish snapshots executor work and checkpoints recovery before cleanup.
+// Parked refs survive until the terminal record contains the retention plan.
 func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 	if err := r.snapshotWorktrees(ctx); err != nil {
 		return state, err
@@ -103,7 +105,51 @@ func (r *Runner) completeFinalization(ctx context.Context, detail terminalDetail
 		}
 		return detail.State, errors.Join(cleanupErr, bookkeepingErr, checkpointErr)
 	}
-	return r.recordFinalization(detail, cleanupErr)
+	// Resolve retention after bookkeeping, which may add a reachable tree.
+	retained, deletions, deletionErr := r.git.PlanParkedCleanup(ctx, r.plan.Slug, r.branch)
+	if deletionErr == nil {
+		detail.Summary.Parked, detail.Deletions = retained, deletions
+	}
+	if deletionErr != nil {
+		detail.CleanupPending = true
+		detail.CleanupError = errorString(errors.Join(cleanupErr, deletionErr))
+		checkpointErr := r.checkpointFinalization(detail)
+		r.printFinalization(detail)
+		return detail.State, errors.Join(cleanupErr, deletionErr, checkpointErr)
+	}
+	if _, err := r.recordFinalization(detail, nil); err != nil {
+		return detail.State, errors.Join(cleanupErr, err)
+	}
+	if len(detail.Deletions) == 0 {
+		return detail.State, cleanupErr
+	}
+	deletionErr = r.git.DeleteParked(ctx, detail.Deletions)
+	detail.Deletions = nil
+	if deletionErr != nil {
+		parked, listErr := r.git.Parked(ctx, r.plan.Slug)
+		if listErr == nil {
+			detail.Summary.Parked = parked
+		}
+		cleanupErr = errors.Join(cleanupErr, deletionErr, listErr)
+		detail.CleanupPending = true
+		detail.CleanupError = errorString(cleanupErr)
+	}
+	r.mu.Lock()
+	followupErr := r.record(kindCleanup, "", detail)
+	if followupErr == nil {
+		r.pendingFinish = nil
+		if detail.CleanupPending {
+			r.pendingFinish = &detail
+		}
+	}
+	r.mu.Unlock()
+	if cleanupErr != nil {
+		r.printFinalization(detail)
+	}
+	if followupErr != nil {
+		fmt.Fprintf(r.out, "cleanup record: %s\nretry with batuta loop --resume %s\n", followupErr, r.delivery)
+	}
+	return detail.State, errors.Join(cleanupErr, followupErr)
 }
 
 func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) error {
@@ -116,13 +162,6 @@ func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) 
 		}
 	}
 	detail.Worktrees = retained
-	_, cleanErr := r.git.CleanParked(ctx, r.plan.Slug, r.branch)
-	// CleanParked can fail after deleting some refs. Always report what remains.
-	parked, listErr := r.git.Parked(ctx, r.plan.Slug)
-	if listErr == nil {
-		detail.Summary.Parked = parked
-	}
-	cleanupErr = errors.Join(cleanupErr, cleanErr, listErr)
 	detail.CleanupPending = cleanupErr != nil
 	detail.CleanupError = errorString(cleanupErr)
 	return cleanupErr
@@ -130,10 +169,13 @@ func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) 
 
 func (r *Runner) recordFinalization(detail terminalDetail, cleanupErr error) (string, error) {
 	r.mu.Lock()
-	r.terminal = detail.State
 	err := r.record(KindTerminal, "", detail)
 	if err == nil {
+		r.terminal = detail.State
 		r.pendingFinish = nil
+		if detail.CleanupPending || len(detail.Deletions) > 0 {
+			r.pendingFinish = &detail
+		}
 	}
 	r.mu.Unlock()
 	r.printFinalization(detail)
@@ -155,11 +197,11 @@ func (r *Runner) printFinalization(detail terminalDetail) {
 
 func pendingFinalization(records []journal.Record) *terminalDetail {
 	for i := len(records) - 1; i >= 0; i-- {
-		if records[i].Kind != KindTerminal && records[i].Kind != kindFinalizing {
+		if records[i].Kind != KindTerminal && records[i].Kind != kindFinalizing && records[i].Kind != kindCleanup {
 			continue
 		}
 		var detail terminalDetail
-		if json.Unmarshal(records[i].Detail, &detail) == nil && (records[i].Kind == kindFinalizing || detail.CleanupPending) {
+		if json.Unmarshal(records[i].Detail, &detail) == nil && (records[i].Kind == kindFinalizing || detail.CleanupPending || len(detail.Deletions) > 0) {
 			return &detail
 		}
 		return nil
@@ -359,7 +401,30 @@ func pendingReason(task SummaryTask) string {
 // bookkeeping ticks integrated tasks in the plan, sets Status: done when
 // every task is integrated, appends the WORK.md lines and commits them.
 func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary) error {
-	_, err := r.tickPlan(summary)
+	// Recovery bypasses the general clean-tree preflight. Check before touching
+	// bookkeeping files so refusing a foreign staged path preserves the index.
+	staged, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable: r.git.Git, Args: []string{"diff", "--cached", "--name-only", "--no-renames", "-z", "--"}, Directory: r.root,
+	})
+	if err != nil {
+		return err
+	}
+	if staged.ExitCode != 0 || staged.StdoutTruncated || staged.StderrTruncated {
+		return errors.New("loop: cannot inspect staged bookkeeping paths")
+	}
+	allowed := map[string]bool{"WORK.md": true, ".batuta/roadmap.md": true, filepath.ToSlash(r.plan.Path): true, ".batuta/plans/done/" + r.plan.Slug + ".md": true}
+	current, err := filepath.Rel(r.root, r.planPath)
+	if err != nil {
+		return err
+	}
+	allowed[filepath.ToSlash(current)] = true
+	for _, path := range strings.Split(string(staged.Stdout), "\x00") {
+		if path != "" && !allowed[path] {
+			return fmt.Errorf("loop: staged path outside bookkeeping: %q; unstage it before retrying", path)
+		}
+	}
+
+	_, err = r.tickPlan(summary)
 	if err != nil {
 		return err
 	}
@@ -825,7 +890,7 @@ func Abandon(ctx context.Context, opts Options) (state string, abandonErr error)
 	if err != nil {
 		return "", err
 	}
-	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now())
+	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
 	if err != nil {
 		return "", err
 	}

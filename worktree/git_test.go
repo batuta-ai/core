@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -536,5 +537,80 @@ func TestParkWithUnmergedIndexStageMatchesHead(t *testing.T) {
 	}
 	if _, err := p.run(ctx, root, "show-ref", "--verify", ref+"-index-stage-1"); err == nil {
 		t.Fatal("invented absent base stage")
+	}
+}
+
+type observingGitRunner func(context.Context, publication.Command) (publication.CommandResult, error)
+
+func (f observingGitRunner) Run(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+	return f(ctx, cmd)
+}
+
+func TestParkOrdinaryIndexUsesWriteTree(t *testing.T) {
+	p, _ := initRepo(t)
+	writes, scans := 0, 0
+	p.Runner = observingGitRunner(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		if len(cmd.Args) > 0 && cmd.Args[0] == "ls-files" {
+			scans++
+			if !strings.Contains(strings.Join(cmd.Args, " "), "-u") {
+				t.Error("enumerated ordinary index")
+			}
+		}
+		if len(cmd.Args) > 0 && cmd.Args[0] == "write-tree" {
+			writes++
+		}
+		return (publication.ExecRunner{}).Run(ctx, cmd)
+	})
+	if _, err := p.Park(context.Background(), p.Root, "refs/batuta/parked/demo/task-e1", "wip"); err != nil {
+		t.Fatal(err)
+	}
+	if scans != 1 || writes != 2 {
+		t.Fatalf("scans = %d, write-tree = %d", scans, writes)
+	}
+}
+
+func TestParkWithUnmergedIndexStreamsBeyondOutputLimit(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	// One valid entry repeated exercises a listing larger than the command cap
+	// without constructing a giant repository or buffering that listing in RAM.
+	entry := "100644 " + sha + " 1\tconflict.txt\x00"
+	count := (17<<20)/len(entry) + 1
+	additions, removals := 0, 0
+	p := GitProvider{Git: "/git", Root: t.TempDir()}
+	p.Runner = observingGitRunner(func(_ context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		switch cmd.Args[0] {
+		case "ls-files":
+			if strings.Join(cmd.Args, " ") != "ls-files -u -z" || cmd.Observer == nil {
+				t.Fatal("conflict listing must stream only unmerged entries")
+			}
+			chunk := strings.Repeat(entry, 1024)
+			for n := 0; n < count; {
+				size := min(1024, count-n)
+				if _, err := cmd.Observer.Write([]byte(chunk[:size*len(entry)])); err != nil {
+					return publication.CommandResult{}, err
+				}
+				n += size
+			}
+			return publication.CommandResult{StdoutTruncated: true}, nil
+		case "update-index":
+			if len(cmd.Stdin) > 65<<10 {
+				t.Fatalf("unbounded batch: %d", len(cmd.Stdin))
+			}
+			n := bytes.Count(cmd.Stdin, []byte{0})
+			if bytes.HasPrefix(cmd.Stdin, []byte("0 ")) {
+				removals += n
+			} else {
+				additions += n
+			}
+		case "show-ref":
+			return publication.CommandResult{ExitCode: 1}, errors.New("missing ref")
+		}
+		return publication.CommandResult{Stdout: []byte(sha + "\n")}, nil
+	})
+	if err := p.parkConflictStages(context.Background(), p.Root, "refs/batuta/parked/demo/task-e1", "wip", sha, nil); err != nil {
+		t.Fatal(err)
+	}
+	if additions != count || removals != count {
+		t.Fatalf("entries added = %d, removed = %d, want %d", additions, removals, count)
 	}
 }

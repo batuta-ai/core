@@ -186,14 +186,20 @@ exit `1` with the reason on stderr.
   named `wip(batuta): <slug> <task> e<execution> parked`, leaves the real HEAD,
   index, and files untouched, and is journaled as a `worktree_snapshotted`
   record. A same-runtime retry keeps the worktree; a fresh escalation or
-  cleanup may remove it only after that snapshot succeeds. Final bookkeeping
-  deletes only parked refs whose complete tree is already present in branch
-  history and reports every remaining recovery ref in the terminal summary.
+  cleanup may remove it only after that snapshot succeeds. Finalization first
+  computes which refs to retain, then journals that list in the terminal
+  record, and only then deletes refs whose complete tree is already present
+  in branch history. A `delivery_cleanup` follow-up records the deletion
+  outcome. Failures print the error and remaining refs and stay retryable;
+  interruption between the terminal record and deletion also stays retryable.
   An unmerged (conflicted) index is copied and serialized into separate trees:
   `-index` retains normal stage-zero entries, and `-index-stage-1`,
   `-index-stage-2`, and `-index-stage-3` retain the conflicted base, ours, and
   theirs entries at their original paths, including file modes. Absent stages
-  need no tree. These recovery refs protect staged blobs without resolving or
+  need no tree. Only unmerged entries are streamed to a temporary file and
+  reconstructed in bounded batches; ordinary indexes use `write-tree` on a
+  copy without enumerating stage-zero entries. These recovery refs protect
+  staged blobs without resolving or
   changing the real index; the working-directory snapshot still includes the
   unresolved file contents. The summary lists conflicted paths for retained
   stage refs. Use `git show <ref>:<path>` to recover a specific version.
@@ -206,11 +212,16 @@ exit `1` with the reason on stderr.
   `batuta loop --abandon <delivery>` recovery commands. Either command retries
   finalization with its original result without running tasks again. Recovery
   accepts a plan already moved into `plans/done/`, repeats any unfinished
-  staging and commit, and avoids duplicate WORK.md entries or bookkeeping
+  staging and commit, and refuses staged paths outside the source/archived
+  plan, WORK.md, and roadmap before changing bookkeeping files. Unstage any
+  unrelated paths before retrying. Recovery avoids duplicate WORK.md entries or bookkeeping
   commits, including interruption after a successful commit. A terminal
   record is appended only after bookkeeping succeeds; a separate checkpoint
   preserves that success if the final append is interrupted. Cleanup failures
-  remain retryable through the same commands.
+  remain retryable through the same commands. The presence heartbeat uses
+  the runner's clock and cancellable sleep, so tests can drive refreshes
+  without waiting for wall time. Acquisition and takeover use the guard
+  lock directly and have no timed retry loop.
 - **User-authored command lines** (`Test:`, `Install:`, proofs) run through
   `sh -c` with stdin closed, a timeout and bounded output; they come from
   files the user wrote and approved. **Executor lines never see a shell**:
