@@ -2,11 +2,16 @@ package worktree
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/batuta-ai/core/publication"
 )
 
 // initRepo creates a repository with one commit and returns a provider.
@@ -317,5 +322,94 @@ func TestParkSkipsOnlyWhenAlreadyPreserved(t *testing.T) {
 	}
 	if again, err := p.Park(ctx, root, ref, "wip: park"); err != nil || again != "" {
 		t.Fatalf("preserved committed Park = %s, %v", again, err)
+	}
+}
+
+func TestCleanParkedBoundedHistory(t *testing.T) {
+	const historyCount = 500_001
+	parkedTree := strings.Repeat("b", 40)
+	runner := &boundedHistoryRunner{historyCount: historyCount, parkedTree: parkedTree, matchAt: historyCount - 1}
+	p := GitProvider{Git: "/controlled/git", Runner: runner, Root: "/repo"}
+
+	kept, err := p.CleanParked(context.Background(), "demo", "main")
+	if err != nil {
+		t.Fatalf("CleanParked() error = %v", err)
+	}
+	if len(kept) != 0 || !runner.deleted {
+		t.Fatalf("CleanParked() kept = %v, deleted = %t; want deleted", kept, runner.deleted)
+	}
+	if runner.maxHistoryOutput >= 16<<20 {
+		t.Fatalf("largest history output = %d, want less than 16 MiB", runner.maxHistoryOutput)
+	}
+}
+
+func TestCleanParkedMatchesBeyondCommandLimit(t *testing.T) {
+	const historyCount = 500_001
+	parkedTree := strings.Repeat("b", 40)
+	runner := &boundedHistoryRunner{historyCount: historyCount, parkedTree: parkedTree, matchAt: historyCount - 1}
+	p := GitProvider{Git: "/controlled/git", Runner: runner, Root: "/repo"}
+
+	if _, err := p.CleanParked(context.Background(), "demo", "main"); err != nil {
+		t.Fatalf("CleanParked() error = %v", err)
+	}
+	if runner.historyBytes <= 16<<20 {
+		t.Fatalf("history traversed = %d bytes, want more than 16 MiB", runner.historyBytes)
+	}
+	if runner.historyEntries != historyCount {
+		t.Fatalf("history entries = %d, want %d", runner.historyEntries, historyCount)
+	}
+}
+
+type boundedHistoryRunner struct {
+	historyCount     int
+	historyBytes     int
+	historyEntries   int
+	matchAt          int
+	maxHistoryOutput int
+	parkedTree       string
+	deleted          bool
+}
+
+func (r *boundedHistoryRunner) Run(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+	if len(command.Args) == 0 {
+		return publication.CommandResult{}, errors.New("missing git command")
+	}
+	switch command.Args[0] {
+	case "for-each-ref":
+		return publication.CommandResult{Stdout: []byte("refs/batuta/parked/demo/task-1-e1 " + strings.Repeat("c", 40) + "\n")}, nil
+	case "cat-file":
+		return publication.CommandResult{Stdout: []byte("tree " + r.parkedTree + "\n")}, nil
+	case "log":
+		limit, skip := 0, 0
+		for _, arg := range command.Args {
+			if value, found := strings.CutPrefix(arg, "--max-count="); found {
+				limit, _ = strconv.Atoi(value)
+			}
+			if value, found := strings.CutPrefix(arg, "--skip="); found {
+				skip, _ = strconv.Atoi(value)
+			}
+		}
+		if limit == 0 {
+			return publication.CommandResult{StdoutTruncated: true}, nil
+		}
+		end := min(skip+limit, r.historyCount)
+		var output strings.Builder
+		for index := skip; index < end; index++ {
+			tree := strings.Repeat("a", 40)
+			if index == r.matchAt {
+				tree = r.parkedTree
+			}
+			fmt.Fprintln(&output, tree)
+		}
+		payload := []byte(output.String())
+		r.historyBytes += len(payload)
+		r.historyEntries += end - skip
+		r.maxHistoryOutput = max(r.maxHistoryOutput, len(payload))
+		return publication.CommandResult{Stdout: payload}, nil
+	case "update-ref":
+		r.deleted = true
+		return publication.CommandResult{}, nil
+	default:
+		return publication.CommandResult{}, fmt.Errorf("unexpected git command %q", command.Args[0])
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/batuta-ai/core/publication"
@@ -330,16 +331,9 @@ func (p GitProvider) CleanParked(ctx context.Context, slug, branch string) ([]Pa
 	if err != nil || len(refs) == 0 {
 		return refs, err
 	}
-	result, err := p.run(ctx, p.Root, "log", "--format=%T", "refs/heads/"+branch, "--")
-	if err != nil {
-		return nil, err
-	}
-	trees := map[string]bool{}
-	for _, tree := range nonempty(string(result.Stdout)) {
-		trees[tree] = true
-	}
-	var kept []ParkedRef
-	for _, ref := range refs {
+	refTrees := make([]string, len(refs))
+	wantedTrees := make(map[string]bool, len(refs))
+	for index, ref := range refs {
 		commit, err := p.run(ctx, p.Root, "cat-file", "-p", ref.SHA)
 		if err != nil {
 			return nil, err
@@ -348,7 +342,31 @@ func (p GitProvider) CleanParked(ctx context.Context, slug, branch string) ([]Pa
 		if !gitSHA.MatchString(tree) {
 			return nil, errors.New("worktree: invalid parked tree")
 		}
-		if !trees[tree] {
+		refTrees[index] = tree
+		wantedTrees[tree] = true
+	}
+
+	const historyPageSize = 50_000
+	matchedTrees := make(map[string]bool, len(wantedTrees))
+	for skip := 0; len(matchedTrees) < len(wantedTrees); skip += historyPageSize {
+		result, err := p.run(ctx, p.Root, "log", "--format=%T", "--max-count="+strconv.Itoa(historyPageSize), "--skip="+strconv.Itoa(skip), "refs/heads/"+branch, "--")
+		if err != nil {
+			return nil, err
+		}
+		trees := nonempty(string(result.Stdout))
+		for _, tree := range trees {
+			if wantedTrees[tree] {
+				matchedTrees[tree] = true
+			}
+		}
+		if len(trees) < historyPageSize {
+			break
+		}
+	}
+
+	var kept []ParkedRef
+	for index, ref := range refs {
+		if !matchedTrees[refTrees[index]] {
 			kept = append(kept, ref)
 			continue
 		}
