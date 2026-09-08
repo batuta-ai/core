@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
@@ -786,12 +787,30 @@ func commitMessage(task routing.PlanTask, slug string) string {
 	case task.Domain == routing.DomainInfra:
 		kind = "chore"
 	}
-	if len(title) > 0 {
-		title = strings.ToLower(title[:1]) + title[1:]
+	runes := []rune(title)
+	if len(runes) >= 2 && unicode.IsLower(runes[1]) {
+		runes[0] = unicode.ToLower(runes[0])
+		title = string(runes)
 	}
 	title = strings.TrimSuffix(title, ".")
 	if len(title) > 68 {
-		title = strings.TrimSpace(title[:68])
+		lastSpace := -1
+		byteCount := 0
+		for _, r := range title {
+			runeBytes := len(string(r))
+			if byteCount+runeBytes > 68 {
+				break
+			}
+			if r == ' ' {
+				lastSpace = byteCount
+			}
+			byteCount += runeBytes
+		}
+		if lastSpace != -1 {
+			title = strings.TrimRight(title[:lastSpace], " ,:;—-")
+		} else {
+			title = strings.TrimSpace(title[:byteCount])
+		}
 	}
 	return fmt.Sprintf("%s: %s\n\nPlan %s, %s. Delivered by batuta loop.\n", kind, title, slug, task.ID)
 }
