@@ -96,6 +96,7 @@
 - [x] Inventory never starts an agent turn: cursor, opencode and codex adapters drop probes without a consumer; doctor notes slow probes → ticked in the plan before the run, commit 3a8e07aa9069 (trail: .batuta/runs/2026-09-08-loop-deadends-task-7.md, plan loop-deadends, 2026-09-08)
 - [x] --abandon, --answer and --resume refuse a delivery whose runner is alive → ticked in the plan before the run, commit 3a8e07aa9069 (trail: .batuta/runs/2026-09-08-loop-deadends-task-9.md, plan loop-deadends, 2026-09-08)
 - [x] docs/loop.md describes the dead ends, the snapshots and the limit fallback → codex (gpt-5.6-sol), commit 99d8dd9dc256 (trail: .batuta/runs/2026-09-08-loop-deadends-task-8.md, plan loop-deadends, 2026-09-08)
+- [x] The review package: manifest, cohorts, findings schema, merge and verdict, all pure → codex (gpt-6-astra), commit 8057f16fa6b2 (trail: .batuta/runs/2026-09-08-review-task-1.md, plan review, 2026-09-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
