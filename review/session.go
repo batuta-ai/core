@@ -122,6 +122,7 @@ type CohortResult struct {
 	Suppressed []SuppressedFinding `json:"suppressed,omitempty"`
 	Rejected   []RejectedLine      `json:"rejected,omitempty"`
 	Attempts   []SessionAttempt    `json:"attempts"`
+	Lint       *LintResult         `json:"lint,omitempty"`
 }
 
 // RunCohorts invokes only adapter read-only commands in the checkout. Each
@@ -178,15 +179,21 @@ func RunCohorts(ctx context.Context, manifest Manifest, runtime routing.RuntimeV
 		return nil, fmt.Errorf("review: initial tree signature: %w", err)
 	}
 	lint, err := RunLint(ctx, root, ProfileLintCommand(profile.Raw), manifest, opts.LintRunner)
+	results := make([]CohortResult, len(manifest.Cohorts))
+	for i, cohort := range manifest.Cohorts {
+		results[i] = CohortResult{Cohort: i, Files: append([]string(nil), cohort.Files...), Reason: "session did not run", Lint: &lint}
+	}
 	if err != nil {
-		return nil, err
+		for i := range results {
+			results[i].Reason = lint.Error
+		}
+		return results, err
 	}
 	afterLint, err := git.WorktreeState(ctx, root)
 	if err != nil || afterLint != baseline {
 		return nil, fmt.Errorf("review: lint changed the review tree")
 	}
 	invocations := make([]executor.Invocation, len(manifest.Cohorts))
-	results := make([]CohortResult, len(manifest.Cohorts))
 	for i, cohort := range manifest.Cohorts {
 		prompt, err := BuildCohortPrompt(root, manifest, cohort, profile.Raw, conventions)
 		if err != nil {
@@ -197,7 +204,6 @@ func RunCohorts(ctx context.Context, manifest Manifest, runtime routing.RuntimeV
 			return nil, err
 		}
 		invocations[i] = invocation
-		results[i] = CohortResult{Cohort: i, Files: append([]string(nil), cohort.Files...), Reason: "session did not run"}
 	}
 	var wg sync.WaitGroup
 	jobs := make(chan int)

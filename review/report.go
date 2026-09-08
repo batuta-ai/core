@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -32,7 +33,7 @@ func BuildReport(manifest Manifest, cohorts []CohortResult, spec *SpecSweep) Rep
 	for _, cohort := range cohorts {
 		findings = append(findings, cohort.Findings...)
 		report.Suppressed += len(cohort.Suppressed)
-		covered = covered && cohort.Covered
+		covered = covered && cohort.Covered && (cohort.Lint == nil || cohort.Lint.Error == "")
 	}
 	report.Findings = Merge(findings, nil).Findings
 	slices.SortStableFunc(report.Findings, func(a, b Finding) int {
@@ -79,9 +80,30 @@ func PrintReport(w io.Writer, report Report) error {
 		if !cohort.Covered {
 			status = "uncovered: " + cleanReportText(cohort.Reason)
 		}
-		if _, err := fmt.Fprintf(w, "- Cohort %d: %s — %s\n", cohort.Cohort+1, strings.Join(cohort.Files, ", "), status); err != nil {
+		names := make([]string, len(cohort.Files))
+		for i, name := range cohort.Files {
+			names[i] = escapeReportPath(name)
+		}
+		if _, err := fmt.Fprintf(w, "- Cohort %d: %s — %s\n", cohort.Cohort+1, strings.Join(names, ", "), status); err != nil {
 			return err
 		}
+	}
+	for _, cohort := range report.Cohorts {
+		if cohort.Lint == nil {
+			continue
+		}
+		lint := cohort.Lint
+		status := "not configured"
+		if strings.TrimSpace(lint.Command) != "" {
+			status = fmt.Sprintf("completed (exit %d)", lint.ExitCode)
+			if lint.Error != "" {
+				status = fmt.Sprintf("failed (exit %d): %s", lint.ExitCode, cleanReportText(lint.Error))
+			}
+		}
+		if _, err := fmt.Fprintf(w, "Lint: %s\n", status); err != nil {
+			return err
+		}
+		break // Lint runs once for the entire cohort batch.
 	}
 	if _, err := fmt.Fprintln(w, "\nFindings:"); err != nil {
 		return err
@@ -92,7 +114,7 @@ func PrintReport(w io.Writer, report Report) error {
 		}
 	}
 	for _, finding := range report.Findings {
-		if _, err := fmt.Fprintf(w, "%s · %s:%d · %s · %s\n", finding.Severity, finding.File, finding.Line, cleanReportText(finding.Premise), cleanReportText(finding.Fix)); err != nil {
+		if _, err := fmt.Fprintf(w, "%s · %s:%d · %s · %s\n", finding.Severity, escapeReportPath(finding.File), finding.Line, cleanReportText(finding.Premise), cleanReportText(finding.Fix)); err != nil {
 			return err
 		}
 	}
@@ -101,7 +123,7 @@ func PrintReport(w io.Writer, report Report) error {
 			return err
 		}
 		for _, result := range report.Spec.Results {
-			if _, err := fmt.Fprintf(w, "| %s | %s | %s |\n", markdownCell(result.ID), result.Status, markdownCell(result.Path)); err != nil {
+			if _, err := fmt.Fprintf(w, "| %s | %s | %s |\n", markdownCell(result.ID), result.Status, markdownCell(escapeReportPath(result.Path))); err != nil {
 				return err
 			}
 		}
@@ -254,4 +276,17 @@ func resolveArtifactPath(filename string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(parent, filepath.Base(filename)), nil
+}
+
+func escapeReportPath(value string) string {
+	var escaped strings.Builder
+	for _, r := range value {
+		if unicode.IsControl(r) || !unicode.IsPrint(r) {
+			quoted := strconv.QuoteRune(r)
+			escaped.WriteString(quoted[1 : len(quoted)-1])
+		} else {
+			escaped.WriteRune(r)
+		}
+	}
+	return escaped.String()
 }

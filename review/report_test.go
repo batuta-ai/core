@@ -79,3 +79,44 @@ func TestUncoveredReportCannotShip(t *testing.T) {
 		t.Fatalf("verdict = %s, want REWORK", report.Verdict)
 	}
 }
+
+func TestReportEscapesControlCharacters(t *testing.T) {
+	name := "bad\x1b[2J\n\t\r\x7f\u009b.go"
+	report := BuildReport(Manifest{Files: []File{{Path: name, OldPath: name, Selected: true}}, Cohorts: []Cohort{{Files: []string{name}}}},
+		[]CohortResult{{Files: []string{name}, Covered: true, Findings: []Finding{{File: name, Line: 1, Severity: Major}}}},
+		&SpecSweep{Covered: true, Results: []SpecResult{{ID: "task-1.1", Status: CriterionSatisfied, Path: name + ":1"}}})
+	var out bytes.Buffer
+	if err := PrintReport(&out, report); err != nil {
+		t.Fatal(err)
+	}
+	escaped := `bad\x1b[2J\n\t\r\x7f\u009b.go`
+	if strings.Count(out.String(), escaped) != 3 || strings.ContainsAny(out.String(), "\x1b\r\t\x7f\u009b") {
+		t.Fatalf("unsafe or ambiguous report: %q", out.String())
+	}
+	dir := t.TempDir()
+	if err := WriteArtifacts(dir, report, IncrementalState{}); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(payload, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	if manifest.Files[0].Path != name || manifest.Files[0].OldPath != name || manifest.Cohorts[0].Files[0] != name {
+		t.Fatal("manifest paths changed")
+	}
+	payload, err = os.ReadFile(filepath.Join(dir, "findings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findings []Finding
+	if err := json.Unmarshal(payload, &findings); err != nil {
+		t.Fatal(err)
+	}
+	if findings[0].File != name {
+		t.Fatal("finding path changed")
+	}
+}

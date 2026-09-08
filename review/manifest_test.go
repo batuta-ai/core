@@ -235,3 +235,50 @@ func TestManifestDoesNotFollowSymlink(t *testing.T) {
 		t.Fatalf("symlink should review link target text, not external content: %+v, %v", m, err)
 	}
 }
+
+func TestManifestHandlesSubmoduleGitlink(t *testing.T) {
+	for _, change := range []string{"deleted", "changed", "added"} {
+		t.Run(change, func(t *testing.T) {
+			root := reviewRepo(t)
+			sub := reviewRepo(t)
+			writeTestFile(t, sub, "source.go", "old\n")
+			gitTest(t, sub, "add", ".")
+			gitTest(t, sub, "-c", "commit.gpgsign=false", "commit", "-qm", "submodule")
+			old := gitTest(t, sub, "rev-parse", "HEAD")
+			if change != "added" {
+				gitTest(t, root, "update-index", "--add", "--cacheinfo", "160000,"+old+",module")
+				gitTest(t, root, "-c", "commit.gpgsign=false", "commit", "-qm", "gitlink")
+			}
+			base := gitTest(t, root, "rev-parse", "HEAD")
+			added, deleted := 1, 1
+			switch change {
+			case "deleted":
+				gitTest(t, root, "update-index", "--force-remove", "module")
+				added = 0
+			default:
+				if err := os.Mkdir(filepath.Join(root, "module"), 0755); err != nil {
+					t.Fatal(err)
+				}
+				writeTestFile(t, sub, "source.go", "new\n")
+				gitTest(t, sub, "add", ".")
+				gitTest(t, sub, "-c", "commit.gpgsign=false", "commit", "-qm", "update")
+				next := gitTest(t, sub, "rev-parse", "HEAD")
+				gitTest(t, root, "update-index", "--add", "--cacheinfo", "160000,"+next+",module")
+				if change == "added" {
+					deleted = 0
+				}
+			}
+			manifest, err := BuildManifest(root, base, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(manifest.Files) != 1 || len(manifest.Cohorts) != 1 {
+				t.Fatalf("manifest=%+v", manifest)
+			}
+			file := manifest.Files[0]
+			if file.Path != "module" || !file.Selected || file.Added != added || file.Deleted != deleted || len(file.Hunks) != 1 {
+				t.Fatalf("gitlink accounting=%+v", file)
+			}
+		})
+	}
+}

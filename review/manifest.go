@@ -208,7 +208,11 @@ func inspectFile(root string, workspace *os.Root, base string, file *File) error
 			file.Hunks = append(file.Hunks, Hunk{Start: 1, Count: added})
 		}
 	} else if file.Status == "D" {
-		content, err = gitOutput(root, "show", base+":"+file.Path)
+		var entry []byte
+		entry, err = gitOutput(root, "ls-tree", "-z", base, "--", file.Path)
+		if err == nil && !bytes.HasPrefix(entry, []byte("160000 ")) {
+			content, err = gitOutput(root, "show", base+":"+file.Path)
+		}
 	} else {
 		content, err = workspaceContent(workspace, file.Path, false)
 	}

@@ -210,7 +210,7 @@ func Merge(findings []Finding, linters []LinterFinding) MergeResult {
 	for _, finding := range ordered {
 		suppressed := false
 		for _, check := range checks {
-			if finding.Rule != "" && finding.Rule == check.Rule && finding.File == check.File && check.Line > 0 && check.EndLine >= check.Line && finding.Line <= check.EndLine && check.Line <= finding.EndLine {
+			if normalizedRule(finding.Rule) != "" && normalizedRule(finding.Rule) == normalizedRule(check.Rule) && finding.File == check.File && check.Line > 0 && check.EndLine >= check.Line && finding.Line <= check.EndLine && check.Line <= finding.EndLine {
 				result.Suppressed = append(result.Suppressed, SuppressedFinding{Finding: finding, Linter: check, Reason: "linter overlap: " + check.Rule})
 				suppressed = true
 				break
@@ -258,4 +258,8 @@ func severityRank(severity Severity) int {
 	default:
 		return 0
 	}
+}
+
+func normalizedRule(rule string) string {
+	return strings.ToLower(strings.TrimSpace(rule))
 }

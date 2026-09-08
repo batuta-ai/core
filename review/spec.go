@@ -244,11 +244,17 @@ func parseSpecResults(output string, rules []SpecRule) ([]SpecResult, error) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		if err := uniqueFields(line); err != nil {
+			return nil, fmt.Errorf("review: invalid criterion result: %w", err)
+		}
 		var result SpecResult
 		decoder := json.NewDecoder(strings.NewReader(line))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&result); err != nil {
 			return nil, fmt.Errorf("review: invalid criterion result: %w", err)
+		}
+		if err := decoder.Decode(new(any)); err != io.EOF {
+			return nil, fmt.Errorf("review: expected one criterion JSON object per line")
 		}
 		if result.Status != CriterionSatisfied && result.Status != CriterionViolated && result.Status != CriterionNotApplicable {
 			return nil, fmt.Errorf("review: criterion %q has invalid status", result.ID)

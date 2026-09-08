@@ -2,7 +2,9 @@ package review
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -16,6 +18,7 @@ var lintDiagnostic = regexp.MustCompile(`^(.+?):([0-9]+)(?::([0-9]+))?:[ \t]*(.+
 
 type LintResult struct {
 	Command     string          `json:"command"`
+	Error       string          `json:"error,omitempty"`
 	ExitCode    int             `json:"exit_code"`
 	Diagnostics []LinterFinding `json:"diagnostics"`
 }
@@ -30,8 +33,8 @@ func ProfileLintCommand(profile string) string {
 	return ""
 }
 
-// RunLint invokes the project-authored command through the shell. A nonzero
-// exit is retained because linters commonly use it to signal diagnostics.
+// RunLint invokes the project-authored command through the shell. Exits zero
+// and one indicate completion; other exits and execution errors fail closed.
 func RunLint(ctx context.Context, root, command string, manifest Manifest, runner publication.CommandRunner) (LintResult, error) {
 	result := LintResult{Command: command}
 	if strings.TrimSpace(command) == "" {
@@ -49,14 +52,20 @@ func RunLint(ctx context.Context, root, command string, manifest Manifest, runne
 		StderrLimit: 1 << 20,
 	})
 	result.ExitCode = outcome.ExitCode
+	var exitErr *exec.ExitError
+	if outcome.ExitCode < 0 || outcome.ExitCode > 1 || err != nil && !errors.As(err, &exitErr) {
+		if err == nil {
+			err = fmt.Errorf("command exited with code %d", outcome.ExitCode)
+		}
+		err = fmt.Errorf("review: run lint (exit %d): %w: %s", outcome.ExitCode, err, strings.TrimSpace(string(outcome.Stderr)))
+		result.Error = err.Error()
+		return result, err
+	}
 	output := string(outcome.Stdout)
 	if len(outcome.Stderr) > 0 {
 		output += "\n" + string(outcome.Stderr)
 	}
 	result.Diagnostics = ParseLintDiagnostics(root, output, manifest)
-	if err != nil && outcome.ExitCode < 0 {
-		return result, fmt.Errorf("review: run lint: %w", err)
-	}
 	return result, nil
 }
 
@@ -102,19 +111,5 @@ func manifestContainsLine(manifest Manifest, name string, line int) bool {
 }
 
 func suppressLintOverlaps(findings []Finding, diagnostics []LinterFinding) MergeResult {
-	var result MergeResult
-	for _, finding := range findings {
-		matched := false
-		for _, diagnostic := range diagnostics {
-			if path.Clean(finding.File) == path.Clean(diagnostic.File) && finding.Line <= rangeEnd(diagnostic.Line, diagnostic.EndLine) && diagnostic.Line <= rangeEnd(finding.Line, finding.EndLine) {
-				result.Suppressed = append(result.Suppressed, SuppressedFinding{Finding: finding, Linter: diagnostic, Reason: "linter overlap: " + diagnostic.Rule})
-				matched = true
-				break
-			}
-		}
-		if !matched {
-			result.Findings = append(result.Findings, finding)
-		}
-	}
-	return result
+	return Merge(findings, diagnostics)
 }

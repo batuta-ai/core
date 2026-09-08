@@ -144,3 +144,42 @@ func TestLoadSpecCriteriaPreservesNumericSlugs(t *testing.T) {
 		t.Fatalf("rules=%+v err=%v", rules, err)
 	}
 }
+
+func TestParseSpecResultsRejectsDuplicateFields(t *testing.T) {
+	for _, line := range []string{
+		`{"id":"task-1.1","status":"violated","status":"satisfied","path":"evidence"}`,
+		`{"id":"task-1.1","status":"violated","Status":"satisfied","path":"evidence"}`,
+		`{"id":"task-1.1","status":"satisfied","path":"first","path":"second"}`,
+	} {
+		assertInvalidSpecOutput(t, line)
+	}
+}
+
+func TestParseSpecResultsRejectsTrailingJSON(t *testing.T) {
+	for _, tail := range []string{` {"status":"violated"}`, ` trailing`, ` null`} {
+		assertInvalidSpecOutput(t, `{"id":"task-1.1","status":"satisfied","path":"evidence"}`+tail)
+	}
+}
+
+func assertInvalidSpecOutput(t *testing.T, line string) {
+	t.Helper()
+	output := "<<<CRITERIA\n" + line + "\nCRITERIA>>>\n"
+	rules := []SpecRule{{ID: "task-1.1", Text: "criterion"}}
+	if got, err := parseSpecResults(output, rules); err == nil || len(got) != 0 {
+		t.Errorf("accepted %q: %+v, %v", line, got, err)
+	}
+	manifest, runtime, opts := sessionFixture(t, 1)
+	useReviewRunner(&opts, func(context.Context, publication.Command) (publication.CommandResult, error) {
+		return publication.CommandResult{Stdout: []byte(output)}, nil
+	})
+	sweep, err := RunSpecSweep(t.Context(), manifest, rules, runtime, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sweep.Covered || sweep.Reason == "" || len(sweep.Results) != 0 {
+		t.Fatalf("malformed output covered: %+v", sweep)
+	}
+	if report := BuildReport(manifest, []CohortResult{{Covered: true}}, &sweep); report.Verdict != Rework {
+		t.Fatal("malformed sweep can ship")
+	}
+}
