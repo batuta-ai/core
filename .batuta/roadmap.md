@@ -7,3 +7,4 @@ Written 2026-09-07 night from the open issues (#70, #71, #67, #54, #57) and the 
 - [x] 3. Hardening review fixes: parked work never lost, graph transitions persist, review safe and incremental → plans/hardening-review-fixes.md
 - [x] 4. Watch review fixes: answer binding, poll identity, presence lock, overlay sanitising, picker fallbacks → plans/watch-review-fixes.md
 - [x] 5. Hardening review fixes 2: crash-safe ownership lock, bounded parked-ref cleanup, honest review state → plans/hardening-review-fixes-2.md
+- [ ] 6. Watch answer editor: Enter sends, ctrl+j or shift+enter newline → plans/watch-submit-keys.md
