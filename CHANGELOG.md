@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0-beta.21](https://github.com/batuta-ai/core/compare/v1.1.0-beta.20...v1.1.0-beta.21) (2026-09-08)
+
+
+### Features
+
+* batuta review runs proof-backed criteria in the reviewed tree and se ([043124a](https://github.com/batuta-ai/core/commit/043124adb5d144e9092083b37a4fb08161ce6253))
+* **review:** proof-backed criteria run in the reviewed tree; commit subjects keep their case ([ddb4459](https://github.com/batuta-ai/core/commit/ddb445916d169d7de9918e4572cc5edf7755208c))
+* the integration commit subject keeps the title's case and cuts at a ([f5b5f31](https://github.com/batuta-ai/core/commit/f5b5f3150ac1d3ad6e2f03ba6d74a15b92fc041a))
+
+
+### Bug Fixes
+
+* **loop:** a space exactly at byte 68 is a cut boundary for the commit subject ([96c5950](https://github.com/batuta-ai/core/commit/96c59506b58111a219fd2cdd34eaaf252520f22a))
+
 ## [1.1.0-beta.20](https://github.com/batuta-ai/core/compare/v1.1.0-beta.19...v1.1.0-beta.20) (2026-09-08)
 
 
