@@ -1,9 +1,11 @@
 # WORK — core
 
 ## In progress
-- [ ] queue after beta.20: skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
+- [ ] queue after beta.21: skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
+- [x] queue after beta.20 (superseded): skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
 
 ## Done
+- [x] review-proofs plan shipped: #78 (commit subject keeps case, word-boundary cut; agy gemini-3.8-flash-low first attempt) and #80 (review runs proof-backed criteria itself; codex gpt-6-astra first attempt), blocker of review round 1 fixed by codex gpt-5.6-sol (96c5950), round 2 SHIP → conductor (2026-09-08)
 - [x] feat/loop-hardening shipped: batuta review round 9 SHIP (0 findings), core PR #75 merged (3e64e13), release v1.1.0-beta.20, host PR #74 → v0.4.16 pins it; issues #70 #71 #67 #54 #57 closed; PR #72 closed as superseded → conductor (2026-09-08)
 - [x] round-8 review fixes: --answer ages a malformed lock and binds ownership to the answerable delivery → codex (codex/gpt-6-astra), primeira tentativa, commit e0fc087 em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round8.md)
 - [x] round-7 review fixes: terminal record last, deletion list kept, --answer refuses a running task with the ownership message → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round7.md)
@@ -136,6 +138,8 @@
 - [x] Enter submits the answer; ctrl+j and shift+enter insert a newline; the footer says so → codex (gpt-5.6-sol), commit 8ebe72a5e688 (trail: .batuta/runs/2026-09-08-watch-submit-keys-task-1.md, plan watch-submit-keys, 2026-09-08)
 - [x] Loop: bounded reset-time parsing, empty-journal takeover, staged work parked, recoverable finish, deterministic stop-between-waves test → codex (gpt-6-astra), commit 950cdceaa264 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-3-task-1.md, plan hardening-review-fixes-3, 2026-09-08)
 - [x] Review: patches by file identity, no publication beneath gitlinks, cancellation is not mutation, whole inventory for the spec sweep, pending files kept while the sweep is uncovered, docs → codex (gpt-6-astra), commit 6cc933d6c0b4 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-3-task-2.md, plan hardening-review-fixes-3, 2026-09-08)
+- [x] The integration commit subject keeps the title's case and cuts at a word boundary → agy (gemini-3.8-flash-low), commit f5b5f3150ac1 (trail: .batuta/runs/2026-09-08-review-proofs-task-1.md, delivery review-proofs-20260908-200509, plan review-proofs, 2026-09-08)
+- [x] batuta review runs proof-backed criteria in the reviewed tree and sends only arrow-less criteria to the spec sweep → codex (gpt-6-astra), commit 043124adb5d1 (trail: .batuta/runs/2026-09-08-review-proofs-task-2.md, delivery review-proofs-20260908-200509, plan review-proofs, 2026-09-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

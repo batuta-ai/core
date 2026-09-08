@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/inventory/adapters"
 	"github.com/batuta-ai/core/loop"
@@ -644,14 +645,6 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	git := publication.GitClient{Executable: gitPath, Runner: publication.ExecRunner{}}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	baseline, err := git.WorktreeState(ctx, root)
-	if err != nil {
-		return err
-	}
-	trackedBaseline, err := trackedChangeSignatures(root, baseline.HeadSHA)
-	if err != nil {
-		return err
-	}
 	var rules []review.SpecRule
 	var resolvedSpecPath string
 	if *spec != "" {
@@ -662,6 +655,51 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 		resolvedSpecPath, err = reviewSpecPath(root, *spec)
 		if err != nil {
 			return err
+		}
+	}
+	options := reviewSessionOptions(root, *parallel)
+	if options.Timeout < 0 {
+		return errors.New("review: timeout must not be negative")
+	}
+	if options.Timeout == 0 {
+		options.Timeout = 10 * time.Minute
+	}
+	baseline, err := git.WorktreeState(ctx, root)
+	if err != nil {
+		return err
+	}
+	trackedBaseline, err := trackedChangeSignatures(root, baseline.HeadSHA)
+	if err != nil {
+		return err
+	}
+	var proofResults []review.SpecResult
+	var sweepRules []review.SpecRule
+	if *spec != "" {
+		shell, err := gates.NewShellRunner(options.Timeout)
+		if err != nil {
+			return err
+		}
+		for _, rule := range rules {
+			if rule.Proof == "" {
+				sweepRules = append(sweepRules, rule)
+				continue
+			}
+			results, _, proofErr := review.RunSpecProofs(ctx, root, []review.SpecRule{rule}, shell)
+			after, stateErr := git.WorktreeState(ctx, root)
+			if stateErr != nil {
+				return fmt.Errorf("review: verify source tree: %w", stateErr)
+			}
+			if after != baseline {
+				paths := changedTrackedPaths(root, baseline.HeadSHA, trackedBaseline)
+				if len(paths) == 0 {
+					paths = []string{"worktree state changed"}
+				}
+				return fmt.Errorf("review: proof of %s changed the source tree: %s", rule.ID, strings.Join(paths, ", "))
+			}
+			if proofErr != nil {
+				return proofErr
+			}
+			proofResults = append(proofResults, results...)
 		}
 	}
 	slug, err := reviewSlug(root, *spec)
@@ -721,17 +759,17 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	options := reviewSessionOptions(root, *parallel)
 	cohorts, err := review.RunCohorts(ctx, manifest, runtime, options)
 	if err != nil {
 		return reviewSessionError(ctx, git, root, baseline, trackedBaseline, err)
 	}
 	var sweep *review.SpecSweep
 	if *spec != "" {
-		result, err := review.RunSpecSweep(ctx, manifest, rules, runtime, options)
+		result, err := review.RunSpecSweep(ctx, manifest, sweepRules, runtime, options)
 		if err != nil {
 			return reviewSessionError(ctx, git, root, baseline, trackedBaseline, err)
 		}
+		result.Results = review.MergeSpecResults(rules, proofResults, result.Results)
 		sweep = &result
 	}
 	after, stateErr := git.WorktreeState(ctx, root)

@@ -1270,3 +1270,132 @@ func TestReviewStateErrorIsNotMutation(t *testing.T) {
 		}
 	}
 }
+
+func writeReviewProofPlan(t *testing.T, root, accept string) string {
+	t.Helper()
+	path := filepath.Join(root, "spec.md")
+	payload := "# Plan — Spec\n**Goal:** Review\n**Status:** approved\n## Tasks\n- [ ] 1. Check — docs/low\n      Accept: " + accept + "\n"
+	if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestReviewRefusesProofThatChangesTree(t *testing.T) {
+	for _, tc := range []struct{ name, proof, path string }{
+		{"tracked", "printf changed > tracked.go", "tracked.go"},
+		{"already dirty", "printf changed > change.go", "change.go"},
+		{"untracked", "printf changed > new.go", "worktree state changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, base := reviewCommandRepo(t)
+			t.Chdir(root)
+			spec := writeReviewProofPlan(t, root, "safe → true; mutates → "+tc.proof)
+			restore := stubReviewRunner(t, func(context.Context, publication.Command) (publication.CommandResult, error) {
+				t.Fatal("reviewer started after proof changed tree")
+				return publication.CommandResult{}, nil
+			})
+			defer restore()
+			err := run([]string{"review", "--base", base, "--spec", spec, "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{})
+			want := "review: proof of task-1.2 changed the source tree: " + tc.path
+			if err == nil || err.Error() != want {
+				t.Fatalf("error=%v, want %q", err, want)
+			}
+		})
+	}
+}
+
+func TestReviewWithOnlyProofRulesRunsNoSweep(t *testing.T) {
+	for _, tc := range []struct {
+		name, accept string
+		statuses     []review.CriterionStatus
+	}{
+		{"passing", "first → test -f tracked.go; second → true", []review.CriterionStatus{review.CriterionSatisfied, review.CriterionSatisfied}},
+		{"failing", "first → false; second → true", []review.CriterionStatus{review.CriterionViolated, review.CriterionSatisfied}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, base := reviewCommandRepo(t)
+			t.Chdir(root)
+			spec := writeReviewProofPlan(t, root, tc.accept)
+			calls := 0
+			restore := stubReviewRunner(t, func(_ context.Context, cmd publication.Command) (publication.CommandResult, error) {
+				calls++
+				if strings.Contains(cmd.Args[len(cmd.Args)-1], "<<<CRITERIA") {
+					t.Fatal("all-proof plan started a spec sweep")
+				}
+				return publication.CommandResult{Stdout: []byte("<<<FINDINGS\nFINDINGS>>>\n")}, nil
+			})
+			defer restore()
+			var stdout bytes.Buffer
+			err := run([]string{"review", "--base", base, "--spec", spec, "--out", "out"}, &stdout, &bytes.Buffer{})
+			if tc.name == "failing" {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 3 {
+					t.Fatalf("error=%v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("reviewer calls=%d, want one cohort only", calls)
+			}
+			payload, readErr := os.ReadFile(filepath.Join(root, "out", "review.md"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if string(payload) != stdout.String() {
+				t.Fatal("saved report differs from stdout")
+			}
+			previous := -1
+			for i, status := range tc.statuses {
+				want := fmt.Sprintf("| task-1.%d | %s | proof: ", i+1, status)
+				position := strings.Index(stdout.String(), want)
+				if position <= previous {
+					t.Fatalf("missing or out-of-order %q in %s", want, stdout.String())
+				}
+				previous = position
+			}
+		})
+	}
+}
+
+func TestReviewWithMixedSpecRules(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	spec := writeReviewProofPlan(t, root, "first → true; manual criterion; last → false")
+	var sessions []string
+	restore := stubReviewRunner(t, func(_ context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		prompt := cmd.Args[len(cmd.Args)-1]
+		if strings.Contains(prompt, "<<<CRITERIA") {
+			sessions = append(sessions, "sweep")
+			if strings.Contains(prompt, "[task-1.1]") || strings.Contains(prompt, "[task-1.3]") || !strings.Contains(prompt, "[task-1.2]") || strings.Contains(prompt, "Proof:") {
+				t.Fatalf("sweep did not receive only arrow-less criterion: %s", prompt)
+			}
+			return publication.CommandResult{Stdout: []byte("<<<CRITERIA\n" + `{"id":"task-1.2","status":"satisfied","path":"change.go:3"}` + "\nCRITERIA>>>\n")}, nil
+		}
+		sessions = append(sessions, "cohort")
+		return publication.CommandResult{Stdout: []byte("<<<FINDINGS\nFINDINGS>>>\n")}, nil
+	})
+	defer restore()
+	var stdout bytes.Buffer
+	err := run([]string{"review", "--base", base, "--spec", spec, "--out", "out"}, &stdout, &bytes.Buffer{})
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 3 {
+		t.Fatalf("error=%v", err)
+	}
+	if !slices.Equal(sessions, []string{"cohort", "sweep"}) {
+		t.Fatalf("sessions=%v", sessions)
+	}
+	previous := -1
+	for _, want := range []string{
+		"| task-1.1 | satisfied | proof: true exited 0 |",
+		"| task-1.2 | satisfied | change.go:3 |",
+		"| task-1.3 | violated | proof: false exited 1 |",
+	} {
+		position := strings.Index(stdout.String(), want)
+		if position <= previous {
+			t.Fatalf("missing or out-of-order %q in %s", want, stdout.String())
+		}
+		previous = position
+	}
+}

@@ -80,13 +80,22 @@ Premise → Improvement → Fix.
 ## Spec conformance and linter overlap
 
 With `--spec <plan>`, Batuta loads every acceptance criterion from the named
-plan and runs a separate read-only sweep over the complete diff. An explicit
+plan. An explicit
 path (for example, `--spec .batuta/plans/done/review.md`) loads that exact file.
 A slug searches `.batuta/plans/<slug>.md`, then
 `.batuta/plans/done/<slug>.md`, then the legacy `.batuta/plan-<slug>.md`.
-The criteria are loaded once before reviewer sessions start. The sweep must
-return each criterion in order as `satisfied`, `violated`, or `not-applicable`,
-with an evidence path. A violated criterion, malformed response, or incomplete
+The criteria are loaded once before reviewer sessions start.
+
+Proof-backed criteria run through the gates in the reviewed tree before lint
+or reviewer sessions, using the review session timeout. A passing proof settles
+its criterion as `satisfied`; a failed proof or one that cannot run settles it
+as `violated`, with the command and exit status or error as evidence. A proof
+that changes the source tree fails the review and names the criterion and changed
+paths. Only arrow-less criteria go to the read-only spec sweep over the complete
+diff, which must return exactly those criteria in order as `satisfied`,
+`violated`, or `not-applicable`, with an evidence path. Plans with only proofs
+need no sweep session. Proof and sweep results appear in the plan's original
+order in the report. A violated criterion, malformed response, or incomplete
 spec coverage produces `REWORK`.
 
 If `.batuta/profile.md` declares a `Lint:` command, Batuta runs it before the

@@ -119,7 +119,53 @@ func LoadSpecCriteria(root, spec string) ([]SpecRule, error) {
 	return nil, fmt.Errorf("review: plan %q is unavailable", spec)
 }
 
-// RunSpecSweep runs one read-only session for the complete spec. Invalid or
+// RunSpecProofs settles mechanical criteria and leaves arrow-less rules for the sweep.
+func RunSpecProofs(ctx context.Context, root string, rules []SpecRule, shell gates.ShellRunner) ([]SpecResult, []SpecRule, error) {
+	var results []SpecResult
+	var remaining []SpecRule
+	for _, rule := range rules {
+		if err := ctx.Err(); err != nil {
+			return results, remaining, err
+		}
+		if rule.Proof == "" {
+			remaining = append(remaining, rule)
+			continue
+		}
+		verdict := gates.Proofs(ctx, shell, root, []gates.Criterion{{Text: rule.Text, Proof: rule.Proof}})[0]
+		result := SpecResult{ID: rule.ID, Status: CriterionViolated}
+		switch {
+		case verdict.Pass:
+			result.Status = CriterionSatisfied
+			result.Path = "proof: " + rule.Proof + " exited 0"
+		case strings.HasPrefix(verdict.Signal, rule.Text+" — could not run `"+rule.Proof+"`: "):
+			result.Path = "proof: " + rule.Proof + " could not run: " + strings.TrimPrefix(verdict.Signal, rule.Text+" — could not run `"+rule.Proof+"`: ")
+		default:
+			result.Path = "proof: " + rule.Proof + " " + strings.TrimPrefix(verdict.Signal, rule.Text+" — `"+rule.Proof+"` ")
+		}
+		results = append(results, result)
+	}
+	return results, remaining, ctx.Err()
+}
+
+// MergeSpecResults restores plan order while retaining evidence from an uncovered sweep.
+func MergeSpecResults(rules []SpecRule, proofs, sweep []SpecResult) []SpecResult {
+	byID := make(map[string]SpecResult, len(proofs)+len(sweep))
+	for _, result := range sweep {
+		byID[result.ID] = result
+	}
+	for _, result := range proofs {
+		byID[result.ID] = result
+	}
+	results := make([]SpecResult, 0, len(byID))
+	for _, rule := range rules {
+		if result, ok := byID[rule.ID]; ok {
+			results = append(results, result)
+		}
+	}
+	return results
+}
+
+// RunSpecSweep runs one read-only session for the arrow-less rules. Invalid or
 // incomplete output leaves the sweep explicitly uncovered.
 func RunSpecSweep(ctx context.Context, manifest Manifest, rules []SpecRule, runtime routing.RuntimeValue, opts SessionOptions) (SpecSweep, error) {
 	var sweep SpecSweep
