@@ -1,10 +1,14 @@
 package loop
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -247,4 +251,182 @@ func TestLoopRemovesPresenceLockOnEndWithoutCancellation(t *testing.T) {
 			t.Fatalf("lock recreated after run ended: %v", err)
 		}
 	})
+}
+
+func TestPresenceHeartbeatIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.lock")
+	now := time.Now().UTC()
+	ownership, err := acquirePresence(context.Background(), path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := ownership.stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	// A reader that opened the old inode must retain a complete old payload.
+	reader, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	first := readPresenceLock(t, path)
+	refreshed := first
+	refreshed.RefreshedAt = now.Add(time.Second)
+	if err := ownership.refresh(refreshed); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old presenceLock
+	if err := json.Unmarshal(payload, &old); err != nil {
+		t.Fatal(err)
+	}
+	if old != first {
+		t.Fatalf("refresh overwrote an open reader's inode: %+v", old)
+	}
+	if got := readPresenceLock(t, path); got != refreshed {
+		t.Fatalf("new heartbeat = %+v", got)
+	}
+	// Simulate a crash after truncating the staging file, before rename.
+	if err := os.WriteFile(path+".tmp", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := inspectPresence(path); err != nil || *got != refreshed {
+		t.Fatalf("interrupted staging write affected lock: %+v, %v", got, err)
+	}
+	if err := ownership.refresh(refreshed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging file remains: %v", err)
+	}
+}
+
+func TestPresenceRecoversMalformedStaleLock(t *testing.T) {
+	for _, payload := range []string{"", `{"pid":`} {
+		for _, stale := range []bool{false, true} {
+			t.Run(fmt.Sprintf("payload=%q/stale=%v", payload, stale), func(t *testing.T) {
+				root := t.TempDir()
+				now := time.Now().UTC()
+				at := now
+				if stale {
+					at = now.Add(-presenceFresh - time.Second)
+				}
+				path := writePresenceFixture(t, root, "delivery", at)
+				if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(path, at, at); err != nil {
+					t.Fatal(err)
+				}
+				ownership, err := acquireDeliveryOwnership(context.Background(), root, "delivery", now)
+				if !stale {
+					if err == nil {
+						_ = ownership.stop()
+						t.Fatal("accepted fresh malformed lock")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := ownership.stop(); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
+func TestConcurrentStaleTakeoversLeaveOneOwner(t *testing.T) {
+	if root := os.Getenv("BATUTA_PRESENCE_TEST_ROOT"); root != "" {
+		fmt.Println("ready")
+		ownership, err := acquireDeliveryOwnership(context.Background(), root, "delivery", time.Now().UTC())
+		if err != nil {
+			if !strings.Contains(err.Error(), "owned by pid") {
+				t.Fatal(err)
+			}
+			fmt.Println("refused")
+			return
+		}
+		fmt.Println("owned")
+		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+			t.Fatal(err)
+		}
+		if err := ownership.stop(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	root := t.TempDir()
+	path := writePresenceFixture(t, root, "delivery", time.Now().UTC().Add(-presenceFresh-time.Second))
+	guard, err := os.OpenFile(path+".guard", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guard.Close()
+	if err := lockExclusive(guard); err != nil {
+		t.Fatal(err)
+	}
+	defer unlockFile(guard)
+	type child struct {
+		cmd    *exec.Cmd
+		output *bufio.Reader
+		input  io.WriteCloser
+	}
+	children := make([]child, 0, 2)
+	for range 2 {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestConcurrentStaleTakeoversLeaveOneOwner$")
+		cmd.Env = append(os.Environ(), "BATUTA_PRESENCE_TEST_ROOT="+root)
+		cmd.Stderr = os.Stderr
+		output, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		input, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = input.Close(); _ = cmd.Process.Kill() })
+		reader := bufio.NewReader(output)
+		if line, err := reader.ReadString('\n'); err != nil || line != "ready\n" {
+			t.Fatalf("child ready = %q, %v", line, err)
+		}
+		children = append(children, child{cmd, reader, input})
+	}
+	// Both processes start with the same stale lock behind the parent's guard.
+	unlockFile(guard)
+	owners, refused := 0, 0
+	for _, child := range children {
+		line, err := child.output.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch line {
+		case "owned\n":
+			owners++
+		case "refused\n":
+			refused++
+		default:
+			t.Fatalf("child result = %q", line)
+		}
+	}
+	if owners != 1 || refused != 1 {
+		t.Fatalf("owners = %d, refused = %d", owners, refused)
+	}
+	for _, child := range children {
+		_ = child.input.Close()
+	}
+	for _, child := range children {
+		if err := child.cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

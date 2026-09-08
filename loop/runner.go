@@ -249,7 +249,8 @@ func New(ctx context.Context, opts Options) (*Runner, error) {
 	return r, nil
 }
 
-// Resume reopens a delivery from its journal.
+// Resume reopens a delivery from its journal. Callers must release ownership
+// with Release when finished, including when they only call DryRun.
 func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error) {
 	r, err := prepare(ctx, opts)
 	if err != nil {
@@ -801,13 +802,19 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 	}
 }
 
-func (r *Runner) releaseOwnership() error {
+// Release stops the heartbeat and releases delivery ownership. It is idempotent;
+// Run also calls it before returning.
+func (r *Runner) Release() error {
 	if r.ownership == nil {
 		return nil
 	}
 	err := r.ownership.stop()
 	r.ownership = nil
 	return err
+}
+
+func (r *Runner) releaseOwnership() error {
+	return r.Release()
 }
 
 func (r *Runner) open() error {

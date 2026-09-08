@@ -1168,3 +1168,68 @@ func TestReviewAllowsUntrackedArtifactDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestResumeDryRunLeavesNoLock(t *testing.T) {
+	root, _ := reviewCommandRepo(t)
+	skills := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(skills, "adapters"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".batuta", "plans"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	planText := "# Plan — Preview\n\n**Goal:** Preview a resumed delivery.\n**Status:** approved\n\n## Tasks\n- [x] 1. Build — backend/high\n      Scope: change.go\n      Accept: file exists → test -f change.go\n"
+	if err := os.WriteFile(filepath.Join(root, routing.PlanPath("preview")), []byte(planText), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	reviewGit(t, root, "add", ".")
+	reviewGit(t, root, "-c", "commit.gpgsign=false", "commit", "-qm", "prepare preview")
+	if err := os.WriteFile(filepath.Join(root, ".git", "info", "exclude"), []byte(".batuta/journal/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	loader, err := routing.NewPlanLoader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := loader.LoadPlan("preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := reviewGit(t, root, "rev-parse", "HEAD")
+	detail, err := json.Marshal(map[string]any{
+		"slug": "preview", "plan_digest": plan.Set.Digest,
+		"branch": reviewGit(t, root, "branch", "--show-current"), "head": head, "parallel": 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	graph, err := json.Marshal(routing.DeliveryGraph{
+		Waves: []routing.DeliveryWave{}, Integrations: []routing.IntegrationOperation{}, Pauses: []routing.HumanPause{},
+		Tasks: []routing.GraphTask{{
+			TaskID: "task_1", Domain: routing.DomainBackend, Complexity: routing.ComplexityHigh,
+			Dependencies: []string{}, Attempts: []routing.GraphTaskAttempt{},
+			State: routing.GraphTaskIntegrated, IntegratedCommitSHA: head,
+		}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("preview", journal.Record{Kind: loop.KindOpened, Detail: detail, Graph: graph}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		var stdout, stderr bytes.Buffer
+		if err := run([]string{"loop", "--workspace", root, "--skills", skills, "--resume", "preview", "--dry-run"}, &stdout, &stderr); err != nil {
+			t.Fatalf("resume preview: %v\n%s", err, &stderr)
+		}
+		if !strings.Contains(stdout.String(), "delivery  preview") {
+			t.Fatalf("missing preview: %s", &stdout)
+		}
+		if _, err := os.Stat(filepath.Join(root, journal.Dir, "preview.lock")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("preview retained ownership: %v", err)
+		}
+	}
+}

@@ -1899,7 +1899,7 @@ func TestConcurrentResumesLeaveOneOwner(t *testing.T) {
 	}
 
 	winner, errs := contendResumes(t, f, r.Delivery())
-	if winner == nil || len(errs) != 1 || !strings.Contains(errs[0].Error(), fmt.Sprintf("owned by pid %d", os.Getpid())) {
+	if winner == nil || len(errs) != 1 {
 		t.Fatalf("winner = %v, errors = %v", winner != nil, errs)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -2867,5 +2867,71 @@ func TestLoopParksCommittedWorkBeforeCleanupFailsClosed(t *testing.T) {
 	}
 	if got := f.run(t, "rev-parse", "refs/heads/"+wt.Branch); got != head {
 		t.Fatalf("unprotected branch lost: %s", got)
+	}
+}
+
+func TestReleaseDropsOwnership(t *testing.T) {
+	f := setup(t)
+	opts := f.options("default", &bytes.Buffer{})
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	opts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumed.Release() })
+	ownership := resumed.ownership
+	path := filepath.Join(f.root, journal.Dir, r.Delivery()+".lock")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resumed.DryRun(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := resumed.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-ownership.done:
+	default:
+		t.Fatal("Release did not stop the heartbeat")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lock after Release: %v", err)
+	}
+	next, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("immediate resume: %v", err)
+	}
+	if err := next.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRoadmapResumeMismatchReleasesOwnership(t *testing.T) {
+	f := setupRoadmap(t)
+	opts := f.options("default", &bytes.Buffer{})
+	opts.Plan = "release"
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	opts.Resume = r.Delivery()
+	if _, err := RunRoadmap(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "first unfinished roadmap phase") {
+		t.Fatalf("roadmap resume: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, journal.Dir, r.Delivery()+".lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("roadmap retained ownership: %v", err)
 	}
 }

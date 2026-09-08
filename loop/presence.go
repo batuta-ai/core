@@ -27,7 +27,8 @@ type presenceLock struct {
 
 type deliveryOwnership struct {
 	path              string
-	file              *os.File
+	info              os.FileInfo
+	mu                sync.Mutex
 	owner             presenceLock
 	takenOver         *presenceLock
 	takeoverJournaled bool
@@ -52,7 +53,28 @@ func liveDeliveryOwner(workspace, delivery string, now time.Time) (*presenceLock
 	return lock, nil
 }
 
+func guardPresence(path string) (func(), error) {
+	file, err := os.OpenFile(path+".guard", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockExclusive(file); err != nil {
+		return nil, errors.Join(err, file.Close())
+	}
+	// Keep the guard inode: unlinking it would let processes lock different files.
+	return func() { unlockFile(file); _ = file.Close() }, nil
+}
+
 func inspectPresence(path string) (*presenceLock, os.FileInfo, error) {
+	release, err := guardPresence(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
+	return inspectPresenceGuarded(path)
+}
+
+func inspectPresenceGuarded(path string) (*presenceLock, os.FileInfo, error) {
 	before, err := os.Lstat(path)
 	if err != nil {
 		return nil, nil, err
@@ -88,7 +110,7 @@ func inspectPresence(path string) (*presenceLock, os.FileInfo, error) {
 	}
 	var lock presenceLock
 	if err := json.Unmarshal(payload, &lock); err != nil {
-		return nil, nil, fmt.Errorf("parse presence lock: %w", err)
+		return nil, opened, fmt.Errorf("parse presence lock: %w", err)
 	}
 	return &lock, opened, nil
 }
@@ -131,60 +153,75 @@ func presenceFiles(workspace string) map[string]watchFileStamp {
 	return locks
 }
 
-func (lock presenceLock) writeFile(file *os.File) error {
+func (lock presenceLock) writeAtomic(path string) (os.FileInfo, error) {
 	data, err := json.Marshal(lock)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if err := file.Truncate(0); err != nil {
-		return err
+	tmp := path + ".tmp"
+	// A previous owner may have crashed while staging a heartbeat.
+	if err := os.Remove(tmp); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
 	}
-	if _, err := file.Seek(0, 0); err != nil {
-		return err
+	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := file.Write(data); err != nil {
-		return err
+	defer os.Remove(tmp)
+	_, writeErr := file.Write(data)
+	syncErr := file.Sync()
+	info, statErr := file.Stat()
+	if err := errors.Join(writeErr, syncErr, statErr, file.Close()); err != nil {
+		return nil, err
 	}
-	if err := file.Sync(); err != nil {
-		return err
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, err
 	}
-	return nil
+	return info, nil
 }
 
 func acquireDeliveryOwnership(ctx context.Context, workspace, delivery string, now time.Time) (*deliveryOwnership, error) {
 	path := filepath.Join(workspace, journal.Dir, delivery+".lock")
-	var takenOver *presenceLock
-	for {
-		ownership, err := acquirePresence(ctx, path, now)
-		if err == nil {
-			ownership.takenOver = takenOver
-			if takenOver != nil {
-				recorded, recordErr := journalPresenceTakeover(workspace, delivery, now, *takenOver, ownership.owner)
-				if recordErr != nil {
-					return nil, errors.Join(recordErr, ownership.stop())
-				}
-				ownership.takeoverJournaled = recorded
-			}
-			return ownership, nil
-		}
-		if !errors.Is(err, os.ErrExist) {
-			return nil, err
-		}
-		owner, info, inspectErr := inspectPresence(path)
-		if inspectErr != nil {
-			return nil, fmt.Errorf("loop: inspect presence lock: %w", inspectErr)
-		}
-		if now.Sub(owner.RefreshedAt) <= presenceFresh {
-			return nil, fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", delivery, owner.PID, owner.StartedAt.Format(time.RFC3339))
-		}
-		if err := removeStalePresence(path, *owner, info); err != nil {
-			if errors.Is(err, os.ErrExist) || errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("loop: remove stale presence lock: %w", err)
-		}
-		takenOver = owner
+	ownership, err := takePresence(ctx, path, delivery, now)
+	if err != nil {
+		return nil, err
 	}
+	if ownership.takenOver != nil {
+		recorded, err := journalPresenceTakeover(workspace, delivery, now, *ownership.takenOver, ownership.owner)
+		if err != nil {
+			return nil, errors.Join(err, ownership.stop())
+		}
+		ownership.takeoverJournaled = recorded
+	}
+	return ownership, nil
+}
+
+func takePresence(ctx context.Context, path, delivery string, now time.Time) (*deliveryOwnership, error) {
+	release, err := guardPresence(path)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	owner, info, err := inspectPresenceGuarded(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return acquirePresenceGuarded(ctx, path, now)
+	}
+	// Only parse errors return an inode; never recover symlinks or I/O failures.
+	if err != nil && (info == nil || now.Sub(info.ModTime()) <= presenceFresh) {
+		return nil, fmt.Errorf("loop: inspect presence lock: %w", err)
+	}
+	if owner != nil && now.Sub(owner.RefreshedAt) <= presenceFresh {
+		return nil, fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", delivery, owner.PID, owner.StartedAt.Format(time.RFC3339))
+	}
+	if err := removeStalePresence(path, owner, info, now); err != nil {
+		return nil, fmt.Errorf("loop: remove stale presence lock: %w", err)
+	}
+	ownership, err := acquirePresenceGuarded(ctx, path, now)
+	if err != nil {
+		return nil, err
+	}
+	ownership.takenOver = owner
+	return ownership, nil
 }
 
 type presenceTakeoverDetail struct {
@@ -234,12 +271,20 @@ func (r *Runner) recordPendingPresenceTakeover() error {
 	return nil
 }
 
-func removeStalePresence(path string, expected presenceLock, expectedInfo os.FileInfo) error {
-	current, currentInfo, err := inspectPresence(path)
-	if err != nil {
+// removeStalePresence runs with the sibling guard held by takePresence.
+func removeStalePresence(path string, expected *presenceLock, expectedInfo os.FileInfo, now time.Time) error {
+	current, currentInfo, err := inspectPresenceGuarded(path)
+	if err != nil && currentInfo == nil {
 		return err
 	}
-	if !os.SameFile(expectedInfo, currentInfo) || !samePresenceOwner(expected, *current) {
+	if !os.SameFile(expectedInfo, currentInfo) {
+		return os.ErrExist
+	}
+	if current == nil {
+		if expected != nil || now.Sub(currentInfo.ModTime()) <= presenceFresh {
+			return os.ErrExist
+		}
+	} else if expected == nil || !samePresenceOwner(*expected, *current) || now.Sub(current.RefreshedAt) <= presenceFresh {
 		return os.ErrExist
 	}
 	return os.Remove(path)
@@ -250,20 +295,31 @@ func samePresenceOwner(left, right presenceLock) bool {
 }
 
 func acquirePresence(ctx context.Context, path string, now time.Time) (*deliveryOwnership, error) {
+	release, err := guardPresence(path)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	return acquirePresenceGuarded(ctx, path, now)
+}
+
+func acquirePresenceGuarded(ctx context.Context, path string, now time.Time) (*deliveryOwnership, error) {
 	host, err := os.Hostname()
 	if err != nil {
 		return nil, fmt.Errorf("loop: presence host: %w", err)
 	}
 	now = now.UTC()
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-	if err != nil {
+	if _, err := os.Lstat(path); err == nil {
+		return nil, os.ErrExist
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	lock := presenceLock{PID: os.Getpid(), Host: host, StartedAt: now, RefreshedAt: now}
-	if err := lock.writeFile(file); err != nil {
-		return nil, fmt.Errorf("loop: presence lock: %w", errors.Join(err, file.Close(), os.Remove(path)))
+	info, err := lock.writeAtomic(path)
+	if err != nil {
+		return nil, fmt.Errorf("loop: presence lock: %w", err)
 	}
-	ownership := &deliveryOwnership{path: path, file: file, owner: lock, done: make(chan struct{}), finished: make(chan error, 1)}
+	ownership := &deliveryOwnership{path: path, info: info, owner: lock, done: make(chan struct{}), finished: make(chan error, 1)}
 	ticker := time.NewTicker(presenceRefresh)
 	go func() {
 		defer ticker.Stop()
@@ -288,35 +344,49 @@ func acquirePresence(ctx context.Context, path string, now time.Time) (*delivery
 }
 
 func (ownership *deliveryOwnership) refresh(lock presenceLock) error {
+	ownership.mu.Lock()
+	defer ownership.mu.Unlock()
+	release, err := guardPresence(ownership.path)
+	if err != nil {
+		return err
+	}
+	defer release()
 	owned, err := ownership.ownsPath()
 	if err != nil || !owned {
 		return errors.Join(err, errors.New("ownership was replaced"))
 	}
-	if err := lock.writeFile(ownership.file); err != nil {
+	info, err := lock.writeAtomic(ownership.path)
+	if err != nil {
 		return err
 	}
+	ownership.info = info
 	return nil
 }
 
+// ownsPath runs with the sibling guard and ownership mutex held.
 func (ownership *deliveryOwnership) ownsPath() (bool, error) {
-	ownedInfo, err := ownership.file.Stat()
-	if err != nil {
-		return false, err
-	}
-	current, pathInfo, err := inspectPresence(ownership.path)
+	current, pathInfo, err := inspectPresenceGuarded(ownership.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return os.SameFile(ownedInfo, pathInfo) && samePresenceOwner(ownership.owner, *current), nil
+	return os.SameFile(ownership.info, pathInfo) && samePresenceOwner(ownership.owner, *current), nil
 }
 
 func (ownership *deliveryOwnership) stop() error {
 	ownership.stopOnce.Do(func() {
 		close(ownership.done)
 		refreshErr := <-ownership.finished
+		ownership.mu.Lock()
+		defer ownership.mu.Unlock()
+		release, err := guardPresence(ownership.path)
+		if err != nil {
+			ownership.stopErr = errors.Join(refreshErr, err)
+			return
+		}
+		defer release()
 		owned, inspectErr := ownership.ownsPath()
 		var removeErr error
 		if owned {
@@ -328,7 +398,7 @@ func (ownership *deliveryOwnership) stop() error {
 		if removeErr != nil {
 			removeErr = fmt.Errorf("loop: remove presence: %w", removeErr)
 		}
-		ownership.stopErr = errors.Join(refreshErr, inspectErr, removeErr, ownership.file.Close())
+		ownership.stopErr = errors.Join(refreshErr, inspectErr, removeErr)
 	})
 	return ownership.stopErr
 }

@@ -13,7 +13,7 @@ import (
 
 // RunRoadmap runs one delivery per approved phase on the current branch.
 // Only a done delivery advances the chain; every other state stops it.
-func RunRoadmap(ctx context.Context, opts Options) (string, error) {
+func RunRoadmap(ctx context.Context, opts Options) (state string, runErr error) {
 	root, loader, err := roadmapLoader(opts.Workspace)
 	if err != nil {
 		return "", err
@@ -39,6 +39,7 @@ func RunRoadmap(ctx context.Context, opts Options) (string, error) {
 			if err != nil {
 				return "", err
 			}
+			defer func() { runErr = errors.Join(runErr, runner.Release()) }()
 			if next == nil || runner.plan.Slug != next.Slug {
 				return "", fmt.Errorf("loop: delivery %s does not belong to the first unfinished roadmap phase", opts.Resume)
 			}

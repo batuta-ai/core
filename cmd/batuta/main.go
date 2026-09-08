@@ -465,7 +465,7 @@ type ExitError struct {
 
 func (e *ExitError) Error() string { return "delivery " + e.State }
 
-func runLoop(args []string, stdout, stderr io.Writer) error {
+func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	flags := flag.NewFlagSet("loop", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	workspace := flags.String("workspace", "", "repository root (default: current directory)")
@@ -571,6 +571,7 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	defer func() { runErr = errors.Join(runErr, runner.Release()) }()
 	if *dryRun {
 		preview, err := runner.DryRun()
 		if err != nil {
