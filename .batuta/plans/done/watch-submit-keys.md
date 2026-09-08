@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** The maintainer could not submit an answer from the watch: `ctrl+s` is swallowed by terminals (XOFF) or never reaches the program, `alt+enter` needs "Option as Meta" on macOS, `ctrl+enter` needs the Kitty protocol and collides with the terminal's own shortcut. Enter becomes the submit key (answers are one to three sentences), a newline is inserted with `ctrl+j` (LF, always distinct from Enter in raw mode) or `shift+enter` where the terminal reports it, `ctrl+d` also submits, `esc` cancels, and the editor's footer names exactly those keys. The old combinations stay accepted. Refs core #64.
-**Created:** 2026-09-08 · **Status:** approved
+**Created:** 2026-09-08 · **Status:** done
 
 ## Tasks
-- [ ] 1. Enter submits the answer; ctrl+j and shift+enter insert a newline; the footer says so — backend/medium
+- [x] 1. Enter submits the answer; ctrl+j and shift+enter insert a newline; the footer says so — backend/medium
       Scope: loop/watch_answer.go, loop/watch_answer_test.go, loop/watch_tui.go, loop/watch_tui_test.go, loop/panel_labels.go, loop/panel_keys.go, loop/panel_keys_test.go, docs/loop.md
       Accept: in the answer overlay `enter` and `ctrl+d` submit the trimmed text (empty refused with the existing notice), `ctrl+j` and `shift+enter` insert a newline in the textarea, `esc` cancels, and `ctrl+s`, `alt+enter` and `ctrl+enter` still submit → go test ./loop -run 'TestAnswerOverlayEnterSubmits|TestAnswerOverlayCtrlJNewline|TestAnswerOverlayShiftEnterNewline|TestAnswerOverlayLegacySubmitKeys|TestAnswerOverlayCancels' -count=1; the overlay footer reads `enter send · ctrl+j newline · esc cancel` in English and its Portuguese counterpart in pt, the legend (`?`) matches, and the textarea no longer treats Enter as newline → go test ./loop -run 'TestAnswerOverlayKeyLine|TestRenderLegendMentionsAnswerKeys' -count=1; goldens unchanged → go test ./loop -run 'TestRenderMatchesGoldens|TestRenderMatchesColourGoldens' -count=1 && git diff --quiet -- docs/dashboard-mock loop/testdata; `docs/loop.md` keeps every heading and its answer-editor sentence names enter, ctrl+j and shift+enter → test "$(grep -c '^## ' docs/loop.md)" -ge "$(git show HEAD:docs/loop.md | grep -c '^## ')" && grep -q 'ctrl+j' docs/loop.md
 
