@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** A delivery-level review that runs the same on every host: `batuta review --base <ref> [--spec <plan>]` splits the diff into cohorts, runs one read-only reviewer session per cohort through the routing table's executors (the adapters' `readonly` lines, the mechanism the verifier gate already uses), merges the findings mechanically, checks the plan's criteria as a spec, and derives a `SHIP / FIX_BEFORE_SHIP / REWORK` verdict by rule. Distilled from pedronauck/skills `deep-review` (cohorts, evidence discipline, taxonomy, linter overlap, mechanical verdict); none of its scripts, state or publishing. Refs the July decision in batuta-ai/batuta `docs/specs-history/2026-07-26-destilacao-pedronauck-skills-design.md`.
-**Created:** 2026-09-07 · **Status:** approved
+**Created:** 2026-09-07 · **Status:** done
 
 ## Tasks
 - [x] 1. The review package: manifest, cohorts, findings schema, merge and verdict, all pure — backend/high
@@ -20,7 +20,7 @@
       Depends on: 3
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, review/report.go, review/report_test.go, review/testdata
       Accept: `batuta review [--base <ref>] [--worktree] [--spec <plan>] [--cohort-files N] [--parallel N] [--reviewer <executor/model>] [--full] [--out <dir>]` writes `<out>/manifest.json`, `findings.json`, `review.md` and `state.json` under `.batuta/reviews/<date>-<slug>/`, prints the walkthrough (files, cohorts, coverage), every finding as `severity · file:line · problem · fix` most severe first, the criteria table when a spec was given, the suppressed overlaps count and the verdict line, and exits 0 on SHIP, 2 on FIX_BEFORE_SHIP, 3 on REWORK → go test ./cmd/batuta -run 'TestReviewWritesArtefacts|TestReviewExitCodes|TestReviewPrintsReport' -count=1; `capabilities` lists `review` and the usage names every flag → go test ./cmd/batuta -run 'TestCapabilitiesListsReview|TestUsage' -count=1; source tree is read-only during a review: any change to tracked files fails the run with the paths → go test ./cmd/batuta -run TestReviewRefusesTreeChange -count=1
-- [ ] 5. docs/review.md and the loop docs name the delivery review — docs/medium
+- [x] 5. docs/review.md and the loop docs name the delivery review — docs/medium
       Depends on: 4
       Scope: docs/review.md, docs/loop.md, README.md, README.pt-BR.md
       Accept: `docs/review.md` describes the manifest, cohorts, the reviewer runtime, the findings contract (`<<<FINDINGS` JSON lines), the taxonomy, spec conformance, linter overlap, incremental rounds, artefacts, exit codes, and credits pedronauck/skills `deep-review` as the design source with its URL → test -s docs/review.md && grep -q 'FINDINGS' docs/review.md && grep -q 'pedronauck' docs/review.md && grep -q 'REWORK' docs/review.md; `docs/loop.md` keeps every heading and its "after the run" text names `batuta review --spec .batuta/plans/done/<slug>.md` as the step before the PR → test "$(grep -c '^## ' docs/loop.md)" -ge "$(git show HEAD:docs/loop.md | grep -c '^## ')" && grep -q 'batuta review' docs/loop.md; both READMEs list `review` among the commands → grep -q 'batuta review' README.md && grep -q 'batuta review' README.pt-BR.md
