@@ -1,5 +1,49 @@
 # Changelog
 
+## [1.1.0-beta.20](https://github.com/batuta-ai/core/compare/v1.1.0-beta.19...v1.1.0-beta.20) (2026-09-08)
+
+
+### Features
+
+* --abandon, --answer and --resume refuse a delivery whose runner is a ([8842df4](https://github.com/batuta-ai/core/commit/8842df4d0d54ee1063d63e79f9db723d6408eaab))
+* a continuation is judged against the attempt's base, never against t ([8ea4049](https://github.com/batuta-ai/core/commit/8ea4049d79aab8ffdd2cdb8c1710785d96abfc5a))
+* a question on the last allowed execution blocks the task with the qu ([61fc763](https://github.com/batuta-ai/core/commit/61fc76379ee3a64945c6a2842820acaa757f295f))
+* a usage limit that outlasts the wait budget falls back to the next r ([aced9f7](https://github.com/batuta-ai/core/commit/aced9f7c1256189f7b631c1c9797dde73c4065d9))
+* an already-satisfied task does not end the delivery; dependents run ([1009933](https://github.com/batuta-ai/core/commit/1009933f0d35d614ae9ad3da086077ec84357635))
+* batuta review: stable incremental state, pending cohorts carried ove ([de384b4](https://github.com/batuta-ai/core/commit/de384b45e0176bae9d7b15ee398393ae4c1a588d))
+* batuta review: the subcommand, its artefacts and the printed report ([1d77034](https://github.com/batuta-ai/core/commit/1d77034655bc793d3b3417ed5fefb7e53ee4ac0a))
+* cleanParked walks history with bounded output ([c8dcab7](https://github.com/batuta-ai/core/commit/c8dcab7ad13be03ed93ca7c98c5baa0766581b9e))
+* enter submits the answer; ctrl+j and shift+enter insert a newline; t ([8ebe72a](https://github.com/batuta-ai/core/commit/8ebe72a5e688de39c7092eaf5d08f8134fc68371))
+* escalation to self blocks the task in RecordFailure instead of plann ([281a184](https://github.com/batuta-ai/core/commit/281a18445570941a8a2b9233b693d6088076052d))
+* graph transitions persist through the ownership store: limit fallbac ([3676943](https://github.com/batuta-ai/core/commit/3676943832b7ac8752a55972d66670e25b833171))
+* inventory never starts an agent turn: cursor, opencode and codex ada ([afcf4d1](https://github.com/batuta-ai/core/commit/afcf4d11ea8cc0cc20dd1610c8d3d70cbe9ff946))
+* loop: bounded reset-time parsing, empty-journal takeover, staged wor ([950cdce](https://github.com/batuta-ai/core/commit/950cdceaa264e235560a7d98b64e9cb2d16ee85f))
+* **loop:** hardening — dead ends, limit fallback, cursor probes, batuta review, presence lock ([3e64e13](https://github.com/batuta-ai/core/commit/3e64e13558afb27bcd6304198064d0e026eae00f))
+* overlay text is sanitised; the picker honours glyphs and language an ([6cdc6bb](https://github.com/batuta-ai/core/commit/6cdc6bb6d53084722e2ff18facc7aa2dd2a9c71b))
+* parking preserves committed executor work: a clean worktree whose HE ([69d457b](https://github.com/batuta-ai/core/commit/69d457b2401198c4471444c23aaa39d4cf1aaea6))
+* poll results carry their identity; the picker never starves the back ([5b87e41](https://github.com/batuta-ai/core/commit/5b87e4145bca1f36731232f5bb9222dbbb16bf7a))
+* resume, answer and abandon acquire exclusive delivery ownership befo ([0b41238](https://github.com/batuta-ai/core/commit/0b41238a8268949a2692629d4b9c8e064b8d9bf8))
+* review honesty: truncated lint output is an error, the state key is ([7f27bb0](https://github.com/batuta-ai/core/commit/7f27bb0db59b32ca778c1d9640c8ef6a38730c4b))
+* review package robustness: submodule gitlinks, escaped filenames, st ([5a849ec](https://github.com/batuta-ai/core/commit/5a849ec5e63f99f884e7e1ef17a32ee755202313))
+* review: patches by file identity, no publication beneath gitlinks, c ([6cc933d](https://github.com/batuta-ai/core/commit/6cc933d6c0b40fba17b729e2a3dbe878cee722ed))
+* reviewer sessions: one read-only executor per cohort, in parallel, t ([e802c99](https://github.com/batuta-ai/core/commit/e802c99ee134cc0ca74eb7011ce9784fa94d8ec5))
+* spec conformance and linter overlap ([735219d](https://github.com/batuta-ai/core/commit/735219ded1c6e437cad1ed2812eac5a47e04df73))
+* the answer binds to the shown delivery and question and refuses whil ([52d4bfd](https://github.com/batuta-ai/core/commit/52d4bfd5c7574351986a8866e83486a732f60f45))
+* the ownership lock is crash-safe, takeover is serialised across proc ([dfcce25](https://github.com/batuta-ai/core/commit/dfcce257ebce33f314bda4a1a36bcc963426529d))
+* the presence lock is owned and symlink-safe; the pager is cancellabl ([0251bc9](https://github.com/batuta-ai/core/commit/0251bc9a06622c654f5c8e057ba62f41f38cdc10))
+* the review package: manifest, cohorts, findings schema, merge and ve ([8057f16](https://github.com/batuta-ai/core/commit/8057f16fa6b279177c1d0fa8608a1c27333c85da))
+* uncommitted executor work is snapshotted before a park, a retry or a ([f394044](https://github.com/batuta-ai/core/commit/f394044945547a88ff78f3d5040cab016108ad11))
+
+
+### Bug Fixes
+
+* **loop:** --answer ages a malformed lock and binds ownership to the answerable delivery ([e0fc087](https://github.com/batuta-ai/core/commit/e0fc08728668eadbe92c345d788e8d5a4ec4dcb5))
+* **loop:** park a conflicted index; finalisation survives bookkeeping failures ([10092c8](https://github.com/batuta-ai/core/commit/10092c816c45c9b88e69897685eccbcdcc20526a))
+* **loop:** Run waits for in-flight attempts; output writes are serialised ([a940181](https://github.com/batuta-ai/core/commit/a9401817c0333cb943a2eeebf38573e7f52ebd39))
+* **loop:** terminal record precedes parked-ref deletion; scoped bookkeeping recovery; bounded conflict scan ([78edbcc](https://github.com/batuta-ai/core/commit/78edbccbe1b7329c634050779790d25909050b9a))
+* **loop:** the terminal record stays last; deletions retried on recovery; --answer refuses a running task ([c3f49d8](https://github.com/batuta-ai/core/commit/c3f49d85e6fdec7bf6e06b9c6d72f0e070e58486))
+* **review:** an oversized file becomes its own cohort instead of an error ([84a7e61](https://github.com/batuta-ai/core/commit/84a7e6174d31b5e073430aaa31502869b50280e8))
+
 ## [1.1.0-beta.19](https://github.com/batuta-ai/core/compare/v1.1.0-beta.18...v1.1.0-beta.19) (2026-09-08)
 
 
