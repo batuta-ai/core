@@ -1,9 +1,10 @@
 # WORK — core
 
 ## In progress
-- [ ] feat/loop-hardening: PR pending the maintainer's call after batuta review round 8 (1 blocker + 1 major in loop/report.go:847–849, the --answer ownership check) → conductor (paused 2026-09-08 16:40 UTC)
+- [ ] feat/loop-hardening: PR open (review round 9 SHIP, 0 findings); merge on green CI, then release beta.20 and host pin → conductor
 
 ## Done
+- [x] round-8 review fixes: --answer ages a malformed lock and binds ownership to the answerable delivery → codex (codex/gpt-6-astra), primeira tentativa, commit e0fc087 em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round8.md)
 - [x] round-7 review fixes: terminal record last, deletion list kept, --answer refuses a running task with the ownership message → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round7.md)
 - [x] round-6 review fixes: finish records terminal before deleting refs, bookkeeping recovery scoped, bounded unmerged-index scan, no real-time waits → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round6.md)
 - [x] round-5 review fixes: Park tolerates an unmerged index, finalisation survives bookkeeping failures → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round5.md)
