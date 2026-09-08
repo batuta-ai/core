@@ -1,6 +1,7 @@
 # WORK — core
 
 ## In progress
+- [ ] feat/loop-hardening: PR pending the maintainer's call after batuta review round 8 (1 blocker + 1 major in loop/report.go:847–849, the --answer ownership check) → conductor (paused 2026-09-08 16:40 UTC)
 
 ## Done
 - [x] round-7 review fixes: terminal record last, deletion list kept, --answer refuses a running task with the ownership message → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round7.md)
