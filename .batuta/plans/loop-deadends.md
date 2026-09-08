@@ -5,7 +5,7 @@
 **Created:** 2026-09-07 · **Status:** approved
 
 ## Tasks
-- [ ] 1. A continuation is judged against the attempt's base, never against the execution's start — backend/high
+- [x] 1. A continuation is judged against the attempt's base, never against the execution's start — backend/high
       Scope: loop/attempt.go, loop/loop_test.go, loop/runner.go
       Accept: `tree_changed` in `executor_finished` is true whenever the worktree differs from the attempt's `BaseHeadSHA` (`git diff --quiet <base>` plus untracked files), so a same-worktree continuation after a question or a same-runtime retry whose executor changed nothing is verified as a candidate and integrated → go test ./loop -run TestLoopContinuationVerifiesTheWorktreeAgainstTheBase -count=1; the `already_satisfied` path is taken only when the worktree equals the base and gates 2 and 3 pass on that tree → go test ./loop -run TestLoopAlreadySatisfiedOnlyWhenWorktreeEqualsBase -count=1; the existing scenarios keep passing → go test ./loop -run 'TestLoop' -count=1
 - [ ] 2. Uncommitted executor work is snapshotted before a park, a retry or a cleanup — backend/high

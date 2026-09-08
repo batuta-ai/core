@@ -73,3 +73,4 @@
 - [x] Submitting an answer resumes the loop detached; the watch keeps following → codex (gpt-5.6-sol), commit 75cb914cfe58 (trail: .batuta/runs/2026-09-07-watch-answer-task-3.md, plan watch-answer, 2026-09-07)
 - [x] The delivery picker: d opens a list of deliveries; the watch without an open delivery opens it instead of exiting → codex (gpt-5.6-sol), commit 40df23fb2ad1 (trail: .batuta/runs/2026-09-07-watch-answer-task-4.md, plan watch-answer, 2026-09-07)
 - [x] Docs, help, legend and key line describe presence, the answer editor and the picker → codex (gpt-5.6-sol), commit e9a60afdaa4a (trail: .batuta/runs/2026-09-07-watch-answer-task-5.md, plan watch-answer, 2026-09-07)
+- [x] A continuation is judged against the attempt's base, never against the execution's start → codex (gpt-6-astra), commit 8ea4049d79aa (trail: .batuta/runs/2026-09-08-loop-deadends-task-1.md, plan loop-deadends, 2026-09-08)
