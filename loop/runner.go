@@ -29,26 +29,27 @@ import (
 
 // Journal kinds written by the loop.
 const (
-	KindOpened        journal.Kind = "delivery_opened"
-	KindWave          journal.Kind = "wave_admitted"
-	KindAttempts      journal.Kind = "attempts_begun"
-	KindWorktree      journal.Kind = "worktree_attached"
-	KindSnapshot      journal.Kind = "worktree_snapshotted"
-	KindStarted       journal.Kind = "executor_started"
-	KindProgress      journal.Kind = "task_progress"
-	KindFinished      journal.Kind = "executor_finished"
-	KindQuestion      journal.Kind = "question_recorded"
-	KindAnswer        journal.Kind = "answer_recorded"
-	KindGates         journal.Kind = "gates_reported"
-	KindCandidate     journal.Kind = "candidate_recorded"
-	KindFailure       journal.Kind = "failure_recorded"
-	KindPreflight     journal.Kind = "integration_preflight"
-	KindSettled       journal.Kind = "wave_settled"
-	KindCleanup       journal.Kind = "cleanup"
-	KindTerminal      journal.Kind = "delivery_terminal"
-	KindInterrupted   journal.Kind = "run_interrupted"
-	KindLimitWait     journal.Kind = "limit_wait"
-	KindLimitFallback journal.Kind = "limit_fallback"
+	KindOpened            journal.Kind = "delivery_opened"
+	KindWave              journal.Kind = "wave_admitted"
+	KindAttempts          journal.Kind = "attempts_begun"
+	KindWorktree          journal.Kind = "worktree_attached"
+	KindSnapshot          journal.Kind = "worktree_snapshotted"
+	KindStarted           journal.Kind = "executor_started"
+	KindProgress          journal.Kind = "task_progress"
+	KindFinished          journal.Kind = "executor_finished"
+	KindQuestion          journal.Kind = "question_recorded"
+	KindAnswer            journal.Kind = "answer_recorded"
+	KindGates             journal.Kind = "gates_reported"
+	KindCandidate         journal.Kind = "candidate_recorded"
+	KindFailure           journal.Kind = "failure_recorded"
+	KindPreflight         journal.Kind = "integration_preflight"
+	KindSettled           journal.Kind = "wave_settled"
+	KindCleanup           journal.Kind = "cleanup"
+	KindTerminal          journal.Kind = "delivery_terminal"
+	KindInterrupted       journal.Kind = "run_interrupted"
+	KindLimitWait         journal.Kind = "limit_wait"
+	KindLimitFallback     journal.Kind = "limit_fallback"
+	KindPresenceTakenOver journal.Kind = "presence_taken_over"
 )
 
 // Terminal states of a delivery.
@@ -735,6 +736,9 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 		if err := r.open(); err != nil {
 			return "", err
 		}
+	}
+	if err := r.recordPendingPresenceTakeover(); err != nil {
+		return "", err
 	}
 
 	for {

@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -26,7 +27,10 @@ type pagerDoneMsg struct{ err error }
 type spinnerTickMsg struct{}
 type progressTickMsg struct{}
 
+type pagerProcessRunner func(*exec.Cmd, tea.ExecCallback) tea.Cmd
+
 type watchModel struct {
+	ctx         context.Context
 	workspace   string
 	delivery    string
 	store       *journal.Store
@@ -47,6 +51,7 @@ type watchModel struct {
 	progress    progressAnimation
 	progressSet bool
 	spawn       func(argv []string, dir, logPath string) error
+	pagerRunner pagerProcessRunner
 
 	answering        bool
 	answerEditor     textarea.Model
@@ -94,7 +99,7 @@ func newPollingWatchModel(workspace, delivery string, store *journal.Store, reco
 		ticker = tea.Tick
 	}
 	style.Frame = 0
-	m := watchModel{workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker, focus: focusTable, spawn: spawnDetached}
+	m := watchModel{ctx: context.Background(), workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker, focus: focusTable, spawn: spawnDetached, pagerRunner: tea.ExecProcess}
 	m.refresh(true)
 	if store != nil && delivery != "" {
 		if state, err := m.pollState(m.currentTime); err == nil {
@@ -197,8 +202,8 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.navigation.move(key, m.panel, max(1, len(panelTaskIDs(m.viewport))))
 		path := panelKeyAction(key, m.workspace, m.panel, &m.navigation)
 		if pager := strings.Fields(os.Getenv("PAGER")); path != "" && len(pager) > 0 {
-			process := exec.Command(pager[0], append(pager[1:], path)...)
-			cmd = tea.ExecProcess(process, func(err error) tea.Msg { return pagerDoneMsg{err: err} })
+			process := exec.CommandContext(m.ctx, pager[0], append(pager[1:], path)...)
+			cmd = m.pagerRunner(process, func(err error) tea.Msg { return pagerDoneMsg{err: err} })
 		}
 	case tea.MouseWheelMsg:
 		key := "down"

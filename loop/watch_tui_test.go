@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -316,6 +317,40 @@ func TestWatchProgramPager(t *testing.T) {
 	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second))
 	if notice := tm.FinalModel(t).(watchModel).navigation.notice; !strings.Contains(notice, "batuta-nonexistent-pager") {
 		t.Fatalf("pager error missing: %q", notice)
+	}
+}
+
+func TestPagerCancelsWithWatch(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	root := t.TempDir()
+	pager := filepath.Join(root, "pager")
+	if err := os.WriteFile(pager, []byte("#!/bin/sh\nwhile :; do :; done\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := newWatchModel(root, nil, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time {
+		return time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	})
+	m.ctx = ctx
+	m.panel.Detail.LogPath = "executor.log"
+	m.pagerRunner = func(process *exec.Cmd, callback tea.ExecCallback) tea.Cmd {
+		return func() tea.Msg {
+			if err := process.Start(); err != nil {
+				return callback(err)
+			}
+			cancel()
+			return callback(process.Wait())
+		}
+	}
+	t.Setenv("PAGER", pager)
+	_, cmd := updateWatch(t, m, tea.KeyPressMsg{Code: 'o', Text: "o"})
+	if cmd == nil {
+		t.Fatal("open did not start pager")
+	}
+	msg := cmd()
+	result, ok := msg.(pagerDoneMsg)
+	if !ok || result.err == nil || !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("pager result = %#v, context error = %v", msg, ctx.Err())
 	}
 }
 
