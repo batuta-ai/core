@@ -33,6 +33,38 @@ The example is a schema illustration, not a finding to reproduce. Use only the f
 Do not choose SHIP, FIX_BEFORE_SHIP or REWORK: the conductor derives the verdict mechanically.
 `
 
+const specInstructions = `You are an independent read-only spec verifier. Do not create, edit or delete files.
+Judge every numbered criterion against the complete diff summary and repository evidence.
+Answer in order with exactly one JSON object per criterion. Status must be satisfied, violated, or not-applicable.
+Path must identify the evidence path or explain why the criterion is outside this diff.
+Output exactly one block and no markdown fences:
+<<<CRITERIA
+{"id":"task-1.1","status":"satisfied","path":"relative/file.go:12 demonstrates the criterion"}
+CRITERIA>>>
+The example is a schema illustration, not a result to reproduce.
+`
+
+// BuildSpecPrompt gives the dedicated sweep every bound rule and a compact
+// account of the complete diff; repository inspection supplies detailed evidence.
+func BuildSpecPrompt(manifest Manifest, rules []SpecRule) string {
+	var b strings.Builder
+	b.WriteString(specInstructions)
+	b.WriteString("\nDiff summary (base " + manifest.Base + "):\n")
+	for _, file := range manifest.Files {
+		if file.Selected && !file.Ignored {
+			fmt.Fprintf(&b, "%s (+%d -%d)\n", file.Path, file.Added, file.Deleted)
+		}
+	}
+	b.WriteString("\nBound acceptance criteria:\n")
+	for i, rule := range rules {
+		fmt.Fprintf(&b, "%d. [%s] %s: %s\n", i+1, rule.ID, rule.Task, rule.Text)
+		if rule.Proof != "" {
+			b.WriteString("   Proof: " + rule.Proof + "\n")
+		}
+	}
+	return b.String()
+}
+
 // BuildCohortPrompt preserves the zero-context diff, whose hunk headers carry
 // new-side line numbers. Rubric and conventions come from the project profile.
 func BuildCohortPrompt(root string, manifest Manifest, cohort Cohort, rubric string, conventions []string) (string, error) {

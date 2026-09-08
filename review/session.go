@@ -2,7 +2,9 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -19,6 +21,45 @@ import (
 )
 
 var reviewerExecutor = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+
+type ReviewState struct {
+	Head string `json:"head"`
+}
+
+// ResolveReviewBase selects the original base for a full or first review and
+// the last reviewed head for an incremental round.
+func ResolveReviewBase(root, slug, base string, full bool) (string, error) {
+	if !reviewerExecutor.MatchString(slug) {
+		return "", fmt.Errorf("review: invalid review slug %q", slug)
+	}
+	if full {
+		return base, nil
+	}
+	statePath := filepath.Join(root, ".batuta", "reviews", slug, "state.json")
+	payload, err := os.ReadFile(statePath)
+	if os.IsNotExist(err) {
+		return base, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("review: read prior state: %w", err)
+	}
+	if len(payload) > 1<<20 {
+		return "", fmt.Errorf("review: prior state exceeds 1 MiB")
+	}
+	var state ReviewState
+	if err := json.Unmarshal(payload, &state); err != nil || strings.TrimSpace(state.Head) != state.Head || state.Head == "" || strings.ContainsAny(state.Head, "\x00\r\n") {
+		return "", fmt.Errorf("review: prior state has an invalid head")
+	}
+	resolved, err := gitOutput(root, "rev-parse", "--verify", "--end-of-options", state.Head+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("review: prior head is unavailable: %w", err)
+	}
+	head := strings.TrimSpace(string(resolved))
+	if _, err := gitOutput(root, "merge-base", "--is-ancestor", head, "HEAD"); err != nil {
+		return "", fmt.Errorf("review: prior head is not an ancestor of HEAD")
+	}
+	return head, nil
+}
 
 // ReviewerRuntimeFromTable uses the optional review role, then the high lane
 // for the requested domain. An override is executor/model (model may contain /).
@@ -60,10 +101,11 @@ func validateReviewer(runtime routing.RuntimeValue) error {
 
 type SessionOptions struct {
 	Root       string
-	Skills     string               // Installed batuta skill directory; empty uses normal discovery.
-	Parallel   int                  // Zero defaults to one.
-	Timeout    time.Duration        // Per attempt; zero defaults to ten minutes.
-	Subprocess *executor.Subprocess // Nil uses the production executor runner; custom runners must support concurrent calls.
+	Skills     string                    // Installed batuta skill directory; empty uses normal discovery.
+	Parallel   int                       // Zero defaults to one.
+	Timeout    time.Duration             // Per attempt; zero defaults to ten minutes.
+	Subprocess *executor.Subprocess      // Nil uses the production executor runner; custom runners must support concurrent calls.
+	LintRunner publication.CommandRunner // Nil uses the production command runner.
 }
 
 type SessionAttempt struct {
@@ -72,13 +114,14 @@ type SessionAttempt struct {
 }
 
 type CohortResult struct {
-	Cohort   int              `json:"cohort"` // Zero-based manifest index; results retain manifest order.
-	Files    []string         `json:"files"`
-	Covered  bool             `json:"covered"`
-	Reason   string           `json:"reason,omitempty"`
-	Findings []Finding        `json:"findings"`
-	Rejected []RejectedLine   `json:"rejected,omitempty"`
-	Attempts []SessionAttempt `json:"attempts"`
+	Cohort     int                 `json:"cohort"` // Zero-based manifest index; results retain manifest order.
+	Files      []string            `json:"files"`
+	Covered    bool                `json:"covered"`
+	Reason     string              `json:"reason,omitempty"`
+	Findings   []Finding           `json:"findings"`
+	Suppressed []SuppressedFinding `json:"suppressed,omitempty"`
+	Rejected   []RejectedLine      `json:"rejected,omitempty"`
+	Attempts   []SessionAttempt    `json:"attempts"`
 }
 
 // RunCohorts invokes only adapter read-only commands in the checkout. Each
@@ -134,6 +177,14 @@ func RunCohorts(ctx context.Context, manifest Manifest, runtime routing.RuntimeV
 	if err != nil {
 		return nil, fmt.Errorf("review: initial tree signature: %w", err)
 	}
+	lint, err := RunLint(ctx, root, ProfileLintCommand(profile.Raw), manifest, opts.LintRunner)
+	if err != nil {
+		return nil, err
+	}
+	afterLint, err := git.WorktreeState(ctx, root)
+	if err != nil || afterLint != baseline {
+		return nil, fmt.Errorf("review: lint changed the review tree")
+	}
 	invocations := make([]executor.Invocation, len(manifest.Cohorts))
 	results := make([]CohortResult, len(manifest.Cohorts))
 	for i, cohort := range manifest.Cohorts {
@@ -153,7 +204,7 @@ func RunCohorts(ctx context.Context, manifest Manifest, runtime routing.RuntimeV
 	for worker := 0; worker < min(opts.Parallel, len(results)); worker++ {
 		wg.Go(func() {
 			for i := range jobs {
-				runCohort(ctx, manifest, adapter, subprocess, git, baseline, invocations[i], opts.Timeout, &results[i])
+				runCohort(ctx, manifest, lint.Diagnostics, adapter, subprocess, git, baseline, invocations[i], opts.Timeout, &results[i])
 			}
 		})
 	}
@@ -177,7 +228,7 @@ func RunCohorts(ctx context.Context, manifest Manifest, runtime routing.RuntimeV
 	return results, nil
 }
 
-func runCohort(ctx context.Context, manifest Manifest, adapter executor.Adapter, subprocess executor.Subprocess, git publication.GitClient, baseline publication.WorktreeState, invocation executor.Invocation, timeout time.Duration, result *CohortResult) {
+func runCohort(ctx context.Context, manifest Manifest, diagnostics []LinterFinding, adapter executor.Adapter, subprocess executor.Subprocess, git publication.GitClient, baseline publication.WorktreeState, invocation executor.Invocation, timeout time.Duration, result *CohortResult) {
 	for attempt := 0; attempt < 2; attempt++ {
 		before, err := git.WorktreeState(ctx, invocation.Dir)
 		if err != nil || before != baseline {
@@ -224,6 +275,9 @@ func runCohort(ctx context.Context, manifest Manifest, adapter executor.Adapter,
 			result.Reason = "reviewer output contains rejected findings or invalid framing"
 			return
 		}
+		merged := suppressLintOverlaps(result.Findings, diagnostics)
+		result.Findings = merged.Findings
+		result.Suppressed = merged.Suppressed
 		result.Covered = true
 		result.Reason = ""
 		return
