@@ -14,6 +14,7 @@ batuta loop [<plano>]                  executa um plano aprovado
 batuta loop --resume <entrega>         continua uma entrega interrompida
 batuta loop --answer <tarefa> "<texto>" responde uma tarefa aguardando entrada
 batuta loop --dashboard [<entrega>]    imprime um retrato TSV da entrega
+batuta review --base <ref> [--spec <plano>] revisa uma entrega pelos adaptadores
 batuta watch [<entrega>]               abre o painel interativo ao vivo
 batuta trail [<entrega>]               mostra os registros do diário
 ```

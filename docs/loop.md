@@ -63,6 +63,14 @@ terminal    done | blocked | waiting_input | canceled | abandoned
 Exit codes: `0` done · `2` blocked · `3` waiting for an answer · `130`
 canceled · `1` an error before or during the run.
 
+## After the run
+
+When the delivery reaches `done`, run
+`batuta review --spec .batuta/plans/done/<slug>.md`. Resolve any review verdict
+that is not `SHIP`, then open the pull request and attach or link the review
+artefacts. The review is the delivery-level gate between the completed loop and
+the PR; see [review.md](review.md) for its contract.
+
 ## Standalone gates
 
 The interactive skill can run each verification gate independently. Every
