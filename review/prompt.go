@@ -44,7 +44,7 @@ CRITERIA>>>
 The example is a schema illustration, not a result to reproduce.
 `
 
-// BuildSpecPrompt gives the dedicated sweep every bound rule and a compact
+// BuildSpecPrompt gives the dedicated sweep every arrow-less rule and a compact
 // account of the complete diff; repository inspection supplies detailed evidence.
 func BuildSpecPrompt(manifest Manifest, rules []SpecRule) string {
 	var b strings.Builder
@@ -60,9 +60,6 @@ func BuildSpecPrompt(manifest Manifest, rules []SpecRule) string {
 	b.WriteString("\nBound acceptance criteria:\n")
 	for i, rule := range rules {
 		fmt.Fprintf(&b, "%d. [%s] %s: %s\n", i+1, rule.ID, rule.Task, rule.Text)
-		if rule.Proof != "" {
-			b.WriteString("   Proof: " + rule.Proof + "\n")
-		}
 	}
 	return b.String()
 }

@@ -3,11 +3,14 @@ package review
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
@@ -69,7 +72,10 @@ func TestSpecCriteriaBecomeRules(t *testing.T) {
 	}
 
 	prompt := BuildSpecPrompt(Manifest{Base: "abc", Files: []File{{Path: "parser.go", Added: 8, Deleted: 2, Selected: true}}}, rules)
-	for _, want := range []string{"1. [task-1.1] Build parser: parses every record", "Proof: go test ./parser", "3. [task-2.1] Wire command: prints the verdict", "parser.go (+8 -2)"} {
+	if strings.Contains(prompt, "Proof:") {
+		t.Fatalf("prompt contains proof command: %s", prompt)
+	}
+	for _, want := range []string{"1. [task-1.1] Build parser: parses every record", "3. [task-2.1] Wire command: prints the verdict", "parser.go (+8 -2)"} {
 		if !strings.Contains(prompt, want) {
 			t.Errorf("prompt missing %q:\n%s", want, prompt)
 		}
@@ -181,5 +187,104 @@ func assertInvalidSpecOutput(t *testing.T, line string) {
 	}
 	if report := BuildReport(manifest, []CohortResult{{Covered: true}}, &sweep); report.Verdict != Rework {
 		t.Fatal("malformed sweep can ship")
+	}
+}
+
+func TestSpecProofsRunInTree(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		code   int
+		runErr error
+		status CriterionStatus
+		path   string
+	}{
+		{"pass", 0, nil, CriterionSatisfied, "proof: check input exited 0"},
+		{"fail", 7, nil, CriterionViolated, "proof: check input exited 7"},
+		{"cannot run", -1, errors.New("unavailable"), CriterionViolated, "proof: check input could not run: unavailable"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := reviewRepo(t)
+			calls := 0
+			shell := gates.ShellRunner{Shell: "sh", Runner: reviewCommandRunner(func(_ context.Context, cmd publication.Command) (publication.CommandResult, error) {
+				calls++
+				if cmd.Directory != root || !reflect.DeepEqual(cmd.Args, []string{"-c", "check input"}) {
+					t.Fatalf("proof invocation = %+v", cmd)
+				}
+				return publication.CommandResult{ExitCode: tc.code}, tc.runErr
+			})}
+			rules := []SpecRule{{ID: "task-1.1", Text: "input", Proof: "check input"}, {ID: "task-1.2", Text: "manual"}}
+			results, remaining, err := RunSpecProofs(t.Context(), root, rules, shell)
+			want := []SpecResult{{ID: rules[0].ID, Status: tc.status, Path: tc.path}}
+			if err != nil || calls != 1 || !reflect.DeepEqual(results, want) || !reflect.DeepEqual(remaining, rules[1:]) {
+				t.Fatalf("results=%+v remaining=%+v calls=%d err=%v", results, remaining, calls, err)
+			}
+		})
+	}
+}
+
+func TestSpecPromptOmitsProofRules(t *testing.T) {
+	t.Parallel()
+	rules := []SpecRule{{ID: "mechanical", Text: "mechanical check", Proof: "true"}, {ID: "manual", Text: "manual check"}}
+	shell := gates.ShellRunner{Shell: "sh", Runner: reviewCommandRunner(func(context.Context, publication.Command) (publication.CommandResult, error) {
+		return publication.CommandResult{}, nil
+	})}
+	_, remaining, err := RunSpecProofs(t.Context(), reviewRepo(t), rules, shell)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := BuildSpecPrompt(Manifest{}, remaining)
+	if strings.Contains(prompt, "mechanical") || strings.Contains(prompt, "Proof:") || !strings.Contains(prompt, "manual check") {
+		t.Fatalf("prompt = %s", prompt)
+	}
+}
+
+func TestSpecSweepMergesProofAndSweepResults(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, output string
+		covered      bool
+	}{
+		{"complete", `{"id":"manual","status":"satisfied","path":"file0.go:1"}`, true},
+		{"missing", "", false},
+		{"extra proof result", `{"id":"manual","status":"satisfied","path":"file0.go:1"}` + "\n" + `{"id":"first","status":"satisfied","path":"file0.go:1"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			manifest, runtime, opts := sessionFixture(t, 1)
+			rules := []SpecRule{{ID: "first", Proof: "true"}, {ID: "manual", Text: "manual check"}, {ID: "last", Proof: "true"}}
+			shell := gates.ShellRunner{Shell: "sh", Runner: reviewCommandRunner(func(context.Context, publication.Command) (publication.CommandResult, error) {
+				return publication.CommandResult{}, nil
+			})}
+			proofs, remaining, err := RunSpecProofs(t.Context(), opts.Root, rules, shell)
+			if err != nil {
+				t.Fatal(err)
+			}
+			useReviewRunner(&opts, func(_ context.Context, cmd publication.Command) (publication.CommandResult, error) {
+				prompt := cmd.Args[len(cmd.Args)-1]
+				if strings.Contains(prompt, "[first]") || strings.Contains(prompt, "[last]") || !strings.Contains(prompt, "[manual]") {
+					t.Fatalf("prompt=%s", prompt)
+				}
+				return publication.CommandResult{Stdout: []byte("<<<CRITERIA\n" + tc.output + "\nCRITERIA>>>\n")}, nil
+			})
+			sweep, err := RunSpecSweep(t.Context(), manifest, remaining, runtime, opts)
+			if err != nil || sweep.Covered != tc.covered {
+				t.Fatalf("sweep=%+v err=%v", sweep, err)
+			}
+			sweep.Results = MergeSpecResults(rules, proofs, sweep.Results)
+			if tc.covered {
+				if len(sweep.Results) != len(rules) {
+					t.Fatalf("results=%+v", sweep.Results)
+				}
+				for i, rule := range rules {
+					if sweep.Results[i].ID != rule.ID {
+						t.Fatalf("results=%+v", sweep.Results)
+					}
+				}
+			} else if len(sweep.Results) != 2 || BuildReport(manifest, nil, &sweep).Verdict != Rework {
+				t.Fatalf("uncovered sweep=%+v", sweep)
+			}
+		})
 	}
 }
