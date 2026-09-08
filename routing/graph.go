@@ -18,6 +18,7 @@ const (
 	MaxTaskExecutions             = 4
 	BlockerNeedsConductingSession = "needs_conducting_session"
 	BlockerQuestionAtCeiling      = "question_at_ceiling"
+	BlockerAlreadySatisfied       = "already_satisfied"
 
 	maxQuestionBytes              = 2 << 10
 	maxChoiceBytes                = 512
@@ -88,6 +89,7 @@ type GraphTask struct {
 	State               GraphTaskState     `json:"state"`
 	Attempts            []GraphTaskAttempt `json:"attempts"`
 	IntegratedCommitSHA string             `json:"integrated_commit_sha,omitempty"`
+	AlreadySatisfied    bool               `json:"already_satisfied,omitempty"`
 	BlockerCode         string             `json:"blocker_code,omitempty"`
 }
 
@@ -110,6 +112,7 @@ type GraphTaskAttempt struct {
 	TokensUsed         *int64                 `json:"tokens_used,omitempty"`
 	TerminalStatus     string                 `json:"terminal_status,omitempty"`
 	BlockerCode        string                 `json:"blocker_code,omitempty"`
+	AlreadySatisfied   bool                   `json:"already_satisfied,omitempty"`
 }
 
 type TaskQuestion struct {
@@ -163,10 +166,11 @@ type TaskFailure struct {
 }
 
 type TaskFailureResult struct {
-	Replayed bool
-	Blocked  bool
-	Wave     DeliveryWave
-	Runtime  RuntimeValue
+	Replayed  bool
+	Blocked   bool
+	Satisfied bool
+	Wave      DeliveryWave
+	Runtime   RuntimeValue
 }
 
 type TaskCandidate struct {
@@ -786,6 +790,11 @@ func (g *DeliveryGraph) RecordFailureWithPolicy(
 		return TaskFailureResult{}, ErrInvalidDeliveryTransition
 	}
 	attempt := &task.Attempts[execution-1]
+	if attempt.State == GraphTaskIntegrated && attempt.AlreadySatisfied && task.State == GraphTaskIntegrated &&
+		task.AlreadySatisfied && task.IntegratedCommitSHA == attempt.BaseHeadSHA &&
+		attempt.ChildRunID == failure.ChildRunID && failure.BlockerCode == BlockerAlreadySatisfied {
+		return TaskFailureResult{Replayed: true, Satisfied: true}, nil
+	}
 	if attempt.TokenAllowance > 0 && failure.TokensUsed > attempt.TokenAllowance {
 		return TaskFailureResult{}, ErrInvalidDeliveryTransition
 	}
@@ -813,6 +822,22 @@ func (g *DeliveryGraph) RecordFailureWithPolicy(
 	if len(task.Attempts) != execution || task.State != GraphTaskRunning || attempt.State != GraphTaskRunning ||
 		(attempt.ChildRunID != "" && attempt.ChildRunID != failure.ChildRunID) {
 		return TaskFailureResult{}, ErrInvalidDeliveryTransition
+	}
+	if failure.BlockerCode == BlockerAlreadySatisfied {
+		if nextBaseHeadSHA != attempt.BaseHeadSHA {
+			return TaskFailureResult{}, ErrInvalidDeliveryTransition
+		}
+		attempt.ChildRunID = failure.ChildRunID
+		attempt.State = GraphTaskIntegrated
+		attempt.AlreadySatisfied = true
+		task.State = GraphTaskIntegrated
+		task.IntegratedCommitSHA = attempt.BaseHeadSHA
+		task.AlreadySatisfied = true
+		if err := validateGraphTask(*task, "pending"); err != nil {
+			return TaskFailureResult{}, err
+		}
+		*g = *candidate
+		return TaskFailureResult{Satisfied: true}, nil
 	}
 	attempt.ChildRunID = failure.ChildRunID
 	attempt.State = GraphTaskBlocked
@@ -1366,7 +1391,7 @@ func validateGraphTask(task GraphTask, authoredStatus string) error {
 	switch authoredStatus {
 	case "completed":
 		if task.State != GraphTaskIntegrated || !canonicalGitSHA.MatchString(task.IntegratedCommitSHA) ||
-			len(task.Attempts) != 0 || task.BlockerCode != "" {
+			len(task.Attempts) != 0 || task.AlreadySatisfied || task.BlockerCode != "" {
 			return ErrInvalidDeliveryGraph
 		}
 		return nil
@@ -1402,11 +1427,13 @@ func validateGraphTask(task GraphTask, authoredStatus string) error {
 	}
 	if task.State == GraphTaskIntegrated {
 		last := task.Attempts[len(task.Attempts)-1]
+		satisfied := task.AlreadySatisfied && last.AlreadySatisfied && task.IntegratedCommitSHA == last.BaseHeadSHA
+		candidate := !task.AlreadySatisfied && !last.AlreadySatisfied && canonicalGitSHA.MatchString(last.CandidateCommitSHA)
 		if !canonicalGitSHA.MatchString(task.IntegratedCommitSHA) || last.State != GraphTaskIntegrated ||
-			!canonicalGitSHA.MatchString(last.CandidateCommitSHA) || task.BlockerCode != "" {
+			(!satisfied && !candidate) || task.BlockerCode != "" {
 			return ErrInvalidDeliveryGraph
 		}
-	} else if task.IntegratedCommitSHA != "" {
+	} else if task.IntegratedCommitSHA != "" || task.AlreadySatisfied {
 		return ErrInvalidDeliveryGraph
 	}
 	if task.State == GraphTaskBlocked {
@@ -1452,6 +1479,9 @@ func validateGraphTaskAttempt(attempt GraphTaskAttempt, expectedExecution int, t
 		!validTaskCandidateEvidence(attempt.CandidateEvidence, taskID, attempt.VerificationDigest) {
 		return ErrInvalidDeliveryGraph
 	}
+	if attempt.State != GraphTaskIntegrated && attempt.AlreadySatisfied {
+		return ErrInvalidDeliveryGraph
+	}
 	switch attempt.State {
 	case GraphTaskPreparing:
 		if attempt.ChildRunID != "" || attempt.CandidateCommitSHA != "" ||
@@ -1475,17 +1505,26 @@ func validateGraphTaskAttempt(attempt GraphTaskAttempt, expectedExecution int, t
 			attempt.TokensUsed != nil || attempt.TerminalStatus != "" || attempt.BlockerCode != "" {
 			return ErrInvalidDeliveryGraph
 		}
-	case GraphTaskCandidate, GraphTaskIntegrated:
+	case GraphTaskCandidate:
 		if attempt.WorktreeID == "" || !boundedArgument(attempt.ChildRunID) ||
 			!canonicalGitSHA.MatchString(attempt.CandidateCommitSHA) ||
-			!canonicalSHA256.MatchString(attempt.VerificationDigest) || attempt.TerminalStatus != "" || attempt.BlockerCode != "" {
+			!canonicalSHA256.MatchString(attempt.VerificationDigest) || attempt.TerminalStatus != "" || attempt.BlockerCode != "" ||
+			attempt.AlreadySatisfied {
+			return ErrInvalidDeliveryGraph
+		}
+	case GraphTaskIntegrated:
+		satisfied := attempt.AlreadySatisfied && attempt.CandidateCommitSHA == "" && attempt.VerificationDigest == "" && attempt.CandidateEvidence == nil
+		candidate := !attempt.AlreadySatisfied && canonicalGitSHA.MatchString(attempt.CandidateCommitSHA) &&
+			canonicalSHA256.MatchString(attempt.VerificationDigest)
+		if attempt.WorktreeID == "" || !boundedArgument(attempt.ChildRunID) || (!satisfied && !candidate) ||
+			attempt.TerminalStatus != "" || attempt.BlockerCode != "" || attempt.TokensUsed != nil || attempt.Conflict != nil {
 			return ErrInvalidDeliveryGraph
 		}
 	case GraphTaskBlocked:
 		terminalFailure := attempt.TerminalStatus != ""
 		conflictExhausted := attempt.Conflict != nil && canonicalGitSHA.MatchString(attempt.CandidateCommitSHA) &&
 			canonicalSHA256.MatchString(attempt.VerificationDigest) && attempt.TokensUsed != nil && attempt.TerminalStatus == ""
-		if !boundedArgument(attempt.BlockerCode) || (attempt.CandidateEvidence != nil && !conflictExhausted) ||
+		if attempt.AlreadySatisfied || !boundedArgument(attempt.BlockerCode) || (attempt.CandidateEvidence != nil && !conflictExhausted) ||
 			(!conflictExhausted && (attempt.CandidateCommitSHA != "" || attempt.VerificationDigest != "" || attempt.Conflict != nil)) ||
 			(terminalFailure && (!boundedArgument(attempt.ChildRunID) || attempt.TokensUsed == nil ||
 				!validTaskTerminalStatus(attempt.TerminalStatus))) ||
@@ -1727,7 +1766,8 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 	}
 	appendedAttempt := len(after.Attempts) == len(before.Attempts)+1
 	stateAllowed := graphTaskTransitionAllowed(before.State, after.State) ||
-		(appendedAttempt && before.State == GraphTaskRunning && after.State == GraphTaskPreparing)
+		(appendedAttempt && before.State == GraphTaskRunning && after.State == GraphTaskPreparing) ||
+		(before.State == GraphTaskRunning && after.State == GraphTaskIntegrated && after.AlreadySatisfied)
 	if !stateAllowed || len(after.Attempts) < len(before.Attempts) || len(after.Attempts) > len(before.Attempts)+1 {
 		return ErrInvalidDeliveryTransition
 	}
@@ -1736,6 +1776,13 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 			return ErrDeliveryConflict
 		}
 	} else if before.IntegratedCommitSHA != after.IntegratedCommitSHA {
+		return ErrDeliveryConflict
+	}
+	if after.AlreadySatisfied {
+		if before.AlreadySatisfied || before.State != GraphTaskRunning || after.State != GraphTaskIntegrated {
+			return ErrDeliveryConflict
+		}
+	} else if before.AlreadySatisfied != after.AlreadySatisfied {
 		return ErrDeliveryConflict
 	}
 	if after.State == GraphTaskBlocked {
@@ -1794,6 +1841,11 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index]); err != nil {
 				return err
 			}
+		} else if before.Attempts[index].State == GraphTaskRunning &&
+			after.Attempts[index].State == GraphTaskIntegrated && after.Attempts[index].AlreadySatisfied {
+			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index]); err != nil {
+				return err
+			}
 		} else if !reflect.DeepEqual(before.Attempts[index], after.Attempts[index]) {
 			return ErrDeliveryConflict
 		}
@@ -1822,7 +1874,8 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 func validateGraphAttemptTransition(before, after GraphTaskAttempt) error {
 	if before.Execution != after.Execution || before.Runtime != after.Runtime || before.BaseHeadSHA != after.BaseHeadSHA ||
 		graphAttemptRunExecution(before) != graphAttemptRunExecution(after) ||
-		!graphTaskTransitionAllowed(before.State, after.State) {
+		(!graphTaskTransitionAllowed(before.State, after.State) &&
+			!(before.State == GraphTaskRunning && after.State == GraphTaskIntegrated && after.AlreadySatisfied)) {
 		return ErrInvalidDeliveryTransition
 	}
 	if before.WorktreeID != "" && (before.WorktreeID != after.WorktreeID || before.WorktreeRoot != after.WorktreeRoot) {

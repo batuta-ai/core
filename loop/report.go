@@ -55,17 +55,19 @@ type Summary struct {
 }
 
 type SummaryTask struct {
-	ID       string `json:"task_id"`
-	Number   int    `json:"number"`
-	Title    string `json:"title"`
-	Executor string `json:"executor"`
-	Model    string `json:"model"`
-	Attempts int    `json:"attempts"`
-	Commit   string `json:"commit,omitempty"`
-	Blocker  string `json:"blocker,omitempty"`
-	Question string `json:"question,omitempty"`
-	Story    string `json:"story"`
-	Worktree string `json:"worktree,omitempty"`
+	ID        string `json:"task_id"`
+	Number    int    `json:"number"`
+	Title     string `json:"title"`
+	Executor  string `json:"executor"`
+	Model     string `json:"model"`
+	Attempts  int    `json:"attempts"`
+	Commit    string `json:"commit,omitempty"`
+	Base      string `json:"base,omitempty"`
+	Satisfied bool   `json:"satisfied,omitempty"`
+	Blocker   string `json:"blocker,omitempty"`
+	Question  string `json:"question,omitempty"`
+	Story     string `json:"story"`
+	Worktree  string `json:"worktree,omitempty"`
 }
 
 func (r *Runner) summaryLocked() Summary {
@@ -88,6 +90,10 @@ func (r *Runner) summaryLocked() Summary {
 		switch task.State {
 		case routing.GraphTaskIntegrated:
 			entry.Commit = task.IntegratedCommitSHA
+			entry.Satisfied = task.AlreadySatisfied
+			if entry.Satisfied {
+				entry.Base = task.IntegratedCommitSHA
+			}
 			if entry.Commit == "" {
 				entry.Commit = r.commits[task.TaskID]
 			}
@@ -132,6 +138,10 @@ func routingStory(attempts []routing.GraphTaskAttempt) string {
 func (r *Runner) printSummary(state string, summary Summary) {
 	fmt.Fprintf(r.out, "\ndelivery %s: %s (%d waves)\n", r.delivery, state, summary.Waves)
 	for _, task := range summary.Integrated {
+		if task.Satisfied {
+			fmt.Fprintf(r.out, "  ✅ %s %s → already satisfied on the base %s, no commit\n", task.ID, task.Title, short(task.Base))
+			continue
+		}
 		if task.Commit != "" {
 			fmt.Fprintf(r.out, "  ✅ %s %s → %s, commit %s\n", task.ID, task.Title, task.Story, short(task.Commit))
 		}
@@ -208,8 +218,12 @@ func (r *Runner) tickPlan(summary Summary) (bool, error) {
 		return false, err
 	}
 	integrated := map[int]bool{}
+	satisfied := map[int]string{}
 	for _, task := range summary.Integrated {
 		integrated[task.Number] = true
+		if task.Satisfied {
+			satisfied[task.Number] = task.Base
+		}
 	}
 	for _, task := range summary.Blocked {
 		if task.Blocker == blockerAlreadySatisfied {
@@ -217,18 +231,26 @@ func (r *Runner) tickPlan(summary Summary) (bool, error) {
 		}
 	}
 	lines := strings.Split(string(payload), "\n")
+	rendered := make([]string, 0, len(lines)+len(satisfied))
 	changed := false
-	for index, line := range lines {
+	for _, line := range lines {
 		match := planTick.FindStringSubmatch(line)
 		if match == nil {
+			rendered = append(rendered, line)
 			continue
 		}
 		number, _ := strconv.Atoi(match[1])
 		if integrated[number] {
-			lines[index] = "- [x]" + line[5:]
+			line = "- [x]" + line[5:]
+			changed = true
+		}
+		rendered = append(rendered, line)
+		if base := satisfied[number]; base != "" {
+			rendered = append(rendered, "      Result: already satisfied on the base "+short(base)+", no commit")
 			changed = true
 		}
 	}
+	lines = rendered
 	allDone := len(summary.Waiting) == 0 && len(summary.Pending) == 0
 	for _, task := range summary.Blocked {
 		if task.Blocker != blockerAlreadySatisfied {
@@ -284,6 +306,10 @@ func (r *Runner) writeWork(summary Summary, state string) error {
 	date := r.now().Format("2006-01-02")
 	var done, blocked []string
 	for _, task := range summary.Integrated {
+		if task.Satisfied {
+			done = append(done, fmt.Sprintf("- [x] %s → %s, already satisfied on the base %s, no commit (trail: %s, plan %s, %s)", task.Title, task.Story, short(task.Base), r.trailRelative(task.ID), r.plan.Slug, date))
+			continue
+		}
 		if task.Commit == "" {
 			continue
 		}

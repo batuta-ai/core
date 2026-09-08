@@ -34,7 +34,7 @@ const (
 	// blockerAlreadySatisfied is not a failure: the criteria held before the
 	// executor touched anything, so there is no candidate to integrate. The
 	// task is ticked in the plan at the end without a commit.
-	blockerAlreadySatisfied = "already_satisfied"
+	blockerAlreadySatisfied = routing.BlockerAlreadySatisfied
 )
 
 type attemptContext struct {
@@ -569,15 +569,15 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 	if task, found := r.graph.Task(ac.taskID); outcome.Blocked && found && task.BlockerCode == routing.BlockerNeedsConductingSession {
 		recordedBlocker = task.BlockerCode
 	}
-	sameRuntime := !outcome.Blocked && outcome.Runtime == ac.runtime
-	if !outcome.Blocked {
+	sameRuntime := !outcome.Blocked && !outcome.Satisfied && outcome.Runtime == ac.runtime
+	if !outcome.Blocked && !outcome.Satisfied {
 		r.feedback[ac.taskID] = feedback
 		if sameRuntime && ac.worktree.Root != "" {
 			r.worktrees[attemptKey(ac.taskID, ac.execution+1)] = attemptWorktree{Name: ac.worktree.Name, Branch: ac.worktree.Branch, Root: ac.worktree.Root}
 		}
 	}
 	detail := map[string]any{
-		"execution": ac.execution, "blocker": recordedBlocker, "status": status, "feedback": feedback, "blocked": outcome.Blocked,
+		"execution": ac.execution, "blocker": recordedBlocker, "status": status, "feedback": feedback, "blocked": outcome.Blocked, "satisfied": outcome.Satisfied,
 		"next_execution": ac.execution + 1, "next_runtime": outcome.Runtime, "same_runtime": sameRuntime, "reuse_worktree": sameRuntime && ac.worktree.Root != "",
 	}
 	recordErr := r.record(KindFailure, ac.taskID, detail)
@@ -586,7 +586,7 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		return recordErr
 	}
 	switch {
-	case outcome.Blocked && recordedBlocker == blockerAlreadySatisfied:
+	case outcome.Satisfied:
 		fmt.Fprintf(r.out, "%s e%d ✓ already satisfied on the base; no commit\n", ac.taskID, ac.execution)
 		r.writeTrailVerdict(ac.taskID, "✅ already satisfied — no commit", feedback)
 	case outcome.Blocked:
@@ -598,7 +598,7 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		fmt.Fprintf(r.out, "%s e%d ✗ %s — escalating to %s/%s\n", ac.taskID, ac.execution, code, outcome.Runtime.Provider, outcome.Runtime.Model)
 		r.writeTrailVerdict(ac.taskID, "⏫ escalated from "+string(ac.plan.Complexity)+" ("+ac.runtime.Provider+"/"+ac.runtime.Model+" → "+outcome.Runtime.Provider+"/"+outcome.Runtime.Model+")", feedback)
 	}
-	if (outcome.Blocked || !sameRuntime) && ac.worktree.Root != "" && !r.opts.KeepWorktrees {
+	if (outcome.Blocked || outcome.Satisfied || !sameRuntime) && ac.worktree.Root != "" && !r.opts.KeepWorktrees {
 		_ = r.git.Remove(context.WithoutCancel(ctx), ac.worktree.Root, ac.worktree.Branch)
 	}
 	return nil

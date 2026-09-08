@@ -1145,7 +1145,12 @@ func TestLoopAlreadySatisfiedOnlyWhenWorktreeEqualsBase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+			wantSatisfied := scenario != "satisfied-broken" && scenario != "satisfied-unverified"
+			wantState := StateBlocked
+			if wantSatisfied {
+				wantState = StateDone
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != wantState {
 				t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
 			}
 			var satisfied, verified bool
@@ -1180,7 +1185,6 @@ func TestLoopAlreadySatisfiedOnlyWhenWorktreeEqualsBase(t *testing.T) {
 					t.Fatalf("base-equivalent tree produced a candidate: %s", record.Detail)
 				}
 			}
-			wantSatisfied := scenario != "satisfied-broken" && scenario != "satisfied-unverified"
 			if treeChanged || satisfied != wantSatisfied {
 				t.Fatalf("tree_changed=%t already_satisfied=%t, want false/%t\n%s", treeChanged, satisfied, wantSatisfied, out.String())
 			}
@@ -1257,7 +1261,7 @@ func TestLoopWaitsOutAUsageLimitWithoutSpendingARetry(t *testing.T) {
 	}
 }
 
-func TestLoopTicksATaskAlreadySatisfiedOnTheBase(t *testing.T) {
+func TestLoopContinuesAfterAlreadySatisfiedTask(t *testing.T) {
 	f := setup(t)
 	// out/1.txt already exists on the base: task 1's criterion holds before any executor runs.
 	os.MkdirAll(filepath.Join(f.root, "out"), 0o755)
@@ -1271,27 +1275,82 @@ func TestLoopTicksATaskAlreadySatisfiedOnTheBase(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	state, err := r.Run(context.Background())
-	if err != nil || state != StateBlocked {
+	if err != nil || state != StateDone {
 		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
 	}
-	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"))
-	if !strings.Contains(string(plan), "- [x] 1.") || !strings.Contains(string(plan), "- [x] 2.") || !strings.Contains(string(plan), "- [ ] 3.") {
-		t.Fatalf("plan after run:\n%s", plan)
+	first := graphTask(r.graph, "task_1")
+	third := graphTask(r.graph, "task_3")
+	if first == nil || first.State != routing.GraphTaskIntegrated || !first.AlreadySatisfied || first.IntegratedCommitSHA != base {
+		t.Fatalf("satisfied task = %#v", first)
 	}
-	if !strings.Contains(out.String(), "already satisfied") {
-		t.Fatalf("report:\n%s", out.String())
+	if third == nil || third.State != routing.GraphTaskIntegrated {
+		t.Fatalf("dependent task = %#v", third)
 	}
-	// The next run picks up task 3 alone, on top of the ticked tasks.
-	next, err := New(context.Background(), f.options("default", &out))
-	if err != nil {
-		t.Fatalf("second New() error = %v", err)
-	}
-	if state, err := next.Run(context.Background()); err != nil || state != StateDone {
-		t.Fatalf("second Run() = %s, %v\n%s", state, err, out.String())
+	if _, err := os.Stat(filepath.Join(f.root, "out", "3.txt")); err != nil {
+		t.Fatalf("dependent output: %v", err)
 	}
 	commits := f.commitsSince(t, base)
-	if len(commits) != 4 || !strings.HasPrefix(commits[0], "feat: add greeting two") || !strings.HasPrefix(commits[2], "feat: add greeting three") {
+	if len(commits) != 3 || !strings.HasPrefix(commits[0], "feat: add greeting two") || !strings.HasPrefix(commits[1], "feat: add greeting three") {
 		t.Fatalf("commits = %q", commits)
+	}
+}
+
+func TestLoopDoneWithSatisfiedTasks(t *testing.T) {
+	f := setup(t)
+	os.MkdirAll(filepath.Join(f.root, "out"), 0o755)
+	for n := 1; n <= 3; n++ {
+		os.WriteFile(filepath.Join(f.root, "out", fmt.Sprintf("%d.txt", n)), []byte("ok\n"), 0o644)
+	}
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "chore: satisfy greetings by hand")
+	base := f.run(t, "rev-parse", "HEAD")
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("satisfied", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	for _, task := range r.graph.Tasks {
+		if task.State != routing.GraphTaskIntegrated || !task.AlreadySatisfied || task.IntegratedCommitSHA != base {
+			t.Fatalf("task = %#v", task)
+		}
+	}
+	if commits := f.commitsSince(t, base); len(commits) != 1 || !strings.HasPrefix(commits[0], "chore(batuta): greetings — loop done") {
+		t.Fatalf("commits = %q", commits)
+	}
+}
+
+func TestLoopTicksSatisfiedTaskWithBase(t *testing.T) {
+	f := setup(t)
+	os.MkdirAll(filepath.Join(f.root, "out"), 0o755)
+	os.WriteFile(filepath.Join(f.root, "out", "1.txt"), []byte("ok\n"), 0o644)
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "chore: greeting one by hand")
+	base := f.run(t, "rev-parse", "HEAD")
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("satisfied", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	marker := "already satisfied on the base " + short(base)
+	plan, err := os.ReadFile(r.planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan), "- [x] 1. Add greeting one") || !strings.Contains(string(plan), marker) {
+		t.Fatalf("plan:\n%s", plan)
+	}
+	work, err := os.ReadFile(filepath.Join(f.root, "WORK.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(work), "Add greeting one") || !strings.Contains(string(work), marker) {
+		t.Fatalf("WORK.md:\n%s", work)
 	}
 }
 
