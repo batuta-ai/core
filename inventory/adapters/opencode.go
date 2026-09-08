@@ -8,12 +8,12 @@ import (
 )
 
 func NewOpenCode(executable string) (Adapter, error) {
-	ids := map[string]inventory.ProbeID{"version": "opencode.version", "config": "opencode.config", "paths": "opencode.paths", "agents": "opencode.agents", "skills": "opencode.skills", "mcp": "opencode.mcp", "auth": "opencode.auth", "models": "opencode.models"}
+	ids := map[string]inventory.ProbeID{"version": "opencode.version", "config": "opencode.config", "paths": "opencode.paths", "agents": "opencode.agents", "skills": "opencode.skills", "auth": "opencode.auth", "models": "opencode.models"}
 	args := map[string][]string{
 		"version": {"--version"}, "config": {"debug", "config"}, "paths": {"debug", "paths"}, "agents": {"agent", "list"},
-		"skills": {"debug", "skill"}, "mcp": {"mcp", "list"}, "auth": {"auth", "list"}, "models": {"models"},
+		"skills": {"debug", "skill"}, "auth": {"auth", "list"}, "models": {"models"},
 	}
-	order := []string{"version", "config", "paths", "agents", "skills", "mcp", "auth", "models"}
+	order := []string{"version", "config", "paths", "agents", "skills", "auth", "models"}
 	a, err := orderedAdapter(inventory.ExecutorOpenCode, executable, order, ids, args, "version", "config", func(outputs map[inventory.ProbeID][]byte) inventory.ExecutorSnapshot {
 		return normalizeOpenCode(ids, outputs)
 	})
@@ -68,7 +68,7 @@ func normalizeOpenCode(ids map[string]inventory.ProbeID, outputs map[inventory.P
 	} else {
 		snapshot.Capabilities = append(snapshot.Capabilities, unknownEvidence("config", "opencode debug config", "probe_unavailable"))
 	}
-	for _, entry := range []struct{ key, name string }{{"agents", "agents"}, {"skills", "skills"}, {"mcp", "mcp"}} {
+	for _, entry := range []struct{ key, name string }{{"agents", "agents"}, {"skills", "skills"}} {
 		raw := outputs[ids[entry.key]]
 		state := inventory.ResolutionUnknown
 		if len(raw) > 0 && json.Valid(raw) {

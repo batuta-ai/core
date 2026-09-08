@@ -17,7 +17,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -214,7 +216,12 @@ func workspaceRoot(flagValue string) (string, error) {
 
 func collect(ctx context.Context, root string) (inventory.InventorySnapshot, executables, error) {
 	found := discoverExecutables()
-	collector, err := adapters.NewCollector(publication.ExecRunner{}, adapters.CollectorOptions{
+	snapshot, err := collectWithRunner(ctx, root, found, publication.ExecRunner{})
+	return snapshot, found, err
+}
+
+func collectWithRunner(ctx context.Context, root string, found executables, runner publication.CommandRunner) (inventory.InventorySnapshot, error) {
+	collector, err := adapters.NewCollector(runner, adapters.CollectorOptions{
 		TrustedWorkspace: root, WorkspaceID: "local",
 		CompozyExecutable: found.Compozy, CodexExecutable: found.Codex,
 		OpenCodeExecutable: found.OpenCode, CursorExecutable: found.Cursor,
@@ -222,10 +229,9 @@ func collect(ctx context.Context, root string) (inventory.InventorySnapshot, exe
 		ProbeParallelism: 8,
 	})
 	if err != nil {
-		return inventory.InventorySnapshot{}, found, err
+		return inventory.InventorySnapshot{}, err
 	}
-	snapshot, err := collector.Collect(ctx)
-	return snapshot, found, err
+	return collector.Collect(ctx)
 }
 
 func runInventory(args []string, stdout io.Writer) error {
@@ -251,16 +257,70 @@ func runInventory(args []string, stdout io.Writer) error {
 }
 
 type doctorReport struct {
-	Workspace     string           `json:"workspace"`
-	GitRepository bool             `json:"git_repository"`
-	GitToplevel   string           `json:"git_toplevel,omitempty"`
-	GitState      string           `json:"git_state,omitempty"`
-	GitClean      *bool            `json:"git_clean,omitempty"`
-	GitExecutable string           `json:"git_executable,omitempty"`
-	Commands      []string         `json:"commands"`
-	SkillsPath    string           `json:"skills_path,omitempty"`
-	Executors     []doctorExecutor `json:"executors"`
-	Digest        string           `json:"inventory_digest"`
+	Workspace      string                `json:"workspace"`
+	GitRepository  bool                  `json:"git_repository"`
+	GitToplevel    string                `json:"git_toplevel,omitempty"`
+	GitState       string                `json:"git_state,omitempty"`
+	GitClean       *bool                 `json:"git_clean,omitempty"`
+	GitExecutable  string                `json:"git_executable,omitempty"`
+	Commands       []string              `json:"commands"`
+	SkillsPath     string                `json:"skills_path,omitempty"`
+	Executors      []doctorExecutor      `json:"executors"`
+	Digest         string                `json:"inventory_digest"`
+	ProbeDurations []doctorProbeDuration `json:"-"`
+}
+
+type doctorProbeDuration struct {
+	Executor string
+	Probe    string
+	Duration time.Duration
+}
+
+type doctorProbeRunner struct {
+	runner            publication.CommandRunner
+	executorByCommand map[string]string
+	mu                sync.Mutex
+	durations         []doctorProbeDuration
+}
+
+func (r *doctorProbeRunner) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	started := time.Now()
+	result, err := r.runner.Run(ctx, command)
+	duration := doctorProbeDuration{
+		Executor: r.executorByCommand[command.Executable],
+		Probe:    strings.Join(command.Args, " "),
+		Duration: time.Since(started),
+	}
+	r.mu.Lock()
+	r.durations = append(r.durations, duration)
+	r.mu.Unlock()
+	return result, err
+}
+
+func (r *doctorProbeRunner) snapshot() []doctorProbeDuration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	durations := append([]doctorProbeDuration(nil), r.durations...)
+	sort.Slice(durations, func(i, j int) bool {
+		if durations[i].Executor != durations[j].Executor {
+			return durations[i].Executor < durations[j].Executor
+		}
+		return durations[i].Probe < durations[j].Probe
+	})
+	return durations
+}
+
+func doctorExecutorCommands(found executables) map[string]string {
+	commands := make(map[string]string)
+	for executor, command := range map[string]string{
+		"compozy": found.Compozy, "codex": found.Codex, "opencode": found.OpenCode,
+		"cursor-agent": found.Cursor, "claude": found.Claude, "agy": found.Agy,
+	} {
+		if command != "" {
+			commands[command] = executor
+		}
+	}
+	return commands
 }
 
 type doctorExecutor struct {
@@ -287,11 +347,13 @@ func runDoctor(args []string, stdout io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	snapshot, found, err := collect(ctx, root)
+	found := discoverExecutables()
+	probeRunner := &doctorProbeRunner{runner: publication.ExecRunner{}, executorByCommand: doctorExecutorCommands(found)}
+	snapshot, err := collectWithRunner(ctx, root, found, probeRunner)
 	if err != nil {
 		return err
 	}
-	report := doctorReport{Workspace: root, Digest: snapshot.Digest, Commands: commands}
+	report := doctorReport{Workspace: root, Digest: snapshot.Digest, Commands: commands, ProbeDurations: probeRunner.snapshot()}
 	if git, err := exec.LookPath("git"); err == nil {
 		report.GitExecutable = git
 		// The probe context may already be spent by collect; git gets its own.
@@ -636,6 +698,11 @@ func printDoctor(w io.Writer, report doctorReport) {
 			notes = strings.Join(executor.Diagnostics, ",")
 		}
 		fmt.Fprintf(w, "%-13s %-12s %-14s %7d  %s\n", executor.ID, executor.Availability, truncate(executor.Version, 14), executor.Models, notes)
+	}
+	for _, probe := range report.ProbeDurations {
+		if probe.Duration > 5*time.Second {
+			fmt.Fprintf(w, "note: %s %s took %.1fs (budget 5s)\n", probe.Executor, probe.Probe, probe.Duration.Seconds())
+		}
 	}
 }
 

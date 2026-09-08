@@ -276,6 +276,23 @@ func TestDoctorPrintsCleanAndDirtyGitStates(t *testing.T) {
 	}
 }
 
+func TestDoctorNotesSlowProbe(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	printDoctor(&output, doctorReport{ProbeDurations: []doctorProbeDuration{
+		{Executor: "cursor-agent", Probe: "models", Duration: 7200 * time.Millisecond},
+		{Executor: "codex", Probe: "--version", Duration: 5 * time.Second},
+		{Executor: "opencode", Probe: "status", Duration: 4900 * time.Millisecond},
+	}})
+	if got := strings.Count(output.String(), "note:"); got != 1 {
+		t.Fatalf("slow-probe notes = %d, want 1:\n%s", got, output.String())
+	}
+	if !strings.Contains(output.String(), "note: cursor-agent models took 7.2s (budget 5s)") {
+		t.Fatalf("printDoctor() = %q, want slow-probe note", output.String())
+	}
+}
+
 func TestVersionPrefersTheBuildVersion(t *testing.T) {
 	previous := buildVersion
 	t.Cleanup(func() { buildVersion = previous })
