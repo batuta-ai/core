@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -651,10 +652,15 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	var rules []review.SpecRule
+	var resolvedSpecPath string
 	if *spec != "" {
 		rules, err = review.LoadSpecCriteria(root, *spec)
 		if err != nil {
 			return fmt.Errorf("review: load spec %s: %w", *spec, err)
+		}
+		resolvedSpecPath, err = reviewSpecPath(root, *spec)
+		if err != nil {
+			return err
 		}
 	}
 	slug, err := reviewSlug(root, *spec)
@@ -665,10 +671,15 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	key := branch
-	if *spec != "" {
-		key += "-" + slug
+	branchIdentity, err := reviewBranchIdentity(root)
+	if err != nil {
+		return err
 	}
+	specSlug := ""
+	if *spec != "" {
+		specSlug = slug
+	}
+	key := reviewStateKey(branch, branchIdentity, specSlug, resolvedSpecPath)
 	statePath := filepath.Join(root, ".batuta", "reviews", "state", key+".json")
 	sessionSlug := reviewNow().Format("2006-01-02") + "-" + slug
 	directory := *out
@@ -684,7 +695,7 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	}
 	requestedBase := *base
 	if requestedBase == "" {
-		requestedBase, err = defaultReviewBase(root, *includeWorktree)
+		requestedBase, err = defaultReviewBase(root)
 		if err != nil {
 			return err
 		}
@@ -829,10 +840,51 @@ func reviewSlug(root, spec string) (string, error) {
 	return slug, nil
 }
 
-func defaultReviewBase(root string, includeWorktree bool) (string, error) {
-	if includeWorktree {
-		return "HEAD", nil
+func reviewBranchIdentity(root string) (string, error) {
+	output, err := exec.Command("git", "-C", root, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	if err == nil {
+		return strings.TrimSpace(string(output)), nil
 	}
+	output, err = exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("review: determine branch identity: %w", err)
+	}
+	return "detached-head:" + strings.TrimSpace(string(output)), nil
+}
+
+func reviewSpecPath(root, spec string) (string, error) {
+	paths := []string{spec}
+	if !filepath.IsAbs(spec) && !strings.ContainsAny(spec, "/\\") && filepath.Ext(spec) == "" {
+		paths = []string{routing.PlanPath(spec), filepath.Join(".batuta", "plans", "done", spec+".md"), filepath.Join(".batuta", "plan-"+spec+".md")}
+	}
+	for _, filename := range paths {
+		if !filepath.IsAbs(filename) {
+			filename = filepath.Join(root, filename)
+		}
+		if _, err := os.Stat(filename); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("review: resolve spec path: %w", err)
+		}
+		resolved, err := filepath.EvalSymlinks(filename)
+		if err != nil {
+			return "", fmt.Errorf("review: resolve spec path: %w", err)
+		}
+		return filepath.Clean(resolved), nil
+	}
+	return "", fmt.Errorf("review: plan %q is unavailable", spec)
+}
+
+func reviewStateKey(branchSlug, branchIdentity, specSlug, resolvedSpecPath string) string {
+	name := branchSlug
+	if specSlug != "" {
+		name += "-" + specSlug
+	}
+	digest := sha256.Sum256([]byte(branchIdentity + "\x00" + resolvedSpecPath))
+	return fmt.Sprintf("%s-%x", name, digest[:8])
+}
+
+func defaultReviewBase(root string) (string, error) {
 	for _, candidate := range []string{"main", "origin/main", "master", "origin/master", "@{upstream}", "HEAD^", "HEAD"} {
 		cmd := exec.Command("git", "-C", root, "merge-base", "HEAD", candidate)
 		if output, err := cmd.Output(); err == nil && strings.TrimSpace(string(output)) != "" {

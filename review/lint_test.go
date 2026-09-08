@@ -106,6 +106,36 @@ func TestRunLintPropagatesExecutionFailure(t *testing.T) {
 	}
 }
 
+func TestRunLintRejectsTruncatedOutput(t *testing.T) {
+	manifest := Manifest{Files: []File{{Path: "a.go", Selected: true, Hunks: []Hunk{{Start: 1, Count: 1}}}}}
+	for _, tc := range []struct {
+		name            string
+		stdoutTruncated bool
+		stderrTruncated bool
+	}{
+		{name: "stdout", stdoutTruncated: true},
+		{name: "stderr", stderrTruncated: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := reviewCommandRunner(func(context.Context, publication.Command) (publication.CommandResult, error) {
+				return publication.CommandResult{
+					ExitCode:        0,
+					Stdout:          []byte("a.go:1: incomplete diagnostic"),
+					StdoutTruncated: tc.stdoutTruncated,
+					StderrTruncated: tc.stderrTruncated,
+				}, nil
+			})
+			result, err := RunLint(t.Context(), t.TempDir(), "lint", manifest, runner)
+			if err == nil || !strings.Contains(err.Error(), "truncated") {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+			if result.Error != err.Error() || len(result.Diagnostics) != 0 {
+				t.Fatalf("result=%+v err=%v", result, err)
+			}
+		})
+	}
+}
+
 func TestReportShowsLintStatus(t *testing.T) {
 	for _, tc := range []struct {
 		name, command, want string

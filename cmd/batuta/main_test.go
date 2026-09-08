@@ -844,6 +844,87 @@ func readReviewJSON(t *testing.T, name string, value any) {
 	}
 }
 
+func onlyReviewStatePath(t *testing.T, root string) string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(root, ".batuta", "reviews", "state", "*.json"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("review state paths=%v err=%v", paths, err)
+	}
+	return paths[0]
+}
+
+func TestReviewStateKeyDistinguishesBranches(t *testing.T) {
+	first := reviewStateKey("feature-a", "feature/a", "", "")
+	second := reviewStateKey("feature-a", "feature-a", "", "")
+	if first == second {
+		t.Fatalf("colliding branch keys: %q", first)
+	}
+	if !strings.HasPrefix(first, "feature-a-") || !strings.HasPrefix(second, "feature-a-") {
+		t.Fatalf("keys do not retain sanitized branch name: %q, %q", first, second)
+	}
+
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	restore := stubReviewSessions(t, nil, nil)
+	defer restore()
+	for index, branch := range []string{"feature/a", "feature-a"} {
+		if index > 0 {
+			reviewGit(t, root, "checkout", "-q", "--detach", base)
+		}
+		reviewGit(t, root, "checkout", "-qb", branch)
+		if err := os.WriteFile(filepath.Join(root, "change.go"), []byte(fmt.Sprintf("package changed\n\nvar Changed = %d\n", index)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		reviewGit(t, root, "commit", "-qam", branch)
+		if err := run([]string{"review", "--base", base, "--out", fmt.Sprintf("out/%d", index)}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("review %s: %v", branch, err)
+		}
+	}
+	paths, err := filepath.Glob(filepath.Join(root, ".batuta", "reviews", "state", "feature-a-*.json"))
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("branch state paths=%v err=%v", paths, err)
+	}
+}
+
+func TestReviewStateKeyDistinguishesSpecs(t *testing.T) {
+	first := reviewStateKey("feature", "feature", "delivery", "/repo/plans/delivery.md")
+	second := reviewStateKey("feature", "feature", "delivery", "/repo/archive/delivery.md")
+	if first == second {
+		t.Fatalf("colliding spec keys: %q", first)
+	}
+	if !strings.HasPrefix(first, "feature-delivery-") || !strings.HasPrefix(second, "feature-delivery-") {
+		t.Fatalf("keys do not retain sanitized branch and spec names: %q, %q", first, second)
+	}
+
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	reviewGit(t, root, "checkout", "-qb", "feature")
+	reviewGit(t, root, "commit", "-qam", "change")
+	plan := "# Plan — Spec\n**Goal:** Review\n**Status:** approved\n## Tasks\n- [ ] 1. Check — docs/low\n      Accept: delivery is reviewed\n"
+	var specs []string
+	for _, directory := range []string{"one", "two"} {
+		name := filepath.Join(root, ".batuta", "plans", directory, "delivery.md")
+		if err := os.MkdirAll(filepath.Dir(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(plan), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		specs = append(specs, name)
+	}
+	restore := stubReviewSessions(t, nil, &review.SpecSweep{Results: []review.SpecResult{{ID: "task-1.1", Status: review.CriterionSatisfied, Path: "change.go:3"}}})
+	defer restore()
+	for index, spec := range specs {
+		if err := run([]string{"review", "--base", base, "--spec", spec, "--out", fmt.Sprintf("out/%d", index)}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+			t.Fatalf("review %s: %v", spec, err)
+		}
+	}
+	paths, err := filepath.Glob(filepath.Join(root, ".batuta", "reviews", "state", "feature-delivery-*.json"))
+	if err != nil || len(paths) != 2 {
+		t.Fatalf("spec state paths=%v err=%v", paths, err)
+	}
+}
+
 func TestReviewStateSurvivesDatedDirectories(t *testing.T) {
 	root, base := reviewCommandRepo(t)
 	t.Chdir(root)
@@ -866,7 +947,7 @@ func TestReviewStateSurvivesDatedDirectories(t *testing.T) {
 		t.Fatalf("second round = %+v, want empty diff from %s", manifest, head)
 	}
 	var state review.ReviewState
-	readReviewJSON(t, filepath.Join(root, ".batuta/reviews/state/feature-review.json"), &state)
+	readReviewJSON(t, onlyReviewStatePath(t, root), &state)
 	if state.Head != head {
 		t.Fatalf("state = %+v", state)
 	}
@@ -899,7 +980,7 @@ func TestReviewKeepsCheckpointWhenUncovered(t *testing.T) {
 				Head    string
 				Pending []struct{ Files []review.File }
 			}
-			readReviewJSON(t, filepath.Join(root, ".batuta/reviews/state/pending.json"), &state)
+			readReviewJSON(t, onlyReviewStatePath(t, root), &state)
 			if state.Head != base || len(state.Pending) != 1 || len(state.Pending[0].Files) != 1 || len(state.Pending[0].Files[0].Hunks) == 0 {
 				t.Fatalf("state lost checkpoint or pending hunks: %+v", state)
 			}
@@ -940,9 +1021,36 @@ func TestReviewCarriesPendingCohorts(t *testing.T) {
 		Head    string
 		Pending []json.RawMessage
 	}
-	readReviewJSON(t, filepath.Join(root, ".batuta/reviews/state/pending.json"), &state)
+	readReviewJSON(t, onlyReviewStatePath(t, root), &state)
 	if state.Head != reviewGit(t, root, "rev-parse", "HEAD") || len(state.Pending) != 0 {
 		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestReviewWorktreeKeepsBranchBase(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	reviewGit(t, root, "checkout", "-qb", "feature/worktree")
+	reviewGit(t, root, "commit", "-qam", "committed change")
+	if err := os.WriteFile(filepath.Join(root, "untracked.go"), []byte("package untracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore := stubReviewSessions(t, nil, nil)
+	defer restore()
+	if err := run([]string{"review", "--worktree", "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var manifest review.Manifest
+	readReviewJSON(t, filepath.Join(root, "out", "manifest.json"), &manifest)
+	if manifest.Base != base {
+		t.Fatalf("base=%q, want branch point %q", manifest.Base, base)
+	}
+	paths := make(map[string]bool)
+	for _, file := range manifest.Files {
+		paths[file.Path] = true
+	}
+	if !paths["change.go"] || !paths["untracked.go"] {
+		t.Fatalf("manifest paths=%v, want committed and untracked changes", paths)
 	}
 }
 
@@ -1045,9 +1153,7 @@ func TestReviewSpecPath(t *testing.T) {
 	if !sawSpec {
 		t.Fatal("no spec sweep")
 	}
-	if _, err := os.Stat(filepath.Join(root, ".batuta/reviews/state/feature-spec-delivery.json")); err != nil {
-		t.Fatal(err)
-	}
+	onlyReviewStatePath(t, root)
 }
 
 func TestReviewAllowsUntrackedArtifactDirectory(t *testing.T) {

@@ -52,6 +52,11 @@ func RunLint(ctx context.Context, root, command string, manifest Manifest, runne
 		StderrLimit: 1 << 20,
 	})
 	result.ExitCode = outcome.ExitCode
+	if outcome.StdoutTruncated || outcome.StderrTruncated {
+		err = fmt.Errorf("review: run lint (exit %d): output truncated (stdout=%t, stderr=%t)", outcome.ExitCode, outcome.StdoutTruncated, outcome.StderrTruncated)
+		result.Error = err.Error()
+		return result, err
+	}
 	var exitErr *exec.ExitError
 	if outcome.ExitCode < 0 || outcome.ExitCode > 1 || err != nil && !errors.As(err, &exitErr) {
 		if err == nil {

@@ -13,7 +13,8 @@ batuta review [--base <ref>] [--worktree] [--spec <plan>]
 
 `--base` defaults to the branch point when Batuta can determine one. Use
 `--worktree` to include untracked, non-ignored files as well as tracked and
-staged changes. `--reviewer` overrides routing with an exact
+staged changes; it does not change how the default base is selected.
+`--reviewer` overrides routing with an exact
 `executor/model`; otherwise the optional `review` role in `.batuta/routing.md`
 wins, followed by the general/high lane.
 
@@ -92,15 +93,18 @@ If `.batuta/profile.md` declares a `Lint:` command, Batuta runs it before the
 review sessions and retains diagnostics anchored to selected new-side lines.
 Reviewer findings whose ranges overlap a linter diagnostic are suppressed from
 the merged findings; the report counts these overlaps so automated and human
-signals are not presented twice.
+signals are not presented twice. Truncated lint stdout or stderr fails the
+review instead of treating the retained prefix as complete diagnostics.
 
 ## Incremental rounds
 
 Incremental state lives in `.batuta/reviews/state/<key>.json`. The key is the
-sanitised branch name, with `-<spec-slug>` appended when `--spec` is supplied.
-It is independent of the date and `--out`, so later rounds continue from the
-last covered HEAD even when their report directory changes. The saved HEAD must
-still be an ancestor of the current HEAD.
+sanitised branch name, with `-<spec-slug>` appended when `--spec` is supplied,
+plus a stable hash of the exact branch identity and resolved spec path. Thus
+branch names that sanitise identically and spec files with the same basename do
+not share a checkpoint. The key is independent of the date and `--out`, so later
+rounds continue from the last covered HEAD even when their report directory
+changes. The saved HEAD must still be an ancestor of the current HEAD.
 
 Incomplete cohort or spec coverage keeps the previous checkpoint (the resolved
 base on the first round). Uncovered cohorts are saved as pending file lists with
