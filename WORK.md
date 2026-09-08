@@ -107,6 +107,12 @@
 - [x] Spec conformance and linter overlap → ticked in the plan before the run, commit a9401817c033 (trail: .batuta/runs/2026-09-08-review-task-3.md, plan review, 2026-09-08)
 - [x] batuta review: the subcommand, its artefacts and the printed report → ticked in the plan before the run, commit a9401817c033 (trail: .batuta/runs/2026-09-08-review-task-4.md, plan review, 2026-09-08)
 - [x] docs/review.md and the loop docs name the delivery review → codex (gpt-5.6-sol), commit b4939449bb96 (trail: .batuta/runs/2026-09-08-review-task-5.md, plan review, 2026-09-08)
+- [x] Parking preserves committed executor work: a clean worktree whose HEAD holds unmerged commits gets a recovery ref before any cleanup → codex (gpt-6-astra), commit 69d457b24011 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-1.md, plan hardening-review-fixes, 2026-09-08)
+- [x] Graph transitions persist through the ownership store: limit fallback and integrated candidates → codex (gpt-6-astra), commit 3676943832b7 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-2.md, plan hardening-review-fixes, 2026-09-08)
+- [x] Resume, answer and abandon acquire exclusive delivery ownership before touching the journal → codex (gpt-5.6-sol), commit 0b41238a8268 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-3.md, plan hardening-review-fixes, 2026-09-08)
+- [x] batuta review: stable incremental state, pending cohorts carried over, artefacts never overwrite tracked files, --spec takes paths and archived plans → codex (gpt-6-astra), commit de384b45e017 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-4.md, plan hardening-review-fixes, 2026-09-08)
+- [x] Review package robustness: submodule gitlinks, escaped filenames, strict spec output, lint failures surfaced, overlap needs rule identity → codex (gpt-6-astra), commit 5a849ec5e63f (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-5.md, plan hardening-review-fixes, 2026-09-08)
+- [x] Docs drift: journal kind name, changed-tree error path, missing state semantics → codex (gpt-5.4-mini), commit 022df13c2dee (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-6.md, plan hardening-review-fixes, 2026-09-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
