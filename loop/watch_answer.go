@@ -167,11 +167,11 @@ func (m watchModel) answerNotice() string {
 	if m.navigation.notice == "" {
 		return ""
 	}
-	return wrapAnswerText(m.navigation.notice, max(1, m.style.Width)) + "\n"
+	return wrapAnswerText(sanitizePanelText(m.navigation.notice), max(1, m.style.Width)) + "\n"
 }
 
 func (m watchModel) answerPrompt() string {
-	lines := strings.Split(wrapAnswerText(m.answerQuestion, max(1, m.style.Width-4)), "\n")
+	lines := strings.Split(wrapAnswerText(sanitizePanelText(m.answerQuestion), max(1, m.style.Width-4)), "\n")
 	available := max(1, m.height-panelLineCount(m.answerHelp())-panelLineCount(m.answerNotice())-1)
 	return strings.Join(lines[:min(len(lines), available)], "\n") + "\n"
 }

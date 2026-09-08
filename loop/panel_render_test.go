@@ -322,6 +322,14 @@ func TestRenderUsesSuppliedValues(t *testing.T) {
 	}
 }
 
+func TestPanelTextSanitizer(t *testing.T) {
+	input := "one\n\ttwo\x00\x1b[31mred\x1b[0m \x1b]8;;https://evil.example\a"
+	input += "link\x1b]8;;\x1b\\ end\u009b2Jsafe\u0090hidden\u009c"
+	if got, want := sanitizePanelText(input), "one\n\ttwo red link endsafe"; got != want {
+		t.Fatalf("sanitizePanelText() = %q, want %q", got, want)
+	}
+}
+
 func TestStyleForWriterTerminalColour(t *testing.T) {
 	previous := isTerminal
 	t.Cleanup(func() { isTerminal = previous })

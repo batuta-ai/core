@@ -27,11 +27,18 @@ type deliveryItem struct {
 	description string
 }
 
-func (i deliveryItem) Title() string       { return i.id + " · " + i.slug }
-func (i deliveryItem) Description() string { return i.description }
-func (i deliveryItem) FilterValue() string { return i.id + " " + i.slug + " " + i.state }
+func (i deliveryItem) Title() string       { return sanitizePanelText(i.id + " · " + i.slug) }
+func (i deliveryItem) Description() string { return sanitizePanelText(i.description) }
+func (i deliveryItem) FilterValue() string {
+	return sanitizePanelText(i.id + " " + i.slug + " " + i.state)
+}
 
-func deliveryItems(workspace string, store *journal.Store, now time.Time) ([]list.Item, error) {
+func deliveryItems(workspace string, store *journal.Store, now time.Time, style Style) ([]list.Item, error) {
+	labels := panelLabels[style.Lang]
+	if labels == nil {
+		labels = panelLabels["en"]
+	}
+	renderer := panelRenderer{style: style, g: glyphsFor(style), labels: labels}
 	ids, err := store.List()
 	if err != nil {
 		return nil, err
@@ -46,20 +53,26 @@ func deliveryItems(workspace string, store *journal.Store, now time.Time) ([]lis
 		if json.Unmarshal(first.Detail, &opened) != nil {
 			continue
 		}
-		state := terminalState([]journal.Record{first, last})
+		state := lastTerminal([]journal.Record{last})
 		if state == "" {
 			state = "open"
 		}
 		presence, _ := Presence(workspace, id, now)
 		glyph := "○"
+		if style.Glyphs == "ascii" {
+			glyph = "o"
+		}
 		if presence == "running" {
 			glyph = "●"
+			if style.Glyphs == "ascii" {
+				glyph = "*"
+			}
 		} else if presence == "stale" {
-			glyph = "○ stale"
+			glyph += " " + labels["stale"]
 		}
 		items = append(items, deliveryItem{
 			id: id, slug: opened.Slug, state: state, presence: presence, opened: first.At, updated: last.At,
-			description: fmt.Sprintf("%s · %s · %s ago", state, glyph, pickerAge(now.Sub(last.At))),
+			description: fmt.Sprintf("%s · %s · %s %s", renderer.status(state, false), glyph, pickerAge(now.Sub(last.At)), labels["ago"]),
 		})
 	}
 	sort.SliceStable(items, func(i, j int) bool {

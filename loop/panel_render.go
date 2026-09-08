@@ -628,11 +628,11 @@ func (r panelRenderer) fitLine(line panelLine, n int) panelLine {
 	clean := make([]segment, len(line.segments))
 	for i, part := range line.segments {
 		part.text = strings.Map(func(c rune) rune {
-			if unicode.IsControl(c) && c != '\t' {
+			if c == '\n' || c == '\r' {
 				return ' '
 			}
 			return c
-		}, part.text)
+		}, sanitizePanelText(part.text))
 		clean[i] = part
 	}
 	line.segments = clean
@@ -660,6 +660,92 @@ func (r panelRenderer) fitLine(line panelLine, n int) panelLine {
 	}
 	out.segments = append(out.segments, segment{text: strings.Repeat(" ", max(0, n-used))})
 	return out
+}
+
+func sanitizePanelText(text string) string {
+	const (
+		plain = iota
+		escape
+		escapeIntermediate
+		csi
+		osc
+		oscEscape
+		controlString
+		controlStringEscape
+	)
+	state := plain
+	var clean strings.Builder
+	for _, char := range text {
+		switch state {
+		case escape:
+			switch char {
+			case '[':
+				state = csi
+			case ']':
+				state = osc
+			case 'P', 'X', '^', '_':
+				state = controlString
+			default:
+				if char >= 0x20 && char <= 0x2f {
+					state = escapeIntermediate
+				} else {
+					state = plain
+				}
+			}
+		case escapeIntermediate:
+			if char < 0x20 || char > 0x2f {
+				state = plain
+			}
+		case csi:
+			if char >= 0x40 && char <= 0x7e {
+				state = plain
+			}
+		case osc:
+			if char == '\a' || char == '\u009c' {
+				state = plain
+			} else if char == '\x1b' {
+				state = oscEscape
+			}
+		case oscEscape:
+			if char == '\\' || char == '\u009c' {
+				state = plain
+			} else {
+				state = osc
+			}
+		case controlString:
+			if char == '\u009c' {
+				state = plain
+			} else if char == '\x1b' {
+				state = controlStringEscape
+			}
+		case controlStringEscape:
+			if char == '\\' || char == '\u009c' {
+				state = plain
+			} else {
+				state = controlString
+			}
+		default:
+			switch char {
+			case '\x1b':
+				state = escape
+			case '\u009b':
+				state = csi
+			case '\u009d':
+				state = osc
+			case '\u0090', '\u0098', '\u009e', '\u009f':
+				state = controlString
+			default:
+				if char == '\n' || char == '\t' {
+					clean.WriteRune(char)
+				} else if unicode.IsControl(char) {
+					clean.WriteByte(' ')
+				} else {
+					clean.WriteRune(char)
+				}
+			}
+		}
+	}
+	return clean.String()
 }
 
 func panelWidth(s string) int {

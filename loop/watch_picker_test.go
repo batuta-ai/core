@@ -44,7 +44,7 @@ func TestPickerListsDeliveries(t *testing.T) {
 	pickerDelivery(t, store, "newer-open", "third-plan", now.Add(-5*time.Minute), now.Add(-2*time.Minute), "", routing.GraphTaskRunning)
 	writePresenceFixture(t, root, "newer-open", now)
 
-	items, err := deliveryItems(root, store, now)
+	items, err := deliveryItems(root, store, now, Style{Lang: "en", Glyphs: "unicode", Frame: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +70,94 @@ func TestPickerListsDeliveries(t *testing.T) {
 	picker.SetFilterText("second-plan")
 	if got := picker.VisibleItems(); len(got) != 1 || got[0].(deliveryItem).id != "newer-done" {
 		t.Fatalf("filtered items=%v", got)
+	}
+}
+
+func TestPickerSanitisesItems(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pickerDelivery(t, store, "unsafe-id", "line one\n\tline two\x1b[31mred\x1b[0m \x1b]8;;https://evil.example\x1b\\link\x1b]8;;\x1b\\", now.Add(-time.Minute), now, "", routing.GraphTaskRunning)
+	items, err := deliveryItems(root, store, now, Style{Lang: "en", Glyphs: "unicode", Frame: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items=%d, want 1", len(items))
+	}
+	item := items[0].(deliveryItem)
+	got := item.Title() + " " + item.Description() + " " + item.FilterValue()
+	for _, unsafe := range []string{"\x1b", "[31m", "https://evil.example"} {
+		if strings.Contains(got, unsafe) {
+			t.Fatalf("picker item contains unsafe terminal text %q: %q", unsafe, got)
+		}
+	}
+	for _, want := range []string{"unsafe-id", "line one", "line two", "red link"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("picker item lost safe text %q: %q", want, got)
+		}
+	}
+}
+
+func TestPickerASCIIAndPortuguese(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pickerDelivery(t, store, "active", "plano", now.Add(-time.Hour), now.Add(-2*time.Minute), "", routing.GraphTaskRunning)
+	writePresenceFixture(t, root, "active", now)
+	items, err := deliveryItems(root, store, now, Style{Lang: "pt", Glyphs: "ascii", Frame: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	description := items[0].(deliveryItem).Description()
+	for _, want := range []string{"aberta", "*", "2m atrás"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("ASCII Portuguese description %q missing %q", description, want)
+		}
+	}
+	if strings.ContainsAny(description, "●○✓✗") {
+		t.Fatalf("ASCII picker contains Unicode status glyph: %q", description)
+	}
+}
+
+func TestPickerShowsRealState(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pickerDelivery(t, store, "waiting", "question", now.Add(-3*time.Hour), now.Add(-3*time.Minute), StateWaitingInput, routing.GraphTaskWaitingInput)
+	pickerDelivery(t, store, "canceled", "stopped", now.Add(-2*time.Hour), now.Add(-2*time.Minute), StateCanceled, routing.GraphTaskPending)
+	pickerDelivery(t, store, "open", "active", now.Add(-time.Hour), now.Add(-time.Minute), "", routing.GraphTaskRunning)
+	items, err := deliveryItems(root, store, now, Style{Lang: "en", Glyphs: "unicode", Frame: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items=%d, want 3", len(items))
+	}
+	states := make(map[string]deliveryItem, len(items))
+	for _, item := range items {
+		delivery := item.(deliveryItem)
+		states[delivery.id] = delivery
+	}
+	if first := items[0].(deliveryItem); first.id != "open" || first.state != "open" {
+		t.Fatalf("first item = %q/%q, want open delivery first", first.id, first.state)
+	}
+	for id, want := range map[string]string{"waiting": StateWaitingInput, "canceled": StateCanceled} {
+		if got := states[id].state; got != want {
+			t.Errorf("%s state = %q, want %q", id, got, want)
+		}
+	}
+	if !strings.Contains(states["waiting"].Description(), "waiting answer") || !strings.Contains(states["canceled"].Description(), "canceled") {
+		t.Fatalf("real states not displayed: waiting=%q canceled=%q", states["waiting"].Description(), states["canceled"].Description())
 	}
 }
 

@@ -102,6 +102,31 @@ func TestAnswerOverlayKeyLine(t *testing.T) {
 	}
 }
 
+func TestOverlaySanitisesQuestion(t *testing.T) {
+	m, _ := answerWatch(t)
+	m.panel.Detail.Question = "line one\n\tline two\x1b[31mred\x1b[0m \x1b]8;;https://evil.example\x1b\\link\x1b]8;;\x1b\\"
+	m.navigation.notice = "retry\x1b[2J now"
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m.navigation.notice = "retry\x1b[2J now"
+	view := m.View().Content
+	for _, unsafe := range []string{"\x1b[31mred", "[2J", "https://evil.example"} {
+		if strings.Contains(view, unsafe) {
+			t.Fatalf("overlay contains unsafe terminal text %q:\n%s", unsafe, view)
+		}
+	}
+	for _, want := range []string{"line one", "line two", "red link", "retry now"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("overlay lost safe text %q:\n%s", want, view)
+		}
+	}
+	m.answering = false
+	m.navigation.notice = "plain\x1b]8;;https://evil.example\x1b\\notice\x1b]8;;\x1b\\"
+	view = m.View().Content
+	if strings.Contains(view, "evil.example") || !strings.Contains(view, "plainnotice") {
+		t.Fatalf("non-answer overlay notice was not sanitised:\n%s", view)
+	}
+}
+
 func TestAnswerOverlaySubmits(t *testing.T) {
 	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEnter, Mod: tea.ModCtrl}, {Code: tea.KeyEnter, Mod: tea.ModAlt}, {Code: 's', Mod: tea.ModCtrl}} {
 		t.Run(key.String(), func(t *testing.T) {

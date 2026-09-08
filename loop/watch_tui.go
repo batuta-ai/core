@@ -388,7 +388,7 @@ func (m watchModel) supplementView() string {
 		content = panelLegend(m.renderStyle())
 	}
 	if m.navigation.notice != "" {
-		content += m.navigation.notice + "\n"
+		content += sanitizePanelText(m.navigation.notice) + "\n"
 	}
 	return content
 }
@@ -456,7 +456,7 @@ func (m watchModel) View() tea.View {
 }
 
 func (m *watchModel) openPicker() error {
-	items, err := deliveryItems(m.workspace, m.store, m.currentTime)
+	items, err := deliveryItems(m.workspace, m.store, m.currentTime, m.style)
 	if err != nil {
 		return err
 	}
