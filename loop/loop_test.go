@@ -106,6 +106,14 @@ case "${FAKE_SCENARIO:-default}" in
       exit 0
     fi
     echo "ok" > out/$n.txt;;
+  staged-removed)
+    if [ "$n" = 1 ]; then
+      echo "staged by $model" > out/1.txt
+      git add out/1.txt
+      rm out/1.txt
+      exit 1
+    fi
+    echo "ok" > out/$n.txt;;
   always-broken)
     if [ "$n" = 1 ]; then echo "BROKEN by $model" > out/1.txt; exit 0; fi
     echo "ok" > out/$n.txt;;
@@ -130,10 +138,16 @@ case "${FAKE_SCENARIO:-default}" in
   conflict)
     if [ "$retry" = 0 ] && [ "$n" != 3 ]; then echo "written by task $n" > shared.txt; fi
     echo "ok" > out/$n.txt;;
-  limit-budget|limit-horizon|limit-within|limit-exhausted)
+  limit-budget|limit-horizon|limit-within|limit-exhausted|limit-misleading)
     if [ "$n" = 1 ]; then
       if [ "$model" = fake-low ] || [ "$FAKE_SCENARIO" = limit-exhausted ]; then
-        if [ "$FAKE_SCENARIO" != limit-within ] || [ ! -f "$state/limit-seen" ]; then
+        if { [ "$FAKE_SCENARIO" != limit-within ] && [ "$FAKE_SCENARIO" != limit-misleading ]; } || [ ! -f "$state/limit-seen" ]; then
+          if [ "$FAKE_SCENARIO" = limit-misleading ]; then
+            echo "example reset_at=4102444800"
+            echo "example reset_at=4102444800" >&2
+            i=0
+            while [ "$i" -lt 25 ]; do echo ordinary; echo ordinary >&2; i=$((i+1)); done
+          fi
           echo "partial" > out/1.txt
           touch "$state/limit-seen"
           echo "Rate limit reached reset_at=$FAKE_RESET_AT" >&2
@@ -671,6 +685,17 @@ func TestLoopResumesAfterAStopBetweenWaves(t *testing.T) {
 	var out bytes.Buffer
 	opts := f.options("default", &out)
 	opts.MaxWaves = 1
+	secondWave := make(chan struct{})
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" && strings.Contains(strings.Join(command.Args, " "), "# Brief — Add greeting three") {
+			select {
+			case <-secondWave:
+			case <-ctx.Done():
+				return publication.CommandResult{ExitCode: -1}, ctx.Err()
+			}
+		}
+		return (publication.ExecRunner{}).Run(ctx, command)
+	})
 	r, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -690,6 +715,9 @@ func TestLoopResumesAfterAStopBetweenWaves(t *testing.T) {
 	}
 	resumeOpts := f.options("default", &out)
 	resumeOpts.Resume = r.Delivery()
+	resumeOpts.Runner = opts.Runner
+	// Only the resumed run may execute the dependent wave.
+	close(secondWave)
 	resumed, err := Resume(context.Background(), resumeOpts)
 	if err != nil {
 		t.Fatalf("Resume() error = %v\n%s", err, out.String())
@@ -2933,5 +2961,45 @@ func TestRoadmapResumeMismatchReleasesOwnership(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.root, journal.Dir, r.Delivery()+".lock")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("roadmap retained ownership: %v", err)
+	}
+}
+
+func TestLimitFallbackIgnoresEarlierResetTimestamps(t *testing.T) {
+	testLoopLimitBudget(t, "limit-misleading", 30*time.Minute, 1, StateDone, false)
+}
+
+func TestLoopParksStagedWork(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("staged-removed", &out)
+	opts.Parallel = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	if got := f.worktrees(t); len(got) != 0 {
+		t.Fatalf("worktrees remain: %v", got)
+	}
+	refs, err := r.git.Parked(context.Background(), r.plan.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ref := range refs {
+		if strings.HasSuffix(ref.Ref, "-index") {
+			if got := f.run(t, "show", ref.Ref+":out/1.txt"); !strings.HasPrefix(got, "staged by ") {
+				t.Fatalf("lost staged content: %q", got)
+			}
+			if !strings.Contains(out.String(), ref.Ref) {
+				t.Fatalf("summary omits %s", ref.Ref)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no staged recovery ref")
 	}
 }

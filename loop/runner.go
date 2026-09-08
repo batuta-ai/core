@@ -136,6 +136,8 @@ type Runner struct {
 	warnings   []string
 	journaled  bool
 	ownership  *deliveryOwnership
+
+	pendingFinish *terminalDetail
 }
 
 // Parallel attempts share the output sink, which may be an unguarded buffer.
@@ -279,6 +281,12 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 	var opened openedDetail
 	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
 		return nil, fmt.Errorf("loop: journal: %w", err)
+	}
+	if detail := pendingFinalization(records); detail != nil {
+		if err := r.restoreFinalization(records, opened, detail); err != nil {
+			return nil, err
+		}
+		return r, nil
 	}
 	if err := r.loadPlan(opened.Slug); err != nil {
 		return nil, err
@@ -740,6 +748,10 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 	}
 	if err := r.recordPendingPresenceTakeover(); err != nil {
 		return "", err
+	}
+
+	if r.pendingFinish != nil {
+		return r.retryFinalization(ctx)
 	}
 
 	for {

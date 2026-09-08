@@ -23,10 +23,16 @@ import (
 	"github.com/batuta-ai/core/worktree"
 )
 
-// finish records the terminal state and, for final states, writes the
-// bookkeeping the doctrine expects: ticks in the plan, WORK.md lines, one
-// commit. Non-final states (waiting for an answer, canceled) leave the tree
-// untouched so the integration chain can continue on --resume.
+type terminalDetail struct {
+	State          string            `json:"state"`
+	Summary        Summary           `json:"summary"`
+	CleanupPending bool              `json:"cleanup_pending,omitempty"`
+	CleanupError   string            `json:"cleanup_error,omitempty"`
+	Worktrees      []attemptWorktree `json:"retained_worktrees,omitempty"`
+}
+
+// finish snapshots executor work before cleanup, then persists the retained
+// refs and bookkeeping result. Cleanup failures remain retryable.
 func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 	if err := r.snapshotWorktrees(ctx); err != nil {
 		return state, err
@@ -36,33 +42,101 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 		return state, err
 	}
 	r.mu.Lock()
-	r.terminal = state
-	summary := r.summaryLocked()
-	summary.Parked = parked
-	err = r.record(KindTerminal, "", map[string]any{"state": state, "summary": summary})
+	detail := terminalDetail{State: state, Summary: r.summaryLocked()}
+	detail.Summary.Parked = parked
 	r.mu.Unlock()
-	if err != nil {
-		return state, err
-	}
 	final := state == StateDone || state == StateBlocked || state == StateAbandoned
+	var cleanupErr error
 	if final {
 		if !r.opts.KeepWorktrees {
+			seen := map[string]bool{}
 			for _, wt := range r.worktrees {
-				if err := r.removeWorktree(ctx, wt.Root, wt.Branch); err != nil {
-					return state, err
+				if !seen[wt.Root] {
+					detail.Worktrees = append(detail.Worktrees, wt)
+					seen[wt.Root] = true
 				}
 			}
+			slices.SortFunc(detail.Worktrees, func(a, b attemptWorktree) int { return strings.Compare(a.Root, b.Root) })
 		}
-		summary.Parked, err = r.git.CleanParked(ctx, r.plan.Slug, r.branch)
-		if err != nil {
-			return state, err
-		}
-		if err := r.bookkeeping(ctx, state, summary); err != nil {
-			return state, err
+		cleanupErr = r.cleanFinalization(ctx, &detail)
+		if err := r.bookkeeping(ctx, state, detail.Summary); err != nil {
+			r.printFinalization(detail)
+			return state, errors.Join(cleanupErr, err)
 		}
 	}
-	r.printSummary(state, summary)
-	return state, nil
+	return r.recordFinalization(detail, cleanupErr)
+}
+
+func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) error {
+	var retained []attemptWorktree
+	var cleanupErr error
+	for _, wt := range detail.Worktrees {
+		if err := r.removeWorktree(ctx, wt.Root, wt.Branch); err != nil {
+			retained = append(retained, wt)
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("loop: retain worktree %s: %w", wt.Root, err))
+		}
+	}
+	detail.Worktrees = retained
+	_, cleanErr := r.git.CleanParked(ctx, r.plan.Slug, r.branch)
+	// CleanParked can fail after deleting some refs. Always report what remains.
+	parked, listErr := r.git.Parked(ctx, r.plan.Slug)
+	if listErr == nil {
+		detail.Summary.Parked = parked
+	}
+	cleanupErr = errors.Join(cleanupErr, cleanErr, listErr)
+	detail.CleanupPending = cleanupErr != nil
+	detail.CleanupError = errorString(cleanupErr)
+	return cleanupErr
+}
+
+func (r *Runner) recordFinalization(detail terminalDetail, cleanupErr error) (string, error) {
+	r.mu.Lock()
+	r.terminal = detail.State
+	err := r.record(KindTerminal, "", detail)
+	r.mu.Unlock()
+	r.printFinalization(detail)
+	return detail.State, errors.Join(cleanupErr, err)
+}
+
+func (r *Runner) printFinalization(detail terminalDetail) {
+	r.printSummary(detail.State, detail.Summary)
+	if detail.CleanupPending {
+		fmt.Fprintf(r.out, "cleanup pending: %s\nretry with batuta loop --resume %s or --abandon %s\n", detail.CleanupError, r.delivery, r.delivery)
+	}
+}
+
+func pendingFinalization(records []journal.Record) *terminalDetail {
+	for i := len(records) - 1; i >= 0; i-- {
+		if records[i].Kind != KindTerminal {
+			continue
+		}
+		var detail terminalDetail
+		if json.Unmarshal(records[i].Detail, &detail) == nil && detail.CleanupPending {
+			return &detail
+		}
+		return nil
+	}
+	return nil
+}
+
+func (r *Runner) restoreFinalization(records []journal.Record, opened openedDetail, detail *terminalDetail) error {
+	if r.branch != opened.Branch {
+		return fmt.Errorf("loop: delivery %s runs on branch %s; %s is checked out", r.opts.Resume, opened.Branch, r.branch)
+	}
+	var graph routing.DeliveryGraph
+	if err := json.Unmarshal(records[len(records)-1].Graph, &graph); err != nil {
+		return err
+	}
+	r.graph = &graph
+	r.delivery, r.plan.Slug = r.opts.Resume, opened.Slug
+	r.journaled, r.pendingFinish = true, detail
+	return nil
+}
+
+func (r *Runner) retryFinalization(ctx context.Context) (string, error) {
+	detail := *r.pendingFinish
+	err := r.cleanFinalization(ctx, &detail)
+	return r.recordFinalization(detail, err)
 }
 
 func (r *Runner) snapshotWorktrees(ctx context.Context) error {
@@ -514,6 +588,9 @@ func (r *Runner) openDeliveries(slug string) []string {
 }
 
 func terminalState(records []journal.Record) string {
+	if pendingFinalization(records) != nil {
+		return ""
+	}
 	state := ""
 	for _, record := range records {
 		if record.Kind != KindTerminal {
@@ -690,6 +767,12 @@ func Abandon(ctx context.Context, opts Options) (state string, abandonErr error)
 	var opened openedDetail
 	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
 		return "", err
+	}
+	if detail := pendingFinalization(records); detail != nil {
+		if err := r.restoreFinalization(records, opened, detail); err != nil {
+			return "", err
+		}
+		return r.retryFinalization(ctx)
 	}
 	if state := terminalState(records); state != "" {
 		return "", fmt.Errorf("loop: delivery %s already ended: %s", opts.Resume, state)

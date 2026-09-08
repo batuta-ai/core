@@ -185,7 +185,8 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 			return err
 		}
 		now := r.now()
-		result.ResetAt = executor.ResetTime(string(result.Stdout)+"\n"+string(result.Stderr), now)
+		// Match Adapter.Outcome's bounded streams while using the loop clock.
+		result.ResetAt = executor.ResetTime(executor.Tail(result.Stdout, 20)+"\n"+executor.Tail(result.Stderr, 20), now)
 		if waits >= r.opts.MaxLimitWaits || (!result.ResetAt.IsZero() && result.ResetAt.Sub(now) > r.opts.LimitHorizon) {
 			switched, err := r.fallbackLimited(&ac, result.ResetAt, waits)
 			if err != nil {

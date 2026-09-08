@@ -202,9 +202,9 @@ func (p GitProvider) Remove(ctx context.Context, path, branch string) error {
 	return first
 }
 
-// Park saves the working tree under ref without changing HEAD, the real
-// index, or any files. A tree already protected by a recovery ref or
-// integration history needs no new snapshot.
+// Park saves the working tree under ref and distinct staged contents under
+// ref+"-index" without changing HEAD, the real index, or any files. A tree
+// already protected by a recovery ref or integration history needs no new snapshot.
 func (p GitProvider) Park(ctx context.Context, root, ref, message string) (string, error) {
 	if !strings.HasPrefix(ref, "refs/batuta/parked/") || strings.TrimSpace(message) == "" {
 		return "", errors.New("worktree: invalid park request")
@@ -233,6 +233,38 @@ func (p GitProvider) Park(ctx context.Context, root, ref, message string) (strin
 		return "", err
 	}
 	tree := strings.TrimSpace(string(treeResult.Stdout))
+	indexPath, err := p.run(ctx, root, "rev-parse", "--git-path", "index")
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(indexPath.Stdout))
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	index, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err == nil {
+		// write-tree updates the index cache; use a copy to keep the real index intact.
+		stagedPath := filepath.Join(scratch, "staged-index")
+		if err := os.WriteFile(stagedPath, index, 0o600); err != nil {
+			return "", err
+		}
+		staged, err := p.runEnvironment(ctx, root, nil, []string{"GIT_INDEX_FILE=" + stagedPath}, "write-tree")
+		if err != nil {
+			return "", err
+		}
+		if stagedTree := strings.TrimSpace(string(staged.Stdout)); stagedTree != tree {
+			if _, err := p.parkTree(ctx, root, ref+"-index", message+" (index)", head, stagedTree); err != nil {
+				return "", err
+			}
+		}
+	}
+	return p.parkTree(ctx, root, ref, message, head, tree)
+}
+
+func (p GitProvider) parkTree(ctx context.Context, root, ref, message, head, tree string) (string, error) {
 	old, err := p.run(ctx, p.Root, "show-ref", "--verify", "--hash", "--", ref)
 	if err == nil {
 		previous := strings.TrimSpace(string(old.Stdout))
@@ -273,6 +305,7 @@ func (p GitProvider) Park(ctx context.Context, root, ref, message string) (strin
 		}
 		return head, nil
 	}
+	var env []string
 	for _, field := range []struct{ key, author, committer string }{
 		{"user.name", "GIT_AUTHOR_NAME=", "GIT_COMMITTER_NAME="},
 		{"user.email", "GIT_AUTHOR_EMAIL=", "GIT_COMMITTER_EMAIL="},

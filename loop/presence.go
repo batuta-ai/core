@@ -250,6 +250,9 @@ func journalPresenceTakeover(workspace, delivery string, now time.Time, previous
 	if err != nil {
 		return false, err
 	}
+	if len(records) == 0 {
+		return false, errors.New("loop: cannot take over an empty journal")
+	}
 	detail, err := json.Marshal(newPresenceTakeoverDetail(previous, current))
 	if err != nil {
 		return false, err

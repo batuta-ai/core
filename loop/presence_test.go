@@ -430,3 +430,31 @@ func TestConcurrentStaleTakeoversLeaveOneOwner(t *testing.T) {
 		}
 	}
 }
+
+func TestTakeoverWithEmptyJournalFails(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.Path("delivery"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePresenceFixture(t, root, "delivery", now.Add(-presenceFresh-time.Second))
+	ownership, err := acquireDeliveryOwnership(context.Background(), root, "delivery", now)
+	if ownership != nil {
+		_ = ownership.stop()
+		t.Fatal("acquired empty delivery")
+	}
+	if err == nil || !strings.Contains(err.Error(), "empty journal") {
+		t.Fatalf("takeover error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, journal.Dir, "delivery.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement lock remains: %v", err)
+	}
+	records, err := store.Read("delivery")
+	if err != nil || len(records) != 0 {
+		t.Fatalf("journal changed: %v, %v", records, err)
+	}
+}

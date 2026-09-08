@@ -413,3 +413,40 @@ func (r *boundedHistoryRunner) Run(_ context.Context, command publication.Comman
 		return publication.CommandResult{}, fmt.Errorf("unexpected git command %q", command.Args[0])
 	}
 }
+
+func TestParkPreservesStagedIndex(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	branch := "batuta/demo/task-1-e1"
+	root, err := p.Add(ctx, "demo-task-1-e1", branch, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(root, "staged.txt")
+	if err := os.WriteFile(path, []byte("only in the index\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.run(ctx, root, "add", "staged.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	ref := "refs/batuta/parked/demo/task-1-e1"
+	if _, err := p.Park(ctx, root, ref, "wip: park"); err != nil {
+		t.Fatal(err)
+	}
+	refs, err := p.Parked(ctx, "demo")
+	if err != nil || len(refs) != 1 {
+		t.Fatalf("staged recovery refs = %v, %v", refs, err)
+	}
+	if again, err := p.Park(ctx, root, ref, "wip: park"); err != nil || again != "" {
+		t.Fatalf("repeated park = %s, %v", again, err)
+	}
+	if err := p.Remove(ctx, root, branch); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(p.Show(ctx, p.Root, refs[0].Ref, "staged.txt")); got != "only in the index\n" {
+		t.Fatalf("lost staged work: %q", got)
+	}
+}
