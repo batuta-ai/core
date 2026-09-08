@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.0-beta.19](https://github.com/batuta-ai/core/compare/v1.1.0-beta.18...v1.1.0-beta.19) (2026-09-08)
+
+
+### Features
+
+* a paint layer in the renderer: segments, line kinds, one SGR table; ([2c043ad](https://github.com/batuta-ai/core/commit/2c043add7e708f876b1ce532671bbc74cb961715))
+* animation: spinner on running work, eased progress bars ([02f8ccc](https://github.com/batuta-ai/core/commit/02f8ccc499a12cde51524a56b044ab50bd207867))
+* bars, header, boxes, detail, keys and log painted ([24a971b](https://github.com/batuta-ai/core/commit/24a971b4cbec8fe25f67c6804f3654a4d23627df))
+* log panel scrolling and mouse wheel ([c321435](https://github.com/batuta-ai/core/commit/c321435b5c63ea1601cccefa077726f4b5ee9daa))
+* loop.Watch runs the program; the hand-rolled terminal code goes ([bfb6d45](https://github.com/batuta-ai/core/commit/bfb6d45b3847bacbc57362945a7c2fa82480081f))
+* **loop:** batuta watch on Bubble Tea v2 — event-driven, styled, answer in place, delivery picker ([4dde022](https://github.com/batuta-ai/core/commit/4dde022238b6ae0cadf0aa4bab25d59924c9d20b))
+* submitting an answer resumes the loop detached; the watch keeps foll ([d3e9a4a](https://github.com/batuta-ai/core/commit/d3e9a4a4c13d79eda70b9e207efb320e2611bb32))
+* the answer editor: r opens a textarea overlay, ctrl+enter, alt+enter ([7b4fbbe](https://github.com/batuta-ai/core/commit/7b4fbbeec11e39e0a1ee2f7d05eee704443c438a))
+* the delivery picker: d opens a list of deliveries; the watch without ([be0df8e](https://github.com/batuta-ai/core/commit/be0df8ee5ff4a3a40cce52a2365e610e3692d748))
+* the program redraws only on change: journal poller, log tail, clock ([83d4548](https://github.com/batuta-ai/core/commit/83d45487e8a05536b7bf1f83eab00db9737942e1))
+* the watch is a Bubble Tea model over PanelModel and Render ([35ec592](https://github.com/batuta-ai/core/commit/35ec592ad164f8ae63fbc87c41e9333cfe518996))
+* the watch never quits by itself and shows loop presence from a lock ([2c97f77](https://github.com/batuta-ai/core/commit/2c97f7735a8fc570976e2e01a5e16fdf426b6282))
+
+
+### Bug Fixes
+
+* **loop:** watch frames never wrap or overflow the terminal ([3e24c94](https://github.com/batuta-ai/core/commit/3e24c94dbe71a746b2b2ad4e07d6f8632d34a519))
+
 ## [1.1.0-beta.18](https://github.com/batuta-ai/core/compare/v1.1.0-beta.17...v1.1.0-beta.18) (2026-09-07)
 
 
