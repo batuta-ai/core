@@ -3,7 +3,7 @@ package loop
 var panelLabels = map[string]map[string]string{
 	"en": {
 		"answer_placeholder": "Type your answer...",
-		"answer_keys":        "ctrl+enter / alt+enter / ctrl+s send · esc cancel · enter newline",
+		"answer_keys":        "enter send · ctrl+j newline · esc cancel",
 		"answer_empty":       "The answer is empty.",
 
 		"loop_run":    "loop ●",
@@ -70,7 +70,7 @@ var panelLabels = map[string]map[string]string{
 	},
 	"pt": {
 		"answer_placeholder": "Digite sua resposta...",
-		"answer_keys":        "ctrl+enter / alt+enter / ctrl+s envia · esc cancela · enter nova linha",
+		"answer_keys":        "enter envia · ctrl+j nova linha · esc cancela",
 		"answer_empty":       "A resposta está vazia.",
 
 		"loop_run":    "loop ●",

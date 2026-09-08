@@ -131,6 +131,23 @@ func TestRenderLegendMentionsPresence(t *testing.T) {
 	}
 }
 
+func TestRenderLegendMentionsAnswerKeys(t *testing.T) {
+	for _, test := range []struct {
+		lang string
+		want string
+	}{
+		{lang: "en", want: "enter send · ctrl+j newline · esc cancel"},
+		{lang: "pt", want: "enter envia · ctrl+j nova linha · esc cancela"},
+	} {
+		t.Run(test.lang, func(t *testing.T) {
+			legend := panelLegend(Style{Width: 120, Lang: test.lang, Glyphs: "unicode"})
+			if !strings.Contains(legend, test.want) {
+				t.Fatalf("legend is missing %q:\n%s", test.want, legend)
+			}
+		})
+	}
+}
+
 type keyFrameWriter struct{ write func(string) }
 
 func (w *keyFrameWriter) Write(p []byte) (int, error) { w.write(string(p)); return len(p), nil }

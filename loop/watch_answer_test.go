@@ -75,7 +75,7 @@ func TestAnswerOverlayOpens(t *testing.T) {
 			}
 		}
 	}
-	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
 	m, _ = updateWatch(t, m, tea.PasteMsg{Content: "second line"})
 	m, _ = updateWatch(t, m, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	if got := m.answerEditor.Value(); got != "qlfrR?o\nsecond line" || m.panel.Detail.Task != selected || m.focus != focus || m.navigation.legend {
@@ -88,9 +88,9 @@ func TestAnswerOverlayKeyLine(t *testing.T) {
 		m, _ := answerWatch(t)
 		m.style.Lang = lang
 		m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
-		want, placeholder := "ctrl+enter / alt+enter / ctrl+s send · esc cancel · enter newline", "Type your answer..."
+		want, placeholder := "enter send · ctrl+j newline · esc cancel", "Type your answer..."
 		if lang == "pt" {
-			want, placeholder = "ctrl+enter / alt+enter / ctrl+s envia · esc cancela · enter nova linha", "Digite sua resposta..."
+			want, placeholder = "enter envia · ctrl+j nova linha · esc cancela", "Digite sua resposta..."
 		}
 		view := m.View()
 		if !strings.Contains(view.Content, want) || m.answerEditor.Placeholder != placeholder {
@@ -98,6 +98,9 @@ func TestAnswerOverlayKeyLine(t *testing.T) {
 		}
 		if !view.KeyboardEnhancements.ReportEventTypes {
 			t.Fatal("view did not request keyboard enhancements")
+		}
+		if got := m.answerEditor.KeyMap.InsertNewline.Keys(); !slices.Equal(got, []string{"ctrl+j", "shift+enter"}) {
+			t.Fatalf("newline keys = %q", got)
 		}
 	}
 }
@@ -127,8 +130,17 @@ func TestOverlaySanitisesQuestion(t *testing.T) {
 	}
 }
 
-func TestAnswerOverlaySubmits(t *testing.T) {
-	for _, key := range []tea.KeyPressMsg{{Code: tea.KeyEnter, Mod: tea.ModCtrl}, {Code: tea.KeyEnter, Mod: tea.ModAlt}, {Code: 's', Mod: tea.ModCtrl}} {
+func TestAnswerOverlayEnterSubmits(t *testing.T) {
+	testAnswerOverlaySubmits(t, []tea.KeyPressMsg{{Code: tea.KeyEnter}, {Code: 'd', Mod: tea.ModCtrl}})
+}
+
+func TestAnswerOverlayLegacySubmitKeys(t *testing.T) {
+	testAnswerOverlaySubmits(t, []tea.KeyPressMsg{{Code: tea.KeyEnter, Mod: tea.ModCtrl}, {Code: tea.KeyEnter, Mod: tea.ModAlt}, {Code: 's', Mod: tea.ModCtrl}})
+}
+
+func testAnswerOverlaySubmits(t *testing.T, keys []tea.KeyPressMsg) {
+	t.Helper()
+	for _, key := range keys {
 		t.Run(key.String(), func(t *testing.T) {
 			f := setup(t)
 			var out bytes.Buffer
@@ -159,6 +171,28 @@ func TestAnswerOverlaySubmits(t *testing.T) {
 				t.Fatalf("recorded answer = %q, %v", detail.Answer, err)
 			}
 		})
+	}
+}
+
+func TestAnswerOverlayCtrlJNewline(t *testing.T) {
+	testAnswerOverlayNewline(t, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl})
+}
+
+func TestAnswerOverlayShiftEnterNewline(t *testing.T) {
+	testAnswerOverlayNewline(t, tea.KeyPressMsg{Code: tea.KeyEnter, Mod: tea.ModShift})
+}
+
+func testAnswerOverlayNewline(t *testing.T, key tea.KeyPressMsg) {
+	t.Helper()
+	m, store := answerWatch(t)
+	before, _ := store.Read("demo")
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m.answerEditor.SetValue("first line")
+	m, _ = updateWatch(t, m, key)
+	m, _ = updateWatch(t, m, tea.PasteMsg{Content: "second line"})
+	after, _ := store.Read("demo")
+	if !m.answering || !m.answerEditor.Focused() || m.answerEditor.Value() != "first line\nsecond line" || len(after) != len(before) {
+		t.Fatalf("%s did not insert newline: answering=%v value=%q", key.String(), m.answering, m.answerEditor.Value())
 	}
 }
 

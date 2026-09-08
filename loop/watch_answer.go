@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 )
@@ -55,6 +56,7 @@ func (m *watchModel) openAnswer() tea.Cmd {
 	m.answerEditor.ShowLineNumbers = false
 	m.answerEditor.Prompt = ""
 	m.answerEditor.MaxWidth = 0
+	m.answerEditor.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j", "shift+enter"))
 	cmd := m.answerEditor.Focus()
 	m.refresh(false)
 	return cmd
@@ -67,7 +69,7 @@ func (m watchModel) updateAnswerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.closeAnswer()
-	case "ctrl+enter", "alt+enter", "ctrl+s":
+	case "enter", "ctrl+d", "ctrl+enter", "alt+enter", "ctrl+s":
 		text := strings.TrimSpace(m.answerEditor.Value())
 		if text == "" {
 			m.navigation.notice = m.answerLabel("answer_empty")

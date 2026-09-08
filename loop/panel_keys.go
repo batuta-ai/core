@@ -142,6 +142,7 @@ func panelLegend(style Style) string {
 	r := panelRenderer{style: style, g: glyphsFor(style), labels: panelLabels[style.Lang]}
 	rows := []string{r.g.ok + " " + labels[1] + "   " + r.g.fail + " " + labels[2], r.g.pend + " " + labels[3], labels[4]}
 	rows = append(rows, labels[5:]...)
+	rows = append(rows, r.labels["answer_keys"])
 	rows = append(rows, r.labels["color_done"], r.labels["color_run"], r.labels["color_fail"], r.labels["color_wait"], r.labels["color_pend"], r.labels["color_pick"])
 	return strings.Join(r.box(labels[0], rows, style.Width), "\n") + "\n"
 }

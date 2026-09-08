@@ -232,8 +232,9 @@ exit `1` with the reason on stderr.
   command, `d` to open the delivery picker without leaving the watch, `o` to
   open the selected log with `$PAGER`, `?` for the legend, `l` to move focus
   between the task table and run log, and `q` (or Ctrl+C) to quit. In the
-  answer editor, Enter inserts a newline; `ctrl+enter`, `alt+enter`, or `ctrl+s`
-  submits the answer; and Esc cancels. A submitted answer resumes the loop as
+  answer editor, Enter submits the answer; `ctrl+j` or `shift+enter` inserts a
+  newline; `ctrl+d`, `ctrl+enter`, `alt+enter`, and `ctrl+s` also submit; and
+  Esc cancels. A submitted answer resumes the loop as
   a detached process and writes its output to
   `.batuta/runs/loop-<delivery>.log`. The mouse wheel scrolls whichever panel
   has focus; Up/Down and PgUp/PgDn do the same, and End returns the focused log
