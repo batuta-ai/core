@@ -1842,6 +1842,128 @@ func TestResumeRefusesLiveRunner(t *testing.T) {
 	}
 }
 
+func contendResumes(t *testing.T, f fixture, delivery string) (*Runner, []error) {
+	t.Helper()
+	start := make(chan struct{})
+	type result struct {
+		runner *Runner
+		err    error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			opts := f.options("default", &bytes.Buffer{})
+			opts.Resume = delivery
+			runner, err := Resume(context.Background(), opts)
+			results <- result{runner: runner, err: err}
+		}()
+	}
+	close(start)
+
+	var winner *Runner
+	var errs []error
+	for range 2 {
+		got := <-results
+		if got.err != nil {
+			errs = append(errs, got.err)
+			continue
+		}
+		if winner != nil {
+			t.Fatal("both concurrent Resume calls acquired the delivery")
+		}
+		winner = got.runner
+	}
+	return winner, errs
+}
+
+func TestConcurrentResumesLeaveOneOwner(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	winner, errs := contendResumes(t, f, r.Delivery())
+	if winner == nil || len(errs) != 1 || !strings.Contains(errs[0].Error(), fmt.Sprintf("owned by pid %d", os.Getpid())) {
+		t.Fatalf("winner = %v, errors = %v", winner != nil, errs)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if state, err := winner.Run(ctx); err != nil || state != StateCanceled {
+		t.Fatalf("release owner with canceled Run() = %s, %v", state, err)
+	}
+}
+
+func TestJournalChainValidAfterContendedResume(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	winner, errs := contendResumes(t, f, r.Delivery())
+	if winner == nil || len(errs) != 1 {
+		t.Fatalf("winner = %v, errors = %v", winner != nil, errs)
+	}
+	if state, err := winner.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("winning Run() = %s, %v", state, err)
+	}
+	readJournal(t, f, r.Delivery())
+}
+
+func TestAnswerAndAbandonTakeOwnership(t *testing.T) {
+	t.Run("answer", func(t *testing.T) {
+		f := setup(t)
+		var out bytes.Buffer
+		r, err := New(context.Background(), f.options("ask", &out))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+			t.Fatalf("Run() = %s, %v", state, err)
+		}
+		at := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+		writePresenceFixture(t, f.root, r.Delivery(), at)
+		if _, err := answer(f.root, "1", "hello", at); err == nil || !strings.Contains(err.Error(), "owned by pid 1") {
+			t.Fatalf("Answer() error = %v", err)
+		}
+	})
+
+	t.Run("abandon", func(t *testing.T) {
+		f := setup(t)
+		var out bytes.Buffer
+		opts := f.options("default", &out)
+		opts.MaxWaves = 1
+		r, err := New(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+			t.Fatalf("Run() error = %v", err)
+		}
+		at := time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC)
+		writePresenceFixture(t, f.root, r.Delivery(), at)
+		abandonOpts := f.options("default", &out)
+		abandonOpts.Resume = r.Delivery()
+		if _, err := Abandon(context.Background(), abandonOpts); err == nil || !strings.Contains(err.Error(), "owned by pid 1") {
+			t.Fatalf("Abandon() error = %v", err)
+		}
+	})
+}
+
 func TestAbandonProceedsWithStaleLock(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer

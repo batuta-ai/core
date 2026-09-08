@@ -582,25 +582,52 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 		if attempt.Question == nil {
 			continue
 		}
-		if err := refuseLiveDelivery(root, id, now); err != nil {
+		ownership, err := acquireDeliveryOwnership(context.Background(), root, id, now)
+		if err != nil {
 			return "", err
+		}
+		records, err = store.Read(id)
+		if err != nil {
+			return "", errors.Join(err, ownership.stop())
+		}
+		last = records[len(records)-1]
+		graph = routing.DeliveryGraph{}
+		if json.Unmarshal(last.Graph, &graph) != nil {
+			if err := ownership.stop(); err != nil {
+				return "", err
+			}
+			continue
+		}
+		task = graphTask(&graph, taskID)
+		if terminalState(records) != "" || task == nil || task.State != routing.GraphTaskWaitingInput || len(task.Attempts) == 0 {
+			if err := ownership.stop(); err != nil {
+				return "", err
+			}
+			continue
+		}
+		attempt = task.Attempts[len(task.Attempts)-1]
+		if attempt.Question == nil {
+			if err := ownership.stop(); err != nil {
+				return "", err
+			}
+			continue
 		}
 		answer := routing.TaskAnswer{
 			QuestionOperationID: attempt.Question.RequestID, LoopRunID: attempt.ChildRunID,
 			Generation: 1, NodeID: "loop", ItemIndex: 0, Value: text,
 		}
 		if _, _, err := graph.RecordAnswer(taskID, attempt.Execution, answer, now); err != nil {
-			return "", fmt.Errorf("loop: record answer: %w", err)
+			return "", errors.Join(fmt.Errorf("loop: record answer: %w", err), ownership.stop())
 		}
 		graphJSON, _ := json.Marshal(graph)
 		detail, _ := json.Marshal(map[string]any{"execution": attempt.Execution, "answer": text, "question": attempt.Question.Prompt})
 		if _, err := store.Append(id, journal.Record{Kind: KindAnswer, TaskID: taskID, Detail: detail, Graph: graphJSON}); err != nil {
-			return "", err
+			return "", errors.Join(err, ownership.stop())
 		}
 		var opened openedDetail
 		_ = json.Unmarshal(records[0].Detail, &opened)
 		_ = os.Remove(filepath.Join(root, ".batuta", "asks", opened.Slug+"-"+strings.ReplaceAll(taskID, "_", "-")+".md"))
-		return id, nil
+		return id, ownership.stop()
 	}
 	if blockedAtCeiling {
 		return "", fmt.Errorf("loop: %s is blocked at the execution ceiling; answer the question in a new plan or an interactive cycle", taskID)
@@ -610,14 +637,17 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 
 // Abandon closes a delivery that will not continue: terminal `abandoned`,
 // bookkeeping for whatever integrated, worktrees removed.
-func Abandon(ctx context.Context, opts Options) (string, error) {
+func Abandon(ctx context.Context, opts Options) (state string, abandonErr error) {
 	r, err := prepare(ctx, opts)
 	if err != nil {
 		return "", err
 	}
-	if err := refuseLiveDelivery(r.root, opts.Resume, r.now()); err != nil {
+	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now())
+	if err != nil {
 		return "", err
 	}
+	r.ownership = ownership
+	defer func() { abandonErr = errors.Join(abandonErr, r.releaseOwnership()) }()
 	records, err := r.store.Read(opts.Resume)
 	if err != nil {
 		return "", fmt.Errorf("loop: %w", err)

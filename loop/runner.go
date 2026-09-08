@@ -134,6 +134,7 @@ type Runner struct {
 	wavesRun   int
 	warnings   []string
 	journaled  bool
+	ownership  *deliveryOwnership
 }
 
 // Parallel attempts share the output sink, which may be an unguarded buffer.
@@ -248,7 +249,7 @@ func New(ctx context.Context, opts Options) (*Runner, error) {
 }
 
 // Resume reopens a delivery from its journal.
-func Resume(ctx context.Context, opts Options) (*Runner, error) {
+func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error) {
 	r, err := prepare(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -256,9 +257,16 @@ func Resume(ctx context.Context, opts Options) (*Runner, error) {
 	if !journal.ValidDeliveryID(opts.Resume) {
 		return nil, fmt.Errorf("loop: %q is not a delivery id", opts.Resume)
 	}
-	if err := refuseLiveDelivery(r.root, opts.Resume, r.now()); err != nil {
+	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now())
+	if err != nil {
 		return nil, err
 	}
+	r.ownership = ownership
+	defer func() {
+		if resumeErr != nil {
+			resumeErr = errors.Join(resumeErr, r.releaseOwnership())
+		}
+	}()
 	records, err := r.store.Read(opts.Resume)
 	if err != nil {
 		return nil, fmt.Errorf("loop: %w", err)
@@ -715,16 +723,19 @@ func PrintPreview(w io.Writer, preview Preview) {
 // Run drives the delivery to a terminal state, or returns ErrStopped when
 // --max-waves ended it early.
 func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
+	if r.ownership == nil {
+		ownership, err := acquireDeliveryOwnership(ctx, r.root, r.delivery, r.now())
+		if err != nil {
+			return "", err
+		}
+		r.ownership = ownership
+	}
+	defer func() { runErr = errors.Join(runErr, r.releaseOwnership()) }()
 	if !r.journaled {
 		if err := r.open(); err != nil {
 			return "", err
 		}
 	}
-	stopPresence, err := startPresence(ctx, filepath.Join(r.root, journal.Dir, r.delivery+".lock"))
-	if err != nil {
-		return "", err
-	}
-	defer func() { runErr = errors.Join(runErr, stopPresence()) }()
 
 	for {
 		if ctx.Err() != nil {
@@ -784,6 +795,15 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 		r.record(KindWave, "", map[string]any{"wave": wave.Number, "base": wave.BaseHeadSHA, "tasks": wave.TaskIDs})
 		fmt.Fprintf(r.out, "wave %d: %s (base %s)\n", wave.Number, strings.Join(wave.TaskIDs, ", "), short(wave.BaseHeadSHA))
 	}
+}
+
+func (r *Runner) releaseOwnership() error {
+	if r.ownership == nil {
+		return nil
+	}
+	err := r.ownership.stop()
+	r.ownership = nil
+	return err
 }
 
 func (r *Runner) open() error {
