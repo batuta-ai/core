@@ -1385,3 +1385,108 @@ func TestRoadmapResumeContinuesTheOpenPhase(t *testing.T) {
 		t.Fatalf("answer was not used: %q, %v", payload, err)
 	}
 }
+
+func TestLoopWritesPresenceLock(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.Parallel, opts.MaxWaves = 1, 1
+	var r *Runner
+	observed := 0
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+			lock := readPresenceLock(t, filepath.Join(f.root, journal.Dir, r.Delivery()+".lock"))
+			if lock.PID != os.Getpid() || lock.Host == "" || lock.StartedAt.IsZero() || lock.RefreshedAt.Before(lock.StartedAt) {
+				t.Errorf("running lock: %+v", lock)
+			}
+			observed++
+		}
+		return (publication.ExecRunner{}).Run(ctx, command)
+	})
+	var err error
+	r, err = New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("first run: %v\n%s", err, &out)
+	}
+	path := filepath.Join(f.root, journal.Dir, r.Delivery()+".lock")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("stopped lock: %v", err)
+	}
+	// A killed process leaves a lock that the resumed run must overwrite.
+	writePresenceFixture(t, f.root, r.Delivery(), time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC))
+	opts.Resume, opts.MaxWaves = r.Delivery(), 0
+	r, err = Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("resume: %s %v\n%s", state, err, &out)
+	}
+	if observed != 3 {
+		t.Fatalf("observed %d running attempts, want 3", observed)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("resumed lock: %v", err)
+	}
+}
+
+func TestLoopRemovesPresenceLockOnEnd(t *testing.T) {
+	for _, tc := range []struct{ scenario, state string }{{"default", StateDone}, {"ask", StateWaitingInput}, {"always-broken", StateBlocked}, {"canceled", StateCanceled}, {"panic", ""}, {"error", ""}} {
+		t.Run(tc.scenario, func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options(tc.scenario, &out)
+			active := false
+			sentinel := errors.New("run interrupted")
+			opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+				if active && command.Executable == f.git {
+					if tc.scenario == "panic" {
+						panic(sentinel)
+					}
+					if tc.scenario == "error" {
+						return publication.CommandResult{}, sentinel
+					}
+				}
+				return (publication.ExecRunner{}).Run(ctx, command)
+			})
+			r, err := New(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			active = true
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc.scenario == "canceled" {
+				cancel()
+			}
+			var recovered any
+			var state string
+			func() {
+				defer func() { recovered = recover() }()
+				state, err = r.Run(ctx)
+			}()
+			if tc.scenario == "panic" {
+				if recovered != sentinel {
+					t.Fatalf("panic = %v", recovered)
+				}
+			} else if tc.scenario == "error" {
+				if err == nil {
+					t.Fatal("expected run error")
+				}
+			} else if err != nil || state != tc.state || recovered != nil {
+				for _, record := range readJournal(t, f, r.Delivery()) {
+					if record.Kind == KindFailure {
+						t.Logf("failure: %s", record.Detail)
+					}
+				}
+				t.Fatalf("run: %s %v panic %v\n%s", state, err, recovered, &out)
+			}
+			if _, err := os.Stat(filepath.Join(f.root, journal.Dir, r.Delivery()+".lock")); !os.IsNotExist(err) {
+				t.Fatalf("lock after %s: %v", tc.scenario, err)
+			}
+		})
+	}
+}

@@ -56,12 +56,13 @@ batuta trail [<delivery>]               one line per journal record
 
 The dashboard groups tasks by wave and shows execution context, progress
 bars, selected-task detail, attempts, gates G0–G3, commits, and the active
-executor log. Up/Down and PgUp/PgDn scroll; `f` follows the active task, `r`
-shows how to answer it, `o` opens its log, `?` shows the legend, and `q`
-quits. Use `--once` for a single non-interactive snapshot or `--interval` to
-change the live refresh period. Without a TTY, keyboard input is disabled and
-the active task is followed automatically; `NO_COLOR` and non-UTF-8 locale
-fallbacks keep redirected output readable.
+executor log. It shows loop presence, opens a multi-line answer editor with
+`r`, resumes a submitted answer detached, opens the delivery picker with `d`,
+and never exits on its own. Use `?` for the full key and presence legend,
+`--once` for a single non-interactive snapshot, or `--interval` to change the
+live refresh period. Without a TTY, keyboard input is disabled and the active
+task is followed automatically; `NO_COLOR` and non-UTF-8 locale fallbacks keep
+redirected output readable.
 
 ## Roadmap
 

@@ -687,12 +687,18 @@ func PrintPreview(w io.Writer, preview Preview) {
 
 // Run drives the delivery to a terminal state, or returns ErrStopped when
 // --max-waves ended it early.
-func (r *Runner) Run(ctx context.Context) (string, error) {
+func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 	if !r.journaled {
 		if err := r.open(); err != nil {
 			return "", err
 		}
 	}
+	stopPresence, err := startPresence(ctx, filepath.Join(r.root, journal.Dir, r.delivery+".lock"))
+	if err != nil {
+		return "", err
+	}
+	defer func() { runErr = errors.Join(runErr, stopPresence()) }()
+
 	for {
 		if ctx.Err() != nil {
 			return r.finish(context.WithoutCancel(ctx), StateCanceled)

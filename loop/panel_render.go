@@ -5,9 +5,12 @@ import (
 	"io"
 	"math"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/charmbracelet/x/term"
 )
 
 // Style fixes the layout independently of the process environment. Use
@@ -16,6 +19,9 @@ type Style struct {
 	Width        int
 	Lang, Glyphs string
 	Colour       bool
+	Frame        int
+	Focus        string
+	LogOffset    int
 }
 
 func StyleForWriter(w io.Writer) Style {
@@ -27,7 +33,7 @@ func StyleForWriter(w io.Writer) Style {
 	if lang == "" {
 		lang = locale
 	}
-	style := Style{Width: 120, Lang: "en", Glyphs: "ascii"}
+	style := Style{Width: 120, Lang: "en", Glyphs: "ascii", Frame: -1}
 	if strings.HasPrefix(strings.ToLower(lang), "pt") {
 		style.Lang = "pt"
 	}
@@ -36,9 +42,18 @@ func StyleForWriter(w io.Writer) Style {
 	}
 	if file, ok := w.(interface{ Fd() uintptr }); ok {
 		style.Width, _ = TerminalSize(file.Fd())
-		style.Colour = terminalIsTTY(file.Fd()) && os.Getenv("NO_COLOR") == ""
+		style.Colour = isTerminal(file.Fd()) && os.Getenv("NO_COLOR") == ""
 	}
 	return style
+}
+
+// TerminalSize reports the visible terminal size, falling back to 120 by 40.
+func TerminalSize(fd uintptr) (width, height int) {
+	width, height, err := term.GetSize(fd)
+	if err != nil || width <= 0 || height <= 0 {
+		return 120, 40
+	}
+	return width, height
 }
 
 type panelGlyphs struct{ h, v, tl, tr, bl, br, ok, fail, pend, full, empty, ell, arrow string }
@@ -48,6 +63,95 @@ func glyphsFor(style Style) panelGlyphs {
 		return panelGlyphs{"-", "|", "+", "+", "+", "+", "+", "x", ".", "#", ".", "~", "->"}
 	}
 	return panelGlyphs{"─", "│", "┌", "┐", "└", "┘", "✓", "✗", "·", "█", "░", "…", "→"}
+}
+
+type paintKind uint8
+
+type lineKind paintKind
+
+const (
+	paintPlain paintKind = iota
+	paintSelected
+	paintSelectedUnfocused
+	paintStateIntegrated
+	paintStateRunning
+	paintStateBlocked
+	paintStateWaiting
+	paintStatePending
+	paintWaveActive
+	paintWave
+	paintDim
+	paintAttentionWaiting
+	paintAttentionBlocked
+	paintBold
+	paintChip
+	paintLogProgress
+	paintLogError
+	paintLogPrompt
+	paintBarDone
+	paintBarRunning
+	paintBarEasing
+	paintBorder
+	paintFocusBorder
+)
+
+var paintTable = map[paintKind]string{
+	paintSelected:          "7",
+	paintSelectedUnfocused: "2;7",
+	paintStateIntegrated:   "32",
+	paintStateRunning:      "34",
+	paintStateBlocked:      "1;31",
+	paintStateWaiting:      "1;33",
+	paintStatePending:      "2",
+	paintWaveActive:        "1;34",
+	paintWave:              "1",
+	paintDim:               "2",
+	paintAttentionWaiting:  "1;33;7",
+	paintAttentionBlocked:  "1;31;7",
+	paintBold:              "1",
+	paintChip:              "7",
+	paintLogProgress:       "1;36",
+	paintLogError:          "31",
+	paintLogPrompt:         "1",
+	paintBarDone:           "32",
+	paintBarRunning:        "34",
+	paintBarEasing:         "94",
+	paintBorder:            "2",
+	paintFocusBorder:       "34",
+}
+
+type segment struct {
+	text string
+	kind paintKind
+}
+
+type panelLine struct {
+	segments []segment
+	kind     lineKind
+}
+
+func textLine(text string) panelLine {
+	return panelLine{segments: []segment{{text: text}}}
+}
+
+func textLines(texts []string) []panelLine {
+	lines := make([]panelLine, len(texts))
+	for i, text := range texts {
+		lines[i] = textLine(text)
+	}
+	return lines
+}
+
+func (line panelLine) text() string {
+	var b strings.Builder
+	for _, part := range line.segments {
+		b.WriteString(part.text)
+	}
+	return b.String()
+}
+
+func stateLine(text, state string) panelLine {
+	return panelLine{segments: []segment{{text, statePaint(state)}}}
 }
 
 type panelRenderer struct {
@@ -74,30 +178,50 @@ func Render(model PanelView, style Style) string {
 	if model.Attention.Kind == "conflict" || model.Attention.Kind == "escalated" {
 		state = model.Attention.Kind
 	}
-	status := r.status(state, false) + " · " + renderElapsed(model.Header.Elapsed)
-	left := " batuta watch"
+	left := textLine(" batuta watch")
 	if width >= 76 {
-		left += " · " + model.Header.Project
+		left.segments = append(left.segments, segment{text: " · " + model.Header.Project})
 	}
 	if width >= 100 {
-		left = " batuta watch · " + model.Header.Delivery + " · " + model.Header.Project
+		left.segments = []segment{{text: " batuta watch · "}, {model.Header.Delivery, paintBold}, {text: " · " + model.Header.Project}}
 	}
 	if width >= 76 && (model.Header.Roadmap != "" || model.Header.Phase > 0) {
-		left += fmt.Sprintf(" · %s %d", labels["phase"], model.Header.Phase)
+		left.segments = append(left.segments, segment{text: fmt.Sprintf(" · %s %d", labels["phase"], model.Header.Phase)})
 	}
-	right := status + " "
+	right := stateLine(r.status(state, false), state)
+	right.segments = append(right.segments, segment{" · " + renderElapsed(model.Header.Elapsed) + " ", paintDim})
 	if width >= 76 {
-		right = model.Header.Branch + " @ " + panelCommit(model.Header.Head) + " · " + right
+		right.segments = append([]segment{{model.Header.Branch + " @ " + panelCommit(model.Header.Head) + " · ", paintDim}}, right.segments...)
 	}
-	if panelWidth(right) > width {
-		right = r.fit(right, width)
+	if model.Header.Presence != "" {
+		presence := panelLine{}
+		switch model.Header.Presence {
+		case "running":
+			presence.segments = append(presence.segments, segment{labels["loop_run"], paintStateIntegrated})
+		case "none":
+			presence.segments = append(presence.segments, segment{labels["loop_none"], paintDim})
+		case "stale":
+			presence.segments = append(presence.segments, segment{labels["loop_stale"], paintStateWaiting})
+		}
+		if model.Header.Loops > 1 {
+			presence.segments = append(presence.segments, segment{text: " · "}, segment{fmt.Sprintf(labels["loops"], model.Header.Loops), paintStateWaiting})
+		}
+		presence.segments = append(presence.segments, segment{text: " · "})
+		right.segments = append(presence.segments, right.segments...)
 	}
-	out := []string{r.fit(left, width-panelWidth(right)) + right}
-	pieces := strings.Split(r.attention(model.Attention), " · ")
+	if panelWidth(right.text()) > width {
+		right = r.fitLine(right, width)
+	}
+	header := r.fitLine(left, width-panelWidth(right.text()))
+	header.segments = append(header.segments, right.segments...)
+	out := []panelLine{header}
+	attention := r.attention(model.Attention)
+	pieces := strings.Split(attention.text(), " · ")
 	for len(pieces) > 1 && panelWidth(" "+strings.Join(pieces, " · ")) > width {
 		pieces = pieces[:len(pieces)-1]
 	}
-	out = append(out, r.fit(" "+strings.Join(pieces, " · "), width))
+	attention.segments = []segment{{text: " " + strings.Join(pieces, " · ")}}
+	out = append(out, r.fitLine(attention, width))
 	c := model.Context
 	pid := "–"
 	if style.Glyphs == "ascii" {
@@ -106,33 +230,36 @@ func Render(model PanelView, style Style) string {
 	if c.PID != 0 {
 		pid = fmt.Sprint(c.PID)
 	}
-	ctx := []string{strings.TrimSpace(c.Executor+" "+c.Model) + " · " + c.Reasoning + " · " + c.TestCommand + " · " + c.Sandbox, fmt.Sprintf("%d %s · %d %s · %d %s · PID %s", c.Sessions, labels["sessions"], c.Retries, labels["retries"], c.Escalations, labels["escalations"], pid)}
+	ctx := textLines([]string{strings.TrimSpace(c.Executor+" "+c.Model) + " · " + c.Reasoning + " · " + c.TestCommand + " · " + c.Sandbox, fmt.Sprintf("%d %s · %d %s · %d %s · PID %s", c.Sessions, labels["sessions"], c.Retries, labels["retries"], c.Escalations, labels["escalations"], pid)})
 	p := model.Progress
-	prog := []string{r.progress(labels["waves"], p.WavesDone, p.WavesTotal), r.progress(labels["tasks"], p.TasksDone, p.TasksTotal)}
+	prog := []panelLine{r.progress(labels["waves"], p.WavesShown, p.WavesDone, p.WavesTotal), r.progress(labels["tasks"], p.TasksShown, p.TasksDone, p.TasksTotal)}
 	detail := r.detail(model.Detail)
 	var cols []int
 	var headings []string
 	switch {
 	case width >= 100:
 		lw := width/2 - 1
-		a, b := r.box(labels["context"], ctx, lw), r.box(labels["progress"], prog, width-lw-1)
+		a, b := r.boxLines(labels["context"], ctx, lw), r.boxLines(labels["progress"], prog, width-lw-1)
 		for i := range a {
-			out = append(out, a[i]+" "+b[i])
+			joined := a[i]
+			joined.segments = append(joined.segments, segment{text: " "})
+			joined.segments = append(joined.segments, b[i].segments...)
+			out = append(out, joined)
 		}
-		out = append(out, r.box(labels["detail"], detail, width)...)
+		out = append(out, r.boxLines(labels["detail"], detail, width)...)
 		cols = []int{7, width - 7 - 17 - 7 - 6 - 8 - 14, 17, 7, 6, 8}
 		headings = []string{labels["id"], labels["task"], labels["status"], labels["attempt"], labels["gates"], labels["commit"]}
 	case width >= 76:
-		out = append(out, r.box(labels["context"], append(ctx, prog...), width)...)
-		out = append(out, r.box(labels["detail"], detail[:3], width)...)
+		out = append(out, r.boxLines(labels["context"], append(ctx, prog...), width)...)
+		out = append(out, r.boxLines(labels["detail"], detail[:3], width)...)
 		cols = []int{7, width - 7 - 15 - 5 - 6 - 10, 15, 5, 6}
 		headings = []string{labels["id"], labels["task"], labels["status"], labels["tr"], labels["gates"]}
 	default:
-		out = append(out, r.box(labels["progress"], []string{prog[0], detail[0]}, width)...)
+		out = append(out, r.boxLines(labels["progress"], []panelLine{prog[0], detail[0]}, width)...)
 		cols = []int{7, max(0, width-7-13-6-8), 13, 6}
 		headings = []string{labels["id"], labels["task"], labels["status"], labels["gates"]}
 	}
-	table := []string{r.row(headings, cols)}
+	table := []panelLine{r.row(textLines(headings), cols)}
 	for _, wave := range model.Waves {
 		title := ""
 		if wave.Base != "" {
@@ -151,36 +278,76 @@ func Render(model PanelView, style Style) string {
 				id, title = "", labels["before_run"]
 			}
 		}
-		table = append(table, r.tableRow([]string{id, title, fmt.Sprintf("%s %d/%d", r.stateGlyph(wave.State), wave.Done, wave.Total), "", "", ""}, cols))
+		waveLine := r.tableRow([]panelLine{textLine(id), textLine(title), stateLine(fmt.Sprintf("%s %d/%d", r.stateGlyph(wave.State), wave.Done, wave.Total), wave.State), {}, {}, {}}, cols)
+		waveLine.kind = lineKind(paintWave)
+		if wave.State == "running" {
+			waveLine.kind = lineKind(paintWaveActive)
+		} else if wave.Number == 0 {
+			waveLine.kind = lineKind(paintDim)
+		}
+		table = append(table, waveLine)
 		for _, task := range wave.Rows {
 			state := task.State
 			if model.Attention.Task == task.Task && model.Attention.Kind != "none" && model.Attention.Kind != "" {
 				state = model.Attention.Kind
 			}
-			gates := ""
+			gates := panelLine{}
 			for _, gate := range task.Gates {
+				part := segment{r.g.pend, paintStatePending}
 				switch gate {
 				case "pass", "silent":
-					gates += r.g.ok
+					part = segment{r.g.ok, paintStateIntegrated}
 				case "fail":
-					gates += r.g.fail
-				default:
-					gates += r.g.pend
+					part = segment{r.g.fail, paintStateBlocked}
 				}
+				gates.segments = append(gates.segments, part)
 			}
 			commit := ""
 			if task.Commit != "" {
 				commit = panelCommit(task.Commit)
 			}
-			table = append(table, r.tableRow([]string{task.Task, "  " + task.Title, r.status(state, true), renderAttempt(task.Attempt, task.AttemptLimit), gates, commit}, cols))
+			taskLine := r.tableRow([]panelLine{textLine(task.Task), textLine("  " + task.Title), stateLine(r.status(state, true), state), textLine(renderAttempt(task.Attempt, task.AttemptLimit)), gates, textLine(commit)}, cols)
+			if wave.State == "before_run" || task.State == "pending" {
+				taskLine.kind = lineKind(paintDim)
+			}
+			if task.Task != "" && task.Task == model.Detail.Task {
+				taskLine.kind = lineKind(paintSelected)
+				if style.Focus == string(focusLog) {
+					taskLine.kind = lineKind(paintSelectedUnfocused)
+				}
+			}
+			table = append(table, taskLine)
 		}
 	}
-	out = append(out, r.box(labels["table"], table, width)...)
+	tableTitle := labels["table"]
+	if style.Focus == string(focusTable) {
+		tableTitle += " ·"
+	}
+	out = append(out, r.boxLines(tableTitle, table, width, style.Focus == string(focusTable))...)
 	keys := labels["keys"]
+	if style.Focus != "" {
+		keys = labels["keys_focus"]
+	}
+	if style.Frame >= 0 {
+		if style.Lang == "pt" {
+			keys = strings.Replace(keys, "r responde", "d entregas · r responde", 1)
+		} else {
+			keys = strings.Replace(keys, "r answer", "d deliveries · r answer", 1)
+		}
+	}
 	if width >= 100 {
-		out = append(out, r.fit(fmt.Sprintf(" ^ %d %s · v %d %s", model.RowsAbove, labels["above"], model.RowsBelow, labels["below"]), width-panelWidth(keys)-1)+keys+" ")
+		keyLine := r.fitLine(textLine(fmt.Sprintf(" ^ %d %s · v %d %s", model.RowsAbove, labels["above"], model.RowsBelow, labels["below"])), width-panelWidth(keys)-1)
+		keyLine.segments = append(keyLine.segments, r.keyLine(keys+" ").segments...)
+		out = append(out, keyLine)
 	} else {
-		out = append(out, r.fit(fmt.Sprintf(" ^ %d · v %d · ", model.RowsAbove, model.RowsBelow)+strings.Split(keys, " · ")[0]+" · ? · q", width))
+		keyParts := strings.Split(keys, " · ")
+		compactKeys := keyParts[0]
+		if style.Focus != "" && len(keyParts) > 1 {
+			compactKeys += " · " + keyParts[1]
+		}
+		keyLine := textLine(fmt.Sprintf(" ^ %d · v %d · ", model.RowsAbove, model.RowsBelow))
+		keyLine.segments = append(keyLine.segments, r.keyLine(compactKeys+" · ? · q").segments...)
+		out = append(out, r.fitLine(keyLine, width))
 	}
 	if width >= 76 {
 		count := 3
@@ -191,27 +358,34 @@ func Render(model PanelView, style Style) string {
 		if model.LogTitle != "" {
 			title += " · " + model.LogTitle
 		}
-		out = append(out, r.box(title, model.LogLines[max(0, len(model.LogLines)-count):], width)...)
+		if style.Focus == string(focusLog) {
+			title += " ·"
+		}
+		end := max(0, len(model.LogLines)-max(0, style.LogOffset))
+		start := max(0, end-count)
+		out = append(out, r.boxLines(title, r.logLines(model.LogLines[start:end]), width, style.Focus == string(focusLog))...)
 	}
+	painted := make([]string, len(out))
 	for i, line := range out {
-		line = r.fit(expandPanelTabs(line), width)
+		line = r.fitLine(expandLineTabs(line), width)
 		if style.Glyphs == "ascii" {
-			line = strings.ReplaceAll(line, "·", "-")
+			for j := range line.segments {
+				line.segments[j].text = strings.ReplaceAll(line.segments[j].text, "·", "-")
+			}
 		}
-		if style.Colour && os.Getenv("NO_COLOR") == "" {
-			line = r.colour(line)
-		}
-		out[i] = line
+		painted[i] = r.paint(line)
 	}
-	return strings.Join(out, "\n") + "\n"
+	return strings.Join(painted, "\n") + "\n"
 }
 
-func (r panelRenderer) attention(a PanelAttention) string {
+func (r panelRenderer) attention(a PanelAttention) panelLine {
 	if a.Kind == "" || a.Kind == "none" {
-		return r.labels["needs_none"]
+		return panelLine{segments: []segment{{text: r.labels["needs_none"]}}, kind: lineKind(paintDim)}
 	}
 	text := r.stateGlyph(a.Kind) + " "
 	switch a.Kind {
+	case "stopped":
+		text = r.labels["loop_stop"]
 	case "question":
 		text += a.Task + " " + r.labels["question"] + " · \"" + a.Text + "\""
 	case "blocked":
@@ -228,6 +402,8 @@ func (r panelRenderer) attention(a PanelAttention) string {
 	if a.Hint != "" {
 		hint := a.Hint
 		switch hint {
+		case "d picks another delivery":
+			hint = r.labels["pick"]
 		case "r answers":
 			hint = r.labels["answer"]
 		case "o opens the log":
@@ -235,9 +411,16 @@ func (r panelRenderer) attention(a PanelAttention) string {
 		}
 		text += " · " + hint
 	}
-	return text
+	kind := statePaint(a.Kind)
+	switch kind {
+	case paintStateWaiting:
+		kind = paintAttentionWaiting
+	case paintStateBlocked:
+		kind = paintAttentionBlocked
+	}
+	return panelLine{segments: []segment{{text: text}}, kind: lineKind(kind)}
 }
-func (r panelRenderer) detail(d PanelDetail) []string {
+func (r panelRenderer) detail(d PanelDetail) []panelLine {
 	first := d.Task
 	if attempt := renderAttempt(d.Attempt, d.AttemptLimit); attempt != "" {
 		first += " · " + attempt
@@ -249,16 +432,21 @@ func (r panelRenderer) detail(d PanelDetail) []string {
 	if d.CriterionTotal > 0 {
 		criterion += fmt.Sprintf("/%d", d.CriterionTotal)
 	}
-	second := r.labels["criterion"] + "  " + criterion
+	label, value, kind := "criterion", criterion, paintPlain
 	if d.CriterionTitle != "" {
-		second += " · " + d.CriterionTitle
+		value += " · " + d.CriterionTitle
 	}
 	if d.Question != "" {
-		second = r.labels["question"] + "  " + d.Question
+		label, value, kind = "question", d.Question, paintStateWaiting
 	} else if d.Reason != "" {
-		second = r.labels["reason"] + "  " + d.Reason
+		label, value = "reason", d.Reason
 	}
-	return []string{first, second, r.labels["last"] + "  " + d.LastRecord + " · " + renderAge(d.LastAge), r.labels["worktree"] + "  " + d.Worktree, r.labels["log"] + "  " + d.LogPath}
+	labelled := func(key, value string, kind paintKind) panelLine {
+		return panelLine{segments: []segment{{r.labels[key], paintDim}, {text: "  "}, {value, kind}}}
+	}
+	return []panelLine{textLine(first), labelled(label, value, kind),
+		labelled("last", d.LastRecord+" · "+renderAge(d.LastAge), paintPlain),
+		labelled("worktree", d.Worktree, paintPlain), labelled("log", d.LogPath, paintPlain)}
 }
 func renderAttempt(n, total int) string {
 	if n <= 0 {
@@ -283,6 +471,21 @@ func renderAge(d time.Duration) string {
 	}
 	return fmt.Sprintf("%ds", s)
 }
+func statePaint(state string) paintKind {
+	switch state {
+	case "integrated", "done", "pass":
+		return paintStateIntegrated
+	case "running", "executor", "candidate", "preparing":
+		return paintStateRunning
+	case "blocked", "fail", "failed", "conflict", "escalated":
+		return paintStateBlocked
+	case "waiting_input", "question", "limit_wait", "limit":
+		return paintStateWaiting
+	default:
+		return paintStatePending
+	}
+}
+
 func (r panelRenderer) stateGlyph(state string) string {
 	switch state {
 	case "integrated", "done", "pass", "before_run":
@@ -299,6 +502,15 @@ func (r panelRenderer) stateGlyph(state string) string {
 		return "^"
 	case "pending", "":
 		return r.g.pend
+	case "running", "preparing":
+		if r.style.Frame < 0 {
+			return ">"
+		}
+		frames := []rune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+		if r.style.Glyphs == "ascii" {
+			frames = []rune("|/-\\")
+		}
+		return string(frames[r.style.Frame%len(frames)])
 	default:
 		return ">"
 	}
@@ -324,135 +536,299 @@ func (r panelRenderer) status(state string, task bool) string {
 	}
 	return r.stateGlyph(state) + " " + label
 }
-func (r panelRenderer) progress(label string, done, total int) string {
+func (r panelRenderer) progress(label string, shown float64, done, total int) panelLine {
 	if total <= 0 {
-		return fmt.Sprintf("%s  %d", label, done)
+		return textLine(fmt.Sprintf("%s  %d", label, done))
 	}
-	fraction := float64(max(0, min(done, total))) / float64(total)
-	full := int(math.RoundToEven(24 * fraction))
-	return fmt.Sprintf("%s  %d/%d  [%s%s]  %d%%", label, done, total, strings.Repeat(r.g.full, full), strings.Repeat(r.g.empty, 24-full), int(math.RoundToEven(100*fraction)))
+	fraction := max(0, min(shown, float64(total))) / float64(total)
+	cells := 24 * fraction
+	full := int(math.RoundToEven(cells))
+	kind := paintBarRunning
+	if fraction == 1 {
+		kind = paintBarDone
+	}
+	stable := int(math.Floor(cells))
+	line := panelLine{segments: []segment{{text: fmt.Sprintf("%s  %d/%d  [", label, done, total)}, {strings.Repeat(r.g.full, stable), kind}}}
+	empty := 24 - full
+	if cells > float64(stable) {
+		glyph := r.g.full
+		if full == stable {
+			glyph = r.g.empty
+			empty--
+		}
+		line.segments = append(line.segments, segment{glyph, paintBarEasing})
+	}
+	line.segments = append(line.segments, segment{text: strings.Repeat(r.g.empty, empty) + "]  "}, segment{fmt.Sprintf("%d%%", int(math.RoundToEven(100*fraction))), paintBold})
+	return line
 }
-func (r panelRenderer) tableRow(values []string, cols []int) string {
+func (r panelRenderer) tableRow(values []panelLine, cols []int) panelLine {
 	if len(cols) == 5 {
 		values = values[:5]
 	} else if len(cols) == 4 {
-		values = []string{values[0], values[1], values[2], values[4]}
+		values = []panelLine{values[0], values[1], values[2], values[4]}
 	}
 	return r.row(values, cols)
 }
-func (r panelRenderer) row(values []string, cols []int) string {
-	out := make([]string, len(cols))
+func (r panelRenderer) row(values []panelLine, cols []int) panelLine {
+	out := panelLine{}
 	for i, n := range cols {
-		out[i] = r.fit(values[i], n)
+		if i > 0 {
+			out.segments = append(out.segments, segment{text: " "})
+		}
+		out.segments = append(out.segments, r.fitLine(values[i], n).segments...)
 	}
-	return strings.Join(out, " ")
+	return out
 }
+
+// The legend also uses this plain-text box entry point.
 func (r panelRenderer) box(title string, rows []string, width int) []string {
+	lines := r.boxLines(title, textLines(rows), width)
+	out := make([]string, len(lines))
+	for i, line := range lines {
+		out[i] = line.text()
+	}
+	return out
+}
+
+func (r panelRenderer) boxLines(title string, rows []panelLine, width int, focused ...bool) []panelLine {
+	border := paintBorder
+	if len(focused) > 0 && focused[0] {
+		border = paintFocusBorder
+	}
 	inner := max(0, width-2)
 	title = strings.TrimRight(r.fit(title, max(0, inner-3)), " ")
-	out := []string{r.g.tl + r.g.h + " " + title + " " + strings.Repeat(r.g.h, max(0, inner-panelWidth(title)-3)) + r.g.tr}
+	out := []panelLine{{segments: []segment{{r.g.tl + r.g.h + " ", border}, {title, paintBold}, {" " + strings.Repeat(r.g.h, max(0, inner-panelWidth(title)-3)) + r.g.tr, border}}}}
 	for _, row := range rows {
-		out = append(out, r.g.v+" "+r.fit(row, max(0, inner-2))+" "+r.g.v)
+		padding := " "
+		if r.style.Colour && (row.kind == lineKind(paintSelected) || row.kind == lineKind(paintSelectedUnfocused)) {
+			padding = "❯"
+			if r.style.Glyphs == "ascii" {
+				padding = ">"
+			}
+		}
+		line := panelLine{segments: []segment{{r.g.v, border}, {text: padding}}, kind: row.kind}
+		line.segments = append(line.segments, r.fitLine(row, max(0, inner-2)).segments...)
+		line.segments = append(line.segments, segment{text: " "}, segment{r.g.v, border})
+		out = append(out, line)
 	}
-	return append(out, r.g.bl+strings.Repeat(r.g.h, inner)+r.g.br)
+	return append(out, panelLine{segments: []segment{{r.g.bl + strings.Repeat(r.g.h, inner) + r.g.br, border}}})
 }
+
 func (r panelRenderer) fit(s string, n int) string {
+	return r.fitLine(textLine(s), n).text()
+}
+
+func (r panelRenderer) fitLine(line panelLine, n int) panelLine {
+	out := panelLine{kind: line.kind}
 	if n <= 0 {
-		return ""
+		return out
 	}
 	// Journal values are text, never terminal control sequences. Tabs retain the
 	// generator's expansion order: after boxing and before the final width fit.
-	s = strings.Map(func(c rune) rune {
-		if unicode.IsControl(c) && c != '\t' {
-			return ' '
-		}
-		return c
-	}, s)
-	if panelWidth(s) > n {
+	clean := make([]segment, len(line.segments))
+	for i, part := range line.segments {
+		part.text = strings.Map(func(c rune) rune {
+			if unicode.IsControl(c) && c != '\t' {
+				return ' '
+			}
+			return c
+		}, part.text)
+		clean[i] = part
+	}
+	line.segments = clean
+	limit := n
+	truncate := panelWidth(line.text()) > n
+	if truncate {
+		limit--
+	}
+	used := 0
+	for _, part := range clean {
 		var b strings.Builder
-		used := 0
-		for _, c := range s {
+		for _, c := range part.text {
 			w := panelRuneWidth(c)
-			if used+w > n-1 {
-				break
+			if used+w > limit {
+				b.WriteString(r.g.ell)
+				used++
+				out.segments = append(out.segments, segment{b.String(), part.kind})
+				out.segments = append(out.segments, segment{text: strings.Repeat(" ", max(0, n-used))})
+				return out
 			}
 			b.WriteRune(c)
 			used += w
 		}
-		s = b.String() + r.g.ell
+		out.segments = append(out.segments, segment{b.String(), part.kind})
 	}
-	return s + strings.Repeat(" ", max(0, n-panelWidth(s)))
+	out.segments = append(out.segments, segment{text: strings.Repeat(" ", max(0, n-used))})
+	return out
 }
+
 func panelWidth(s string) int {
 	n := 0
-	for _, c := range s {
-		n += panelRuneWidth(c)
+	for len(s) > 0 {
+		if strings.HasPrefix(s, "\x1b[") {
+			end := 2
+			for end < len(s) && (s[end] >= '0' && s[end] <= '9' || s[end] == ';') {
+				end++
+			}
+			if end < len(s) && s[end] == 'm' {
+				s = s[end+1:]
+				continue
+			}
+		}
+		for _, c := range s {
+			n += panelRuneWidth(c)
+			s = s[len(string(c)):]
+			break
+		}
 	}
 	return n
 }
 func panelRuneWidth(c rune) int {
+	// Emoji-capable symbols can use emoji presentation in terminal fonts. Count
+	// them conservatively even without a variation selector; ordinary dingbats
+	// such as the selection marker U+276F remain one cell.
+	if c >= 0x2600 && c <= 0x27bf && panelEmojiSymbol(c) ||
+		c == 0x25b6 || c == 0x25c0 || c >= 0x25fb && c <= 0x25fe ||
+		c >= 0x2b05 && c <= 0x2b07 || c >= 0x2b1b && c <= 0x2b1c || c == 0x2b50 || c == 0x2b55 {
+		return 2
+	}
 	// Fullwidth forms, CJK, Hangul and wide emoji occupy two terminal cells.
 	if c >= 0x1100 && (c <= 0x115f || c == 0x2329 || c == 0x232a || c >= 0x2e80 && c <= 0xa4cf && c != 0x303f || c >= 0xac00 && c <= 0xd7a3 || c >= 0xf900 && c <= 0xfaff || c >= 0xfe10 && c <= 0xfe19 || c >= 0xfe30 && c <= 0xfe6f || c >= 0xff01 && c <= 0xff60 || c >= 0xffe0 && c <= 0xffe6 || c >= 0x1f300 && c <= 0x1faff || c >= 0x20000 && c <= 0x3fffd) {
 		return 2
 	}
 	return 1
 }
+
+// Emoji-capable code points in the Miscellaneous Symbols and Dingbats blocks.
+func panelEmojiSymbol(c rune) bool {
+	switch {
+	case c >= 0x2600 && c <= 0x2604, c >= 0x2614 && c <= 0x2615,
+		c >= 0x2622 && c <= 0x2623, c >= 0x262e && c <= 0x262f,
+		c >= 0x2638 && c <= 0x263a, c >= 0x2648 && c <= 0x2653,
+		c >= 0x265f && c <= 0x2660, c >= 0x2665 && c <= 0x2666,
+		c >= 0x267e && c <= 0x267f, c >= 0x2692 && c <= 0x2697,
+		c >= 0x269b && c <= 0x269c, c >= 0x26a0 && c <= 0x26a1,
+		c >= 0x26aa && c <= 0x26ab, c >= 0x26b0 && c <= 0x26b1,
+		c >= 0x26bd && c <= 0x26be, c >= 0x26c4 && c <= 0x26c5,
+		c >= 0x26ce && c <= 0x26cf, c >= 0x26d3 && c <= 0x26d4,
+		c >= 0x26e9 && c <= 0x26ea, c >= 0x26f0 && c <= 0x26f5,
+		c >= 0x26f7 && c <= 0x26fa, c >= 0x2708 && c <= 0x270d,
+		c >= 0x2733 && c <= 0x2734, c >= 0x2753 && c <= 0x2755,
+		c >= 0x2763 && c <= 0x2764, c >= 0x2795 && c <= 0x2797:
+		return true
+	}
+	switch c {
+	case 0x260e, 0x2611, 0x2618, 0x261d, 0x2620, 0x2626, 0x262a,
+		0x2640, 0x2642, 0x2663, 0x2668, 0x267b, 0x2699, 0x26a7,
+		0x26c8, 0x26d1, 0x26fd, 0x2702, 0x2705, 0x270f, 0x2712,
+		0x2714, 0x2716, 0x271d, 0x2721, 0x2728, 0x2744, 0x2747,
+		0x274c, 0x274e, 0x2757, 0x27a1, 0x27b0, 0x27bf:
+		return true
+	}
+	return false
+}
+
 func expandPanelTabs(s string) string {
-	var b strings.Builder
+	return expandLineTabs(textLine(s)).text()
+}
+
+func expandLineTabs(line panelLine) panelLine {
 	column := 0
-	for _, c := range s {
-		if c == '\t' {
-			n := 4 - column%4
-			b.WriteString(strings.Repeat(" ", n))
-			column += n
-		} else {
-			b.WriteRune(c)
-			column++
+	parts := make([]segment, len(line.segments))
+	for i, part := range line.segments {
+		var b strings.Builder
+		for _, c := range part.text {
+			if c == '\t' {
+				n := 4 - column%4
+				b.WriteString(strings.Repeat(" ", n))
+				column += n
+			} else {
+				b.WriteRune(c)
+				column++
+			}
 		}
+		parts[i] = segment{b.String(), part.kind}
+	}
+	line.segments = parts
+	return line
+}
+
+func (r panelRenderer) paint(line panelLine) string {
+	if !r.style.Colour {
+		return line.text()
+	}
+	var b strings.Builder
+	outer := paintTable[paintKind(line.kind)]
+	if outer != "" {
+		b.WriteString("\x1b[" + outer + "m")
+	}
+	for _, part := range line.segments {
+		if part.text == "" {
+			continue
+		}
+		code := paintTable[part.kind]
+		if part.kind == paintBorder || part.kind == paintFocusBorder {
+			b.WriteString("\x1b[0m")
+			for _, attribute := range strings.Split(outer, ";") {
+				if attribute == "1" || attribute == "2" || attribute == "7" {
+					b.WriteString("\x1b[" + attribute + "m")
+				}
+			}
+		}
+		if code != "" {
+			b.WriteString("\x1b[" + code + "m")
+		}
+		b.WriteString(part.text)
+		if code != "" {
+			b.WriteString("\x1b[0m")
+			if outer != "" {
+				b.WriteString("\x1b[" + outer + "m")
+			}
+		}
+	}
+	if outer != "" {
+		b.WriteString("\x1b[0m")
 	}
 	return b.String()
 }
-func (r panelRenderer) colour(s string) string {
-	var b strings.Builder
-	runes := []rune(s)
-	for i := 0; i < len(runes); {
-		if unicode.IsSpace(runes[i]) {
-			b.WriteRune(runes[i])
-			i++
-			continue
+
+func (r panelRenderer) keyLine(keys string) panelLine {
+	line := panelLine{}
+	for i, item := range strings.Split(keys, " · ") {
+		if i > 0 {
+			line.segments = append(line.segments, segment{text: " · "})
 		}
-		end := i + 1
-		for end < len(runes) && !unicode.IsSpace(runes[end]) {
-			end++
+		key, description, found := strings.Cut(item, " ")
+		line.segments = append(line.segments, segment{key, paintChip})
+		if strings.HasPrefix(description, "PgUp/PgDn ") {
+			line.segments = append(line.segments, segment{text: " "}, segment{"PgUp/PgDn", paintChip})
+			description = strings.TrimPrefix(description, "PgUp/PgDn ")
 		}
-		token := runes[i:end]
-		gates := len(token) == 4
-		for _, c := range token {
-			if string(c) != r.g.ok && string(c) != r.g.fail && string(c) != r.g.pend {
-				gates = false
-			}
+		if found {
+			line.segments = append(line.segments, segment{" " + description, paintDim})
 		}
-		for _, c := range token {
-			code := ""
-			if len(token) == 1 || gates {
-				switch string(c) {
-				case r.g.ok:
-					code = "32"
-				case r.g.fail:
-					code = "31"
-				case ">", "?", "~", "<", "^":
-					code = "34"
-				}
-			}
-			if code != "" {
-				b.WriteString("\x1b[" + code + "m")
-				b.WriteRune(c)
-				b.WriteString("\x1b[0m")
-			} else {
-				b.WriteRune(c)
-			}
-		}
-		i = end
 	}
-	return b.String()
+	return line
+}
+
+var logErrorPattern = regexp.MustCompile(`(?i)\b(error|fail|failed|panic|fatal)\b`)
+
+func (r panelRenderer) logLines(texts []string) []panelLine {
+	lines := make([]panelLine, len(texts))
+	for i, text := range texts {
+		kind := paintPlain
+		switch {
+		case strings.Contains(text, "BATUTA-PROGRESS"):
+			kind = paintLogProgress
+		case logErrorPattern.MatchString(text):
+			kind = paintLogError
+		case strings.HasPrefix(text, "codex"), strings.HasPrefix(text, "claude"), strings.HasPrefix(text, "$ "):
+			kind = paintLogPrompt
+		}
+		lines[i] = panelLine{segments: []segment{{text, kind}}}
+		if i < len(texts)/3 {
+			lines[i].kind = lineKind(paintDim)
+		}
+	}
+	return lines
 }

@@ -13,6 +13,8 @@ import (
 )
 
 type PanelHeader struct {
+	Presence                        string
+	Loops                           int
 	Delivery, Project, Branch, Head string
 	Elapsed                         time.Duration
 	State, Roadmap                  string
@@ -33,6 +35,7 @@ type PanelProgress struct {
 	Criterion, CriterionTotal                    int
 	CriterionTitle                               string
 	WavesDone, WavesTotal, TasksDone, TasksTotal int
+	WavesShown, TasksShown                       float64
 }
 
 type PanelDetail struct {
@@ -239,6 +242,8 @@ func PanelModel(records []journal.Record, now time.Time, selected string) PanelV
 	}
 	model.Progress.TasksTotal = len(graph.Tasks)
 	model.groupWaves(graph, tasks, settled)
+	model.Progress.WavesShown = float64(model.Progress.WavesDone)
+	model.Progress.TasksShown = float64(model.Progress.TasksDone)
 	return model
 }
 

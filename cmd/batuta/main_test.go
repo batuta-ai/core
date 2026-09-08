@@ -109,6 +109,26 @@ func TestUsageListsEveryGateForm(t *testing.T) {
 	}
 }
 
+func TestUsageListsWatchFlagsAndKeys(t *testing.T) {
+	for _, want := range []string{"--interval", "--once", "--lang", "--ascii", "Keys: Up/Down and PgUp/PgDn scroll", "f follows", "r opens", "R shows", "d opens", "ctrl+enter", "alt+enter", "ctrl+s", "o opens", "l changes", "? shows", "q quits", "mouse wheel"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage is missing watch option or key %q", want)
+		}
+	}
+}
+
+func TestWatchHelpListsFlagsAndKeys(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"watch", "--help"}, &stdout, &stderr); err != nil {
+		t.Fatalf("watch --help = %v", err)
+	}
+	for _, want := range []string{"batuta watch", "--interval", "--once", "--lang", "--ascii", "Keys: Up/Down and PgUp/PgDn scroll", "f follows", "r opens", "R shows", "d opens", "ctrl+enter", "alt+enter", "ctrl+s", "o opens", "l changes", "? shows", "q quits", "mouse wheel"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("watch --help is missing %q\n%s", want, &stderr)
+		}
+	}
+}
+
 func TestInspectGit(t *testing.T) {
 	git, err := exec.LookPath("git")
 	if err != nil {
@@ -426,7 +446,7 @@ func TestWatchOpensTheLiveDashboard(t *testing.T) {
 			if err := run(tc.args, stdout, &stderr); err != nil {
 				t.Fatalf("watch = %v\nstderr: %s", err, &stderr)
 			}
-			if got := stdout.String(); strings.Count(got, "\x1b[2J\x1b[H") != 2 || !strings.Contains(got, "batuta watch · demo") || strings.Contains(got, "batuta watch · older") || strings.Contains(got, "batuta watch · closed") {
+			if got := stdout.String(); strings.Count(got, "batuta watch") != 2 || strings.Contains(got, "\x1b") || !strings.Contains(got, "batuta watch · demo") || strings.Contains(got, "batuta watch · older") || strings.Contains(got, "batuta watch · closed") {
 				t.Fatalf("watch must redraw the selected delivery through completion:\n%s", got)
 			}
 		})
@@ -525,7 +545,7 @@ func TestLoopDashboardStillWorks(t *testing.T) {
 		want string
 	}{
 		{"dashboard remains TSV", []string{"loop", "--workspace", root, "--dashboard", "demo"}, "delivery  state"},
-		{"watch renders panel", []string{"loop", "--workspace", root, "--dashboard", "--watch", "--interval", time.Millisecond.String(), "demo"}, "\x1b[2J\x1b[Hdelivery demo"},
+		{"watch renders panel", []string{"loop", "--workspace", root, "--dashboard", "--watch", "--interval", time.Millisecond.String(), "demo"}, "batuta watch · demo"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

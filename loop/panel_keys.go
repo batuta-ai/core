@@ -1,12 +1,7 @@
 package loop
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -14,61 +9,6 @@ import (
 
 	"github.com/batuta-ai/core/journal"
 )
-
-type panelTerminal interface {
-	enterRaw() (func() error, error)
-	readKey(context.Context) (string, error)
-}
-
-type panelKeyEvent struct {
-	key string
-	err error
-}
-type panelKeySession struct {
-	keys    chan panelKeyEvent
-	done    chan struct{}
-	cancel  context.CancelFunc
-	restore func() error
-	err     error
-}
-
-func startPanelKeys(ctx context.Context, terminal panelTerminal) (*panelKeySession, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	restore, err := terminal.enterRaw()
-	if err != nil {
-		return nil, err
-	}
-	readCtx, cancel := context.WithCancel(ctx)
-	session := &panelKeySession{keys: make(chan panelKeyEvent), done: make(chan struct{}), cancel: cancel, restore: restore}
-	go func() {
-		defer close(session.done)
-		defer func() { session.err = session.restore() }()
-		defer close(session.keys)
-		for {
-			key, err := terminal.readKey(readCtx)
-			select {
-			case session.keys <- panelKeyEvent{key, err}:
-			case <-readCtx.Done():
-				return
-			}
-			if err != nil {
-				return
-			}
-		}
-	}()
-	return session, nil
-}
-
-func (s *panelKeySession) stop() error {
-	if s == nil {
-		return nil
-	}
-	s.cancel()
-	<-s.done
-	return s.err
-}
 
 type panelNavigation struct {
 	selected string
@@ -190,8 +130,8 @@ func (n *panelNavigation) viewport(model PanelView, style Style, height int) Pan
 }
 
 var panelLegendLabels = map[string][]string{
-	"en": {"Legend", "pass / integrated", "failed / blocked", "pending", "> running   ? waiting answer", "~ usage limit   < re-executing   ^ escalated", "G0 executor finished   G1 tree change", "G2 tests   G3 scope, proofs and verification"},
-	"pt": {"Legenda", "passou / integrada", "falhou / bloqueada", "pendente", "> em execução   ? aguarda resposta", "~ limite de uso   < reexecutando   ^ escalada", "G0 executor terminou   G1 alteração na árvore", "G2 testes   G3 escopo, provas e verificação"},
+	"en": {"Legend", "pass / integrated", "failed / blocked", "pending", "· focused box", "loop ● shown delivery running   loop ○ no loop   loop ○ stale lock expired", "N loops = fresh locks in workspace", "> running   ? waiting answer", "~ usage limit   < re-executing   ^ escalated", "G0 executor finished   G1 tree change", "G2 tests   G3 scope, proofs and verification"},
+	"pt": {"Legenda", "passou / integrada", "falhou / bloqueada", "pendente", "· foco", "loop ● entrega exibida em execução   loop ○ sem loop   loop ○ stale lock expirado", "N loops = locks recentes no workspace", "> em execução   ? aguarda resposta", "~ limite de uso   < reexecutando   ^ escalada", "G0 executor terminou   G1 alteração na árvore", "G2 testes   G3 escopo, provas e verificação"},
 }
 
 func panelLegend(style Style) string {
@@ -200,8 +140,9 @@ func panelLegend(style Style) string {
 		labels = panelLegendLabels["en"]
 	}
 	r := panelRenderer{style: style, g: glyphsFor(style), labels: panelLabels[style.Lang]}
-	rows := []string{r.g.ok + " " + labels[1] + "   " + r.g.fail + " " + labels[2], r.g.pend + " " + labels[3]}
-	rows = append(rows, labels[4:]...)
+	rows := []string{r.g.ok + " " + labels[1] + "   " + r.g.fail + " " + labels[2], r.g.pend + " " + labels[3], labels[4]}
+	rows = append(rows, labels[5:]...)
+	rows = append(rows, r.labels["color_done"], r.labels["color_run"], r.labels["color_fail"], r.labels["color_wait"], r.labels["color_pend"], r.labels["color_pick"])
 	return strings.Join(r.box(labels[0], rows, style.Width), "\n") + "\n"
 }
 
@@ -214,23 +155,6 @@ func panelShellQuote(value string) string {
 
 func panelAnswerCommand(workspace, task string) string {
 	return "batuta loop --workspace " + panelShellQuote(workspace) + " --answer " + panelShellQuote(task) + ` "<text>"`
-}
-
-func openPanelPager(ctx context.Context, path string, w io.Writer) error {
-	pager := strings.TrimSpace(os.Getenv("PAGER"))
-	if pager == "" {
-		return nil
-	}
-	var command *exec.Cmd
-	if runtime.GOOS == "windows" {
-		command = exec.CommandContext(ctx, "cmd.exe", "/d", "/s", "/c", pager+" "+panelShellQuote(path))
-	} else {
-		command = exec.CommandContext(ctx, "sh", "-c", pager+` "$1"`, "batuta-pager", path)
-	}
-	command.Stdin = os.Stdin
-	command.Stdout = w
-	command.Stderr = w
-	return command.Run()
 }
 
 func panelLogPath(root string, model PanelView) string {
@@ -258,6 +182,10 @@ func panelKeyAction(key, workspace string, model PanelView, n *panelNavigation) 
 	switch key {
 	case "?":
 		n.legend = !n.legend
+	case "R":
+		if model.Detail.Task != "" {
+			n.notice = panelAnswerCommand(workspace, model.Detail.Task)
+		}
 	case "r":
 		for _, wave := range model.Waves {
 			for _, row := range wave.Rows {
@@ -274,45 +202,4 @@ func panelKeyAction(key, workspace string, model PanelView, n *panelNavigation) 
 		}
 	}
 	return ""
-}
-
-func panelInputError(err error) error {
-	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
-		return nil
-	}
-	return fmt.Errorf("dashboard input: %w", err)
-}
-
-func decodePanelKey(sequence *string, b byte) string {
-	if b == 3 {
-		*sequence = ""
-		return "interrupt"
-	}
-	if b == 0x1b {
-		*sequence = "\x1b"
-		return ""
-	}
-	if *sequence == "" {
-		return string(b)
-	}
-	*sequence += string(b)
-	switch *sequence {
-	case "\x1b[A", "\x1bOA":
-		*sequence = ""
-		return "up"
-	case "\x1b[B", "\x1bOB":
-		*sequence = ""
-		return "down"
-	case "\x1b[5~":
-		*sequence = ""
-		return "pageUp"
-	case "\x1b[6~":
-		*sequence = ""
-		return "pageDown"
-	case "\x1b[", "\x1bO", "\x1b[5", "\x1b[6":
-		return ""
-	default:
-		*sequence = ""
-		return ""
-	}
 }

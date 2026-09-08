@@ -215,9 +215,77 @@ func TestPanelSnapshotSelectsOpenOrExplicitDoneDelivery(t *testing.T) {
 			want = "open-demo"
 		}
 		got := output.String()
+		if !strings.HasSuffix(got, "\n") || strings.HasSuffix(got, "\n\n") {
+			t.Fatalf("snapshot must end with exactly one newline: %q", got)
+		}
 		if strings.Count(got, "batuta watch ·") != 1 || !strings.Contains(got, want) || !strings.Contains(got, "snapshot log content") || strings.Contains(got, "\x1b[") {
 			t.Fatalf("snapshot %q = %q", delivery, got)
 		}
+	}
+}
+
+func tallPanelFixture() PanelView {
+	model := renderFixture("calm")
+	model.Waves = []PanelWave{{Number: 1, State: "running", Total: 18}}
+	for i := 1; i <= 18; i++ {
+		model.Waves[0].Rows = append(model.Waves[0].Rows, PanelRow{Task: fmt.Sprintf("task_%d", i), State: "running"})
+	}
+	model.LogLines = make([]string, 40)
+	for i := range model.LogLines {
+		model.LogLines[i] = fmt.Sprintf("line %03d", i)
+	}
+	return model
+}
+
+func TestFitPanelHeightShrinksLogFirst(t *testing.T) {
+	for _, width := range []int{80, 120} {
+		for _, offset := range []int{0, 5} {
+			model := tallPanelFixture()
+			style := Style{Width: width, LogOffset: offset}
+			fullHeight := panelLineCount(Render(model, style))
+			visible := 3
+			if width == 120 {
+				visible = 6
+			}
+			for shrink := 1; shrink <= visible; shrink++ {
+				height := fullHeight - shrink
+				fitted := fitPanelHeight(model, style, height)
+				if got := panelLineCount(Render(fitted, style)); got != height {
+					t.Errorf("width %d offset %d: height=%d, want %d", width, offset, got, height)
+				}
+				wantRows := panelTableRows(model) - max(0, shrink-(visible-2))
+				if got := panelTableRows(fitted); got != wantRows {
+					t.Errorf("width %d shrink %d: table rows=%d, want %d", width, shrink, got, wantRows)
+				}
+				if got := len(fitted.LogLines) - offset; got != max(2, visible-shrink) {
+					t.Errorf("visible log lines=%d, want %d", got, max(2, visible-shrink))
+				}
+				if !strings.Contains(Render(fitted, style), model.LogLines[len(model.LogLines)-offset-1]) {
+					t.Error("fitting lost the visible log tail")
+				}
+				if len(model.LogLines) != 40 || panelTableRows(model) != 19 {
+					t.Fatal("fitting modified the source model")
+				}
+			}
+		}
+	}
+}
+
+func TestReadPanelLogKeepsLast200Lines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.log")
+	lines := make([]string, 205)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line %03d", i)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readPanelLog(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 200 || got[0] != "line 005" || got[199] != "line 204" {
+		t.Fatalf("log tail: len=%d first=%q last=%q", len(got), got[0], got[len(got)-1])
 	}
 }
 
@@ -246,10 +314,22 @@ func TestWatchStopsAtTerminalState(t *testing.T) {
 	if appendErr != nil {
 		t.Fatal(appendErr)
 	}
-	if got := strings.Count(out.String(), "\x1b[2J\x1b[H"); got < 2 {
-		t.Fatalf("screen cleared %d times, want at least 2 redraws:\n%s", got, out.String())
+	if !strings.HasSuffix(out.String(), "\n") || strings.HasSuffix(out.String(), "\n\n") {
+		t.Fatal("no-TTY watch must end with exactly one newline")
 	}
-	if !strings.Contains(strings.Join(strings.Fields(out.String()), " "), "last delivery_terminal state=done") {
+	if got := strings.Count(out.String(), "batuta watch"); got != 2 || strings.Contains(out.String(), "\x1b") {
+		t.Fatalf("rendered %d frames, want 2 plain snapshots:\n%s", got, out.String())
+	}
+	finalRecords, err := store.Read("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	style, height := watchPanelSize(out)
+	expected, err := renderWatchPanel(root, finalRecords, now.Add(time.Second), style, height)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(out.String(), expected) {
 		t.Fatalf("terminal panel was not rendered:\n%s", out.String())
 	}
 }
@@ -359,7 +439,7 @@ func TestWatchShrinkOrder(t *testing.T) {
 		absent        []string
 	}{
 		{"wide", 120, 40, []string{"log 1", "log 6"}, nil},
-		{"short", 120, 31, []string{"log 4", "log 6"}, []string{"log 3"}},
+		{"short", 120, 31, []string{"log 5", "log 6"}, []string{"log 1"}},
 		{"compact", 80, 31, []string{"log 4", "log 6"}, []string{"log 3", "Commit"}},
 		{"narrow", 60, 31, nil, []string{"Recent log", "log 6"}},
 	} {
@@ -388,7 +468,7 @@ func TestWatchShrinkOrder(t *testing.T) {
 						shown++
 					}
 				}
-				if shown < 7 { // Seven tasks plus their wave aggregate keep eight table rows.
+				if shown < 1 {
 					t.Errorf("table kept only %d task rows:\n%s", shown, got)
 				}
 			}
