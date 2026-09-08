@@ -13,9 +13,12 @@ import (
 )
 
 const (
-	MaxParallelTasks  = 4
-	MaxDeliveryTasks  = 64
-	MaxTaskExecutions = 4
+	MaxParallelTasks              = 4
+	MaxDeliveryTasks              = 64
+	MaxTaskExecutions             = 4
+	BlockerNeedsConductingSession = "needs_conducting_session"
+	BlockerQuestionAtCeiling      = "question_at_ceiling"
+	BlockerAlreadySatisfied       = "already_satisfied"
 
 	maxQuestionBytes              = 2 << 10
 	maxChoiceBytes                = 512
@@ -86,6 +89,7 @@ type GraphTask struct {
 	State               GraphTaskState     `json:"state"`
 	Attempts            []GraphTaskAttempt `json:"attempts"`
 	IntegratedCommitSHA string             `json:"integrated_commit_sha,omitempty"`
+	AlreadySatisfied    bool               `json:"already_satisfied,omitempty"`
 	BlockerCode         string             `json:"blocker_code,omitempty"`
 }
 
@@ -93,6 +97,7 @@ type GraphTaskAttempt struct {
 	Execution          int                    `json:"execution"`
 	RunExecution       int                    `json:"run_execution,omitempty"`
 	Runtime            RuntimeValue           `json:"runtime"`
+	LimitOrigin        *RuntimeValue          `json:"limit_origin,omitempty"`
 	State              GraphTaskState         `json:"state"`
 	BaseHeadSHA        string                 `json:"base_head_sha"`
 	WorktreeIntent     *TaskWorktreeIntent    `json:"worktree_intent,omitempty"`
@@ -108,6 +113,7 @@ type GraphTaskAttempt struct {
 	TokensUsed         *int64                 `json:"tokens_used,omitempty"`
 	TerminalStatus     string                 `json:"terminal_status,omitempty"`
 	BlockerCode        string                 `json:"blocker_code,omitempty"`
+	AlreadySatisfied   bool                   `json:"already_satisfied,omitempty"`
 }
 
 type TaskQuestion struct {
@@ -161,10 +167,11 @@ type TaskFailure struct {
 }
 
 type TaskFailureResult struct {
-	Replayed bool
-	Blocked  bool
-	Wave     DeliveryWave
-	Runtime  RuntimeValue
+	Replayed  bool
+	Blocked   bool
+	Satisfied bool
+	Wave      DeliveryWave
+	Runtime   RuntimeValue
 }
 
 type TaskCandidate struct {
@@ -628,7 +635,7 @@ func (g *DeliveryGraph) RecordQuestion(
 	question TaskQuestion,
 	startedAt time.Time,
 ) (bool, error) {
-	if g == nil || !boundedArgument(taskID) || execution < 1 || execution >= MaxTaskExecutions ||
+	if g == nil || !boundedArgument(taskID) || execution < 1 || execution > MaxTaskExecutions ||
 		!boundedArgument(childRunID) || !validTaskQuestion(&question) || question.Answer != nil ||
 		startedAt.IsZero() || startedAt.Location() != time.UTC {
 		return false, ErrInvalidDeliveryTransition
@@ -640,7 +647,10 @@ func (g *DeliveryGraph) RecordQuestion(
 	}
 	attempt := &task.Attempts[execution-1]
 	if attempt.Question != nil {
-		if task.State != GraphTaskWaitingInput || attempt.State != GraphTaskWaitingInput ||
+		waiting := task.State == GraphTaskWaitingInput && attempt.State == GraphTaskWaitingInput
+		blockedAtCeiling := execution == MaxTaskExecutions && task.State == GraphTaskBlocked && attempt.State == GraphTaskBlocked &&
+			task.BlockerCode == BlockerQuestionAtCeiling && attempt.BlockerCode == BlockerQuestionAtCeiling
+		if (!waiting && !blockedAtCeiling) ||
 			attempt.ChildRunID != childRunID || !reflect.DeepEqual(attempt.Question, &question) {
 			return false, ErrInvalidDeliveryTransition
 		}
@@ -652,6 +662,17 @@ func (g *DeliveryGraph) RecordQuestion(
 	}
 	attempt.ChildRunID = childRunID
 	attempt.Question = cloneTaskQuestion(&question)
+	if execution == MaxTaskExecutions {
+		attempt.State = GraphTaskBlocked
+		attempt.BlockerCode = BlockerQuestionAtCeiling
+		task.State = GraphTaskBlocked
+		task.BlockerCode = BlockerQuestionAtCeiling
+		if err := validateGraphTask(*task, "pending"); err != nil {
+			return false, err
+		}
+		*g = *candidate
+		return false, nil
+	}
 	attempt.State = GraphTaskWaitingInput
 	task.State = GraphTaskWaitingInput
 	if _, err := candidate.ReconcileHumanPause(startedAt); err != nil {
@@ -722,15 +743,51 @@ func (g *DeliveryGraph) RecordAnswer(
 type FailurePolicy struct {
 	RetryAllowed       bool
 	SameRuntimeRetries int
-	// AbortAfterEscalation blocks the task on the first failure of a runtime
-	// other than the one it started with: the doctrine's "failure after
-	// escalation aborts". False keeps walking the cell's fallbacks.
+	// AbortAfterEscalation blocks on the first failure after a failure-driven
+	// runtime switch; usage-limit fallbacks do not count as escalation.
+	// False keeps walking the cell's fallbacks.
 	AbortAfterEscalation bool
 }
 
 // ConductingFailurePolicy is the skills' doctrine: one retry on the same
 // executor, then one escalation, then abort.
 var ConductingFailurePolicy = FailurePolicy{RetryAllowed: true, SameRuntimeRetries: 1, AbortAfterEscalation: true}
+
+// RecordLimitFallback moves a running execution along its cell without
+// creating an attempt or consuming the conducting failure policy.
+func (g *DeliveryGraph) RecordLimitFallback(taskID string, execution int, runID string, generation RoutingGeneration) (RuntimeValue, bool, error) {
+	if g == nil || !boundedArgument(taskID) || !boundedArgument(runID) || execution < 1 || execution > MaxTaskExecutions {
+		return RuntimeValue{}, false, ErrInvalidDeliveryTransition
+	}
+	recomputed, err := finalizeGeneration(generation)
+	if err != nil || recomputed.Digest != generation.Digest {
+		return RuntimeValue{}, false, ErrInvalidDeliveryGraph
+	}
+	candidate := cloneDeliveryGraph(g)
+	task := graphTaskByID(candidate.Tasks, taskID)
+	if task == nil || len(task.Attempts) != execution || task.State != GraphTaskRunning {
+		return RuntimeValue{}, false, ErrInvalidDeliveryTransition
+	}
+	attempt := &task.Attempts[execution-1]
+	if attempt.State != GraphTaskRunning || (attempt.ChildRunID != "" && attempt.ChildRunID != runID) {
+		return RuntimeValue{}, false, ErrInvalidDeliveryTransition
+	}
+	next, found := nextRuntimeForTask(generation, *task, attempt.Runtime)
+	if !found || next.Provider == string(ExecutorSelf) {
+		return RuntimeValue{}, false, nil
+	}
+	if attempt.LimitOrigin == nil {
+		origin := attempt.Runtime
+		attempt.LimitOrigin = &origin
+	}
+	attempt.Runtime = next
+	attempt.ChildRunID = runID
+	if err := validateGraphTask(*task, "pending"); err != nil {
+		return RuntimeValue{}, false, err
+	}
+	*g = *candidate
+	return next, true, nil
+}
 
 // RecordFailure advances to the next runtime on every failure; see
 // RecordFailureWithPolicy for the retry-then-escalate variant.
@@ -770,6 +827,11 @@ func (g *DeliveryGraph) RecordFailureWithPolicy(
 		return TaskFailureResult{}, ErrInvalidDeliveryTransition
 	}
 	attempt := &task.Attempts[execution-1]
+	if attempt.State == GraphTaskIntegrated && attempt.AlreadySatisfied && task.State == GraphTaskIntegrated &&
+		task.AlreadySatisfied && task.IntegratedCommitSHA == attempt.BaseHeadSHA &&
+		attempt.ChildRunID == failure.ChildRunID && failure.BlockerCode == BlockerAlreadySatisfied {
+		return TaskFailureResult{Replayed: true, Satisfied: true}, nil
+	}
 	if attempt.TokenAllowance > 0 && failure.TokensUsed > attempt.TokenAllowance {
 		return TaskFailureResult{}, ErrInvalidDeliveryTransition
 	}
@@ -798,6 +860,22 @@ func (g *DeliveryGraph) RecordFailureWithPolicy(
 		(attempt.ChildRunID != "" && attempt.ChildRunID != failure.ChildRunID) {
 		return TaskFailureResult{}, ErrInvalidDeliveryTransition
 	}
+	if failure.BlockerCode == BlockerAlreadySatisfied {
+		if nextBaseHeadSHA != attempt.BaseHeadSHA {
+			return TaskFailureResult{}, ErrInvalidDeliveryTransition
+		}
+		attempt.ChildRunID = failure.ChildRunID
+		attempt.State = GraphTaskIntegrated
+		attempt.AlreadySatisfied = true
+		task.State = GraphTaskIntegrated
+		task.IntegratedCommitSHA = attempt.BaseHeadSHA
+		task.AlreadySatisfied = true
+		if err := validateGraphTask(*task, "pending"); err != nil {
+			return TaskFailureResult{}, err
+		}
+		*g = *candidate
+		return TaskFailureResult{Satisfied: true}, nil
+	}
 	attempt.ChildRunID = failure.ChildRunID
 	attempt.State = GraphTaskBlocked
 	attempt.TerminalStatus = failure.TerminalStatus
@@ -809,7 +887,21 @@ func (g *DeliveryGraph) RecordFailureWithPolicy(
 	if sameRuntimeRuns(task.Attempts[:execution], attempt.Runtime) > policy.SameRuntimeRetries {
 		nextRuntime, eligible = nextRuntimeForTask(generation, *task, attempt.Runtime)
 	}
-	escalated := attempt.Runtime != task.Attempts[0].Runtime
+	escalated := false
+	for index := 1; index < len(task.Attempts); index++ {
+		if attemptInitialRuntime(task.Attempts[index]) != task.Attempts[index-1].Runtime {
+			escalated = true
+		}
+	}
+	if retryAllowed && nextRuntime.Provider == string(ExecutorSelf) {
+		task.State = GraphTaskBlocked
+		task.BlockerCode = BlockerNeedsConductingSession
+		if err := validateGraphTask(*task, "pending"); err != nil {
+			return TaskFailureResult{}, err
+		}
+		*g = *candidate
+		return TaskFailureResult{Blocked: true}, nil
+	}
 	if !retryAllowed || execution == MaxTaskExecutions || !eligible || (policy.AbortAfterEscalation && escalated) {
 		task.State = GraphTaskBlocked
 		task.BlockerCode = failure.BlockerCode
@@ -1341,7 +1433,7 @@ func validateGraphTask(task GraphTask, authoredStatus string) error {
 	switch authoredStatus {
 	case "completed":
 		if task.State != GraphTaskIntegrated || !canonicalGitSHA.MatchString(task.IntegratedCommitSHA) ||
-			len(task.Attempts) != 0 || task.BlockerCode != "" {
+			len(task.Attempts) != 0 || task.AlreadySatisfied || task.BlockerCode != "" {
 			return ErrInvalidDeliveryGraph
 		}
 		return nil
@@ -1357,7 +1449,7 @@ func validateGraphTask(task GraphTask, authoredStatus string) error {
 			prior := task.Attempts[index-1]
 			continuedAfterAnswer := prior.State == GraphTaskRunning && prior.Question != nil && prior.Question.Answer != nil &&
 				graphAttemptRunExecution(attempt) == graphAttemptRunExecution(prior) &&
-				attempt.Runtime == prior.Runtime && attempt.BaseHeadSHA == prior.BaseHeadSHA &&
+				attemptInitialRuntime(attempt) == prior.Runtime && attempt.BaseHeadSHA == prior.BaseHeadSHA &&
 				reflect.DeepEqual(attempt.WorktreeIntent, prior.WorktreeIntent) &&
 				attempt.WorktreeID == prior.WorktreeID && attempt.WorktreeRoot == prior.WorktreeRoot &&
 				attempt.ChildRunID == prior.ChildRunID
@@ -1377,11 +1469,13 @@ func validateGraphTask(task GraphTask, authoredStatus string) error {
 	}
 	if task.State == GraphTaskIntegrated {
 		last := task.Attempts[len(task.Attempts)-1]
+		satisfied := task.AlreadySatisfied && last.AlreadySatisfied && task.IntegratedCommitSHA == last.BaseHeadSHA
+		candidate := !task.AlreadySatisfied && !last.AlreadySatisfied && canonicalGitSHA.MatchString(last.CandidateCommitSHA)
 		if !canonicalGitSHA.MatchString(task.IntegratedCommitSHA) || last.State != GraphTaskIntegrated ||
-			!canonicalGitSHA.MatchString(last.CandidateCommitSHA) || task.BlockerCode != "" {
+			(!satisfied && !candidate) || task.BlockerCode != "" {
 			return ErrInvalidDeliveryGraph
 		}
-	} else if task.IntegratedCommitSHA != "" {
+	} else if task.IntegratedCommitSHA != "" || task.AlreadySatisfied {
 		return ErrInvalidDeliveryGraph
 	}
 	if task.State == GraphTaskBlocked {
@@ -1427,6 +1521,15 @@ func validateGraphTaskAttempt(attempt GraphTaskAttempt, expectedExecution int, t
 		!validTaskCandidateEvidence(attempt.CandidateEvidence, taskID, attempt.VerificationDigest) {
 		return ErrInvalidDeliveryGraph
 	}
+	if origin := attempt.LimitOrigin; origin != nil {
+		if !boundedArgument(origin.Provider) || !boundedArgument(origin.Model) || !boundedArgument(origin.Reasoning) || *origin == attempt.Runtime {
+			return ErrInvalidDeliveryGraph
+		}
+	}
+
+	if attempt.State != GraphTaskIntegrated && attempt.AlreadySatisfied {
+		return ErrInvalidDeliveryGraph
+	}
 	switch attempt.State {
 	case GraphTaskPreparing:
 		if attempt.ChildRunID != "" || attempt.CandidateCommitSHA != "" ||
@@ -1450,17 +1553,27 @@ func validateGraphTaskAttempt(attempt GraphTaskAttempt, expectedExecution int, t
 			attempt.TokensUsed != nil || attempt.TerminalStatus != "" || attempt.BlockerCode != "" {
 			return ErrInvalidDeliveryGraph
 		}
-	case GraphTaskCandidate, GraphTaskIntegrated:
+	case GraphTaskCandidate:
 		if attempt.WorktreeID == "" || !boundedArgument(attempt.ChildRunID) ||
 			!canonicalGitSHA.MatchString(attempt.CandidateCommitSHA) ||
-			!canonicalSHA256.MatchString(attempt.VerificationDigest) || attempt.TerminalStatus != "" || attempt.BlockerCode != "" {
+			!canonicalSHA256.MatchString(attempt.VerificationDigest) || attempt.TerminalStatus != "" || attempt.BlockerCode != "" ||
+			attempt.AlreadySatisfied {
+			return ErrInvalidDeliveryGraph
+		}
+	case GraphTaskIntegrated:
+		satisfied := attempt.AlreadySatisfied && attempt.CandidateCommitSHA == "" && attempt.VerificationDigest == "" &&
+			attempt.CandidateEvidence == nil && attempt.TokensUsed == nil
+		candidate := !attempt.AlreadySatisfied && canonicalGitSHA.MatchString(attempt.CandidateCommitSHA) &&
+			canonicalSHA256.MatchString(attempt.VerificationDigest)
+		if attempt.WorktreeID == "" || !boundedArgument(attempt.ChildRunID) || (!satisfied && !candidate) ||
+			attempt.TerminalStatus != "" || attempt.BlockerCode != "" || attempt.Conflict != nil {
 			return ErrInvalidDeliveryGraph
 		}
 	case GraphTaskBlocked:
 		terminalFailure := attempt.TerminalStatus != ""
 		conflictExhausted := attempt.Conflict != nil && canonicalGitSHA.MatchString(attempt.CandidateCommitSHA) &&
 			canonicalSHA256.MatchString(attempt.VerificationDigest) && attempt.TokensUsed != nil && attempt.TerminalStatus == ""
-		if !boundedArgument(attempt.BlockerCode) || (attempt.CandidateEvidence != nil && !conflictExhausted) ||
+		if attempt.AlreadySatisfied || !boundedArgument(attempt.BlockerCode) || (attempt.CandidateEvidence != nil && !conflictExhausted) ||
 			(!conflictExhausted && (attempt.CandidateCommitSHA != "" || attempt.VerificationDigest != "" || attempt.Conflict != nil)) ||
 			(terminalFailure && (!boundedArgument(attempt.ChildRunID) || attempt.TokensUsed == nil ||
 				!validTaskTerminalStatus(attempt.TerminalStatus))) ||
@@ -1657,7 +1770,7 @@ func validateCleanupOperations(graph *DeliveryGraph) error {
 	return nil
 }
 
-func validateDeliveryGraphTransition(before, after *DeliveryGraph) error {
+func validateDeliveryGraphTransition(before, after *DeliveryGraph, generation RoutingGeneration) error {
 	if before == nil || after == nil || len(before.Tasks) != len(after.Tasks) ||
 		len(after.Waves) < len(before.Waves) || len(after.Waves) > len(before.Waves)+1 ||
 		len(after.Integrations) < len(before.Integrations) || len(after.Integrations) > len(before.Integrations)+1 ||
@@ -1681,14 +1794,14 @@ func validateDeliveryGraphTransition(before, after *DeliveryGraph) error {
 		return ErrDeliveryConflict
 	}
 	for index := range before.Tasks {
-		if err := validateGraphTaskTransition(before.Tasks[index], after.Tasks[index]); err != nil {
+		if err := validateGraphTaskTransition(before.Tasks[index], after.Tasks[index], generation); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateGraphTaskTransition(before, after GraphTask) error {
+func validateGraphTaskTransition(before, after GraphTask, generation RoutingGeneration) error {
 	if before.TaskID != after.TaskID || before.AuthoredIndex != after.AuthoredIndex ||
 		!slices.Equal(before.Dependencies, after.Dependencies) || before.Domain != after.Domain ||
 		before.Complexity != after.Complexity {
@@ -1702,7 +1815,8 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 	}
 	appendedAttempt := len(after.Attempts) == len(before.Attempts)+1
 	stateAllowed := graphTaskTransitionAllowed(before.State, after.State) ||
-		(appendedAttempt && before.State == GraphTaskRunning && after.State == GraphTaskPreparing)
+		(appendedAttempt && before.State == GraphTaskRunning && after.State == GraphTaskPreparing) ||
+		(before.State == GraphTaskRunning && after.State == GraphTaskIntegrated && after.AlreadySatisfied)
 	if !stateAllowed || len(after.Attempts) < len(before.Attempts) || len(after.Attempts) > len(before.Attempts)+1 {
 		return ErrInvalidDeliveryTransition
 	}
@@ -1713,12 +1827,23 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 	} else if before.IntegratedCommitSHA != after.IntegratedCommitSHA {
 		return ErrDeliveryConflict
 	}
+	if after.AlreadySatisfied {
+		if before.AlreadySatisfied || before.State != GraphTaskRunning || after.State != GraphTaskIntegrated {
+			return ErrDeliveryConflict
+		}
+	} else if before.AlreadySatisfied != after.AlreadySatisfied {
+		return ErrDeliveryConflict
+	}
 	if after.State == GraphTaskBlocked {
 		if before.BlockerCode != "" || !boundedArgument(after.BlockerCode) {
 			return ErrDeliveryConflict
 		}
 	} else if before.BlockerCode != after.BlockerCode {
 		return ErrDeliveryConflict
+	}
+	var fallback RuntimeValue
+	if len(before.Attempts) > 0 {
+		fallback, _ = nextRuntimeForTask(generation, before, before.Attempts[len(before.Attempts)-1].Runtime)
 	}
 	if len(after.Attempts) == len(before.Attempts) {
 		for index := range before.Attempts {
@@ -1728,7 +1853,7 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 				}
 				continue
 			}
-			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index]); err != nil {
+			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index], fallback); err != nil {
 				return err
 			}
 		}
@@ -1766,7 +1891,12 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 			}
 		} else if before.Attempts[index].State == GraphTaskRunning &&
 			after.Attempts[index].State == GraphTaskBlocked {
-			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index]); err != nil {
+			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index], fallback); err != nil {
+				return err
+			}
+		} else if before.Attempts[index].State == GraphTaskRunning &&
+			after.Attempts[index].State == GraphTaskIntegrated && after.Attempts[index].AlreadySatisfied {
+			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index], fallback); err != nil {
 				return err
 			}
 		} else if !reflect.DeepEqual(before.Attempts[index], after.Attempts[index]) {
@@ -1794,10 +1924,28 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 	return nil
 }
 
-func validateGraphAttemptTransition(before, after GraphTaskAttempt) error {
-	if before.Execution != after.Execution || before.Runtime != after.Runtime || before.BaseHeadSHA != after.BaseHeadSHA ||
+func validateGraphAttemptTransition(before, after GraphTaskAttempt, fallback RuntimeValue) error {
+	if before.Runtime != after.Runtime {
+		if before.State != GraphTaskRunning || after.State != GraphTaskRunning ||
+			fallback.Provider == "" || fallback.Provider == string(ExecutorSelf) || after.Runtime != fallback ||
+			after.LimitOrigin == nil || *after.LimitOrigin != attemptInitialRuntime(before) ||
+			!boundedArgument(after.ChildRunID) || (before.ChildRunID != "" && before.ChildRunID != after.ChildRunID) {
+			return ErrInvalidDeliveryTransition
+		}
+		unchanged := after
+		unchanged.Runtime, unchanged.LimitOrigin, unchanged.ChildRunID = before.Runtime, before.LimitOrigin, before.ChildRunID
+		if !reflect.DeepEqual(before, unchanged) {
+			return ErrDeliveryConflict
+		}
+		return nil
+	}
+	if !reflect.DeepEqual(before.LimitOrigin, after.LimitOrigin) {
+		return ErrDeliveryConflict
+	}
+	if before.Execution != after.Execution || before.BaseHeadSHA != after.BaseHeadSHA ||
 		graphAttemptRunExecution(before) != graphAttemptRunExecution(after) ||
-		!graphTaskTransitionAllowed(before.State, after.State) {
+		(!graphTaskTransitionAllowed(before.State, after.State) &&
+			!(before.State == GraphTaskRunning && after.State == GraphTaskIntegrated && after.AlreadySatisfied)) {
 		return ErrInvalidDeliveryTransition
 	}
 	if before.WorktreeID != "" && (before.WorktreeID != after.WorktreeID || before.WorktreeRoot != after.WorktreeRoot) {
@@ -2112,16 +2260,27 @@ func validTaskTerminalStatus(status string) bool {
 	}
 }
 
-// sameRuntimeRuns counts the distinct runs (attempts continued after an
-// answer share a run) that already used this runtime.
+// sameRuntimeRuns counts distinct runs since the last escalation, following
+// limit origins so a usage limit cannot reset the retry budget. Attempts
+// continued after an answer share a run.
 func sameRuntimeRuns(attempts []GraphTaskAttempt, runtime RuntimeValue) int {
 	runs := map[int]struct{}{}
-	for _, attempt := range attempts {
-		if attempt.Runtime == runtime {
-			runs[graphAttemptRunExecution(attempt)] = struct{}{}
+	for index := len(attempts) - 1; index >= 0; index-- {
+		attempt := attempts[index]
+		if attempt.Runtime != runtime {
+			break
 		}
+		runs[graphAttemptRunExecution(attempt)] = struct{}{}
+		runtime = attemptInitialRuntime(attempt)
 	}
 	return len(runs)
+}
+
+func attemptInitialRuntime(attempt GraphTaskAttempt) RuntimeValue {
+	if attempt.LimitOrigin != nil {
+		return *attempt.LimitOrigin
+	}
+	return attempt.Runtime
 }
 
 func nextRuntimeForTask(generation RoutingGeneration, task GraphTask, current RuntimeValue) (RuntimeValue, bool) {
@@ -2294,6 +2453,10 @@ func cloneDeliveryGraph(graph *DeliveryGraph) *DeliveryGraph {
 }
 
 func cloneGraphTaskAttempt(attempt GraphTaskAttempt) GraphTaskAttempt {
+	if attempt.LimitOrigin != nil {
+		origin := *attempt.LimitOrigin
+		attempt.LimitOrigin = &origin
+	}
 	attempt.WorktreeIntent = cloneTaskWorktreeIntent(attempt.WorktreeIntent)
 	if attempt.Question != nil {
 		attempt.Question = cloneTaskQuestion(attempt.Question)

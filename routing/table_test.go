@@ -69,6 +69,39 @@ func TestParseRoutingTableReadsTheLaneTableOnly(t *testing.T) {
 	}
 }
 
+func TestParseRoutingTableReviewRole(t *testing.T) {
+	t.Parallel()
+	base, err := ParseRoutingTable([]byte(routingTableFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roleTable := "\n| Model | Role | Executor |\n|---|---|---|\n"
+	payload := routingTableFixture + roleTable + "| `provider/reviewer` | review | codex |\n"
+	table, err := ParseRoutingTable([]byte(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if table.Review == nil || table.Review.Executor != inventory.ExecutorCodex || table.Review.Model != "provider/reviewer" || table.Review.Line == 0 {
+		t.Fatalf("review role = %+v", table.Review)
+	}
+	if len(table.Rows) != len(base.Rows) || base.Review != nil || table.Digest == base.Digest {
+		t.Fatal("review role must be separate from lanes and included in the digest")
+	}
+	for _, row := range []string{
+		"| model | review | self |", "| default | review | codex |",
+		"| <model> | review | codex |", "| | review | codex |",
+		"| model | review | ../codex |", "| model | review |",
+		"| model | review | codex |\n| other | review | codex |",
+	} {
+		if _, err := ParseRoutingTable([]byte(routingTableFixture + roleTable + row)); !errors.Is(err, ErrRoutingTableInvalid) {
+			t.Errorf("row %q: got %v", row, err)
+		}
+	}
+	if _, err := ParseRoutingTable([]byte(routingTableFixture + "\n| Role | Executor |\n|---|---|\n| review | codex |\n")); !errors.Is(err, ErrRoutingTableInvalid) {
+		t.Fatalf("review without model: %v", err)
+	}
+}
+
 func TestParseRoutingTableRejectsBrokenRows(t *testing.T) {
 	t.Parallel()
 	cases := map[string]struct{ edit, want string }{

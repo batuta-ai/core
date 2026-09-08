@@ -1,10 +1,16 @@
 package loop
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -12,13 +18,129 @@ import (
 	"github.com/batuta-ai/core/journal"
 )
 
+func TestPresenceLockExclusive(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.lock")
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	first, err := acquirePresence(context.Background(), path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.stop() })
+	if _, err := acquirePresence(context.Background(), path, now); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("second acquire error = %v, want os.ErrExist", err)
+	}
+}
+
+func TestPresenceOwnerDoesNotTouchReplacement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.lock")
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	ownership, err := acquirePresence(context.Background(), path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	replacement := presenceLock{PID: 99, Host: "replacement", StartedAt: now.Add(time.Second), RefreshedAt: now.Add(time.Second)}
+	payload, err := json.Marshal(replacement)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	refreshed := ownership.owner
+	refreshed.RefreshedAt = now.Add(presenceRefresh)
+	if err := ownership.refresh(refreshed); err == nil || !strings.Contains(err.Error(), "ownership was replaced") {
+		t.Fatalf("refresh error = %v", err)
+	}
+	if err := ownership.stop(); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPresenceLock(t, path); got != replacement {
+		t.Fatalf("replacement changed: %+v", got)
+	}
+}
+
+func TestPresenceRefusesLiveOwner(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	writePresenceFixture(t, root, "delivery", now)
+	_, err := acquireDeliveryOwnership(context.Background(), root, "delivery", now)
+	if err == nil || !strings.Contains(err.Error(), "delivery delivery is owned by pid 1 since 2026-09-08T12:00:00Z") {
+		t.Fatalf("acquire error = %v", err)
+	}
+}
+
+func TestPresenceTakesOverStaleLock(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("delivery", journal.Record{Kind: KindOpened, Detail: json.RawMessage(`{}`), Graph: json.RawMessage(`{}`), At: now.Add(-time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	writePresenceFixture(t, root, "delivery", now.Add(-presenceFresh-time.Second))
+	ownership, err := acquireDeliveryOwnership(context.Background(), root, "delivery", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ownership.stop() })
+	lock := readPresenceLock(t, filepath.Join(root, journal.Dir, "delivery.lock"))
+	if lock.PID != os.Getpid() || !lock.StartedAt.Equal(now) {
+		t.Fatalf("replacement lock = %+v", lock)
+	}
+	if ownership.takenOver == nil || ownership.takenOver.PID != 1 {
+		t.Fatalf("taken-over owner = %+v", ownership.takenOver)
+	}
+	records, err := store.Read("delivery")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := records[len(records)-1]; last.Kind != KindPresenceTakenOver || !last.At.Equal(now) || string(last.Graph) != `{}` {
+		t.Fatalf("takeover record = %+v", last)
+	}
+}
+
+func TestPresenceRefusesSymlink(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, journal.Dir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(root, "target")
+	if err := os.WriteFile(target, []byte("untouched"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(dir, "delivery.lock")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := acquireDeliveryOwnership(context.Background(), root, "delivery", time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC))
+	if err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("acquire error = %v", err)
+	}
+	payload, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != "untouched" {
+		t.Fatalf("symlink target changed to %q", payload)
+	}
+}
+
 func writePresenceFixture(t *testing.T, root, delivery string, at time.Time) string {
 	t.Helper()
 	path := filepath.Join(root, journal.Dir, delivery+".lock")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"pid":1,"host":"remote","started_at":"2026-09-07T12:00:00Z","refreshed_at":"2026-09-07T12:00:00Z"}`), 0o644); err != nil {
+	payload, err := json.Marshal(presenceLock{PID: 1, Host: "remote", StartedAt: at, RefreshedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, at, at); err != nil {
@@ -94,12 +216,8 @@ func TestLoopWritesPresenceLockHeartbeat(t *testing.T) {
 		time.Sleep(time.Second)
 		synctest.Wait()
 		refreshed := readPresenceLock(t, path)
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !refreshed.RefreshedAt.Equal(first.RefreshedAt.Add(5*time.Second)) || !refreshed.StartedAt.Equal(first.StartedAt) || !info.ModTime().Equal(refreshed.RefreshedAt) {
-			t.Fatalf("heartbeat: %+v, mtime %v", refreshed, info.ModTime())
+		if !refreshed.RefreshedAt.Equal(first.RefreshedAt.Add(5*time.Second)) || !refreshed.StartedAt.Equal(first.StartedAt) {
+			t.Fatalf("heartbeat: %+v", refreshed)
 		}
 		cancel()
 		synctest.Wait()
@@ -133,4 +251,262 @@ func TestLoopRemovesPresenceLockOnEndWithoutCancellation(t *testing.T) {
 			t.Fatalf("lock recreated after run ended: %v", err)
 		}
 	})
+}
+
+func TestPresenceHeartbeatIsAtomic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.lock")
+	now := time.Now().UTC()
+	ownership, err := acquirePresence(context.Background(), path, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := ownership.stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	// A reader that opened the old inode must retain a complete old payload.
+	reader, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	first := readPresenceLock(t, path)
+	refreshed := first
+	refreshed.RefreshedAt = now.Add(time.Second)
+	if err := ownership.refresh(refreshed); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old presenceLock
+	if err := json.Unmarshal(payload, &old); err != nil {
+		t.Fatal(err)
+	}
+	if old != first {
+		t.Fatalf("refresh overwrote an open reader's inode: %+v", old)
+	}
+	if got := readPresenceLock(t, path); got != refreshed {
+		t.Fatalf("new heartbeat = %+v", got)
+	}
+	// Simulate a crash after truncating the staging file, before rename.
+	if err := os.WriteFile(path+".tmp", nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, err := inspectPresence(path); err != nil || *got != refreshed {
+		t.Fatalf("interrupted staging write affected lock: %+v, %v", got, err)
+	}
+	if err := ownership.refresh(refreshed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path + ".tmp"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging file remains: %v", err)
+	}
+}
+
+func TestPresenceRecoversMalformedStaleLock(t *testing.T) {
+	for _, payload := range []string{"", `{"pid":`} {
+		for _, stale := range []bool{false, true} {
+			t.Run(fmt.Sprintf("payload=%q/stale=%v", payload, stale), func(t *testing.T) {
+				root := t.TempDir()
+				now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+				at := now
+				if stale {
+					at = now.Add(-presenceFresh - time.Second)
+				}
+				path := writePresenceFixture(t, root, "delivery", at)
+				if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chtimes(path, at, at); err != nil {
+					t.Fatal(err)
+				}
+				owner, inspectErr := liveDeliveryOwner(root, "delivery", now)
+				if owner != nil || (stale && inspectErr != nil) || (!stale && inspectErr == nil) {
+					t.Fatalf("preliminary inspection = %+v, %v", owner, inspectErr)
+				}
+				if got, err := os.ReadFile(path); err != nil || string(got) != payload {
+					t.Fatalf("preliminary inspection changed lock: %q, %v", got, err)
+				}
+				ownership, err := acquireDeliveryOwnership(context.Background(), root, "delivery", now)
+				if !stale {
+					if err == nil {
+						_ = ownership.stop()
+						t.Fatal("accepted fresh malformed lock")
+					}
+					return
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				if lock := readPresenceLock(t, path); lock.PID != os.Getpid() || !lock.StartedAt.Equal(now) {
+					t.Fatalf("replacement lock = %+v", lock)
+				}
+				if err := ownership.stop(); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
+func TestConcurrentStaleTakeoversLeaveOneOwner(t *testing.T) {
+	if root := os.Getenv("BATUTA_PRESENCE_TEST_ROOT"); root != "" {
+		fmt.Println("ready")
+		ownership, err := acquireDeliveryOwnership(context.Background(), root, "delivery", time.Now().UTC())
+		if err != nil {
+			if !strings.Contains(err.Error(), "owned by pid") {
+				t.Fatal(err)
+			}
+			fmt.Println("refused")
+			return
+		}
+		fmt.Println("owned")
+		if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
+			t.Fatal(err)
+		}
+		if err := ownership.stop(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	root := t.TempDir()
+	path := writePresenceFixture(t, root, "delivery", time.Now().UTC().Add(-presenceFresh-time.Second))
+	guard, err := os.OpenFile(path+".guard", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer guard.Close()
+	if err := lockExclusive(guard); err != nil {
+		t.Fatal(err)
+	}
+	defer unlockFile(guard)
+	type child struct {
+		cmd    *exec.Cmd
+		output *bufio.Reader
+		input  io.WriteCloser
+	}
+	children := make([]child, 0, 2)
+	for range 2 {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestConcurrentStaleTakeoversLeaveOneOwner$")
+		cmd.Env = append(os.Environ(), "BATUTA_PRESENCE_TEST_ROOT="+root)
+		cmd.Stderr = os.Stderr
+		output, err := cmd.StdoutPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		input, err := cmd.StdinPipe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = input.Close(); _ = cmd.Process.Kill() })
+		reader := bufio.NewReader(output)
+		if line, err := reader.ReadString('\n'); err != nil || line != "ready\n" {
+			t.Fatalf("child ready = %q, %v", line, err)
+		}
+		children = append(children, child{cmd, reader, input})
+	}
+	// Both processes start with the same stale lock behind the parent's guard.
+	unlockFile(guard)
+	owners, refused := 0, 0
+	for _, child := range children {
+		line, err := child.output.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch line {
+		case "owned\n":
+			owners++
+		case "refused\n":
+			refused++
+		default:
+			t.Fatalf("child result = %q", line)
+		}
+	}
+	if owners != 1 || refused != 1 {
+		t.Fatalf("owners = %d, refused = %d", owners, refused)
+	}
+	for _, child := range children {
+		_ = child.input.Close()
+	}
+	for _, child := range children {
+		if err := child.cmd.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestTakeoverWithEmptyJournalFails(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.Path("delivery"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writePresenceFixture(t, root, "delivery", now.Add(-presenceFresh-time.Second))
+	ownership, err := acquireDeliveryOwnership(context.Background(), root, "delivery", now)
+	if ownership != nil {
+		_ = ownership.stop()
+		t.Fatal("acquired empty delivery")
+	}
+	if err == nil || !strings.Contains(err.Error(), "empty journal") {
+		t.Fatalf("takeover error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, journal.Dir, "delivery.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("replacement lock remains: %v", err)
+	}
+	records, err := store.Read("delivery")
+	if err != nil || len(records) != 0 {
+		t.Fatalf("journal changed: %v, %v", records, err)
+	}
+}
+
+func TestPresenceHeartbeatUsesInjectedClockAndSleep(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.lock")
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	ticks := make(chan time.Time)
+	waiting := make(chan struct{})
+	timing := presenceTiming{
+		now: func() time.Time { return now },
+		sleep: func(ctx context.Context, delay time.Duration) error {
+			if delay != presenceRefresh {
+				t.Errorf("delay = %s", delay)
+			}
+			select {
+			case waiting <- struct{}{}:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			select {
+			case now = <-ticks:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	owner, err := acquirePresence(context.Background(), path, now, timing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer owner.stop()
+	<-waiting
+	first := readPresenceLock(t, path)
+	ticks <- first.RefreshedAt.Add(presenceRefresh)
+	<-waiting
+	got := readPresenceLock(t, path)
+	if !got.RefreshedAt.Equal(first.RefreshedAt.Add(presenceRefresh)) {
+		t.Fatalf("heartbeat = %+v", got)
+	}
+	if err := owner.stop(); err != nil {
+		t.Fatal(err)
+	}
 }

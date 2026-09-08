@@ -29,24 +29,27 @@ import (
 
 // Journal kinds written by the loop.
 const (
-	KindOpened      journal.Kind = "delivery_opened"
-	KindWave        journal.Kind = "wave_admitted"
-	KindAttempts    journal.Kind = "attempts_begun"
-	KindWorktree    journal.Kind = "worktree_attached"
-	KindStarted     journal.Kind = "executor_started"
-	KindProgress    journal.Kind = "task_progress"
-	KindFinished    journal.Kind = "executor_finished"
-	KindQuestion    journal.Kind = "question_recorded"
-	KindAnswer      journal.Kind = "answer_recorded"
-	KindGates       journal.Kind = "gates_reported"
-	KindCandidate   journal.Kind = "candidate_recorded"
-	KindFailure     journal.Kind = "failure_recorded"
-	KindPreflight   journal.Kind = "integration_preflight"
-	KindSettled     journal.Kind = "wave_settled"
-	KindCleanup     journal.Kind = "cleanup"
-	KindTerminal    journal.Kind = "delivery_terminal"
-	KindInterrupted journal.Kind = "run_interrupted"
-	KindLimitWait   journal.Kind = "limit_wait"
+	KindOpened            journal.Kind = "delivery_opened"
+	KindWave              journal.Kind = "wave_admitted"
+	KindAttempts          journal.Kind = "attempts_begun"
+	KindWorktree          journal.Kind = "worktree_attached"
+	KindSnapshot          journal.Kind = "worktree_snapshotted"
+	KindStarted           journal.Kind = "executor_started"
+	KindProgress          journal.Kind = "task_progress"
+	KindFinished          journal.Kind = "executor_finished"
+	KindQuestion          journal.Kind = "question_recorded"
+	KindAnswer            journal.Kind = "answer_recorded"
+	KindGates             journal.Kind = "gates_reported"
+	KindCandidate         journal.Kind = "candidate_recorded"
+	KindFailure           journal.Kind = "failure_recorded"
+	KindPreflight         journal.Kind = "integration_preflight"
+	KindSettled           journal.Kind = "wave_settled"
+	KindCleanup           journal.Kind = "cleanup"
+	KindTerminal          journal.Kind = "delivery_terminal"
+	KindInterrupted       journal.Kind = "run_interrupted"
+	KindLimitWait         journal.Kind = "limit_wait"
+	KindLimitFallback     journal.Kind = "limit_fallback"
+	KindPresenceTakenOver journal.Kind = "presence_taken_over"
 )
 
 // Terminal states of a delivery.
@@ -81,12 +84,15 @@ type Options struct {
 	MaxLimitWaits    int
 	LimitWaitDefault time.Duration
 	LimitBuffer      time.Duration
-	Sleep            func(context.Context, time.Duration) error
-	Stdout           io.Writer
-	Inventory        func(context.Context) (inventory.InventorySnapshot, error)
-	Runner           publication.CommandRunner
-	Environment      []string // extra environment for executors (tests)
-	Now              func() time.Time
+	LimitHorizon     time.Duration
+	// Sleep handles foreground waits and presence heartbeats; injected callbacks
+	// must support concurrent calls and context cancellation.
+	Sleep       func(context.Context, time.Duration) error
+	Stdout      io.Writer
+	Inventory   func(context.Context) (inventory.InventorySnapshot, error)
+	Runner      publication.CommandRunner
+	Environment []string // extra environment for executors (tests)
+	Now         func() time.Time
 }
 
 // Runner holds one delivery in flight.
@@ -119,6 +125,7 @@ type Runner struct {
 	now        func() time.Time
 	out        io.Writer
 
+	worktreeMu sync.Mutex // add/remove/prune share the repository worktree registry
 	mu         sync.Mutex
 	worktrees  map[string]attemptWorktree // task:execution
 	feedback   map[string][]string
@@ -130,6 +137,21 @@ type Runner struct {
 	wavesRun   int
 	warnings   []string
 	journaled  bool
+	ownership  *deliveryOwnership
+
+	pendingFinish *terminalDetail
+}
+
+// Parallel attempts share the output sink, which may be an unguarded buffer.
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(p)
 }
 
 type attemptWorktree struct {
@@ -231,8 +253,9 @@ func New(ctx context.Context, opts Options) (*Runner, error) {
 	return r, nil
 }
 
-// Resume reopens a delivery from its journal.
-func Resume(ctx context.Context, opts Options) (*Runner, error) {
+// Resume reopens a delivery from its journal. Callers must release ownership
+// with Release when finished, including when they only call DryRun.
+func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error) {
 	r, err := prepare(ctx, opts)
 	if err != nil {
 		return nil, err
@@ -240,6 +263,16 @@ func Resume(ctx context.Context, opts Options) (*Runner, error) {
 	if !journal.ValidDeliveryID(opts.Resume) {
 		return nil, fmt.Errorf("loop: %q is not a delivery id", opts.Resume)
 	}
+	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
+	if err != nil {
+		return nil, err
+	}
+	r.ownership = ownership
+	defer func() {
+		if resumeErr != nil {
+			resumeErr = errors.Join(resumeErr, r.releaseOwnership())
+		}
+	}()
 	records, err := r.store.Read(opts.Resume)
 	if err != nil {
 		return nil, fmt.Errorf("loop: %w", err)
@@ -250,6 +283,12 @@ func Resume(ctx context.Context, opts Options) (*Runner, error) {
 	var opened openedDetail
 	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
 		return nil, fmt.Errorf("loop: journal: %w", err)
+	}
+	if detail := pendingFinalization(records); detail != nil {
+		if err := r.restoreFinalization(records, opened, detail); err != nil {
+			return nil, err
+		}
+		return r, nil
 	}
 	if err := r.loadPlan(opened.Slug); err != nil {
 		return nil, err
@@ -304,6 +343,9 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	}
 	if opts.LimitWaitDefault == 0 {
 		opts.LimitWaitDefault = 30 * time.Minute
+	}
+	if opts.LimitHorizon == 0 {
+		opts.LimitHorizon = 2 * time.Hour
 	}
 	if opts.LimitBuffer == 0 {
 		opts.LimitBuffer = time.Minute
@@ -383,7 +425,7 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		store:    store, profile: profile, skills: skills, table: table,
 		branch: branch, openedHead: head, parallel: parallel, shell: shell, subprocess: subprocess,
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
-		now: opts.Now, out: opts.Stdout,
+		now: opts.Now, out: &lockedWriter{writer: opts.Stdout},
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
 		candidates: map[string]integration.CandidateEvidence{}, commits: map[string]string{},
 		started: map[string]bool{}, preflights: map[string]integration.PreflightResult{},
@@ -681,6 +723,11 @@ func PrintPreview(w io.Writer, preview Preview) {
 			}
 			fmt.Fprintf(w, "  %-8s %-16s %s/%s reasoning %s%s%s\n           %s\n           %s\n",
 				task.ID, task.Lane, task.Executor, task.Model, task.Reasoning, fallbacks, depends, task.Title, task.Worktree)
+			limitFallback := "none"
+			if len(task.Fallbacks) > 0 && !strings.HasPrefix(task.Fallbacks[0], "self/") {
+				limitFallback = task.Fallbacks[0]
+			}
+			fmt.Fprintf(w, "           limit fallback: %s\n", limitFallback)
 		}
 	}
 }
@@ -688,16 +735,26 @@ func PrintPreview(w io.Writer, preview Preview) {
 // Run drives the delivery to a terminal state, or returns ErrStopped when
 // --max-waves ended it early.
 func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
+	if r.ownership == nil {
+		ownership, err := acquireDeliveryOwnership(ctx, r.root, r.delivery, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
+		if err != nil {
+			return "", err
+		}
+		r.ownership = ownership
+	}
+	defer func() { runErr = errors.Join(runErr, r.releaseOwnership()) }()
 	if !r.journaled {
 		if err := r.open(); err != nil {
 			return "", err
 		}
 	}
-	stopPresence, err := startPresence(ctx, filepath.Join(r.root, journal.Dir, r.delivery+".lock"))
-	if err != nil {
+	if err := r.recordPendingPresenceTakeover(); err != nil {
 		return "", err
 	}
-	defer func() { runErr = errors.Join(runErr, stopPresence()) }()
+
+	if r.pendingFinish != nil {
+		return r.retryFinalization(ctx)
+	}
 
 	for {
 		if ctx.Err() != nil {
@@ -710,9 +767,14 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 		if ctx.Err() != nil {
 			return r.finish(context.WithoutCancel(ctx), StateCanceled)
 		}
+		// Preserve candidates completed before a sibling blocked the delivery.
+		// All attempts have joined, so settlement can safely use the run context.
 		settled, err := r.settleCandidates(ctx)
 		if err != nil {
 			return r.fail(ctx, err)
+		}
+		if r.anyState(routing.GraphTaskBlocked) {
+			return r.finish(ctx, StateBlocked)
 		}
 		if ran > 0 || settled > 0 {
 			continue
@@ -752,6 +814,21 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 		r.record(KindWave, "", map[string]any{"wave": wave.Number, "base": wave.BaseHeadSHA, "tasks": wave.TaskIDs})
 		fmt.Fprintf(r.out, "wave %d: %s (base %s)\n", wave.Number, strings.Join(wave.TaskIDs, ", "), short(wave.BaseHeadSHA))
 	}
+}
+
+// Release stops the heartbeat and releases delivery ownership. It is idempotent;
+// Run also calls it before returning.
+func (r *Runner) Release() error {
+	if r.ownership == nil {
+		return nil
+	}
+	err := r.ownership.stop()
+	r.ownership = nil
+	return err
+}
+
+func (r *Runner) releaseOwnership() error {
+	return r.Release()
 }
 
 func (r *Runner) open() error {
@@ -811,7 +888,21 @@ func (r *Runner) locked(kind journal.Kind, taskID string, detail any, mutate fun
 // tasks admitted to a wave, retries, re-executions after a conflict, and
 // continuations after an answer. It returns how many attempts ran.
 func (r *Runner) runPreparingWaves(ctx context.Context) (int, error) {
+	// The batch owns every attempt's context and joins every goroutine before
+	// Run can settle, admit another wave, or write a terminal record.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	r.mu.Lock()
+	if ctx.Err() != nil {
+		r.mu.Unlock()
+		return 0, nil
+	}
+	for _, task := range r.graph.Tasks {
+		if task.State == routing.GraphTaskBlocked {
+			r.mu.Unlock()
+			return 0, nil
+		}
+	}
 	for _, wave := range r.graph.Waves {
 		needsBegin := false
 		for _, taskID := range wave.TaskIDs {
@@ -856,13 +947,21 @@ func (r *Runner) runPreparingWaves(ctx context.Context) (int, error) {
 		wg.Add(1)
 		go func(taskID string) {
 			defer wg.Done()
-			semaphore <- struct{}{}
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-semaphore }()
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || r.anyState(routing.GraphTaskBlocked) {
 				return
 			}
 			if err := r.runAttempt(ctx, taskID); err != nil {
 				errs <- err
+				cancel()
+			}
+			if r.anyState(routing.GraphTaskBlocked) {
+				cancel()
 			}
 		}(taskID)
 	}
@@ -874,6 +973,20 @@ func (r *Runner) runPreparingWaves(ctx context.Context) (int, error) {
 		}
 	}
 	return len(ready), nil
+}
+
+// Git worktree add exposes its registry entry before setup is complete.
+// A sibling's add/remove may prune that entry, so serialize registry changes.
+func (r *Runner) addWorktree(ctx context.Context, name, branch, base string) (string, error) {
+	r.worktreeMu.Lock()
+	defer r.worktreeMu.Unlock()
+	return r.git.Add(ctx, name, branch, base)
+}
+
+func (r *Runner) removeWorktree(ctx context.Context, root, branch string) error {
+	r.worktreeMu.Lock()
+	defer r.worktreeMu.Unlock()
+	return r.git.Remove(ctx, root, branch)
 }
 
 func (r *Runner) reachable(ctx context.Context, head string) (map[string]bool, error) {

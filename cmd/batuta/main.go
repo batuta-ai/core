@@ -7,6 +7,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -17,7 +18,9 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -25,6 +28,8 @@ import (
 	"github.com/batuta-ai/core/inventory/adapters"
 	"github.com/batuta-ai/core/loop"
 	"github.com/batuta-ai/core/publication"
+	"github.com/batuta-ai/core/review"
+	"github.com/batuta-ai/core/routing"
 	"github.com/batuta-ai/core/worktree"
 )
 
@@ -41,6 +46,7 @@ Usage:
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
   batuta watch     [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
+  batuta review    [--base <ref>] [--worktree] [--spec <plan>] [--cohort-files N] [--parallel N] [--reviewer <executor/model>] [--full] [--out <dir>]
   batuta gate tree --snapshot [--dir <d>]
   batuta gate tree --before '<json>' [--dir <d>]
   batuta gate tests --command "<cmd>" [--dir <d>] [--timeout <duration>]
@@ -70,6 +76,9 @@ watch      Live dashboard of a delivery (the most recent open one by
            submits.
 trail      One line per journal record of a delivery (the latest by
            default).
+review     Read-only, cohort-based delivery review through the configured
+           executor adapter. Writes manifest.json, findings.json, review.md
+           and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK.
 
 inventory  Redacted snapshot of the executor CLIs installed on this machine
            (codex, opencode, cursor-agent, claude, agy, compozy): versions,
@@ -111,6 +120,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runWatch(args[1:], stdout, stderr)
 	case "trail":
 		return runTrail(args[1:], stdout)
+	case "review":
+		return runReview(args[1:], stdout, stderr)
 	case "gate":
 		return runGate(args[1:], stdout)
 	case "help", "--help", "-h":
@@ -138,7 +149,7 @@ func version() string {
 
 // commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "roadmap", "trail", "version", "watch"}
+var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "review", "roadmap", "trail", "version", "watch"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
@@ -214,7 +225,12 @@ func workspaceRoot(flagValue string) (string, error) {
 
 func collect(ctx context.Context, root string) (inventory.InventorySnapshot, executables, error) {
 	found := discoverExecutables()
-	collector, err := adapters.NewCollector(publication.ExecRunner{}, adapters.CollectorOptions{
+	snapshot, err := collectWithRunner(ctx, root, found, publication.ExecRunner{})
+	return snapshot, found, err
+}
+
+func collectWithRunner(ctx context.Context, root string, found executables, runner publication.CommandRunner) (inventory.InventorySnapshot, error) {
+	collector, err := adapters.NewCollector(runner, adapters.CollectorOptions{
 		TrustedWorkspace: root, WorkspaceID: "local",
 		CompozyExecutable: found.Compozy, CodexExecutable: found.Codex,
 		OpenCodeExecutable: found.OpenCode, CursorExecutable: found.Cursor,
@@ -222,10 +238,9 @@ func collect(ctx context.Context, root string) (inventory.InventorySnapshot, exe
 		ProbeParallelism: 8,
 	})
 	if err != nil {
-		return inventory.InventorySnapshot{}, found, err
+		return inventory.InventorySnapshot{}, err
 	}
-	snapshot, err := collector.Collect(ctx)
-	return snapshot, found, err
+	return collector.Collect(ctx)
 }
 
 func runInventory(args []string, stdout io.Writer) error {
@@ -251,16 +266,70 @@ func runInventory(args []string, stdout io.Writer) error {
 }
 
 type doctorReport struct {
-	Workspace     string           `json:"workspace"`
-	GitRepository bool             `json:"git_repository"`
-	GitToplevel   string           `json:"git_toplevel,omitempty"`
-	GitState      string           `json:"git_state,omitempty"`
-	GitClean      *bool            `json:"git_clean,omitempty"`
-	GitExecutable string           `json:"git_executable,omitempty"`
-	Commands      []string         `json:"commands"`
-	SkillsPath    string           `json:"skills_path,omitempty"`
-	Executors     []doctorExecutor `json:"executors"`
-	Digest        string           `json:"inventory_digest"`
+	Workspace      string                `json:"workspace"`
+	GitRepository  bool                  `json:"git_repository"`
+	GitToplevel    string                `json:"git_toplevel,omitempty"`
+	GitState       string                `json:"git_state,omitempty"`
+	GitClean       *bool                 `json:"git_clean,omitempty"`
+	GitExecutable  string                `json:"git_executable,omitempty"`
+	Commands       []string              `json:"commands"`
+	SkillsPath     string                `json:"skills_path,omitempty"`
+	Executors      []doctorExecutor      `json:"executors"`
+	Digest         string                `json:"inventory_digest"`
+	ProbeDurations []doctorProbeDuration `json:"-"`
+}
+
+type doctorProbeDuration struct {
+	Executor string
+	Probe    string
+	Duration time.Duration
+}
+
+type doctorProbeRunner struct {
+	runner            publication.CommandRunner
+	executorByCommand map[string]string
+	mu                sync.Mutex
+	durations         []doctorProbeDuration
+}
+
+func (r *doctorProbeRunner) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	started := time.Now()
+	result, err := r.runner.Run(ctx, command)
+	duration := doctorProbeDuration{
+		Executor: r.executorByCommand[command.Executable],
+		Probe:    strings.Join(command.Args, " "),
+		Duration: time.Since(started),
+	}
+	r.mu.Lock()
+	r.durations = append(r.durations, duration)
+	r.mu.Unlock()
+	return result, err
+}
+
+func (r *doctorProbeRunner) snapshot() []doctorProbeDuration {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	durations := append([]doctorProbeDuration(nil), r.durations...)
+	sort.Slice(durations, func(i, j int) bool {
+		if durations[i].Executor != durations[j].Executor {
+			return durations[i].Executor < durations[j].Executor
+		}
+		return durations[i].Probe < durations[j].Probe
+	})
+	return durations
+}
+
+func doctorExecutorCommands(found executables) map[string]string {
+	commands := make(map[string]string)
+	for executor, command := range map[string]string{
+		"compozy": found.Compozy, "codex": found.Codex, "opencode": found.OpenCode,
+		"cursor-agent": found.Cursor, "claude": found.Claude, "agy": found.Agy,
+	} {
+		if command != "" {
+			commands[command] = executor
+		}
+	}
+	return commands
 }
 
 type doctorExecutor struct {
@@ -287,11 +356,13 @@ func runDoctor(args []string, stdout io.Writer) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	snapshot, found, err := collect(ctx, root)
+	found := discoverExecutables()
+	probeRunner := &doctorProbeRunner{runner: publication.ExecRunner{}, executorByCommand: doctorExecutorCommands(found)}
+	snapshot, err := collectWithRunner(ctx, root, found, probeRunner)
 	if err != nil {
 		return err
 	}
-	report := doctorReport{Workspace: root, Digest: snapshot.Digest, Commands: commands}
+	report := doctorReport{Workspace: root, Digest: snapshot.Digest, Commands: commands, ProbeDurations: probeRunner.snapshot()}
 	if git, err := exec.LookPath("git"); err == nil {
 		report.GitExecutable = git
 		// The probe context may already be spent by collect; git gets its own.
@@ -394,7 +465,7 @@ type ExitError struct {
 
 func (e *ExitError) Error() string { return "delivery " + e.State }
 
-func runLoop(args []string, stdout, stderr io.Writer) error {
+func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	flags := flag.NewFlagSet("loop", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	workspace := flags.String("workspace", "", "repository root (default: current directory)")
@@ -413,6 +484,7 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	maxWaves := flags.Int("max-waves", 0, "stop after N waves (the delivery stays resumable)")
 	keep := flags.Bool("keep-worktrees", false, "keep task worktrees after integration or abort")
 	maxLimitWaits := flags.Int("max-limit-waits", 20, "consecutive usage-limit waits one attempt may take")
+	limitHorizon := flags.Duration("limit-horizon", 2*time.Hour, "switch to the next runtime when a usage-limit reset lies beyond this duration")
 	limitWait := flags.Duration("limit-wait", 30*time.Minute, "wait when a usage-limit message names no reset time")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -439,7 +511,7 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	}
 	opts := loop.Options{
 		Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
-		MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait,
+		MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
 		Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
 			root, err := workspaceRoot(*workspace)
 			if err != nil {
@@ -499,6 +571,7 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	defer func() { runErr = errors.Join(runErr, runner.Release()) }()
 	if *dryRun {
 		preview, err := runner.DryRun()
 		if err != nil {
@@ -531,6 +604,340 @@ func loopExit(state string) error {
 	default:
 		return &ExitError{Code: 2, State: state}
 	}
+}
+
+var (
+	reviewNow            = time.Now
+	reviewSessionOptions = func(root string, parallel int) review.SessionOptions {
+		return review.SessionOptions{Root: root, Parallel: parallel}
+	}
+)
+
+func runReview(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("review", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	base := flags.String("base", "", "base git ref (default: the branch point or HEAD)")
+	includeWorktree := flags.Bool("worktree", false, "include untracked, non-ignored files")
+	spec := flags.String("spec", "", "plan slug or plan file whose criteria are the review spec")
+	cohortFiles := flags.Int("cohort-files", review.CohortFiles, "maximum files per cohort")
+	parallel := flags.Int("parallel", 1, "reviewer sessions to run in parallel")
+	reviewer := flags.String("reviewer", "", "reviewer override as executor/model")
+	full := flags.Bool("full", false, "ignore prior review state and review from --base")
+	out := flags.String("out", "", "artifact directory (default: .batuta/reviews/<date>-<slug>)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("review accepts flags only")
+	}
+	if *cohortFiles < 1 || *parallel < 1 {
+		return errors.New("review requires positive --cohort-files and --parallel values")
+	}
+	root, err := workspaceRoot("")
+	if err != nil {
+		return err
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return err
+	}
+	git := publication.GitClient{Executable: gitPath, Runner: publication.ExecRunner{}}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	baseline, err := git.WorktreeState(ctx, root)
+	if err != nil {
+		return err
+	}
+	trackedBaseline, err := trackedChangeSignatures(root, baseline.HeadSHA)
+	if err != nil {
+		return err
+	}
+	var rules []review.SpecRule
+	var resolvedSpecPath string
+	if *spec != "" {
+		rules, err = review.LoadSpecCriteria(root, *spec)
+		if err != nil {
+			return fmt.Errorf("review: load spec %s: %w", *spec, err)
+		}
+		resolvedSpecPath, err = reviewSpecPath(root, *spec)
+		if err != nil {
+			return err
+		}
+	}
+	slug, err := reviewSlug(root, *spec)
+	if err != nil {
+		return err
+	}
+	branch, err := reviewSlug(root, "")
+	if err != nil {
+		return err
+	}
+	branchIdentity, err := reviewBranchIdentity(root)
+	if err != nil {
+		return err
+	}
+	specSlug := ""
+	if *spec != "" {
+		specSlug = slug
+	}
+	key := reviewStateKey(branch, branchIdentity, specSlug, resolvedSpecPath)
+	statePath := filepath.Join(root, ".batuta", "reviews", "state", key+".json")
+	sessionSlug := reviewNow().Format("2006-01-02") + "-" + slug
+	directory := *out
+	if directory == "" {
+		directory = filepath.Join(root, ".batuta", "reviews", sessionSlug)
+	} else if !filepath.IsAbs(directory) {
+		directory = filepath.Join(root, directory)
+	}
+	artifactPaths := append(review.ArtifactPaths(directory), statePath)
+	resolvedPaths, err := review.CheckArtifactPaths(root, artifactPaths)
+	if err != nil {
+		return err
+	}
+	requestedBase := *base
+	if requestedBase == "" {
+		requestedBase, err = defaultReviewBase(root)
+		if err != nil {
+			return err
+		}
+	}
+	state, err := review.LoadIncrementalState(root, statePath, requestedBase, *full)
+	if err != nil {
+		return err
+	}
+	manifest, err := review.BuildIncrementalManifest(root, state, review.ManifestOptions{Worktree: *includeWorktree, CohortFiles: *cohortFiles})
+	if err != nil {
+		return err
+	}
+	tablePayload, err := os.ReadFile(filepath.Join(root, ".batuta", "routing.md"))
+	if err != nil {
+		return errors.New("review: .batuta/routing.md is missing — run /batuta-init first")
+	}
+	table, err := routing.ParseRoutingTable(tablePayload)
+	if err != nil {
+		return fmt.Errorf("review: %w", err)
+	}
+	runtime, err := review.ReviewerRuntimeFromTable(table, routing.DomainGeneral, *reviewer)
+	if err != nil {
+		return err
+	}
+	options := reviewSessionOptions(root, *parallel)
+	cohorts, err := review.RunCohorts(ctx, manifest, runtime, options)
+	if err != nil {
+		return reviewSessionError(ctx, git, root, baseline, trackedBaseline, err)
+	}
+	var sweep *review.SpecSweep
+	if *spec != "" {
+		result, err := review.RunSpecSweep(ctx, manifest, rules, runtime, options)
+		if err != nil {
+			return reviewSessionError(ctx, git, root, baseline, trackedBaseline, err)
+		}
+		sweep = &result
+	}
+	after, stateErr := git.WorktreeState(ctx, root)
+	if stateErr != nil {
+		return fmt.Errorf("review: verify source tree: %w", stateErr)
+	}
+	if after != baseline {
+		paths := changedTrackedPaths(root, baseline.HeadSHA, trackedBaseline)
+		if len(paths) == 0 {
+			paths = []string{"worktree state changed"}
+		}
+		return fmt.Errorf("review: source tree changed during review: %s", strings.Join(paths, ", "))
+	}
+	report := review.BuildReport(manifest, cohorts, sweep)
+	state = review.StateAfterReport(report, after.HeadSHA)
+	if _, err := review.CheckArtifactPaths(root, artifactPaths); err != nil {
+		return err
+	}
+	publicationGit := git
+	publicationGit.Runner = reviewPublicationRunner{paths: resolvedPaths, runner: git.Runner}
+	beforePublication, err := publicationGit.WorktreeState(ctx, root)
+	if err != nil {
+		return err
+	}
+	if err := review.WriteArtifacts(directory, report, state); err != nil {
+		return err
+	}
+	if err := reviewSessionError(ctx, publicationGit, root, beforePublication, trackedBaseline, nil); err != nil {
+		return err
+	}
+	if err := review.WriteIncrementalState(statePath, state); err != nil {
+		return err
+	}
+	if err := reviewSessionError(ctx, publicationGit, root, beforePublication, trackedBaseline, nil); err != nil {
+		return err
+	}
+	if err := review.PrintReport(stdout, report); err != nil {
+		return err
+	}
+	switch report.Verdict {
+	case review.Ship:
+		return nil
+	case review.FixBeforeShip:
+		return &ExitError{Code: 2, State: string(report.Verdict)}
+	default:
+		return &ExitError{Code: 3, State: string(report.Verdict)}
+	}
+}
+
+func reviewSessionError(ctx context.Context, git publication.GitClient, root string, baseline publication.WorktreeState, trackedBaseline map[string]string, sessionErr error) error {
+	after, stateErr := git.WorktreeState(ctx, root)
+	if stateErr != nil {
+		return errors.Join(sessionErr, fmt.Errorf("review: verify source tree: %w", stateErr))
+	}
+	if after == baseline {
+		return sessionErr
+	}
+	paths := changedTrackedPaths(root, baseline.HeadSHA, trackedBaseline)
+	if len(paths) == 0 {
+		paths = []string{"worktree state changed"}
+	}
+	return errors.Join(sessionErr, fmt.Errorf("review: source tree changed during review: %s", strings.Join(paths, ", ")))
+}
+
+// Exclude only the authorized artifact files from the publication tree guard;
+// other tracked, staged and untracked changes still invalidate the review.
+type reviewPublicationRunner struct {
+	paths  []string
+	runner publication.CommandRunner
+}
+
+func (r reviewPublicationRunner) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	if len(command.Args) > 0 {
+		switch command.Args[0] {
+		case "status", "diff", "ls-files":
+			command.Args = append(command.Args, "--", ".")
+			for _, filename := range r.paths {
+				relative, err := filepath.Rel(command.Directory, filename)
+				if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+					command.Args = append(command.Args, ":(top,literal,exclude)"+filepath.ToSlash(relative))
+				}
+			}
+		}
+	}
+	return r.runner.Run(ctx, command)
+}
+
+func reviewSlug(root, spec string) (string, error) {
+	if spec != "" {
+		name := strings.TrimSuffix(filepath.Base(spec), filepath.Ext(spec))
+		name = strings.TrimPrefix(name, "plan-")
+		return name, nil
+	}
+	output, err := exec.Command("git", "-C", root, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	if err != nil {
+		return "detached-head", nil
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(string(output))) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "branch"
+	}
+	return slug, nil
+}
+
+func reviewBranchIdentity(root string) (string, error) {
+	output, err := exec.Command("git", "-C", root, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	if err == nil {
+		return strings.TrimSpace(string(output)), nil
+	}
+	output, err = exec.Command("git", "-C", root, "rev-parse", "--verify", "HEAD").Output()
+	if err != nil {
+		return "", fmt.Errorf("review: determine branch identity: %w", err)
+	}
+	return "detached-head:" + strings.TrimSpace(string(output)), nil
+}
+
+func reviewSpecPath(root, spec string) (string, error) {
+	paths := []string{spec}
+	if !filepath.IsAbs(spec) && !strings.ContainsAny(spec, "/\\") && filepath.Ext(spec) == "" {
+		paths = []string{routing.PlanPath(spec), filepath.Join(".batuta", "plans", "done", spec+".md"), filepath.Join(".batuta", "plan-"+spec+".md")}
+	}
+	for _, filename := range paths {
+		if !filepath.IsAbs(filename) {
+			filename = filepath.Join(root, filename)
+		}
+		if _, err := os.Stat(filename); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return "", fmt.Errorf("review: resolve spec path: %w", err)
+		}
+		resolved, err := filepath.EvalSymlinks(filename)
+		if err != nil {
+			return "", fmt.Errorf("review: resolve spec path: %w", err)
+		}
+		return filepath.Clean(resolved), nil
+	}
+	return "", fmt.Errorf("review: plan %q is unavailable", spec)
+}
+
+func reviewStateKey(branchSlug, branchIdentity, specSlug, resolvedSpecPath string) string {
+	name := branchSlug
+	if specSlug != "" {
+		name += "-" + specSlug
+	}
+	digest := sha256.Sum256([]byte(branchIdentity + "\x00" + resolvedSpecPath))
+	return fmt.Sprintf("%s-%x", name, digest[:8])
+}
+
+func defaultReviewBase(root string) (string, error) {
+	for _, candidate := range []string{"main", "origin/main", "master", "origin/master", "@{upstream}", "HEAD^", "HEAD"} {
+		cmd := exec.Command("git", "-C", root, "merge-base", "HEAD", candidate)
+		if output, err := cmd.Output(); err == nil && strings.TrimSpace(string(output)) != "" {
+			return strings.TrimSpace(string(output)), nil
+		}
+	}
+	return "", errors.New("review: cannot determine a default base; pass --base <ref>")
+}
+
+func trackedChangeSignatures(root, beforeHead string) (map[string]string, error) {
+	output, err := exec.Command("git", "-C", root, "diff", "--name-only", "-z", beforeHead, "--").Output()
+	if err != nil {
+		return nil, fmt.Errorf("review: list tracked changes: %w", err)
+	}
+	signatures := make(map[string]string)
+	for _, name := range bytes.Split(output, []byte{0}) {
+		if len(name) == 0 {
+			continue
+		}
+		diff, err := exec.Command("git", "-C", root, "diff", "--binary", "--no-ext-diff", beforeHead, "--", string(name)).Output()
+		if err != nil {
+			return nil, fmt.Errorf("review: inspect tracked change %q: %w", name, err)
+		}
+		signatures[string(name)] = string(diff)
+	}
+	return signatures, nil
+}
+
+func changedTrackedPaths(root, beforeHead string, baseline map[string]string) []string {
+	after, err := trackedChangeSignatures(root, beforeHead)
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for name, signature := range after {
+		if baseline[name] != signature {
+			paths = append(paths, name)
+		}
+	}
+	for name := range baseline {
+		if _, exists := after[name]; !exists {
+			paths = append(paths, name)
+		}
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func runWatch(args []string, stdout, stderr io.Writer) error {
@@ -636,6 +1043,11 @@ func printDoctor(w io.Writer, report doctorReport) {
 			notes = strings.Join(executor.Diagnostics, ",")
 		}
 		fmt.Fprintf(w, "%-13s %-12s %-14s %7d  %s\n", executor.ID, executor.Availability, truncate(executor.Version, 14), executor.Models, notes)
+	}
+	for _, probe := range report.ProbeDurations {
+		if probe.Duration > 5*time.Second {
+			fmt.Fprintf(w, "note: %s %s took %.1fs (budget 5s)\n", probe.Executor, probe.Probe, probe.Duration.Seconds())
+		}
 	}
 }
 

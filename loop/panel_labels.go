@@ -3,7 +3,7 @@ package loop
 var panelLabels = map[string]map[string]string{
 	"en": {
 		"answer_placeholder": "Type your answer...",
-		"answer_keys":        "ctrl+enter / alt+enter / ctrl+s send · esc cancel · enter newline",
+		"answer_keys":        "enter send · ctrl+j newline · esc cancel",
 		"answer_empty":       "The answer is empty.",
 
 		"loop_run":    "loop ●",
@@ -27,7 +27,10 @@ var panelLabels = map[string]map[string]string{
 		"above":       "above",
 		"below":       "below",
 		"running":     "running",
+		"open":        "open",
 		"integrated":  "integrated",
+		"abandoned":   "abandoned",
+		"canceled":    "canceled",
 		"pending":     "pending",
 		"before_run":  "before run",
 		"executor":    "executor",
@@ -62,10 +65,12 @@ var panelLabels = map[string]map[string]string{
 		"color_wait":  "yellow · waiting answer",
 		"color_pend":  "dim · pending",
 		"color_pick":  "reverse · selected task",
+		"ago":         "ago",
+		"stale":       "stale",
 	},
 	"pt": {
 		"answer_placeholder": "Digite sua resposta...",
-		"answer_keys":        "ctrl+enter / alt+enter / ctrl+s envia · esc cancela · enter nova linha",
+		"answer_keys":        "enter envia · ctrl+j nova linha · esc cancela",
 		"answer_empty":       "A resposta está vazia.",
 
 		"loop_run":    "loop ●",
@@ -89,7 +94,10 @@ var panelLabels = map[string]map[string]string{
 		"above":       "acima",
 		"below":       "abaixo",
 		"running":     "em execução",
+		"open":        "aberta",
 		"integrated":  "integrada",
+		"abandoned":   "abandonada",
+		"canceled":    "cancelada",
 		"pending":     "pendente",
 		"before_run":  "antes do run",
 		"executor":    "executor",
@@ -124,5 +132,7 @@ var panelLabels = map[string]map[string]string{
 		"color_wait":  "amarelo · aguarda resposta",
 		"color_pend":  "atenuado · pendente",
 		"color_pick":  "invertido · task selecionada",
+		"ago":         "atrás",
+		"stale":       "obsoleto",
 	},
 }

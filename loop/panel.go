@@ -94,6 +94,7 @@ func Watch(ctx context.Context, workspace, delivery string, interval time.Durati
 		}
 	}
 	model := newPollingWatchModel(root, delivery, store, records, interval, StyleForWriter(w), nil, nil)
+	model.ctx = ctx
 	if delivery == "" {
 		if err := model.openPicker(); err != nil {
 			return err

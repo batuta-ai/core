@@ -13,7 +13,8 @@ list, with the same invariants:
 3. A task is done only when it passes the **four gates**, never on the
    executor's exit code or report.
 4. A **usage limit is not a failure**: the loop waits for the reset and runs
-   the same attempt again, spending no retry and no escalation.
+   the same attempt again, or switches to its next runtime when the wait
+   budget is exhausted, spending no retry and no escalation.
 5. **One commit per task**, integrated onto the branch that was checked out
    when the delivery opened.
 
@@ -62,6 +63,14 @@ terminal    done | blocked | waiting_input | canceled | abandoned
 Exit codes: `0` done · `2` blocked · `3` waiting for an answer · `130`
 canceled · `1` an error before or during the run.
 
+## After the run
+
+When the delivery reaches `done`, run
+`batuta review --spec .batuta/plans/done/<slug>.md`. Resolve any review verdict
+that is not `SHIP`, then open the pull request and attach or link the review
+artefacts. The review is the delivery-level gate between the completed loop and
+the PR; see [review.md](review.md) for its contract.
+
 ## Standalone gates
 
 The interactive skill can run each verification gate independently. Every
@@ -103,6 +112,21 @@ exit `1` with the reason on stderr.
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
+- **Usage-limit fallback.** `--max-limit-waits` (default 20) bounds the waits
+  in one attempt. At that cap, or when a named reset is more than
+  `--limit-horizon` (default `2h`) away, the loop walks to the cell's next
+  executable fallback, using the same cell walk as escalation. It reruns the
+  brief in the same worktree with the same execution number and run ID;
+  partial work stays available and no retry or escalation is spent. The wait
+  count stays with the attempt across runtime switches. A reset within the
+  horizon still waits until reset plus the buffer; an unnamed reset uses
+  `--limit-wait` (default `30m`). With no executable fallback left (including
+  `self`), the loop waits the remaining budget, then blocks `rate_limited`.
+  Each switch journals `limit_fallback` with `execution`, `from`, `to`,
+  `reset_at`, and `waits`. The trail shows the switch and watch shows the new
+  runtime without incrementing retries or escalations. `--dry-run` lists the
+  next limit fallback per task, or `none`. Proposal #54's separate **Limit
+  fallback** routing-table column is deferred; no new column is required.
 - **Conflicts keep the same runtime.** A conflicting candidate re-executes on
   the new base with the same executor, model, and reasoning; escalation is
   reserved for verification failures.
@@ -131,6 +155,77 @@ exit `1` with the reason on stderr.
 - **Same-runtime retry keeps the worktree**, so the fix session sees the
   partial work and the brief carries the real cause. An escalation starts
   clean.
+- **Failure outcomes.** The ordinary conducting policy retries once on the
+  same runtime with feedback, escalates once in a fresh worktree, then blocks
+  the task; other ready tasks and later waves continue whenever their
+  dependencies permit. The blocker tells the operator why:
+  - `timed_out` marks the attempt stalled, then follows the ordinary policy.
+  - `verifier_incomplete`, `tests_failed`, `scope_violation`, `no_changes`,
+    `candidate_invalid`, `question_unsafe`, and `install_failed` follow the
+    ordinary policy. So do `executor_failed` and `proof_failed`, the remaining
+    executor and gate blocker codes.
+  - `interrupted` is written as stalled when `--resume` finds an attempt that
+    was still running, then follows the ordinary policy in its preserved
+    worktree.
+  - `needs_conducting_session` blocks immediately when the next escalation is
+    `self`; the task must be completed through an interactive conducting
+    session and then ticked or replanned.
+  - `question_at_ceiling` records the question and blocks immediately instead
+    of creating an impossible continuation; answer it by hand and replan.
+  - `already_satisfied` is a successful no-commit outcome: gates 2 and 3 hold
+    against the attempt base, the task is marked integrated at that base, and
+    the delivery continues to any newly ready dependents.
+  - `rate_limited` spends neither retry nor escalation. The loop waits or uses
+    the `limit_fallback` described above; only after the wait budget and all
+    executable fallbacks are exhausted does it block.
+- **Work is snapshotted before it can be discarded.** Before a question parks
+  an attempt, a usage-limit wait or fallback, any recorded failure or
+  interruption, worktree cleanup, and every terminal delivery record, the
+  loop snapshots tracked, staged, unstaged, and untracked executor work to
+  `refs/batuta/parked/<slug>/<task>-e<execution>`. The synthetic commit is
+  named `wip(batuta): <slug> <task> e<execution> parked`, leaves the real HEAD,
+  index, and files untouched, and is journaled as a `worktree_snapshotted`
+  record. A same-runtime retry keeps the worktree; a fresh escalation or
+  cleanup may remove it only after that snapshot succeeds. Finalization first
+  computes which refs to retain, then journals that list in the terminal
+  record, and only then deletes refs whose complete tree is already present
+  in branch history, in the same critical section. `delivery_terminal` stays
+  last and carries both the retained refs and the deletion plan. Failures print
+  the error and remaining refs (all planned deletions if relisting fails).
+  The next `--resume` or `--abandon` checkpoints and retries those deletions
+  before writing another terminal record, without repeating task work or
+  bookkeeping. This also recovers interruption between recording and deletion;
+  an already completed deletion is safe to retry.
+  An unmerged (conflicted) index is copied and serialized into separate trees:
+  `-index` retains normal stage-zero entries, and `-index-stage-1`,
+  `-index-stage-2`, and `-index-stage-3` retain the conflicted base, ours, and
+  theirs entries at their original paths, including file modes. Absent stages
+  need no tree. Only unmerged entries are streamed to a temporary file and
+  reconstructed in bounded batches; ordinary indexes use `write-tree` on a
+  copy without enumerating stage-zero entries. These recovery refs protect
+  staged blobs without resolving or
+  changing the real index; the working-directory snapshot still includes the
+  unresolved file contents. The summary lists conflicted paths for retained
+  stage refs. Use `git show <ref>:<path>` to recover a specific version.
+- **Finalization can be retried.** A `delivery_finalizing` checkpoint records
+  the result, original plan path, recovery refs, and pending cleanup and
+  bookkeeping before worktrees are removed or the plan is archived. Cleanup
+  and bookkeeping completion are tracked separately. If archival, staging,
+  or the bookkeeping commit fails, the journal records the error and the
+  summary prints `batuta loop --resume <delivery>` and
+  `batuta loop --abandon <delivery>` recovery commands. Either command retries
+  finalization with its original result without running tasks again. Recovery
+  accepts a plan already moved into `plans/done/`, repeats any unfinished
+  staging and commit, and refuses staged paths outside the source/archived
+  plan, WORK.md, and roadmap before changing bookkeeping files. Unstage any
+  unrelated paths before retrying. Recovery avoids duplicate WORK.md entries or bookkeeping
+  commits, including interruption after a successful commit. A terminal
+  record is appended only after bookkeeping succeeds; a separate checkpoint
+  preserves that success if the final append is interrupted. Cleanup failures
+  remain retryable through the same commands. The presence heartbeat uses
+  the runner's clock and cancellable sleep, so tests can drive refreshes
+  without waiting for wall time. Acquisition and takeover use the guard
+  lock directly and have no timed retry loop.
 - **User-authored command lines** (`Test:`, `Install:`, proofs) run through
   `sh -c` with stdin closed, a timeout and bounded output; they come from
   files the user wrote and approved. **Executor lines never see a shell**:
@@ -174,8 +269,9 @@ exit `1` with the reason on stderr.
   command, `d` to open the delivery picker without leaving the watch, `o` to
   open the selected log with `$PAGER`, `?` for the legend, `l` to move focus
   between the task table and run log, and `q` (or Ctrl+C) to quit. In the
-  answer editor, Enter inserts a newline; `ctrl+enter`, `alt+enter`, or `ctrl+s`
-  submits the answer; and Esc cancels. A submitted answer resumes the loop as
+  answer editor, Enter submits the answer; `ctrl+j` or `shift+enter` inserts a
+  newline; `ctrl+d`, `ctrl+enter`, `alt+enter`, and `ctrl+s` also submit; and
+  Esc cancels. A submitted answer resumes the loop as
   a detached process and writes its output to
   `.batuta/runs/loop-<delivery>.log`. The mouse wheel scrolls whichever panel
   has focus; Up/Down and PgUp/PgDn do the same, and End returns the focused log

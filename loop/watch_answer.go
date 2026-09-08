@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -8,11 +9,15 @@ import (
 	"path/filepath"
 	"strings"
 
+	"charm.land/bubbles/v2/key"
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 )
 
 func (m watchModel) canAnswer() bool {
+	if m.delivery == m.resumeDelivery && m.panel.Detail.Task == m.resumeTask && m.panel.Detail.Attempt == m.resumeExecution {
+		return false
+	}
 	if strings.TrimSpace(m.panel.Detail.Question) == "" {
 		return false
 	}
@@ -29,12 +34,29 @@ func (m watchModel) canAnswer() bool {
 func (m *watchModel) openAnswer() tea.Cmd {
 	m.answering = true
 	m.answerQuestion, m.answerTask = m.panel.Detail.Question, m.panel.Detail.Task
+	m.answerDelivery, m.answerExecution = m.delivery, m.panel.Detail.Attempt
+	m.answerQuestionID = ""
+	for i := len(m.records) - 1; i >= 0; i-- {
+		record := m.records[i]
+		if record.Kind != KindQuestion || record.TaskID != m.answerTask {
+			continue
+		}
+		var detail struct {
+			Execution int    `json:"execution"`
+			RequestID string `json:"request_id"`
+		}
+		if json.Unmarshal(record.Detail, &detail) == nil && detail.Execution == m.answerExecution {
+			m.answerQuestionID = detail.RequestID
+			break
+		}
+	}
 	m.navigation.notice = ""
 	m.answerEditor = textarea.New()
 	m.answerEditor.Placeholder = m.answerLabel("answer_placeholder")
 	m.answerEditor.ShowLineNumbers = false
 	m.answerEditor.Prompt = ""
 	m.answerEditor.MaxWidth = 0
+	m.answerEditor.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("ctrl+j", "shift+enter"))
 	cmd := m.answerEditor.Focus()
 	m.refresh(false)
 	return cmd
@@ -47,31 +69,51 @@ func (m watchModel) updateAnswerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "esc":
 		m.closeAnswer()
-	case "ctrl+enter", "alt+enter", "ctrl+s":
+	case "enter", "ctrl+d", "ctrl+enter", "alt+enter", "ctrl+s":
 		text := strings.TrimSpace(m.answerEditor.Value())
 		if text == "" {
 			m.navigation.notice = m.answerLabel("answer_empty")
-		} else if delivery, err := Answer(m.workspace, m.answerTask, text); err != nil {
+		} else if delivery, err := answerDelivery(m.workspace, m.answerDelivery, m.answerTask, m.answerExecution, m.answerQuestionID, text, m.now().UTC()); err != nil {
 			m.navigation.notice = err.Error()
 		} else {
-			exe, err := os.Executable()
-			if err != nil {
-				m.navigation.notice = fmt.Sprintf("loop: resume failed: %v; resume with: batuta loop --resume %s", err, delivery)
-			} else {
-				argv := []string{exe, "loop", "--resume", delivery}
-				logPath := filepath.Join(m.workspace, ".batuta", "runs", "loop-"+delivery+".log")
-				if err := m.spawn(argv, m.workspace, logPath); err != nil {
-					m.navigation.notice = fmt.Sprintf("loop: resume failed: %v; resume with: %s", err, strings.Join(argv, " "))
-				} else {
-					m.closeAnswer()
-				}
-			}
+			m.resumeDelivery, m.resumeTask, m.resumeExecution = delivery, m.answerTask, m.answerExecution
+			m.resumePending = true
+			m.closeAnswer()
+			m.resumeAnsweredDelivery()
 		}
 	default:
 		m.answerEditor, cmd = m.answerEditor.Update(msg)
 	}
 	m.refresh(false)
 	return m, cmd
+}
+
+func (m *watchModel) resumeAnsweredDelivery() {
+	if state, _ := Presence(m.workspace, m.resumeDelivery, m.now().UTC()); state == "running" {
+		m.navigation.notice = "loop still running · wait for waiting_input"
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		m.navigation.notice = fmt.Sprintf("loop: resume failed: %v; resume with: %s", err, recoveryCommand("batuta", m.workspace, m.resumeDelivery))
+		return
+	}
+	argv := []string{exe, "loop", "--resume", m.resumeDelivery}
+	logPath := filepath.Join(m.workspace, ".batuta", "runs", "loop-"+m.resumeDelivery+".log")
+	if err := m.spawn(argv, m.workspace, logPath); err != nil {
+		m.navigation.notice = fmt.Sprintf("loop: resume failed: %v; resume with: %s", err, recoveryCommand(exe, m.workspace, m.resumeDelivery))
+		return
+	}
+	m.resumePending = false
+	m.navigation.notice = ""
+}
+
+func recoveryCommand(exe, workspace, delivery string) string {
+	argv := []string{exe, "loop", "--workspace", workspace, "--resume", delivery}
+	for i, arg := range argv {
+		argv[i] = panelShellQuote(arg)
+	}
+	return strings.Join(argv, " ")
 }
 
 func spawnDetached(argv []string, dir, logPath string) error {
@@ -107,6 +149,7 @@ func (m *watchModel) closeAnswer() {
 	m.answerEditor.Blur()
 	m.answerEditor.Reset()
 	m.answerQuestion, m.answerTask = "", ""
+	m.answerDelivery, m.answerQuestionID, m.answerExecution = "", "", 0
 	m.navigation.notice = ""
 }
 
@@ -126,11 +169,11 @@ func (m watchModel) answerNotice() string {
 	if m.navigation.notice == "" {
 		return ""
 	}
-	return wrapAnswerText(m.navigation.notice, max(1, m.style.Width)) + "\n"
+	return wrapAnswerText(sanitizePanelText(m.navigation.notice), max(1, m.style.Width)) + "\n"
 }
 
 func (m watchModel) answerPrompt() string {
-	lines := strings.Split(wrapAnswerText(m.answerQuestion, max(1, m.style.Width-4)), "\n")
+	lines := strings.Split(wrapAnswerText(sanitizePanelText(m.answerQuestion), max(1, m.style.Width-4)), "\n")
 	available := max(1, m.height-panelLineCount(m.answerHelp())-panelLineCount(m.answerNotice())-1)
 	return strings.Join(lines[:min(len(lines), available)], "\n") + "\n"
 }

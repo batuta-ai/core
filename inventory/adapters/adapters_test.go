@@ -46,7 +46,6 @@ func TestAdaptersUseOnlyClosedCommandShapes(t *testing.T) {
 			want: [][]string{
 				{"--version"},
 				{"doctor", "--json", "--summary"},
-				{"mcp", "list", "--json"},
 				{"plugin", "list", "--json"},
 				{"plugin", "marketplace", "list", "--json"},
 				{"debug", "models"},
@@ -62,7 +61,6 @@ func TestAdaptersUseOnlyClosedCommandShapes(t *testing.T) {
 				{"debug", "paths"},
 				{"agent", "list"},
 				{"debug", "skill"},
-				{"mcp", "list"},
 				{"auth", "list"},
 				{"models"},
 				{"debug", "agent", "build"},
@@ -76,8 +74,6 @@ func TestAdaptersUseOnlyClosedCommandShapes(t *testing.T) {
 				{"--version"},
 				{"status"},
 				{"models"},
-				{"mcp", "list"},
-				{"mcp", "list-tools", "browser"},
 			},
 		},
 		{
@@ -120,6 +116,35 @@ func TestAdaptersUseOnlyClosedCommandShapes(t *testing.T) {
 	}
 }
 
+func TestCursorProbesAreVersionStatusModels(t *testing.T) {
+	t.Parallel()
+	assertStaticCommandShapes(t, mustNewCursor(t, "/opt/bin/agent"), [][]string{{"--version"}, {"status"}, {"models"}})
+}
+
+func TestNoAdapterProbesMCP(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		fixture string
+		adapter Adapter
+	}{
+		{fixture: "cursor", adapter: mustNewCursor(t, "/opt/bin/agent")},
+		{fixture: "opencode", adapter: mustNewOpenCode(t, "/opt/bin/opencode")},
+		{fixture: "codex", adapter: mustNewCodex(t, "/opt/bin/codex")},
+	} {
+		specs := tt.adapter.StaticSpecs()
+		dynamic, err := tt.adapter.DynamicSpecs(fixtureOutputs(t, tt.fixture))
+		if err != nil {
+			t.Fatalf("%s DynamicSpecs() error = %v", tt.adapter.ID(), err)
+		}
+		for _, spec := range append(specs, dynamic...) {
+			if slices.Contains(spec.Args, "mcp") {
+				t.Fatalf("%s probe %q starts an MCP command: %v", tt.adapter.ID(), spec.ID, spec.Args)
+			}
+		}
+	}
+}
+
 func TestClaudeAdapterUsesOnlyReadOnlyBoundedCommands(t *testing.T) {
 	t.Parallel()
 	assertStaticCommandShapes(t, mustNewClaude(t, "/opt/bin/claude"), [][]string{{"--version"}, {"plugin", "list", "--json"}})
@@ -157,16 +182,24 @@ func TestAdaptersRejectUnlistedOrUnsafeDynamicIdentifiers(t *testing.T) {
 		t.Fatalf("OpenCode dynamic specs = %#v, want %#v", got, want)
 	}
 
-	cursor := mustNewCursor(t, "/opt/bin/agent")
-	outputs = map[inventory.ProbeID][]byte{
-		cursor.ProbeID("mcp"): []byte("browser connected\nmy server connected\n../../escape connected\nfigma disconnected\n"),
+}
+
+func TestNormalizeCursor(t *testing.T) {
+	t.Parallel()
+
+	adapter := mustNewCursor(t, "/opt/bin/agent")
+	snapshot := adapter.Normalize(fixtureOutputs(t, "cursor"))
+	if got, want := snapshot.Version.Identifiers, []string{"2026.08.20"}; !slices.Equal(got, want) {
+		t.Fatalf("cursor version identifiers = %v, want %v", got, want)
 	}
-	specs, err = cursor.DynamicSpecs(outputs)
-	if err != nil {
-		t.Fatalf("DynamicSpecs() error = %v", err)
-	}
-	if got, want := specArgs(specs), [][]string{{"mcp", "list-tools", "browser"}, {"mcp", "list-tools", "my server"}}; !slices.EqualFunc(got, want, slices.Equal[[]string]) {
-		t.Fatalf("Cursor dynamic specs = %#v, want %#v", got, want)
+	for _, want := range []inventory.ProviderBinding{
+		{ProviderID: "cursor", ModelID: "auto"},
+		{ProviderID: "cursor", ModelID: "composer-2.5"},
+		{ProviderID: "cursor", ModelID: "grok-4.6"},
+	} {
+		if !slices.Contains(snapshot.ProviderBindings, want) {
+			t.Fatalf("cursor provider bindings = %#v, missing %#v", snapshot.ProviderBindings, want)
+		}
 	}
 }
 

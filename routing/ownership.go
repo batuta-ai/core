@@ -488,7 +488,7 @@ func validateJournalTransition(before, after RoutingJournal) error {
 				if !exists {
 					return ErrDeliveryConflict
 				}
-				if transitionErr := validateDeliveryTransition(delivery, candidate); transitionErr != nil {
+				if transitionErr := validateDeliveryTransition(delivery, candidate, before.Generations[delivery.RoutingGenerationDigest]); transitionErr != nil {
 					return transitionErr
 				}
 			}
@@ -515,7 +515,7 @@ func validateJournalTransition(before, after RoutingJournal) error {
 		if !exists {
 			return ErrDeliveryConflict
 		}
-		if err := validateDeliveryTransition(delivery, candidate); err != nil {
+		if err := validateDeliveryTransition(delivery, candidate, before.Generations[delivery.RoutingGenerationDigest]); err != nil {
 			return err
 		}
 	}

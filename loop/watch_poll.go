@@ -23,8 +23,19 @@ type watchPollState struct {
 	logSize  int64
 }
 
+type watchPollIdentity struct {
+	delivery   string
+	generation uint64
+	logPath    string
+}
+
 type watchPollMsg struct {
-	state watchPollState
+	identity watchPollIdentity
+	state    watchPollState
+}
+
+func (m watchModel) pollIdentity() watchPollIdentity {
+	return watchPollIdentity{delivery: m.delivery, generation: m.generation, logPath: panelLogPath(m.workspace, m.panel)}
 }
 
 type clockMsg struct {
@@ -59,23 +70,24 @@ func (m watchModel) pollCmd() tea.Cmd {
 	if m.store == nil || m.delivery == "" || m.ticker == nil {
 		return nil
 	}
+	identity := m.pollIdentity()
 	return m.ticker(m.interval, func(at time.Time) tea.Msg {
 		state, err := m.pollState(at)
 		if err != nil {
-			return journalMsg{err: err}
+			return journalMsg{identity: identity, err: err}
 		}
 		if state.journal.size == m.poll.journal.size && state.journal.modTime.Equal(m.poll.journal.modTime) && state.logSize == m.poll.logSize && maps.Equal(state.locks, m.poll.locks) && state.presence == m.poll.presence && state.loops == m.poll.loops {
-			return watchPollMsg{state: state}
+			return watchPollMsg{identity: identity, state: state}
 		}
 		records, err := m.store.Read(m.delivery)
 		if err != nil {
-			return journalMsg{err: err, poll: state}
+			return journalMsg{identity: identity, err: err, poll: state}
 		}
-		panel := m.navigation.model(records, at)
+		panel := m.panel
 		if err := loadPanelLog(m.workspace, &panel); err != nil {
-			return journalMsg{err: err, poll: state}
+			return journalMsg{identity: identity, err: err, poll: state}
 		}
-		return journalMsg{records: records, logLines: panel.LogLines, logTitle: panel.LogTitle, logLoaded: true, poll: state}
+		return journalMsg{identity: identity, records: records, logLines: panel.LogLines, logTitle: panel.LogTitle, logLoaded: true, poll: state}
 	})
 }
 

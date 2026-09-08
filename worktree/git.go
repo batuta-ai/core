@@ -6,14 +6,17 @@
 package worktree
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/batuta-ai/core/publication"
@@ -201,6 +204,352 @@ func (p GitProvider) Remove(ctx context.Context, path, branch string) error {
 	return first
 }
 
+// Park saves the working tree under ref and distinct staged contents under
+// ref+"-index" without changing HEAD, the real index, or any files. A tree
+// already protected by a recovery ref or integration history needs no new snapshot.
+func (p GitProvider) Park(ctx context.Context, root, ref, message string) (string, error) {
+	if !strings.HasPrefix(ref, "refs/batuta/parked/") || strings.TrimSpace(message) == "" {
+		return "", errors.New("worktree: invalid park request")
+	}
+	if _, err := p.run(ctx, p.Root, "check-ref-format", ref); err != nil {
+		return "", err
+	}
+	head, err := p.Head(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	scratch, err := os.MkdirTemp("", "batuta-park-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(scratch)
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
+	if _, err := p.runEnvironment(ctx, root, nil, env, "read-tree", head); err != nil {
+		return "", err
+	}
+	if _, err := p.runEnvironment(ctx, root, nil, env, "add", "-A", "--", ".", ":(top,exclude).batuta"); err != nil {
+		return "", err
+	}
+	treeResult, err := p.runEnvironment(ctx, root, nil, env, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	tree := strings.TrimSpace(string(treeResult.Stdout))
+	indexPath, err := p.run(ctx, root, "rev-parse", "--git-path", "index")
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(string(indexPath.Stdout))
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, path)
+	}
+	index, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	if err == nil {
+		// write-tree updates the index cache; use a copy to keep the real index intact.
+		stagedPath := filepath.Join(scratch, "staged-index")
+		if err := os.WriteFile(stagedPath, index, 0o600); err != nil {
+			return "", err
+		}
+		stagedEnv := []string{"GIT_INDEX_FILE=" + stagedPath}
+		if err := p.parkConflictStages(ctx, root, ref, message, head, stagedEnv); err != nil {
+			return "", err
+		}
+		staged, err := p.runEnvironment(ctx, root, nil, stagedEnv, "write-tree")
+		if err != nil {
+			return "", err
+		}
+		if stagedTree := strings.TrimSpace(string(staged.Stdout)); stagedTree != tree {
+			if _, err := p.parkTree(ctx, root, ref+"-index", message+" (index)", head, stagedTree, false); err != nil {
+				return "", err
+			}
+		}
+	}
+	return p.parkTree(ctx, root, ref, message, head, tree, false)
+}
+
+// parkConflictStages serializes each side separately: a single Git tree cannot
+// represent multiple stages or directory/file conflicts between those stages.
+// All commands use the copied index; the executor's index remains untouched.
+func (p GitProvider) parkConflictStages(ctx context.Context, root, ref, message, head string, env []string) error {
+	// Stream only unmerged entries to disk. The observer receives all output even
+	// when the runner's small diagnostic capture is truncated.
+	entries, err := os.CreateTemp("", "batuta-conflicts-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(entries.Name())
+	defer entries.Close()
+	result, err := p.Runner.Run(ctx, publication.Command{
+		Executable: p.Git, Args: []string{"ls-files", "-u", "-z"}, Directory: root,
+		Environment: append([]string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"}, env...),
+		Observer:    entries, StdoutLimit: 1, StderrLimit: 64 << 10,
+	})
+	if err != nil {
+		return fmt.Errorf("worktree: list unmerged entries: %w", err)
+	}
+	if result.ExitCode != 0 || result.StderrTruncated {
+		return errors.New("worktree: list unmerged entries failed")
+	}
+	info, err := entries.Stat()
+	if err != nil || info.Size() == 0 {
+		return err
+	}
+	stagePath := entries.Name() + "-index"
+	defer os.Remove(stagePath)
+	// Stage zero stays in the copied index; remove only its conflicted entries.
+	// Build each conflict side in a separate scratch index in bounded batches.
+	for _, stage := range []int{1, 2, 3, 0} {
+		stageEnv := env
+		if stage != 0 {
+			stageEnv = []string{"GIT_INDEX_FILE=" + stagePath}
+			if _, err := p.runEnvironment(ctx, root, nil, stageEnv, "read-tree", "--empty"); err != nil {
+				return err
+			}
+		}
+		if _, err := entries.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		scanner := bufio.NewScanner(entries)
+		scanner.Split(splitIndexEntry)
+		scanner.Buffer(make([]byte, 4096), 1<<20)
+		var batch bytes.Buffer
+		found := false
+		flush := func() error {
+			if batch.Len() == 0 {
+				return nil
+			}
+			_, err := p.runEnvironment(ctx, root, batch.Bytes(), stageEnv, "update-index", "-z", "--index-info")
+			batch.Reset()
+			return err
+		}
+		for scanner.Scan() {
+			metadata, path, ok := bytes.Cut(scanner.Bytes(), []byte{'\t'})
+			fields := strings.Fields(string(metadata))
+			if !ok || len(fields) != 3 || (fields[2] != "1" && fields[2] != "2" && fields[2] != "3") {
+				return errors.New("worktree: invalid unmerged entry")
+			}
+			if stage == 0 {
+				fmt.Fprintf(&batch, "0 %s\t%s\x00", strings.Repeat("0", len(fields[1])), path)
+			} else if fields[2] == strconv.Itoa(stage) {
+				fmt.Fprintf(&batch, "%s %s\t%s\x00", fields[0], fields[1], path)
+				found = true
+			}
+			if batch.Len() >= 64<<10 {
+				if err := flush(); err != nil {
+					return err
+				}
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			return err
+		}
+		if err := flush(); err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		tree, err := p.runEnvironment(ctx, root, nil, stageEnv, "write-tree")
+		if err != nil {
+			return err
+		}
+		stageRef := fmt.Sprintf("%s-index-stage-%d", ref, stage)
+		if _, err := p.parkTree(ctx, root, stageRef, message+" (conflicted index)", head, strings.TrimSpace(string(tree.Stdout)), true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func splitIndexEntry(data []byte, atEOF bool) (int, []byte, error) {
+	if i := bytes.IndexByte(data, 0); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF && len(data) != 0 {
+		return 0, nil, errors.New("worktree: truncated index entry")
+	}
+	return 0, nil, nil
+}
+
+func (p GitProvider) parkTree(ctx context.Context, root, ref, message, head, tree string, preserveStage bool) (string, error) {
+	old, err := p.run(ctx, p.Root, "show-ref", "--verify", "--hash", "--", ref)
+	if err == nil {
+		previous := strings.TrimSpace(string(old.Stdout))
+		previousTree, err := p.run(ctx, p.Root, "rev-parse", previous+"^{tree}")
+		if err != nil {
+			return "", err
+		}
+		if tree == strings.TrimSpace(string(previousTree.Stdout)) {
+			preserved, err := p.IsAncestor(ctx, head, previous)
+			if err != nil {
+				return "", err
+			}
+			if preserved {
+				return "", nil
+			}
+		}
+	} else if old.ExitCode != 1 && old.ExitCode != 128 {
+		return "", err
+	}
+	headTree, err := p.run(ctx, root, "rev-parse", head+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	if tree == strings.TrimSpace(string(headTree.Stdout)) {
+		integrationHead, err := p.Head(ctx, p.Root)
+		if err != nil {
+			return "", err
+		}
+		integrated, err := p.IsAncestor(ctx, head, integrationHead)
+		if err != nil {
+			return "", err
+		}
+		// Keep the stage identity even when its blobs are already integrated.
+		if integrated && !preserveStage {
+			return "", nil
+		}
+		if _, err := p.run(ctx, p.Root, "update-ref", ref, head); err != nil {
+			return "", err
+		}
+		return head, nil
+	}
+	var env []string
+	for _, field := range []struct{ key, author, committer string }{
+		{"user.name", "GIT_AUTHOR_NAME=", "GIT_COMMITTER_NAME="},
+		{"user.email", "GIT_AUTHOR_EMAIL=", "GIT_COMMITTER_EMAIL="},
+	} {
+		result, err := p.run(ctx, root, "config", "--get", field.key)
+		if err != nil {
+			return "", err
+		}
+		value := strings.TrimSpace(string(result.Stdout))
+		env = append(env, field.author+value, field.committer+value)
+	}
+	env = append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=commit.gpgsign", "GIT_CONFIG_VALUE_0=false")
+	commit, err := p.runEnvironment(ctx, root, nil, env, "commit-tree", tree, "-p", head, "-m", message)
+	if err != nil {
+		return "", err
+	}
+	sha := strings.TrimSpace(string(commit.Stdout))
+	if !gitSHA.MatchString(sha) {
+		return "", errors.New("worktree: invalid parked commit")
+	}
+	if _, err := p.run(ctx, p.Root, "update-ref", ref, sha); err != nil {
+		return "", err
+	}
+	return sha, nil
+}
+
+type ParkedRef struct {
+	Ref       string   `json:"ref"`
+	SHA       string   `json:"sha"`
+	Conflicts []string `json:"conflicted_paths,omitempty"`
+}
+
+// Parked lists the delivery's refs, including snapshots from removed worktrees.
+func (p GitProvider) Parked(ctx context.Context, slug string) ([]ParkedRef, error) {
+	if !safeName(slug) {
+		return nil, errors.New("worktree: invalid parked slug")
+	}
+	result, err := p.run(ctx, p.Root, "for-each-ref", "--format=%(refname) %(objectname)", "refs/batuta/parked/"+slug+"/")
+	if err != nil {
+		return nil, err
+	}
+	var refs []ParkedRef
+	for _, line := range nonempty(string(result.Stdout)) {
+		parts := strings.Fields(line)
+		if len(parts) != 2 || !gitSHA.MatchString(parts[1]) {
+			return nil, errors.New("worktree: invalid parked ref")
+		}
+		ref := ParkedRef{Ref: parts[0], SHA: parts[1]}
+		for stage := 1; stage <= 3; stage++ {
+			if strings.HasSuffix(ref.Ref, fmt.Sprintf("-index-stage-%d", stage)) {
+				paths, err := p.run(ctx, p.Root, "ls-tree", "-r", "--name-only", "-z", ref.SHA)
+				if err != nil {
+					return nil, err
+				}
+				ref.Conflicts = strings.Split(strings.TrimSuffix(string(paths.Stdout), "\x00"), "\x00")
+			}
+		}
+		refs = append(refs, ref)
+	}
+	return refs, nil
+}
+
+// CleanParked deletes only snapshots whose complete tree is already in the
+// integration branch's history. Squashed commits need not share ancestry.
+func (p GitProvider) CleanParked(ctx context.Context, slug, branch string) ([]ParkedRef, error) {
+	kept, integrated, err := p.PlanParkedCleanup(ctx, slug, branch)
+	if err != nil {
+		return nil, err
+	}
+	return kept, p.DeleteParked(ctx, integrated)
+}
+
+// PlanParkedCleanup computes retention without deleting refs. Callers can
+// journal the retained list before allowing any snapshots to be removed.
+func (p GitProvider) PlanParkedCleanup(ctx context.Context, slug, branch string) ([]ParkedRef, []ParkedRef, error) {
+	refs, err := p.Parked(ctx, slug)
+	if err != nil || len(refs) == 0 {
+		return refs, nil, err
+	}
+	refTrees := make([]string, len(refs))
+	wantedTrees := make(map[string]bool, len(refs))
+	for index, ref := range refs {
+		commit, err := p.run(ctx, p.Root, "cat-file", "-p", ref.SHA)
+		if err != nil {
+			return nil, nil, err
+		}
+		tree := strings.TrimPrefix(firstLine(string(commit.Stdout)), "tree ")
+		if !gitSHA.MatchString(tree) {
+			return nil, nil, errors.New("worktree: invalid parked tree")
+		}
+		refTrees[index] = tree
+		wantedTrees[tree] = true
+	}
+
+	const historyPageSize = 50_000
+	matchedTrees := make(map[string]bool, len(wantedTrees))
+	for skip := 0; len(matchedTrees) < len(wantedTrees); skip += historyPageSize {
+		result, err := p.run(ctx, p.Root, "log", "--format=%T", "--max-count="+strconv.Itoa(historyPageSize), "--skip="+strconv.Itoa(skip), "refs/heads/"+branch, "--")
+		if err != nil {
+			return nil, nil, err
+		}
+		trees := nonempty(string(result.Stdout))
+		for _, tree := range trees {
+			if wantedTrees[tree] {
+				matchedTrees[tree] = true
+			}
+		}
+		if len(trees) < historyPageSize {
+			break
+		}
+	}
+
+	var kept, integrated []ParkedRef
+	for index, ref := range refs {
+		if matchedTrees[refTrees[index]] {
+			integrated = append(integrated, ref)
+		} else {
+			kept = append(kept, ref)
+		}
+	}
+	return kept, integrated, nil
+}
+
+// DeleteParked deletes exactly the planned versions, refusing replaced refs.
+func (p GitProvider) DeleteParked(ctx context.Context, refs []ParkedRef) error {
+	for _, ref := range refs {
+		if _, err := p.run(ctx, p.Root, "update-ref", "-d", ref.Ref, ref.SHA); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ChangedPaths lists what a worktree changed against its base: committed
 // paths (base...HEAD) plus anything still uncommitted or untracked.
 func (p GitProvider) ChangedPaths(ctx context.Context, dir, baseSHA string) ([]string, error) {
@@ -306,11 +655,18 @@ func (p GitProvider) run(ctx context.Context, dir string, args ...string) (publi
 }
 
 func (p GitProvider) runInput(ctx context.Context, dir string, stdin []byte, args ...string) (publication.CommandResult, error) {
+	return p.runEnvironment(ctx, dir, stdin, nil, args...)
+}
+
+func (p GitProvider) runEnvironment(ctx context.Context, dir string, stdin []byte, environment []string, args ...string) (publication.CommandResult, error) {
 	result, err := p.Runner.Run(ctx, publication.Command{
 		Executable: p.Git, Args: args, Directory: dir, Stdin: stdin,
-		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+		Environment: append([]string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"}, environment...),
 		StdoutLimit: 16 << 20, StderrLimit: 64 << 10,
 	})
+	if result.StdoutTruncated || result.StderrTruncated {
+		return result, errors.New("worktree: git output exceeded bound")
+	}
 	if err != nil {
 		detail := strings.TrimSpace(string(result.Stderr))
 		if detail == "" {

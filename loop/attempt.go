@@ -11,28 +11,30 @@ import (
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/integration"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
 
 // Blocker codes the loop records on a failed attempt.
 const (
-	blockerExecutorFailed = "executor_failed"
-	blockerRateLimited    = "rate_limited"
-	blockerTimedOut       = "timed_out"
-	blockerNoChanges      = "no_changes"
-	blockerTestsFailed    = "tests_failed"
-	blockerScope          = "scope_violation"
-	blockerProof          = "proof_failed"
-	blockerVerifier       = "verifier_incomplete"
-	blockerInstall        = "install_failed"
-	blockerInterrupted    = "interrupted"
-	blockerCandidate      = "candidate_invalid"
-	blockerSelf           = "needs_conducting_session"
-	blockerUnsafeQuestion = "question_unsafe"
+	blockerExecutorFailed  = "executor_failed"
+	blockerRateLimited     = "rate_limited"
+	blockerTimedOut        = "timed_out"
+	blockerNoChanges       = "no_changes"
+	blockerTestsFailed     = "tests_failed"
+	blockerScope           = "scope_violation"
+	blockerProof           = "proof_failed"
+	blockerVerifier        = "verifier_incomplete"
+	blockerInstall         = "install_failed"
+	blockerInterrupted     = "interrupted"
+	blockerCandidate       = "candidate_invalid"
+	blockerSelf            = routing.BlockerNeedsConductingSession
+	blockerQuestionCeiling = routing.BlockerQuestionAtCeiling
+	blockerUnsafeQuestion  = "question_unsafe"
 	// blockerAlreadySatisfied is not a failure: the criteria held before the
 	// executor touched anything, so there is no candidate to integrate. The
 	// task is ticked in the plan at the end without a commit.
-	blockerAlreadySatisfied = "already_satisfied"
+	blockerAlreadySatisfied = routing.BlockerAlreadySatisfied
 )
 
 type attemptContext struct {
@@ -50,7 +52,7 @@ type attemptContext struct {
 // runAttempt drives one attempt of one task from worktree to candidate or
 // failure. Graph mutations and journal writes happen under r.mu; the
 // executor and the gates run outside it so parallel tasks overlap.
-func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
+func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	r.mu.Lock()
 	task, found := r.graph.Task(taskID)
 	if !found || len(task.Attempts) == 0 {
@@ -74,6 +76,26 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		}
 	}
 	r.mu.Unlock()
+
+	// A canceled executor must finish unwinding before its partial work is
+	// snapshotted. Record the same interruption policy used when replaying a
+	// killed run, now, before Run writes its terminal record.
+	defer func() {
+		if ctx.Err() == nil {
+			return
+		}
+		r.mu.Lock()
+		task, found := r.graph.Task(taskID)
+		running := found && task.State == routing.GraphTaskRunning && len(task.Attempts) == ac.execution && task.Attempts[ac.execution-1].State == routing.GraphTaskRunning
+		r.mu.Unlock()
+		if running {
+			runErr = r.recordFailure(context.WithoutCancel(ctx), ac, nil, blockerInterrupted, []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"})
+		} else if found && task.State == routing.GraphTaskPreparing && len(task.Attempts) == ac.execution {
+			// Cancellation during setup has no running executor to fail. Leave the
+			// preparing attempt resumable and preserve any attached worktree.
+			runErr = r.snapshotWorktree(context.WithoutCancel(ctx), taskID, ac.execution, ac.worktree)
+		}
+	}()
 
 	if ac.runtime.Provider == string(routing.ExecutorSelf) {
 		return r.recordFailure(ctx, ac, nil, blockerSelf, []string{"the routing table escalates this task to `self`, the conducting session, which the loop cannot run"})
@@ -116,32 +138,11 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	if err != nil {
 		return fmt.Errorf("loop: snapshot %s: %w", ac.worktree.Name, err)
 	}
-	request := executor.Request{Brief: brief, BriefFile: briefPath, Cwd: ac.worktree.Root, Model: ac.runtime.Model, Effort: ac.runtime.Reasoning}
-	invocation, err := adapter.Command(request)
-	if err != nil {
-		return fmt.Errorf("loop: %s: %w", adapter.Name, err)
-	}
-	if invocation.UsedFile {
-		if err := os.MkdirAll(filepath.Dir(briefPath), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(briefPath, []byte(brief), 0o644); err != nil {
-			return err
-		}
-	}
 	logPath := r.runLogPath(taskID, ac.execution)
-	relativeLogPath, err := filepath.Rel(r.root, logPath)
+	invocation, err := r.startRuntime(&ac, brief, briefPath, logPath)
 	if err != nil {
-		return fmt.Errorf("loop: relative executor log path: %w", err)
-	}
-	if err := r.locked(KindStarted, taskID, map[string]any{
-		"execution": ac.execution, "run_id": ac.runID, "executor": adapter.Name, "model": ac.runtime.Model,
-		"reasoning": ac.runtime.Reasoning, "argv": redactArgs(invocation, brief), "worktree": ac.worktree.Root,
-		"brief_lines": strings.Count(brief, "\n") + 1, "via_file": invocation.UsedFile, "log_path": filepath.ToSlash(relativeLogPath),
-	}, func() error { r.started[attemptKey(taskID, ac.execution)] = true; return nil }); err != nil {
 		return err
 	}
-	fmt.Fprintf(r.out, "%s e%d → %s/%s in %s\n", taskID, ac.execution, adapter.Name, ac.runtime.Model, filepath.Base(ac.worktree.Root))
 
 	// Each parallel attempt owns its callback and journal error.
 	subprocess := r.subprocess
@@ -165,20 +166,41 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	subprocess.Stderr = logFile
 
 	// Invariant from the harness this loop descends from: a usage limit is
-	// not a failure. Wait for the reset and run the SAME attempt again; it
-	// consumes no retry, no escalation. The cap keeps a run from sleeping
-	// forever on a limit that never lifts.
+	// not a failure. Wait or switch runtimes within the SAME attempt;
+	// neither consumes a retry or escalation.
 	var (
 		result  executor.Result
 		execErr error
 		waits   int
 	)
 	for {
-		result, execErr = subprocess.Execute(ctx, adapter, invocation, r.opts.TaskTimeout)
+		result, execErr = subprocess.Execute(ctx, ac.adapter, invocation, r.opts.TaskTimeout)
 		if progressErr != nil {
 			return progressErr
 		}
-		if execErr != nil || !result.RateLimited || waits >= r.opts.MaxLimitWaits {
+		if ctx.Err() != nil || execErr != nil || !result.RateLimited {
+			break
+		}
+		if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, ac.worktree); err != nil {
+			return err
+		}
+		now := r.now()
+		// Match Adapter.Outcome's bounded streams while using the loop clock.
+		result.ResetAt = executor.ResetTime(executor.Tail(result.Stdout, 20)+"\n"+executor.Tail(result.Stderr, 20), now)
+		if waits >= r.opts.MaxLimitWaits || (!result.ResetAt.IsZero() && result.ResetAt.Sub(now) > r.opts.LimitHorizon) {
+			switched, err := r.fallbackLimited(&ac, result.ResetAt, waits)
+			if err != nil {
+				return err
+			}
+			if switched {
+				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if waits >= r.opts.MaxLimitWaits {
 			break
 		}
 		waits++
@@ -186,44 +208,47 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		if err := r.locked(KindLimitWait, taskID, map[string]any{"execution": ac.execution, "wait": waits, "seconds": int(delay.Seconds()), "reset_at": result.ResetAt}, nil); err != nil {
 			return err
 		}
-		fmt.Fprintf(r.out, "%s e%d: %s hit a usage limit; waiting %s before re-running the same attempt (%d/%d)\n", taskID, ac.execution, adapter.Name, delay.Round(time.Second), waits, r.opts.MaxLimitWaits)
+		fmt.Fprintf(r.out, "%s e%d: %s hit a usage limit; waiting %s before re-running the same attempt (%d/%d)\n", taskID, ac.execution, ac.adapter.Name, delay.Round(time.Second), waits, r.opts.MaxLimitWaits)
 		if err := r.sleep(ctx, delay); err != nil {
-			return nil // canceled while waiting; the attempt resumes as interrupted
+			return nil // the deferred interruption handler parks the attempt
 		}
 	}
-	if invocation.UsedFile {
-		_ = os.Remove(briefPath)
-	}
+	_ = os.Remove(briefPath)
 	if err := logFile.Close(); err != nil {
 		return fmt.Errorf("loop: close executor log: %w", err)
 	}
 	r.writeLog(taskID, ac.execution, result)
+	if ctx.Err() != nil {
+		return nil // the deferred interruption handler parks the attempt
+	}
 	if execErr != nil {
-		if ctx.Err() != nil {
-			return nil // the run is being canceled; the attempt stays running and resumes as interrupted
-		}
 		return r.recordFailure(ctx, ac, &result, blockerExecutorFailed, []string{"the executor could not start: " + execErr.Error()})
 	}
 	after, err := r.gitState.WorktreeState(ctx, ac.worktree.Root)
 	if err != nil {
 		return fmt.Errorf("loop: snapshot %s: %w", ac.worktree.Name, err)
 	}
+	treeChanged, err := r.treeChangedFromBase(ctx, ac.worktree.Root, ac.base)
+	if err != nil {
+		return fmt.Errorf("loop: compare %s against base %s: %w", ac.worktree.Name, ac.base, err)
+	}
 	if err := r.locked(KindFinished, taskID, map[string]any{
 		"execution": ac.execution, "exit_code": result.ExitCode, "finished": result.Finished, "timed_out": result.TimedOut,
 		"rate_limited": result.RateLimited, "duration_ms": result.Duration.Milliseconds(), "question": result.Question,
-		"stdout_bytes": len(result.Stdout), "stderr_bytes": len(result.Stderr), "tree_changed": before != after,
+		"stdout_bytes": len(result.Stdout), "stderr_bytes": len(result.Stderr), "tree_changed": treeChanged,
+		"base_head_sha": ac.base, "before": before, "after": after,
 	}, nil); err != nil {
 		return err
 	}
 
 	if result.Finished && result.Question != "" {
-		return r.recordQuestion(ctx, ac, result, before != after)
+		return r.recordQuestion(ctx, ac, result, treeChanged)
 	}
 
 	report := gates.Report{TaskID: taskID, Execution: ac.execution}
 	report.Finished = gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, executor.Tail(append(result.Stdout, result.Stderr...), 30))
-	report.Tree = gates.Tree(before, after)
-	silent := before == after
+	report.Tree = gates.Verdict{Name: "tree", Pass: true, Signal: "the worktree differs from the attempt's base"}
+	silent := !treeChanged
 	if report.Finished.Pass && !silent {
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		changed, err := r.git.ChangedPaths(ctx, ac.worktree.Root, ac.base)
@@ -237,10 +262,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 			report.Verifier = &verdict
 		}
 	} else if silent && report.Finished.Pass {
-		// The session wrote nothing. Either the task was already done on the
-		// base (the verifier decides, against the real code) or the executor
-		// gave up silently. Neither yields a candidate: a satisfied task is
-		// ticked in the plan at the end; a silent give-up is a failure.
+		// Base equality is established before running gates on this tree;
+		// earlier executions may have left work even if this one wrote nothing.
+		report.Tree.Signal = "the worktree equals the attempt's base"
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "nothing changed"}
 		if len(criteria) > 0 {
@@ -255,7 +279,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 				return r.recordBlocked(ctx, ac, &result, blockerAlreadySatisfied, []string{"gates 2 and 3 green against the base commit: the criteria already hold; nothing to commit"})
 			}
 		}
-		report.Tree = gates.Verdict{Name: "tree", Pass: false, Signal: "silent: the session wrote nothing and the criteria do not all hold on the base"}
+		report.Tree = gates.Verdict{Name: "tree", Pass: false, Signal: "silent: the worktree equals the base and the criteria do not all hold on the base"}
 	} else {
 		report.Tests = gates.Verdict{Name: "tests", Pass: false, Signal: "skipped: the executor did not finish"}
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "not evaluated"}
@@ -269,9 +293,41 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	if !report.Passed {
 		code := blockerCode(report, result, silent)
 		feedback := reportedDoneProofFailures(report.Failures(), criteria, report.Proofs, result.Progress)
+		if code == blockerRateLimited {
+			return r.recordBlocked(ctx, ac, &result, code, feedback)
+		}
 		return r.recordFailure(ctx, ac, &result, code, feedback)
 	}
 	return r.recordCandidate(ctx, ac, report, result)
+}
+
+func (r *Runner) treeChangedFromBase(ctx context.Context, root, base string) (bool, error) {
+	diff, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable: r.git.Git, Directory: root,
+		Args:        []string{"diff", "--quiet", "--no-ext-diff", base, "--", ".", ":(top,exclude).batuta"},
+		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+	})
+	if diff.ExitCode == 1 {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if diff.ExitCode != 0 {
+		return false, fmt.Errorf("git diff exited %d", diff.ExitCode)
+	}
+	untracked, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable: r.git.Git, Directory: root,
+		Args:        []string{"ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(top,exclude).batuta"},
+		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+	})
+	if err != nil {
+		return false, err
+	}
+	if untracked.ExitCode != 0 || untracked.StdoutTruncated || untracked.StderrTruncated {
+		return false, fmt.Errorf("git ls-files returned incomplete evidence (exit %d)", untracked.ExitCode)
+	}
+	return len(untracked.Stdout) > 0, nil
 }
 
 func reportedDoneProofFailures(feedback []string, criteria []gates.Criterion, proofs []gates.Verdict, progress []executor.ProgressEvent) []string {
@@ -291,13 +347,67 @@ func reportedDoneProofFailures(feedback []string, criteria []gates.Criterion, pr
 	return feedback
 }
 
+func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath string) (executor.Invocation, error) {
+	adapter, err := r.adapterLocked(ac.runtime.Provider)
+	if err != nil {
+		return executor.Invocation{}, err
+	}
+	ac.adapter = adapter
+	request := executor.Request{Brief: brief, BriefFile: briefPath, Cwd: ac.worktree.Root, Model: ac.runtime.Model, Effort: ac.runtime.Reasoning}
+	invocation, err := ac.adapter.Command(request)
+	if err != nil {
+		return executor.Invocation{}, fmt.Errorf("loop: %s: %w", ac.adapter.Name, err)
+	}
+	if invocation.UsedFile {
+		if err := os.MkdirAll(filepath.Dir(briefPath), 0o755); err != nil {
+			return executor.Invocation{}, err
+		}
+		if err := os.WriteFile(briefPath, []byte(brief), 0o644); err != nil {
+			return executor.Invocation{}, err
+		}
+	}
+	relativeLogPath, err := filepath.Rel(r.root, logPath)
+	if err != nil {
+		return executor.Invocation{}, fmt.Errorf("loop: relative executor log path: %w", err)
+	}
+	if err := r.locked(KindStarted, ac.taskID, map[string]any{
+		"execution": ac.execution, "run_id": ac.runID, "executor": ac.adapter.Name, "model": ac.runtime.Model,
+		"reasoning": ac.runtime.Reasoning, "argv": redactArgs(invocation, brief), "worktree": ac.worktree.Root,
+		"brief_lines": strings.Count(brief, "\n") + 1, "via_file": invocation.UsedFile, "log_path": filepath.ToSlash(relativeLogPath),
+	}, func() error { r.started[attemptKey(ac.taskID, ac.execution)] = true; return nil }); err != nil {
+		return executor.Invocation{}, err
+	}
+	fmt.Fprintf(r.out, "%s e%d → %s/%s in %s\n", ac.taskID, ac.execution, ac.adapter.Name, ac.runtime.Model, filepath.Base(ac.worktree.Root))
+
+	return invocation, nil
+}
+
+func (r *Runner) fallbackLimited(ac *attemptContext, resetAt time.Time, waits int) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next, found, err := r.graph.RecordLimitFallback(ac.taskID, ac.execution, ac.runID, r.generation)
+	if err != nil || !found {
+		return false, err
+	}
+	reason := fmt.Sprintf("usage limit: %s/%s → %s/%s", ac.runtime.Provider, ac.runtime.Model, next.Provider, next.Model)
+	err = r.record(KindLimitFallback, ac.taskID, map[string]any{
+		"execution": ac.execution, "from": ac.runtime, "to": next, "reset_at": resetAt, "waits": waits, "reason": reason,
+	})
+	if err != nil {
+		return false, err
+	}
+	ac.runtime = next
+	fmt.Fprintf(r.out, "%s e%d: %s; re-running the same execution\n", ac.taskID, ac.execution, reason)
+	return true, nil
+}
+
 // limitDelay is how long to wait for a usage limit: until the reset the
 // output named plus a buffer, or the default when it named none.
 func (r *Runner) limitDelay(resetAt time.Time) time.Duration {
 	if resetAt.IsZero() {
 		return r.opts.LimitWaitDefault
 	}
-	delay := time.Until(resetAt) + r.opts.LimitBuffer
+	delay := resetAt.Sub(r.now()) + r.opts.LimitBuffer
 	if delay < r.opts.LimitBuffer {
 		delay = r.opts.LimitBuffer
 	}
@@ -356,7 +466,12 @@ func (r *Runner) ensureWorktree(ctx context.Context, ac *attemptContext, attempt
 		}
 	}
 	name, branch := r.worktreeName(ac.taskID, ac.execution), r.branchName(ac.taskID, ac.execution)
-	root, err := r.git.Add(ctx, name, branch, ac.base)
+	if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, attemptWorktree{
+		Name: name, Branch: branch, Root: filepath.Join(r.root, ".batuta", "worktrees", name),
+	}); err != nil {
+		return err
+	}
+	root, err := r.addWorktree(ctx, name, branch, ac.base)
 	if err != nil {
 		return fmt.Errorf("loop: %w", err)
 	}
@@ -421,6 +536,9 @@ func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates
 }
 
 func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result executor.Result, treeChanged bool) error {
+	if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, ac.worktree); err != nil {
+		return err
+	}
 	question := routing.TaskQuestion{
 		RequestID: digestString("question:" + ac.runID + ":" + result.Question), Prompt: result.Question,
 		ContextDigest: digestString(string(result.Stdout)),
@@ -429,6 +547,17 @@ func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result e
 		return r.recordFailure(ctx, ac, &result, blockerUnsafeQuestion, []string{"the executor asked a question the journal cannot carry (a path, a token or over 2000 bytes): " + executor.Tail([]byte(result.Question), 1)})
 	}
 	askPath := filepath.Join(r.root, ".batuta", "asks", r.plan.Slug+"-"+strings.ReplaceAll(ac.taskID, "_", "-")+".md")
+	if err := os.MkdirAll(filepath.Dir(askPath), 0o755); err != nil {
+		return fmt.Errorf("loop: create ask directory: %w", err)
+	}
+	atCeiling := ac.execution == routing.MaxTaskExecutions
+	body := fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer with:\n\n    batuta loop --answer %s \"<your answer>\"\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt, ac.taskID)
+	if atCeiling {
+		body = fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer by hand in a new plan or an interactive cycle; this task has reached the execution ceiling.\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt)
+	}
+	if err := os.WriteFile(askPath, []byte(body), 0o644); err != nil {
+		return fmt.Errorf("loop: write ask file: %w", err)
+	}
 	err := r.locked(KindQuestion, ac.taskID, map[string]any{"execution": ac.execution, "run_id": ac.runID, "question": question.Prompt, "request_id": question.RequestID, "ask_path": askPath}, func() error {
 		if _, err := r.graph.RecordQuestion(ac.taskID, ac.execution, ac.runID, question, r.now()); err != nil {
 			return fmt.Errorf("loop: record question: %w", err)
@@ -438,9 +567,17 @@ func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result e
 	if err != nil {
 		return err
 	}
-	_ = os.MkdirAll(filepath.Dir(askPath), 0o755)
-	body := fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer with:\n\n    batuta loop --answer %s \"<your answer>\"\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt, ac.taskID)
-	_ = os.WriteFile(askPath, []byte(body), 0o644)
+	if atCeiling {
+		feedback := []string{"answer by hand and re-plan"}
+		if err := r.locked(KindFailure, ac.taskID, map[string]any{
+			"execution": ac.execution, "blocker": blockerQuestionCeiling, "status": "failed", "feedback": feedback, "blocked": true,
+		}, nil); err != nil {
+			return err
+		}
+		fmt.Fprintf(r.out, "%s e%d ✗ blocked · question at the execution ceiling · answer by hand and re-plan\n", ac.taskID, ac.execution)
+		r.writeTrailVerdict(ac.taskID, "❌ blocked — "+blockerQuestionCeiling, feedback)
+		return nil
+	}
 	fmt.Fprintf(r.out, "%s asks: %s\n  answer: batuta loop --answer %s \"<text>\"\n", ac.taskID, question.Prompt, ac.taskID)
 	return nil
 }
@@ -496,6 +633,15 @@ func (r *Runner) recordBlocked(ctx context.Context, ac attemptContext, result *e
 }
 
 func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext, result *executor.Result, code string, feedback []string, policy routing.FailurePolicy) error {
+	// Cancellation during gates or candidate preparation is an interruption,
+	// not a failed proof or candidate. Keep the usual resumable failure policy.
+	if ctx.Err() != nil {
+		code, policy = blockerInterrupted, routing.ConductingFailurePolicy
+		feedback = []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"}
+	}
+	if err := r.snapshotWorktree(context.WithoutCancel(ctx), ac.taskID, ac.execution, ac.worktree); err != nil {
+		return err
+	}
 	status := "failed"
 	if code == blockerInterrupted {
 		status = "stalled"
@@ -511,15 +657,19 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		r.mu.Unlock()
 		return fmt.Errorf("loop: record failure of %s: %w", ac.taskID, ferr)
 	}
-	sameRuntime := !outcome.Blocked && outcome.Runtime == ac.runtime
-	if !outcome.Blocked {
+	recordedBlocker := code
+	if task, found := r.graph.Task(ac.taskID); outcome.Blocked && found && task.BlockerCode == routing.BlockerNeedsConductingSession {
+		recordedBlocker = task.BlockerCode
+	}
+	sameRuntime := !outcome.Blocked && !outcome.Satisfied && outcome.Runtime == ac.runtime
+	if !outcome.Blocked && !outcome.Satisfied {
 		r.feedback[ac.taskID] = feedback
 		if sameRuntime && ac.worktree.Root != "" {
 			r.worktrees[attemptKey(ac.taskID, ac.execution+1)] = attemptWorktree{Name: ac.worktree.Name, Branch: ac.worktree.Branch, Root: ac.worktree.Root}
 		}
 	}
 	detail := map[string]any{
-		"execution": ac.execution, "blocker": code, "status": status, "feedback": feedback, "blocked": outcome.Blocked,
+		"execution": ac.execution, "blocker": recordedBlocker, "status": status, "feedback": feedback, "blocked": outcome.Blocked, "satisfied": outcome.Satisfied,
 		"next_execution": ac.execution + 1, "next_runtime": outcome.Runtime, "same_runtime": sameRuntime, "reuse_worktree": sameRuntime && ac.worktree.Root != "",
 	}
 	recordErr := r.record(KindFailure, ac.taskID, detail)
@@ -528,22 +678,72 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		return recordErr
 	}
 	switch {
-	case outcome.Blocked && code == blockerAlreadySatisfied:
+	case outcome.Satisfied:
 		fmt.Fprintf(r.out, "%s e%d ✓ already satisfied on the base; no commit\n", ac.taskID, ac.execution)
 		r.writeTrailVerdict(ac.taskID, "✅ already satisfied — no commit", feedback)
 	case outcome.Blocked:
-		fmt.Fprintf(r.out, "%s e%d ✗ %s — aborted (%s)\n", ac.taskID, ac.execution, code, firstLine(strings.Join(feedback, " ")))
-		r.writeTrailVerdict(ac.taskID, "❌ aborted — "+code, feedback)
+		fmt.Fprintf(r.out, "%s e%d ✗ %s — aborted (%s)\n", ac.taskID, ac.execution, recordedBlocker, firstLine(strings.Join(feedback, " ")))
+		r.writeTrailVerdict(ac.taskID, "❌ aborted — "+recordedBlocker, feedback)
 	case sameRuntime:
 		fmt.Fprintf(r.out, "%s e%d ✗ %s — retry on %s/%s with feedback\n", ac.taskID, ac.execution, code, ac.runtime.Provider, ac.runtime.Model)
 	default:
 		fmt.Fprintf(r.out, "%s e%d ✗ %s — escalating to %s/%s\n", ac.taskID, ac.execution, code, outcome.Runtime.Provider, outcome.Runtime.Model)
 		r.writeTrailVerdict(ac.taskID, "⏫ escalated from "+string(ac.plan.Complexity)+" ("+ac.runtime.Provider+"/"+ac.runtime.Model+" → "+outcome.Runtime.Provider+"/"+outcome.Runtime.Model+")", feedback)
 	}
-	if (outcome.Blocked || !sameRuntime) && ac.worktree.Root != "" && !r.opts.KeepWorktrees {
-		_ = r.git.Remove(context.WithoutCancel(ctx), ac.worktree.Root, ac.worktree.Branch)
+	if (outcome.Blocked || outcome.Satisfied || !sameRuntime) && ac.worktree.Root != "" && !r.opts.KeepWorktrees {
+		_ = r.removeWorktree(context.WithoutCancel(ctx), ac.worktree.Root, ac.worktree.Branch)
 	}
 	return nil
+}
+
+func (r *Runner) snapshotWorktree(ctx context.Context, taskID string, execution int, wt attemptWorktree) error {
+	if wt.Root == "" {
+		return nil
+	}
+	if _, err := os.Stat(wt.Root); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	ref := "refs/batuta/parked/" + strings.TrimPrefix(wt.Branch, "batuta/")
+	message := fmt.Sprintf("wip(batuta): %s %s e%d parked", r.plan.Slug, taskID, execution)
+	sha, err := r.git.Park(ctx, wt.Root, ref, message)
+	if err != nil {
+		return fmt.Errorf("loop: park %s: %w", wt.Name, err)
+	}
+	if sha == "" {
+		head, err := r.git.Head(ctx, wt.Root)
+		if err != nil {
+			return err
+		}
+		integrated, err := r.git.IsAncestor(ctx, head, "refs/heads/"+r.branch)
+		if err != nil {
+			return err
+		}
+		if integrated {
+			return nil
+		}
+		parked, err := r.git.Parked(ctx, r.plan.Slug)
+		if err != nil {
+			return err
+		}
+		for _, saved := range parked {
+			if saved.Ref != ref {
+				continue
+			}
+			preserved, err := r.git.IsAncestor(ctx, head, saved.SHA)
+			if err != nil {
+				return err
+			}
+			if preserved {
+				return nil
+			}
+		}
+		return fmt.Errorf("loop: park %s: empty snapshot leaves unmerged HEAD %s unprotected", wt.Name, head)
+	}
+	return r.locked(KindSnapshot, taskID, map[string]any{
+		"execution": execution, "worktree": wt, "ref": ref, "sha": sha,
+	}, nil)
 }
 
 func blockerCode(report gates.Report, result executor.Result, silent bool) string {

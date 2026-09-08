@@ -3,11 +3,13 @@ package loop
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/routing"
 )
 
 func immediateTicker(at time.Time, durations *[]time.Duration) watchTicker {
@@ -169,5 +171,177 @@ func TestWatchPollPresenceChanges(t *testing.T) {
 	check("none", 0)
 	if _, ok := m.pollCmd()().(watchPollMsg); !ok {
 		t.Fatal("unchanged locks redrew")
+	}
+}
+
+func TestPollResultsTaggedAndStaleDropped(t *testing.T) {
+	for _, kind := range []string{"changed", "unchanged", "error"} {
+		for _, change := range []string{"delivery", "generation", "log path"} {
+			t.Run(kind+"/"+change, func(t *testing.T) {
+				records, graph, now := modelFixture(t)
+				root := t.TempDir()
+				store, err := journal.Open(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				records = storePanelRecords(t, store, "old", records)
+				storePanelRecords(t, store, "new", records)
+				var durations []time.Duration
+				m := newPollingWatchModel(root, "old", store, records, 37*time.Millisecond, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+				identity := m.pollIdentity()
+				pending := m.pollCmd()
+				switch kind {
+				case "changed":
+					storePanelRecords(t, store, "old", []journal.Record{panelRecord(t, KindProgress, "task_2", now, map[string]any{"execution": 1, "criterion": 2, "state": "DONE"}, graph)})
+				case "error":
+					if err := os.Remove(store.Path("old")); err != nil {
+						t.Fatal(err)
+					}
+				}
+				msg := pending()
+				switch msg := msg.(type) {
+				case journalMsg:
+					if msg.identity != identity {
+						t.Fatalf("journal identity=%+v, want %+v", msg.identity, identity)
+					}
+				case watchPollMsg:
+					if msg.identity != identity {
+						t.Fatalf("idle identity=%+v, want %+v", msg.identity, identity)
+					}
+				default:
+					t.Fatalf("unexpected poll result %T", msg)
+				}
+				if kind == "error" {
+					storePanelRecords(t, store, "old", records)
+				}
+				switch change {
+				case "delivery", "generation":
+					if err := m.switchDelivery("new"); err != nil {
+						t.Fatal(err)
+					}
+					if change == "generation" {
+						if err := m.switchDelivery("old"); err != nil {
+							t.Fatal(err)
+						}
+					}
+				case "log path":
+					m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+				}
+				beforeRecords, beforePoll, beforeView := m.records, m.poll, m.View().Content
+				m, cmd := updateWatch(t, m, msg)
+				if !reflect.DeepEqual(m.records, beforeRecords) || !reflect.DeepEqual(m.poll, beforePoll) || m.View().Content != beforeView {
+					t.Fatal("stale poll changed the current model")
+				}
+				if (cmd != nil) != (change == "log path") {
+					t.Fatalf("stale result rescheduled=%v, change=%s", cmd != nil, change)
+				}
+			})
+		}
+	}
+}
+
+func TestSinglePollChainAfterSwitch(t *testing.T) {
+	records, _, now := modelFixture(t)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = storePanelRecords(t, store, "old", records)
+	storePanelRecords(t, store, "new", records)
+	var durations []time.Duration
+	m := newPollingWatchModel(root, "old", store, records, 37*time.Millisecond, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+	generation := m.generation
+	oldPoll := m.pollCmd()
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	for i, item := range m.deliveryPicker.Items() {
+		if item.(deliveryItem).id == "new" {
+			m.deliveryPicker.Select(i)
+		}
+	}
+	m, next := updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.generation != generation+1 {
+		t.Fatal("delivery switch did not increment generation")
+	}
+	if m.delivery != "new" || next == nil {
+		t.Fatal("switch did not start a poll")
+	}
+	m, staleNext := updateWatch(t, m, oldPoll())
+	if staleNext != nil {
+		t.Fatal("old delivery started a second poll chain")
+	}
+	for range 3 {
+		m, next = updateWatch(t, m, next())
+		if next == nil {
+			t.Fatal("current poll chain stopped")
+		}
+	}
+	if len(durations) != 5 {
+		t.Fatalf("scheduled %d polls, want 5", len(durations))
+	}
+}
+
+func TestWatchPollFollowsNewLog(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = storePanelRecords(t, store, "dashboard", records)
+	oldPath := panelLogPath(root, PanelModel(records, now, ""))
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(oldPath, []byte("old task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(root, "new-task.log")
+	if err := os.WriteFile(newPath, []byte("new task\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var durations []time.Duration
+	m := newPollingWatchModel(root, "dashboard", store, records, time.Second, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+	pending := m.pollCmd()
+	graph.Tasks[1].State = routing.GraphTaskIntegrated
+	graph.Tasks[2].State = routing.GraphTaskRunning
+	graph.Tasks[2].Attempts = []routing.GraphTaskAttempt{{Execution: 1}}
+	storePanelRecords(t, store, "dashboard", []journal.Record{panelRecord(t, KindStarted, "task_3", now, map[string]any{"execution": 1, "log_path": "new-task.log"}, graph)})
+	msg := pending().(journalMsg)
+	if msg.identity.logPath != oldPath || !reflect.DeepEqual(msg.logLines, []string{"old task"}) {
+		t.Fatalf("poll log path=%q lines=%v", msg.identity.logPath, msg.logLines)
+	}
+	m, cmd := updateWatch(t, m, msg)
+	if cmd == nil || m.panel.Detail.Task != "task_3" || !reflect.DeepEqual(m.panel.LogLines, []string{"new task"}) {
+		t.Fatalf("journal did not follow new log: task=%s lines=%v", m.panel.Detail.Task, m.panel.LogLines)
+	}
+}
+
+func TestFailedDeliverySwitchKeepsPollChain(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = storePanelRecords(t, store, "old", records)
+	broken := append(records, panelRecord(t, KindStarted, "task_2", now, map[string]any{"execution": 1, "log_path": "not-dir/log"}, graph))
+	storePanelRecords(t, store, "broken", broken)
+	if err := os.WriteFile(filepath.Join(root, "not-dir"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var durations []time.Duration
+	m := newPollingWatchModel(root, "old", store, records, time.Second, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+	pending := m.pollCmd()
+	identity := m.pollIdentity()
+	if err := m.switchDelivery("broken"); err == nil {
+		t.Fatal("switch with unreadable log succeeded")
+	}
+	if m.pollIdentity() != identity {
+		t.Fatal("failed switch invalidated the current chain")
+	}
+	_, next := updateWatch(t, m, pending())
+	if next == nil {
+		t.Fatal("failed switch stopped the current chain")
 	}
 }

@@ -33,6 +33,7 @@ The module is **pre-release**: `v1.1.0-beta.N` until the API stabilizes.
 | `executor` | adapter frontmatter (`skills/batuta/adapters/*.md`) to argv — never a shell — subprocess with stdin closed, timeout and process-group kill, `finished` and `limit_regex` rules |
 | `gates` | the four mechanical gates: finished · tree · tests · verify (scope, proofs, independent read-only verifier) |
 | `loop` | `batuta loop`: the mechanical conductor over `routing.DeliveryGraph` on file hosts — see [docs/loop.md](docs/loop.md) |
+| `review` | `batuta review`: cohort-based, read-only delivery review with a mechanical verdict — see [docs/review.md](docs/review.md) |
 
 No package imports a daemon SDK. Everything runs over `git`, `gh` and the
 executor CLIs through `publication.CommandRunner`.
@@ -50,9 +51,13 @@ batuta loop --resume <delivery>         continue after an interruption
 batuta loop --answer <task> "<text>"    answer a parked task and continue
 batuta loop --abandon <delivery>        close a delivery; ticks what integrated
 batuta loop --dashboard [<delivery>]    one TSV snapshot of delivery state
+batuta review --base <ref> [--spec <plan>] review a delivery through adapters
 batuta watch [<delivery>]               live panel dashboard (watch by default)
 batuta trail [<delivery>]               one line per journal record
 ```
+
+When a usage limit outlasts the wait budget, the loop falls back to the next
+executable runtime without spending a retry or escalation.
 
 The dashboard groups tasks by wave and shows execution context, progress
 bars, selected-task detail, attempts, gates G0–G3, commits, and the active

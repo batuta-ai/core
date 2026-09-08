@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/publication"
@@ -38,6 +39,7 @@ done
 text=$1
 state="${FAKE_STATE:-/tmp}"
 if [ "$mode" = "verify" ]; then
+  if [ "${FAKE_SCENARIO:-default}" = satisfied-unverified ]; then exit 0; fi
   if [ "${FAKE_SCENARIO:-default}" = unsigned-config ]; then
     git config --show-origin commit.gpgsign > "$state/verifier-git-config"
   fi
@@ -55,6 +57,39 @@ answered=""; answered=$(printf '%s\n' "$text" | sed -n 's/^The answer: //p' | he
 echo "fake executor: task $n model $model retry $retry scenario ${FAKE_SCENARIO:-default}"
 mkdir -p out
 case "${FAKE_SCENARIO:-default}" in
+  unmerged-index)
+    for stage in 1 2 3; do
+      blob=$(printf 'stage %s\n' "$stage" | git hash-object -w --stdin)
+      printf '100644 %s %s\tout/conflicted.txt\n' "$blob" "$stage"
+    done | git update-index --index-info
+    echo 'unresolved working content' > out/conflicted.txt
+    exit 1;;
+  continuation-*)
+    if [ "$n" = 1 ]; then
+      if [ "$retry" = 1 ] || [ -n "$answered" ]; then exit 0; fi
+      echo "ok" > out/1.txt
+      case "$FAKE_SCENARIO" in
+        *-staged) git add out/1.txt;;
+        *-committed) git add out/1.txt; git commit -q -m "wip: greeting one";;
+      esac
+      case "$FAKE_SCENARIO" in
+        continuation-ask-*) echo "BATUTA-QUESTION: keep this greeting?"; exit 0;;
+        *) exit 1;;
+      esac
+    fi
+    echo "ok" > out/$n.txt;;
+  satisfied-*)
+    if [ "$n" = 1 ]; then
+      case "$FAKE_SCENARIO" in
+        satisfied-restored)
+          if [ "$retry" = 0 ]; then echo "partial" > out/1.txt; exit 1; fi
+          git restore out/1.txt;;
+        satisfied-metadata) echo "metadata" >> .batuta/profile.md; echo "scratch" > .batuta/scratch.txt;;
+        satisfied-empty-commit) git commit -q --allow-empty -m "wip: no tree change";;
+      esac
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   unsigned-config)
     git config --show-origin commit.gpgsign
     if [ "$n" = 3 ] && [ "$retry" = 0 ]; then exit 1; fi
@@ -70,17 +105,64 @@ case "${FAKE_SCENARIO:-default}" in
       exit 0
     fi
     echo "ok" > out/$n.txt;;
+  committed-broken)
+    if [ "$n" = 1 ]; then
+      echo "BROKEN by $model" > out/1.txt
+      git add out/1.txt
+      git diff --cached --quiet || git commit -q -m "wip: committed broken greeting"
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
+  staged-removed)
+    if [ "$n" = 1 ]; then
+      echo "staged by $model" > out/1.txt
+      git add out/1.txt
+      rm out/1.txt
+      exit 1
+    fi
+    echo "ok" > out/$n.txt;;
   always-broken)
     if [ "$n" = 1 ]; then echo "BROKEN by $model" > out/1.txt; exit 0; fi
     echo "ok" > out/$n.txt;;
   ask)
     if [ "$n" = 1 ] && [ -z "$answered" ]; then echo "BATUTA-QUESTION: which greeting?"; exit 0; fi
     if [ "$n" = 1 ]; then echo "$answered" > out/1.txt; else echo "ok" > out/$n.txt; fi;;
+  question-at-ceiling)
+    if [ "$n" = 1 ]; then
+      case "$answered" in
+        "") question="choose the first behavior";;
+        first) question="choose the second behavior";;
+        second) question="choose the third behavior";;
+        *) question="choose the final behavior";;
+      esac
+      echo "BATUTA-QUESTION: $question"
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   slow)
     if [ "$n" = 1 ]; then sleep 30; fi
     echo "ok" > out/$n.txt;;
   conflict)
     if [ "$retry" = 0 ] && [ "$n" != 3 ]; then echo "written by task $n" > shared.txt; fi
+    echo "ok" > out/$n.txt;;
+  limit-budget|limit-horizon|limit-within|limit-exhausted|limit-misleading)
+    if [ "$n" = 1 ]; then
+      if [ "$model" = fake-low ] || [ "$FAKE_SCENARIO" = limit-exhausted ]; then
+        if { [ "$FAKE_SCENARIO" != limit-within ] && [ "$FAKE_SCENARIO" != limit-misleading ]; } || [ ! -f "$state/limit-seen" ]; then
+          if [ "$FAKE_SCENARIO" = limit-misleading ]; then
+            echo "example reset_at=4102444800"
+            echo "example reset_at=4102444800" >&2
+            i=0
+            while [ "$i" -lt 25 ]; do echo ordinary; echo ordinary >&2; i=$((i+1)); done
+          fi
+          echo "partial" > out/1.txt
+          touch "$state/limit-seen"
+          echo "Rate limit reached reset_at=$FAKE_RESET_AT" >&2
+          exit 1
+        fi
+      fi
+      test "$(cat out/1.txt)" = partial
+    fi
     echo "ok" > out/$n.txt;;
   limit)
     if [ "$n" = 1 ] && [ ! -f "$state/limit-seen" ]; then touch "$state/limit-seen"; echo "Rate limit reached for $model, resets 11:10am" >&2; exit 1; fi
@@ -208,6 +290,21 @@ func (f fixture) snapshot() inventory.InventorySnapshot {
 	return snapshot
 }
 
+// These fixtures advance foreground waits immediately. Heartbeats stay parked
+// until cancellation; dedicated presence tests explicitly drive their ticks.
+func fixtureSleep(waited func(time.Duration)) func(context.Context, time.Duration) error {
+	return func(ctx context.Context, delay time.Duration) error {
+		if delay == presenceRefresh {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		if waited != nil {
+			waited(delay)
+		}
+		return nil
+	}
+}
+
 func (f fixture) options(scenario string, out *bytes.Buffer) Options {
 	clock := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
 	var clockMu sync.Mutex
@@ -217,7 +314,7 @@ func (f fixture) options(scenario string, out *bytes.Buffer) Options {
 		Environment: []string{"FAKE_SCENARIO=" + scenario, "FAKE_STATE=" + f.state},
 		TaskTimeout: 2 * time.Minute, TestTimeout: time.Minute,
 		LimitWaitDefault: time.Second, LimitBuffer: time.Millisecond,
-		Sleep: func(context.Context, time.Duration) error { return nil },
+		Sleep: fixtureSleep(nil),
 		Now: func() time.Time {
 			clockMu.Lock()
 			defer clockMu.Unlock()
@@ -610,6 +707,17 @@ func TestLoopResumesAfterAStopBetweenWaves(t *testing.T) {
 	var out bytes.Buffer
 	opts := f.options("default", &out)
 	opts.MaxWaves = 1
+	secondWave := make(chan struct{})
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" && strings.Contains(strings.Join(command.Args, " "), "# Brief — Add greeting three") {
+			select {
+			case <-secondWave:
+			case <-ctx.Done():
+				return publication.CommandResult{ExitCode: -1}, ctx.Err()
+			}
+		}
+		return (publication.ExecRunner{}).Run(ctx, command)
+	})
 	r, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -629,6 +737,9 @@ func TestLoopResumesAfterAStopBetweenWaves(t *testing.T) {
 	}
 	resumeOpts := f.options("default", &out)
 	resumeOpts.Resume = r.Delivery()
+	resumeOpts.Runner = opts.Runner
+	// Only the resumed run may execute the dependent wave.
+	close(secondWave)
 	resumed, err := Resume(context.Background(), resumeOpts)
 	if err != nil {
 		t.Fatalf("Resume() error = %v\n%s", err, out.String())
@@ -645,16 +756,196 @@ func TestLoopResumesAfterAStopBetweenWaves(t *testing.T) {
 	}
 }
 
+// The engine holds task two through cancellation so the test can prove that
+// terminal journaling and Run's return both wait for the attempt to unwind.
+func TestRunWaitsForInFlightAttempts(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	exited := make(chan struct{})
+	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := f.options("default", &out)
+	opts.Parallel = 2
+	opts.MaxLimitWaits = -1
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable != f.fake || len(command.Args) == 0 || command.Args[0] != "run" {
+			return (publication.ExecRunner{}).Run(ctx, command)
+		}
+		if strings.Contains(strings.Join(command.Args, " "), "# Brief — Add greeting one") {
+			select {
+			case <-started:
+			case <-ctx.Done():
+				return publication.CommandResult{ExitCode: -1}, ctx.Err()
+			}
+			return publication.CommandResult{ExitCode: 1, Stderr: []byte("Rate limit reached")}, nil
+		}
+		if err := os.MkdirAll(filepath.Join(command.Directory, "out"), 0o755); err != nil {
+			return publication.CommandResult{}, err
+		}
+		if err := os.WriteFile(filepath.Join(command.Directory, "out", "2.txt"), []byte("partial greeting\n"), 0o644); err != nil {
+			return publication.CommandResult{}, err
+		}
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		defer close(exited)
+		fmt.Fprintln(command.Observer, "executor finished canceling")
+		return publication.CommandResult{ExitCode: -1}, ctx.Err()
+	})
+	r, err := New(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Resume-like setup: independent tasks already admitted in distinct waves.
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		wave, err := r.graph.AdmitReadyWave(routing.ReadyWaveInput{IntegrationHeadSHA: f.base, RemainingSlots: 1, ReachableCommits: map[string]bool{f.base: true}})
+		if err != nil || len(wave.TaskIDs) != 1 {
+			t.Fatalf("admit wave: %v, %v", wave, err)
+		}
+		if err := r.record(KindWave, "", map[string]any{"wave": wave.Number, "base": wave.BaseHeadSHA, "tasks": wave.TaskIDs}); err != nil {
+			t.Fatal(err)
+		}
+		r.wavesRun++
+	}
+	var state string
+	var runErr error
+	go func() { defer close(done); state, runErr = r.Run(ctx) }()
+	released := false
+	defer func() {
+		cancel()
+		if !released {
+			close(release)
+		}
+		<-done
+	}()
+	select {
+	case <-canceled:
+	case <-done:
+		t.Fatalf("Run returned before canceling the in-flight attempt: %s, %v", state, runErr)
+	case <-time.After(20 * time.Second):
+		t.Fatal("blocking task did not cancel the in-flight attempt")
+	}
+	select {
+	case <-done:
+		t.Fatal("Run returned while the engine was still unwinding")
+	default:
+	}
+	if kinds(readJournal(t, f, r.Delivery()))[KindTerminal] != 0 {
+		t.Fatal("terminal record written before the engine finished")
+	}
+	close(release)
+	released = true
+	<-done
+	if state != StateBlocked || runErr != nil {
+		t.Fatalf("Run() = %s, %v\n%s", state, runErr, &out)
+	}
+	select {
+	case <-exited:
+	default:
+		t.Fatal("Run returned before the engine exited")
+	}
+	records := readJournal(t, f, r.Delivery())
+	if records[len(records)-1].Kind != KindTerminal {
+		t.Fatal("attempt wrote after terminal record")
+	}
+	var interrupted, parked bool
+	for _, record := range records {
+		if record.TaskID != "task_2" {
+			continue
+		}
+		if record.Kind == KindFailure && strings.Contains(string(record.Detail), `"blocker":"interrupted"`) {
+			interrupted = true
+		}
+		if record.Kind == KindSnapshot {
+			_, ref := snapshotDetail(t, record)
+			if got := f.run(t, "show", ref+":out/2.txt"); got != "partial greeting" {
+				t.Fatalf("parked content = %q", got)
+			}
+			parked = true
+		}
+	}
+	if !interrupted || !parked {
+		t.Fatalf("interrupted=%t parked=%t\n%s", interrupted, parked, &out)
+	}
+	if kinds(records)[KindWave] != 2 {
+		t.Fatal("admitted another wave after blocking")
+	}
+	// Reading the unguarded buffer and journal after return also exercises
+	// the no-late-writes contract under the race detector.
+	before := out.String()
+	journalBefore, err := os.ReadFile(r.store.Path(r.Delivery()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	journalAfter, err := os.ReadFile(r.store.Path(r.Delivery()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != out.String() || !bytes.Equal(journalBefore, journalAfter) {
+		t.Fatal("writes after Run returned")
+	}
+}
+
+func TestRunPreservesCompletedCandidateWhenSiblingBlocks(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	candidate := make(chan struct{})
+	opts := f.options("default", &out)
+	opts.MaxLimitWaits = -1
+	opts.Stdout = writerFunc(func(p []byte) (int, error) {
+		if bytes.Contains(p, []byte("task_2 e1 ✓ candidate")) {
+			close(candidate)
+		}
+		return out.Write(p)
+	})
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" && strings.Contains(strings.Join(command.Args, " "), "# Brief — Add greeting one") {
+			select {
+			case <-candidate:
+			case <-ctx.Done():
+				return publication.CommandResult{ExitCode: -1}, ctx.Err()
+			}
+			return publication.CommandResult{ExitCode: 1, Stderr: []byte("Rate limit reached")}, nil
+		}
+		return (publication.ExecRunner{}).Run(ctx, command)
+	})
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if state, err := r.Run(ctx); state != StateBlocked || err != nil {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, &out)
+	}
+	if got, err := os.ReadFile(filepath.Join(f.root, "out", "2.txt")); err != nil || string(got) != "ok\n" {
+		t.Fatalf("completed candidate lost: %q, %v\n%s", got, err, &out)
+	}
+}
+
 func TestLoopResumesAnExecutorKilledMidRun(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer
-	opts := f.options("slow", &out)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := f.options("default", &out)
 	opts.Parallel = 1
 	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
 		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
 			if _, err := fmt.Fprintln(command.Observer, "BATUTA-PROGRESS 1 START"); err != nil {
 				return publication.CommandResult{ExitCode: -1}, err
 			}
+			cancel()
+			return publication.CommandResult{ExitCode: -1}, ctx.Err()
 		}
 		return (publication.ExecRunner{}).Run(ctx, command)
 	})
@@ -662,8 +953,6 @@ func TestLoopResumesAnExecutorKilledMidRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
 	state, err := r.Run(ctx)
 	if err != nil || state != StateCanceled {
 		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
@@ -792,6 +1081,72 @@ func TestLoopEscalatesThenBlocksAndReportsExactly(t *testing.T) {
 	}
 }
 
+func TestLoopBlocksInsteadOfCrashingOnSelfEscalation(t *testing.T) {
+	f := setup(t)
+	planPath := filepath.Join(f.root, ".batuta", "plans", "greetings.md")
+	plan, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan = []byte(strings.Replace(string(plan), "Add greeting one — backend/low", "Add greeting one — backend/high", 1))
+	if err := os.WriteFile(planPath, plan, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", planPath)
+	f.run(t, "commit", "-q", "-m", "test: route task one through high lane")
+
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("always-broken", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateBlocked {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if !strings.Contains(out.String(), blockerSelf) {
+		t.Fatalf("output does not name %s:\n%s", blockerSelf, out.String())
+	}
+
+	records := readJournal(t, f, r.Delivery())
+	counts := kinds(records)
+	if counts[KindTerminal] != 1 || counts[KindInterrupted] != 0 {
+		t.Fatalf("journal kinds = %v, want one delivery_terminal and no run_interrupted", counts)
+	}
+	var blockedFailure bool
+	for _, record := range records {
+		if record.Kind == KindFailure && record.TaskID == "task_1" &&
+			strings.Contains(string(record.Detail), `"blocker":"`+blockerSelf+`"`) &&
+			strings.Contains(string(record.Detail), `"blocked":true`) {
+			blockedFailure = true
+		}
+	}
+	if !blockedFailure {
+		t.Fatalf("no blocked failure_recorded with blocker %s\n%s", blockerSelf, out.String())
+	}
+}
+
+func TestLoopRefusesSelfTasksAtPreflight(t *testing.T) {
+	f := setup(t)
+	planPath := filepath.Join(f.root, ".batuta", "plans", "greetings.md")
+	plan, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan = []byte(strings.Replace(string(plan), "Add greeting one — backend/low", "Add greeting one — backend/critical", 1))
+	if err := os.WriteFile(planPath, plan, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", planPath)
+	f.run(t, "commit", "-q", "-m", "test: route task one to self")
+
+	var out bytes.Buffer
+	if _, err := New(context.Background(), f.options("default", &out)); err == nil ||
+		!strings.Contains(err.Error(), "task_1 route to `self` (the conducting session)") {
+		t.Fatalf("New() error = %v, want preflight refusal of self-routed task", err)
+	}
+}
+
 func TestLoopParksAQuestionAndResumesWithTheAnswer(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer
@@ -828,6 +1183,267 @@ func TestLoopParksAQuestionAndResumesWithTheAnswer(t *testing.T) {
 	}
 	if content, _ := os.ReadFile(filepath.Join(f.root, "out", "1.txt")); strings.TrimSpace(string(content)) != "hello there" {
 		t.Fatalf("out/1.txt = %q, want the answer", content)
+	}
+}
+
+func TestLoopQuestionAtCeilingBlocks(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r := runToQuestionCeiling(t, f, &out)
+
+	wantLine := "blocked · question at the execution ceiling · answer by hand and re-plan"
+	if !strings.Contains(out.String(), wantLine) {
+		t.Fatalf("output does not contain %q:\n%s", wantLine, out.String())
+	}
+	ask := filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md")
+	content, err := os.ReadFile(ask)
+	if err != nil || !strings.Contains(string(content), "choose the final behavior") ||
+		!strings.Contains(string(content), "Answer by hand in a new plan or an interactive cycle") {
+		t.Fatalf("ceiling ask file = %v\n%s", err, content)
+	}
+	records := readJournal(t, f, r.Delivery())
+	if terminalState(records) != StateBlocked {
+		t.Fatalf("terminal state = %q, want %q", terminalState(records), StateBlocked)
+	}
+	var blockedFailure bool
+	for _, record := range records {
+		if record.Kind == KindFailure && record.TaskID == "task_1" &&
+			strings.Contains(string(record.Detail), `"blocker":"`+routing.BlockerQuestionAtCeiling+`"`) &&
+			strings.Contains(string(record.Detail), `"blocked":true`) {
+			blockedFailure = true
+		}
+	}
+	if !blockedFailure {
+		t.Fatalf("ceiling failure was not recorded\n%s", out.String())
+	}
+	last := records[len(records)-1]
+	var graph routing.DeliveryGraph
+	if err := json.Unmarshal(last.Graph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	task := graphTask(&graph, "task_1")
+	if task == nil || task.State != routing.GraphTaskBlocked || len(task.Attempts) != routing.MaxTaskExecutions ||
+		task.Attempts[routing.MaxTaskExecutions-1].Question == nil ||
+		task.Attempts[routing.MaxTaskExecutions-1].Question.Prompt != "choose the final behavior" {
+		t.Fatalf("blocked graph task = %#v", task)
+	}
+}
+
+func TestAnswerRefusesBlockedCeilingTask(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	runToQuestionCeiling(t, f, &out)
+	if _, err := Answer(f.root, "1", "too late"); err == nil ||
+		!strings.Contains(err.Error(), "task_1 is blocked at the execution ceiling; answer the question in a new plan or an interactive cycle") {
+		t.Fatalf("Answer(blocked ceiling) error = %v", err)
+	}
+}
+
+func runToQuestionCeiling(t *testing.T, f fixture, out *bytes.Buffer) *Runner {
+	t.Helper()
+	clock := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
+	var clockMu sync.Mutex
+	nextNow := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
+		clock = clock.Add(time.Second)
+		return clock
+	}
+	opts := f.options("question-at-ceiling", out)
+	opts.Now = nextNow
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	for execution, value := range []string{"first", "second", "third"} {
+		if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+			t.Fatalf("Run(execution %d) = %s, %v\n%s", execution+1, state, err, out.String())
+		}
+		delivery, err := answer(f.root, "1", value, nextNow())
+		if err != nil {
+			t.Fatalf("Answer(execution %d) error = %v", execution+1, err)
+		}
+		opts = f.options("question-at-ceiling", out)
+		opts.Now = nextNow
+		opts.Resume = delivery
+		r, err = Resume(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("Resume(execution %d) error = %v", execution+2, err)
+		}
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run(execution %d) = %s, %v\n%s", routing.MaxTaskExecutions, state, err, out.String())
+	}
+	return r
+}
+
+func TestLoopContinuationVerifiesTheWorktreeAgainstTheBase(t *testing.T) {
+	for _, continuation := range []string{"ask", "retry"} {
+		for _, tree := range []string{"untracked", "tracked", "staged", "committed"} {
+			t.Run(continuation+"/"+tree, func(t *testing.T) {
+				f := setup(t)
+				if tree == "tracked" {
+					if err := os.MkdirAll(filepath.Join(f.root, "out"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(f.root, "out", "1.txt"), []byte("old\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					f.run(t, "add", "out/1.txt")
+					f.run(t, "commit", "-q", "-m", "chore: old greeting")
+				}
+				base := f.run(t, "rev-parse", "HEAD")
+				var out bytes.Buffer
+				scenario := "continuation-" + continuation + "-" + tree
+				r, err := New(context.Background(), f.options(scenario, &out))
+				if err != nil {
+					t.Fatal(err)
+				}
+				state, err := r.Run(context.Background())
+				if continuation == "ask" {
+					if err != nil || state != StateWaitingInput {
+						t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+					}
+					delivery, err := Answer(f.root, "1", "keep it")
+					if err != nil {
+						t.Fatal(err)
+					}
+					opts := f.options(scenario, &out)
+					opts.Resume = delivery
+					r, err = Resume(context.Background(), opts)
+					if err != nil {
+						t.Fatal(err)
+					}
+					state, err = r.Run(context.Background())
+				}
+				if err != nil {
+					t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+				}
+				var finished, verified, candidate bool
+				for _, record := range readJournal(t, f, r.Delivery()) {
+					if record.TaskID != "task_1" {
+						continue
+					}
+					switch record.Kind {
+					case KindFinished:
+						var detail struct {
+							Execution   int                       `json:"execution"`
+							TreeChanged bool                      `json:"tree_changed"`
+							BaseHeadSHA string                    `json:"base_head_sha"`
+							Before      publication.WorktreeState `json:"before"`
+							After       publication.WorktreeState `json:"after"`
+						}
+						if err := json.Unmarshal(record.Detail, &detail); err != nil {
+							t.Fatal(err)
+						}
+						if !detail.TreeChanged {
+							t.Fatalf("retained work was not a candidate: %s", record.Detail)
+						}
+						if detail.Execution == 2 {
+							finished = true
+							if detail.BaseHeadSHA != base || detail.Before.HeadSHA == "" || detail.Before != detail.After {
+								t.Fatalf("continuation signatures = %s", record.Detail)
+							}
+						}
+					case KindGates:
+						var report gates.Report
+						if err := json.Unmarshal(record.Detail, &report); err != nil {
+							t.Fatal(err)
+						}
+						if report.Execution == 2 {
+							verified = report.Passed && report.Tree.Pass && report.Tests.Pass && report.Scope.Pass && len(report.Proofs) == 1 && report.Proofs[0].Pass
+						}
+					case KindCandidate:
+						candidate = true
+					case KindFailure:
+						if strings.Contains(string(record.Detail), blockerAlreadySatisfied) {
+							t.Fatalf("retained work marked already satisfied: %s", record.Detail)
+						}
+					}
+				}
+				if state != StateDone || !finished || !verified || !candidate {
+					t.Fatalf("state=%s finished=%t verified=%t candidate=%t\n%s", state, finished, verified, candidate, out.String())
+				}
+				if content, err := os.ReadFile(filepath.Join(f.root, "out", "1.txt")); err != nil || string(content) != "ok\n" {
+					t.Fatalf("integrated greeting = %q, %v", content, err)
+				}
+				if commits := f.run(t, "log", "--format=%s", base+"..HEAD", "--", "out/1.txt"); commits != "feat: add greeting one" {
+					t.Fatalf("greeting commits = %q", commits)
+				}
+			})
+		}
+	}
+}
+
+func TestLoopAlreadySatisfiedOnlyWhenWorktreeEqualsBase(t *testing.T) {
+	for _, scenario := range []string{"satisfied", "satisfied-restored", "satisfied-metadata", "satisfied-empty-commit", "satisfied-broken", "satisfied-unverified"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := setup(t)
+			if err := os.MkdirAll(filepath.Join(f.root, "out"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			content := "ok\n"
+			if scenario == "satisfied-broken" {
+				content = "BROKEN\n"
+			}
+			if err := os.WriteFile(filepath.Join(f.root, "out", "1.txt"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f.run(t, "add", "out/1.txt")
+			f.run(t, "commit", "-q", "-m", "chore: existing greeting")
+			base := f.run(t, "rev-parse", "HEAD")
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options(scenario, &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantSatisfied := scenario != "satisfied-broken" && scenario != "satisfied-unverified"
+			wantState := StateBlocked
+			if wantSatisfied {
+				wantState = StateDone
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != wantState {
+				t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+			}
+			var satisfied, verified bool
+			treeChanged := true
+			for _, record := range readJournal(t, f, r.Delivery()) {
+				if record.TaskID != "task_1" {
+					continue
+				}
+				switch record.Kind {
+				case KindFinished:
+					var detail struct {
+						TreeChanged bool `json:"tree_changed"`
+					}
+					if err := json.Unmarshal(record.Detail, &detail); err != nil {
+						t.Fatal(err)
+					}
+					treeChanged = detail.TreeChanged
+				case KindGates:
+					var report gates.Report
+					if err := json.Unmarshal(record.Detail, &report); err != nil {
+						t.Fatal(err)
+					}
+					verified = report.Passed && report.Tests.Pass && report.Verifier != nil && report.Verifier.Pass
+				case KindFailure:
+					if strings.Contains(string(record.Detail), blockerAlreadySatisfied) {
+						satisfied = true
+						if treeChanged || !verified {
+							t.Fatalf("already satisfied without base equality and green gates: %s", record.Detail)
+						}
+					}
+				case KindCandidate:
+					t.Fatalf("base-equivalent tree produced a candidate: %s", record.Detail)
+				}
+			}
+			if treeChanged || satisfied != wantSatisfied {
+				t.Fatalf("tree_changed=%t already_satisfied=%t, want false/%t\n%s", treeChanged, satisfied, wantSatisfied, out.String())
+			}
+			if commits := f.run(t, "log", "--format=%s", base+"..HEAD", "--", "out/1.txt"); commits != "" {
+				t.Fatalf("base-equivalent tree was committed: %s", commits)
+			}
+		})
 	}
 }
 
@@ -871,12 +1487,140 @@ func TestLoopReexecutesAConflictingCandidateOnTheNewBase(t *testing.T) {
 	}
 }
 
+func TestLoopFallsBackWhenLimitOutlastsBudget(t *testing.T) {
+	testLoopLimitBudget(t, "limit-budget", 30*time.Minute, 2, StateDone, true)
+}
+
+func TestLoopFallsBackWhenResetBeyondHorizon(t *testing.T) {
+	testLoopLimitBudget(t, "limit-horizon", 3*time.Hour, 0, StateDone, true)
+}
+
+func TestLoopWaitsWhenResetWithinHorizon(t *testing.T) {
+	testLoopLimitBudget(t, "limit-within", 30*time.Minute, 1, StateDone, false)
+}
+
+func TestLoopBlocksRateLimitedWithoutFallback(t *testing.T) {
+	testLoopLimitBudget(t, "limit-exhausted", 3*time.Hour, 2, StateBlocked, false)
+}
+
+func testLoopLimitBudget(t *testing.T, scenario string, resetAfter time.Duration, wantWaits int, wantState string, fallback bool) {
+	t.Helper()
+	f := setup(t)
+	lane := "low"
+	if scenario == "limit-exhausted" {
+		lane = "high"
+	}
+	plan := "# Plan — Greetings\n\n**Goal:** Greeting.\n**Created:** 2026-09-06 · **Status:** approved\n\n## Tasks\n- [ ] 1. Add greeting one — backend/" + lane + "\n      Scope: out/1.txt\n      Accept: greeting exists → test -f out/1.txt\n"
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "test: one limit task")
+	base := f.run(t, "rev-parse", "HEAD")
+	var out bytes.Buffer
+	opts := f.options(scenario, &out)
+	now := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
+	resetAt := now.Add(resetAfter)
+	opts.Now = func() time.Time { return now }
+	opts.MaxLimitWaits = 2
+	opts.Environment = append(opts.Environment, fmt.Sprintf("FAKE_RESET_AT=%d", resetAt.Unix()))
+	var slept []time.Duration
+	opts.Sleep = fixtureSleep(func(delay time.Duration) { slept = append(slept, delay) })
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != wantState {
+		t.Fatalf("Run() = %s, %v, want %s\n%s", state, err, wantState, &out)
+	}
+	if len(slept) != wantWaits {
+		t.Fatalf("waits = %v, want %d", slept, wantWaits)
+	}
+	for _, delay := range slept {
+		if delay != resetAfter+opts.LimitBuffer {
+			t.Fatalf("wait = %s, want %s", delay, resetAfter+opts.LimitBuffer)
+		}
+	}
+	task, _ := r.graph.Task("task_1")
+	if len(task.Attempts) != 1 || task.Attempts[0].Execution != 1 {
+		t.Fatalf("limit consumed an execution: %+v", task.Attempts)
+	}
+	if wantState == StateBlocked && task.BlockerCode != blockerRateLimited {
+		t.Fatalf("blocker = %s", task.BlockerCode)
+	}
+	records := readJournal(t, f, r.Delivery())
+	counts := kinds(records)
+	if counts[KindTerminal] != 1 || counts[KindLimitWait] != wantWaits {
+		t.Fatalf("journal kinds = %v", counts)
+	}
+	if !fallback {
+		if counts[journal.Kind("limit_fallback")] != 0 {
+			t.Fatalf("unexpected fallback: %v", counts)
+		}
+		return
+	}
+	if counts[journal.Kind("limit_fallback")] != 1 || counts[KindFailure] != 0 || counts[KindStarted] != 2 {
+		t.Fatalf("journal kinds = %v", counts)
+	}
+	var firstStart map[string]any
+	for i, record := range records {
+		if record.Kind == journal.Kind("limit_fallback") {
+			var detail struct {
+				Execution int                  `json:"execution"`
+				From      routing.RuntimeValue `json:"from"`
+				To        routing.RuntimeValue `json:"to"`
+				ResetAt   time.Time            `json:"reset_at"`
+				Waits     int                  `json:"waits"`
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if detail.Execution != 1 || detail.From.Model != "fake-low" || detail.To.Model != "fake-mid" || !detail.ResetAt.Equal(resetAt) || detail.Waits != wantWaits {
+				t.Fatalf("fallback detail = %+v", detail)
+			}
+		}
+		if record.Kind == KindStarted {
+			var detail map[string]any
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if firstStart == nil {
+				firstStart = detail
+				continue
+			}
+			for _, key := range []string{"execution", "run_id", "worktree", "log_path"} {
+				if detail[key] != firstStart[key] {
+					t.Fatalf("fallback changed %s: %v -> %v", key, firstStart[key], detail[key])
+				}
+			}
+			panel := PanelModel(records[:i+1], now, "task_1")
+			if panel.Context.Model != "fake-mid" || panel.Context.Retries != 0 || panel.Context.Escalations != 0 || panel.Header.State == "limit_wait" {
+				t.Fatalf("watch after fallback: %+v", panel)
+			}
+		}
+	}
+	var trail bytes.Buffer
+	if err := Trail(f.root, r.Delivery(), &trail); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(trail.String(), "limit_fallback") || !strings.Contains(trail.String(), "fake-low") || !strings.Contains(trail.String(), "fake-mid") {
+		t.Fatalf("trail misses fallback: %s", &trail)
+	}
+	if commits := f.commitsSince(t, base); len(commits) != 2 || !strings.HasPrefix(commits[0], "feat: add greeting one") || !strings.HasPrefix(commits[1], "chore(batuta): greetings — loop done") {
+		t.Fatalf("commits = %v", commits)
+	}
+	if task.Attempts[0].Runtime.Model != "fake-mid" {
+		t.Fatalf("persisted runtime = %+v", task.Attempts[0].Runtime)
+	}
+}
+
 func TestLoopWaitsOutAUsageLimitWithoutSpendingARetry(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer
 	var slept []time.Duration
 	opts := f.options("limit", &out)
-	opts.Sleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
+	opts.LimitHorizon = 24 * time.Hour
+	opts.Sleep = fixtureSleep(func(d time.Duration) { slept = append(slept, d) })
 	r, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -897,7 +1641,7 @@ func TestLoopWaitsOutAUsageLimitWithoutSpendingARetry(t *testing.T) {
 	}
 }
 
-func TestLoopTicksATaskAlreadySatisfiedOnTheBase(t *testing.T) {
+func TestLoopContinuesAfterAlreadySatisfiedTask(t *testing.T) {
 	f := setup(t)
 	// out/1.txt already exists on the base: task 1's criterion holds before any executor runs.
 	os.MkdirAll(filepath.Join(f.root, "out"), 0o755)
@@ -911,27 +1655,82 @@ func TestLoopTicksATaskAlreadySatisfiedOnTheBase(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	state, err := r.Run(context.Background())
-	if err != nil || state != StateBlocked {
+	if err != nil || state != StateDone {
 		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
 	}
-	plan, _ := os.ReadFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"))
-	if !strings.Contains(string(plan), "- [x] 1.") || !strings.Contains(string(plan), "- [x] 2.") || !strings.Contains(string(plan), "- [ ] 3.") {
-		t.Fatalf("plan after run:\n%s", plan)
+	first := graphTask(r.graph, "task_1")
+	third := graphTask(r.graph, "task_3")
+	if first == nil || first.State != routing.GraphTaskIntegrated || !first.AlreadySatisfied || first.IntegratedCommitSHA != base {
+		t.Fatalf("satisfied task = %#v", first)
 	}
-	if !strings.Contains(out.String(), "already satisfied") {
-		t.Fatalf("report:\n%s", out.String())
+	if third == nil || third.State != routing.GraphTaskIntegrated {
+		t.Fatalf("dependent task = %#v", third)
 	}
-	// The next run picks up task 3 alone, on top of the ticked tasks.
-	next, err := New(context.Background(), f.options("default", &out))
-	if err != nil {
-		t.Fatalf("second New() error = %v", err)
-	}
-	if state, err := next.Run(context.Background()); err != nil || state != StateDone {
-		t.Fatalf("second Run() = %s, %v\n%s", state, err, out.String())
+	if _, err := os.Stat(filepath.Join(f.root, "out", "3.txt")); err != nil {
+		t.Fatalf("dependent output: %v", err)
 	}
 	commits := f.commitsSince(t, base)
-	if len(commits) != 4 || !strings.HasPrefix(commits[0], "feat: add greeting two") || !strings.HasPrefix(commits[2], "feat: add greeting three") {
+	if len(commits) != 3 || !strings.HasPrefix(commits[0], "feat: add greeting two") || !strings.HasPrefix(commits[1], "feat: add greeting three") {
 		t.Fatalf("commits = %q", commits)
+	}
+}
+
+func TestLoopDoneWithSatisfiedTasks(t *testing.T) {
+	f := setup(t)
+	os.MkdirAll(filepath.Join(f.root, "out"), 0o755)
+	for n := 1; n <= 3; n++ {
+		os.WriteFile(filepath.Join(f.root, "out", fmt.Sprintf("%d.txt", n)), []byte("ok\n"), 0o644)
+	}
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "chore: satisfy greetings by hand")
+	base := f.run(t, "rev-parse", "HEAD")
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("satisfied", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	for _, task := range r.graph.Tasks {
+		if task.State != routing.GraphTaskIntegrated || !task.AlreadySatisfied || task.IntegratedCommitSHA != base {
+			t.Fatalf("task = %#v", task)
+		}
+	}
+	if commits := f.commitsSince(t, base); len(commits) != 1 || !strings.HasPrefix(commits[0], "chore(batuta): greetings — loop done") {
+		t.Fatalf("commits = %q", commits)
+	}
+}
+
+func TestLoopTicksSatisfiedTaskWithBase(t *testing.T) {
+	f := setup(t)
+	os.MkdirAll(filepath.Join(f.root, "out"), 0o755)
+	os.WriteFile(filepath.Join(f.root, "out", "1.txt"), []byte("ok\n"), 0o644)
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "chore: greeting one by hand")
+	base := f.run(t, "rev-parse", "HEAD")
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("satisfied", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	marker := "already satisfied on the base " + short(base)
+	plan, err := os.ReadFile(r.planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(plan), "- [x] 1. Add greeting one") || !strings.Contains(string(plan), marker) {
+		t.Fatalf("plan:\n%s", plan)
+	}
+	work, err := os.ReadFile(filepath.Join(f.root, "WORK.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(work), "Add greeting one") || !strings.Contains(string(work), marker) {
+		t.Fatalf("WORK.md:\n%s", work)
 	}
 }
 
@@ -992,6 +1791,449 @@ func TestAbandonClosesAnOpenDelivery(t *testing.T) {
 	preview, _ := next.DryRun()
 	if len(preview.Waves) != 1 || preview.Waves[0].Tasks[0].ID != "task_3" {
 		t.Fatalf("preview after abandon = %#v", preview.Waves)
+	}
+}
+
+func TestAbandonRefusesLiveRunner(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+	delivery := r.Delivery()
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktrees := f.worktrees(t)
+	lockTime := time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC)
+	writePresenceFixture(t, f.root, delivery, lockTime)
+
+	abandonOpts := f.options("default", &out)
+	abandonOpts.Resume = delivery
+	want := "delivery " + delivery + " is owned by pid 1 since " + lockTime.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+	if _, err := Abandon(context.Background(), abandonOpts); err == nil || err.Error() != want {
+		t.Fatalf("Abandon() error = %v", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) || strings.Join(f.worktrees(t), "\n") != strings.Join(worktrees, "\n") {
+		t.Fatal("Abandon() changed the delivery while its runner was live")
+	}
+}
+
+func TestAnswerRecoversMalformedStaleLock(t *testing.T) {
+	for _, age := range []time.Duration{0, presenceFresh, presenceFresh + time.Second} {
+		t.Run(age.String(), func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("ask", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+				t.Fatalf("Run() = %s, %v", state, err)
+			}
+			now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+			at := now.Add(-age)
+			path := writePresenceFixture(t, f.root, r.Delivery(), at)
+			payload := []byte(`{"pid":`)
+			if err := os.WriteFile(path, payload, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+			before := readJournal(t, f, r.Delivery())
+			id, err := answer(f.root, "1", "hello there", now)
+			after := readJournal(t, f, r.Delivery())
+			if age <= presenceFresh {
+				if err == nil || !strings.Contains(err.Error(), "parse presence lock") {
+					t.Fatalf("fresh malformed lock: Answer() = %q, %v", id, err)
+				}
+				if len(after) != len(before) {
+					t.Fatal("fresh malformed lock allowed a journal mutation")
+				}
+				if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, payload) {
+					t.Fatalf("fresh malformed lock changed: %q, %v", got, err)
+				}
+				return
+			}
+			if err != nil || id != r.Delivery() {
+				t.Fatalf("stale malformed lock: Answer() = %q, %v", id, err)
+			}
+			if len(after) != len(before)+1 || after[len(after)-1].Kind != KindAnswer {
+				t.Fatal("answer was not recorded")
+			}
+			// The recovered lock is released after the answer is recorded.
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("recovered answer lock remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestAnswerSkipsOwnedFinishedDelivery(t *testing.T) {
+	for _, state := range []routing.GraphTaskState{routing.GraphTaskIntegrated, routing.GraphTaskBlocked, routing.GraphTaskPending, routing.GraphTaskWaitingInput} {
+		t.Run(string(state), func(t *testing.T) {
+			f, r, now := answerDeliveryPair(t, state, state == routing.GraphTaskIntegrated || state == routing.GraphTaskWaitingInput)
+			before := answerRecords(t, r.store, "newer")
+			lock := writePresenceFixture(t, f.root, "newer", now)
+			lockBefore, err := os.ReadFile(lock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := answer(f.root, "1", "hello there", now)
+			if err != nil || id != r.Delivery() {
+				t.Fatalf("Answer() = %q, %v; want older delivery %q", id, err, r.Delivery())
+			}
+			if after := readJournal(t, f, r.Delivery()); after[len(after)-1].Kind != KindAnswer {
+				t.Fatal("older delivery did not receive the answer")
+			}
+			if len(answerRecords(t, r.store, "newer")) != len(before) {
+				t.Fatal("newer delivery changed")
+			}
+			if got, err := os.ReadFile(lock); err != nil || !bytes.Equal(got, lockBefore) {
+				t.Fatalf("newer delivery lock changed: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestAnswerReturnsOwnershipErrorAsFallback(t *testing.T) {
+	for _, waiting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("waiting=%v", waiting), func(t *testing.T) {
+			f, r, now := answerDeliveryPair(t, routing.GraphTaskIntegrated, true)
+			writePresenceFixture(t, f.root, "newer", now)
+			owned := "newer"
+			if waiting {
+				owned = r.Delivery()
+				writePresenceFixture(t, f.root, owned, now)
+			} else {
+				if err := os.Remove(filepath.Join(f.root, journal.Dir, r.Delivery()+".jsonl")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := answerRecords(t, r.store, owned)
+			want := "delivery " + owned + " is owned by pid 1 since " + now.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+			if _, err := answer(f.root, "1", "hello there", now); err == nil || err.Error() != want {
+				t.Fatalf("Answer() error = %v; want %q", err, want)
+			}
+			if len(answerRecords(t, r.store, owned)) != len(before) {
+				t.Fatal("owned delivery changed")
+			}
+		})
+	}
+}
+
+func answerDeliveryPair(t *testing.T, newerState routing.GraphTaskState, terminal bool) (fixture, *Runner, time.Time) {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("ask", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	records := readJournal(t, f, r.Delivery())
+	copyAnswerDelivery(t, r.store, "newer", records)
+	var graph routing.DeliveryGraph
+	if err := json.Unmarshal(records[len(records)-1].Graph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	graphTask(&graph, "task_1").State = newerState
+	data, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := journal.Record{Kind: KindStarted, Graph: data}
+	if terminal {
+		record.Kind = KindTerminal
+		record.Detail = json.RawMessage(`{"state":"done"}`)
+	}
+	if _, err := r.store.Append("newer", record); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	for id, at := range map[string]time.Time{r.Delivery(): now.Add(-time.Minute), "newer": now} {
+		if err := os.Chtimes(filepath.Join(f.root, journal.Dir, id+".jsonl"), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids, err := r.store.List()
+	if err != nil || len(ids) != 2 || ids[0] != "newer" {
+		t.Fatalf("delivery order = %v, %v", ids, err)
+	}
+	return f, r, now
+}
+
+func TestAnswerRefusesLiveRunner(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("ask", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	delivery := r.Delivery()
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockTime := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	writePresenceFixture(t, f.root, delivery, lockTime)
+
+	want := "delivery " + delivery + " is owned by pid 1 since " + lockTime.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+	if _, err := answer(f.root, "1", "hello there", lockTime); err == nil || err.Error() != want {
+		t.Fatalf("Answer() error = %v", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Answer() wrote to the journal while the runner was live")
+	}
+	if _, err := os.Stat(filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md")); err != nil {
+		t.Fatalf("Answer() removed the ask file: %v", err)
+	}
+}
+
+func TestAnswerRefusesRunningTaskWithOwnershipMessage(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("ask", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	delivery := r.Delivery()
+	graph := *r.graph
+	graph.Tasks = append([]routing.GraphTask(nil), graph.Tasks...)
+	graph.Tasks[0].State = routing.GraphTaskRunning
+	data, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.Append(delivery, journal.Record{Kind: KindStarted, Graph: data}); err != nil {
+		t.Fatal(err)
+	}
+
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockTime := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	writePresenceFixture(t, f.root, delivery, lockTime)
+
+	want := "delivery " + delivery + " is owned by pid 1 since " + lockTime.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+	if _, err := answer(f.root, "1", "hello there", lockTime); err == nil || err.Error() != want {
+		t.Fatalf("Answer() error = %v", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Answer() wrote to the journal while the runner was live")
+	}
+	if _, err := os.Stat(filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md")); err != nil {
+		t.Fatalf("Answer() removed the ask file: %v", err)
+	}
+}
+
+func TestResumeRefusesLiveRunner(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+	delivery := r.Delivery()
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockTime := time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC)
+	writePresenceFixture(t, f.root, delivery, lockTime)
+
+	resumeOpts := f.options("default", &out)
+	resumeOpts.Resume = delivery
+	want := "delivery " + delivery + " is owned by pid 1 since " + lockTime.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+	if _, err := Resume(context.Background(), resumeOpts); err == nil || err.Error() != want {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Resume() wrote to the journal while the runner was live")
+	}
+}
+
+func contendResumes(t *testing.T, f fixture, delivery string) (*Runner, []error) {
+	t.Helper()
+	start := make(chan struct{})
+	type result struct {
+		runner *Runner
+		err    error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			opts := f.options("default", &bytes.Buffer{})
+			opts.Resume = delivery
+			runner, err := Resume(context.Background(), opts)
+			results <- result{runner: runner, err: err}
+		}()
+	}
+	close(start)
+
+	var winner *Runner
+	var errs []error
+	for range 2 {
+		got := <-results
+		if got.err != nil {
+			errs = append(errs, got.err)
+			continue
+		}
+		if winner != nil {
+			t.Fatal("both concurrent Resume calls acquired the delivery")
+		}
+		winner = got.runner
+	}
+	return winner, errs
+}
+
+func TestConcurrentResumesLeaveOneOwner(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	winner, errs := contendResumes(t, f, r.Delivery())
+	if winner == nil || len(errs) != 1 {
+		t.Fatalf("winner = %v, errors = %v", winner != nil, errs)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if state, err := winner.Run(ctx); err != nil || state != StateCanceled {
+		t.Fatalf("release owner with canceled Run() = %s, %v", state, err)
+	}
+}
+
+func TestJournalChainValidAfterContendedResume(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	winner, errs := contendResumes(t, f, r.Delivery())
+	if winner == nil || len(errs) != 1 {
+		t.Fatalf("winner = %v, errors = %v", winner != nil, errs)
+	}
+	if state, err := winner.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("winning Run() = %s, %v", state, err)
+	}
+	readJournal(t, f, r.Delivery())
+}
+
+func TestAnswerAndAbandonTakeOwnership(t *testing.T) {
+	t.Run("answer", func(t *testing.T) {
+		f := setup(t)
+		var out bytes.Buffer
+		r, err := New(context.Background(), f.options("ask", &out))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+			t.Fatalf("Run() = %s, %v", state, err)
+		}
+		at := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+		writePresenceFixture(t, f.root, r.Delivery(), at)
+		if _, err := answer(f.root, "1", "hello", at); err == nil || !strings.Contains(err.Error(), "owned by pid 1") {
+			t.Fatalf("Answer() error = %v", err)
+		}
+	})
+
+	t.Run("abandon", func(t *testing.T) {
+		f := setup(t)
+		var out bytes.Buffer
+		opts := f.options("default", &out)
+		opts.MaxWaves = 1
+		r, err := New(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+			t.Fatalf("Run() error = %v", err)
+		}
+		at := time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC)
+		writePresenceFixture(t, f.root, r.Delivery(), at)
+		abandonOpts := f.options("default", &out)
+		abandonOpts.Resume = r.Delivery()
+		if _, err := Abandon(context.Background(), abandonOpts); err == nil || !strings.Contains(err.Error(), "owned by pid 1") {
+			t.Fatalf("Abandon() error = %v", err)
+		}
+	})
+}
+
+func TestAbandonProceedsWithStaleLock(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+	writePresenceFixture(t, f.root, r.Delivery(), time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC).Add(-presenceFresh-time.Second))
+	abandonOpts := f.options("default", &out)
+	abandonOpts.Resume = r.Delivery()
+	if state, err := Abandon(context.Background(), abandonOpts); err != nil || state != StateAbandoned {
+		t.Fatalf("Abandon() = %s, %v", state, err)
 	}
 }
 
@@ -1415,8 +2657,8 @@ func TestLoopWritesPresenceLock(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("stopped lock: %v", err)
 	}
-	// A killed process leaves a lock that the resumed run must overwrite.
-	writePresenceFixture(t, f.root, r.Delivery(), time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC))
+	// A killed process leaves a stale lock that the resumed run must overwrite.
+	writePresenceFixture(t, f.root, r.Delivery(), time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC).Add(-presenceFresh-time.Second))
 	opts.Resume, opts.MaxWaves = r.Delivery(), 0
 	r, err = Resume(context.Background(), opts)
 	if err != nil {
@@ -1488,5 +2730,553 @@ func TestLoopRemovesPresenceLockOnEnd(t *testing.T) {
 				t.Fatalf("lock after %s: %v", tc.scenario, err)
 			}
 		})
+	}
+}
+
+func TestInterruptSummaryNamesWorktrees(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	opts := f.options("slow", &out)
+	opts.Parallel = 1
+	opts.Runner = commandRunnerFunc(func(commandCtx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+			cancel()
+		}
+		return (publication.ExecRunner{}).Run(commandCtx, command)
+	})
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(ctx); err != nil || state != StateCanceled {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	worktrees := f.worktrees(t)
+	if len(worktrees) != 1 {
+		t.Fatalf("worktrees = %v, want one", worktrees)
+	}
+	want := filepath.Join(f.root, ".batuta", "worktrees", worktrees[0])
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("interrupt summary does not name %s:\n%s", want, out.String())
+	}
+}
+
+func snapshotRecords(t *testing.T, f fixture, delivery string) []journal.Record {
+	t.Helper()
+	var snapshots []journal.Record
+	for _, record := range readJournal(t, f, delivery) {
+		if record.Kind == "worktree_snapshotted" {
+			snapshots = append(snapshots, record)
+		}
+	}
+	return snapshots
+}
+
+func taskSnapshotRecords(t *testing.T, f fixture, delivery, taskID string) []journal.Record {
+	t.Helper()
+	var snapshots []journal.Record
+	for _, record := range snapshotRecords(t, f, delivery) {
+		if record.TaskID == taskID {
+			snapshots = append(snapshots, record)
+		}
+	}
+	return snapshots
+}
+
+func snapshotDetail(t *testing.T, record journal.Record) (string, string) {
+	t.Helper()
+	var detail struct {
+		SHA string `json:"sha"`
+		Ref string `json:"ref"`
+	}
+	if err := json.Unmarshal(record.Detail, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.SHA == "" || !strings.HasPrefix(detail.Ref, "refs/batuta/parked/greetings/task-") {
+		t.Fatalf("invalid snapshot: %s", record.Detail)
+	}
+	return detail.SHA, detail.Ref
+}
+
+func TestLoopSnapshotsBeforeQuestion(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("continuation-ask-staged", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snapshots))
+	}
+	sha, ref := snapshotDetail(t, snapshots[0])
+	if got := f.run(t, "show", ref+":out/1.txt"); got != "ok" {
+		t.Fatalf("parked content = %q", got)
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind == KindQuestion && record.Seq <= snapshots[0].Seq {
+			t.Fatal("question preceded snapshot")
+		}
+	}
+	wt := r.worktrees[attemptKey("task_1", 1)]
+	if got := f.run(t, "rev-parse", wt.Branch); got != f.base {
+		t.Fatalf("park moved branch: %s (%s)", got, sha)
+	}
+}
+
+func TestLoopSnapshotsBeforeRetry(t *testing.T) {
+	for _, scenario := range []string{"continuation-retry-untracked", "limit-within"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options(scenario, &out)
+			opts.Environment = append(opts.Environment, "FAKE_RESET_AT=2026-09-06T03:00:00Z")
+			r, err := New(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+				t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+			}
+			snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
+			if len(snapshots) == 0 {
+				t.Fatal("retry lost its partial work")
+			}
+			sha, _ := snapshotDetail(t, snapshots[0])
+			want := "ok"
+			if scenario == "limit-within" {
+				want = "partial"
+			}
+			if got := f.run(t, "show", sha+":out/1.txt"); got != want {
+				t.Fatalf("snapshot content = %q", got)
+			}
+			for _, record := range readJournal(t, f, r.Delivery()) {
+				if record.TaskID == "task_1" && (record.Kind == KindFailure || record.Kind == KindLimitWait) && record.Seq <= snapshots[0].Seq {
+					t.Fatal("retry scheduled before snapshot")
+				}
+			}
+		})
+	}
+}
+
+func TestLoopSnapshotsBeforeCleanup(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("always-broken", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want two distinct trees", len(snapshots))
+	}
+	for _, record := range snapshots {
+		sha, ref := snapshotDetail(t, record)
+		if got := f.run(t, "rev-parse", ref); got != sha {
+			t.Fatalf("lost %s", ref)
+		}
+		if got := f.run(t, "show", sha+":out/1.txt"); !strings.HasPrefix(got, "BROKEN by") {
+			t.Fatalf("lost work: %q", got)
+		}
+		if !strings.Contains(out.String(), sha) || !strings.Contains(out.String(), "kept (unmerged work)") {
+			t.Fatalf("missing retained snapshot in summary:\n%s", &out)
+		}
+	}
+	if got := f.worktrees(t); len(got) != 0 {
+		t.Fatalf("worktrees remain: %v", got)
+	}
+}
+
+func TestLoopKeepsParkedRefsUntilTerminal(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("continuation-retry-untracked", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run = %v\n%s", err, &out)
+	}
+	snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want partial work and committed candidate", len(snapshots))
+	}
+	partial, partialRef := snapshotDetail(t, snapshots[0])
+	sha, ref := snapshotDetail(t, snapshots[1])
+	if ref != partialRef || f.run(t, "rev-parse", partial+"^{tree}") != f.run(t, "rev-parse", sha+"^{tree}") {
+		t.Fatal("candidate snapshot did not preserve the partial-work tree under the same ref")
+	}
+	if got := f.run(t, "rev-parse", ref); got != sha {
+		t.Fatal("ref removed before terminal record")
+	}
+	if got := f.worktrees(t); len(got) != 0 {
+		t.Fatalf("worktrees remain: %v", got)
+	}
+	if kinds(readJournal(t, f, r.Delivery()))[KindTerminal] != 0 {
+		t.Fatal("unexpected terminal record")
+	}
+}
+
+func TestLoopDeletesIntegratedParkedRefs(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("continuation-retry-untracked", &out)
+	opts.Parallel = 1
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run = %v\n%s", err, &out)
+	}
+	snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want partial work and committed candidate", len(snapshots))
+	}
+	partial, partialRef := snapshotDetail(t, snapshots[0])
+	sha, ref := snapshotDetail(t, snapshots[1])
+	if ref != partialRef || f.run(t, "rev-parse", partial+"^{tree}") != f.run(t, "rev-parse", sha+"^{tree}") {
+		t.Fatal("candidate snapshot did not preserve the partial-work tree under the same ref")
+	}
+	if got := f.run(t, "rev-parse", ref); got != sha {
+		t.Fatal("ref already deleted")
+	}
+	if err := exec.Command(f.git, "-C", f.root, "merge-base", "--is-ancestor", sha, "HEAD").Run(); err == nil {
+		t.Fatal("test requires a parked commit outside integration ancestry")
+	}
+	opts.MaxWaves = 0
+	opts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deletions := 0
+	resumed.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		if len(cmd.Args) > 1 && cmd.Args[0] == "update-ref" && cmd.Args[1] == "-d" {
+			deletions++
+			records := readJournal(t, f, resumed.Delivery())
+			if kinds(records)[KindTerminal] == 0 {
+				t.Error("ref deleted before terminal")
+			}
+			var detail terminalDetail
+			if err := json.Unmarshal(records[len(records)-1].Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			for _, kept := range detail.Summary.Parked {
+				if kept.Ref == cmd.Args[2] {
+					t.Error("terminal retained list includes deleted ref")
+				}
+			}
+		}
+		return (publication.ExecRunner{}).Run(ctx, cmd)
+	})
+	if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("resume = %s, %v\n%s", state, err, &out)
+	}
+	if deletions == 0 {
+		t.Fatal("no parked deletions exercised")
+	}
+	if got := f.run(t, "for-each-ref", "--format=%(refname)", ref); got != "" {
+		t.Fatalf("integrated parked ref retained: %s", got)
+	}
+}
+
+func TestTrailListsSnapshots(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("continuation-ask-untracked", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshots := snapshotRecords(t, f, r.Delivery())
+	if len(snapshots) == 0 {
+		t.Fatal("no snapshots")
+	}
+	var trail bytes.Buffer
+	if err := Trail(f.root, r.Delivery(), &trail); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range snapshots {
+		sha, _ := snapshotDetail(t, record)
+		if !strings.Contains(trail.String(), sha) {
+			t.Fatalf("trail omitted %s:\n%s", sha, &trail)
+		}
+	}
+}
+
+func runCommittedWorkCleanup(t *testing.T) (fixture, *Runner, string) {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("committed-broken", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	return f, r, out.String()
+}
+
+func committedFailureSnapshots(t *testing.T, f fixture, r *Runner) []journal.Record {
+	t.Helper()
+	var failed []journal.Record
+	for _, record := range snapshotRecords(t, f, r.Delivery()) {
+		if record.TaskID == "task_1" {
+			failed = append(failed, record)
+			continue
+		}
+		// Integration can preserve a sibling's tree under a different commit.
+		// Terminal cleanup must remove that candidate's recovery ref.
+		_, ref := snapshotDetail(t, record)
+		if got := f.run(t, "for-each-ref", "--format=%(refname)", ref); got != "" {
+			t.Fatalf("integrated sibling ref remains: %s", got)
+		}
+	}
+	if len(failed) != 2 {
+		t.Fatalf("failed-task snapshots = %d, want low and escalated committed work", len(failed))
+	}
+	return failed
+}
+
+func TestLoopParksCommittedWorkBeforeCleanup(t *testing.T) {
+	f, r, _ := runCommittedWorkCleanup(t)
+	snapshots := committedFailureSnapshots(t, f, r)
+	for _, record := range snapshots {
+		sha, ref := snapshotDetail(t, record)
+		if got := f.run(t, "rev-parse", ref); got != sha {
+			t.Fatalf("lost %s", ref)
+		}
+		if got := f.run(t, "show", "-s", "--format=%s", ref); got != "wip: committed broken greeting" {
+			t.Fatalf("parked ref does not point at executor HEAD: %s", got)
+		}
+		if got := f.run(t, "show", ref+":out/1.txt"); !strings.HasPrefix(got, "BROKEN by fake-") {
+			t.Fatalf("lost committed content: %q", got)
+		}
+	}
+	if got := f.worktrees(t); len(got) != 0 {
+		t.Fatalf("worktrees remain: %v", got)
+	}
+	if got := f.run(t, "for-each-ref", "--format=%(refname)", "refs/heads/batuta/"); got != "" {
+		t.Fatalf("attempt branches remain: %s", got)
+	}
+}
+
+func TestLoopSummaryListsParkedCommittedWork(t *testing.T) {
+	f, r, out := runCommittedWorkCleanup(t)
+	snapshots := committedFailureSnapshots(t, f, r)
+	parked, err := r.git.Parked(context.Background(), r.plan.Slug)
+	if err != nil || len(parked) != len(snapshots) {
+		t.Fatalf("recovery refs = %v, %v; want only failed-task snapshots", parked, err)
+	}
+	for _, record := range snapshots {
+		sha, ref := snapshotDetail(t, record)
+		if !strings.Contains(out, ref+" "+sha+" kept (unmerged work)") {
+			t.Fatalf("missing recovery ref in summary:\n%s", out)
+		}
+	}
+}
+
+func TestLoopParksCommittedWorkBeforeCleanupFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(ctx, f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := attemptWorktree{Name: "greetings-task-1-e1", Branch: "batuta/greetings/task-1-e1"}
+	wt.Root, err = r.git.Add(ctx, wt.Name, wt.Branch, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := f
+	committed.root = wt.Root
+	if err := os.WriteFile(filepath.Join(wt.Root, "committed.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	committed.run(t, "add", "committed.txt")
+	committed.run(t, "commit", "-qm", "wip: executor work")
+	head := committed.run(t, "rev-parse", "HEAD")
+	ref := "refs/batuta/parked/greetings/task-1-e1"
+	if sha, err := r.git.Park(ctx, wt.Root, ref, "wip: park"); err != nil || sha != head {
+		t.Fatalf("Park = %s, %v", sha, err)
+	}
+	runner := r.git.Runner
+	removed := false
+	r.git.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		result, err := runner.Run(ctx, command)
+		// Lose the recovery ref after Park observes it, before the caller checks preservation.
+		if !removed && strings.Join(command.Args, " ") == "merge-base --is-ancestor "+head+" "+head {
+			removed = true
+			f.run(t, "update-ref", "-d", ref)
+		}
+		return result, err
+	})
+	err = r.recordBlocked(ctx, attemptContext{taskID: "task_1", execution: 1, worktree: wt}, nil, blockerTestsFailed, nil)
+	if !removed || err == nil || !strings.Contains(err.Error(), "unprotected") {
+		t.Fatalf("missing preservation error: removed=%t err=%v", removed, err)
+	}
+	if _, err := os.Stat(wt.Root); err != nil {
+		t.Fatalf("worktree removed despite failed preservation: %v", err)
+	}
+	if got := f.run(t, "rev-parse", "refs/heads/"+wt.Branch); got != head {
+		t.Fatalf("unprotected branch lost: %s", got)
+	}
+}
+
+func TestReleaseDropsOwnership(t *testing.T) {
+	f := setup(t)
+	opts := f.options("default", &bytes.Buffer{})
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	opts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = resumed.Release() })
+	ownership := resumed.ownership
+	path := filepath.Join(f.root, journal.Dir, r.Delivery()+".lock")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resumed.DryRun(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := resumed.Release(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case <-ownership.done:
+	default:
+		t.Fatal("Release did not stop the heartbeat")
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("lock after Release: %v", err)
+	}
+	next, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("immediate resume: %v", err)
+	}
+	if err := next.Release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRoadmapResumeMismatchReleasesOwnership(t *testing.T) {
+	f := setupRoadmap(t)
+	opts := f.options("default", &bytes.Buffer{})
+	opts.Plan = "release"
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	opts.Resume = r.Delivery()
+	if _, err := RunRoadmap(context.Background(), opts); err == nil || !strings.Contains(err.Error(), "first unfinished roadmap phase") {
+		t.Fatalf("roadmap resume: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, journal.Dir, r.Delivery()+".lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("roadmap retained ownership: %v", err)
+	}
+}
+
+func TestLimitFallbackIgnoresEarlierResetTimestamps(t *testing.T) {
+	testLoopLimitBudget(t, "limit-misleading", 30*time.Minute, 1, StateDone, false)
+}
+
+func TestLoopParksStagedWork(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("staged-removed", &out)
+	opts.Parallel = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	if got := f.worktrees(t); len(got) != 0 {
+		t.Fatalf("worktrees remain: %v", got)
+	}
+	refs, err := r.git.Parked(context.Background(), r.plan.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ref := range refs {
+		if strings.HasSuffix(ref.Ref, "-index") {
+			if got := f.run(t, "show", ref.Ref+":out/1.txt"); !strings.HasPrefix(got, "staged by ") {
+				t.Fatalf("lost staged content: %q", got)
+			}
+			if !strings.Contains(out.String(), ref.Ref) {
+				t.Fatalf("summary omits %s", ref.Ref)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("no staged recovery ref")
+	}
+}
+
+func TestLoopParksConflictedWorktree(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("unmerged-index", &out)
+	opts.Parallel = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	if len(f.worktrees(t)) != 0 {
+		t.Fatal("conflicted worktrees not cleaned")
+	}
+	refs, err := r.git.Parked(context.Background(), r.plan.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ref := range refs {
+		if strings.HasSuffix(ref.Ref, "-index-stage-3") {
+			found = true
+			if got := f.run(t, "show", ref.Ref+":out/conflicted.txt"); got != "stage 3" {
+				t.Fatalf("lost theirs: %q", got)
+			}
+		}
+	}
+	if !found || !strings.Contains(out.String(), "conflicted paths:") || !strings.Contains(out.String(), "out/conflicted.txt") {
+		t.Fatalf("missing conflict recovery summary: %s", &out)
+	}
+	records := readJournal(t, f, r.Delivery())
+	if len(snapshotRecords(t, f, r.Delivery())) == 0 || terminalState(records) != StateBlocked {
+		t.Fatal("failure handling did not finalize")
 	}
 }

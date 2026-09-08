@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -13,6 +14,7 @@ import (
 )
 
 type journalMsg struct {
+	identity  watchPollIdentity
 	records   []journal.Record
 	logLines  []string
 	logTitle  string
@@ -25,7 +27,10 @@ type pagerDoneMsg struct{ err error }
 type spinnerTickMsg struct{}
 type progressTickMsg struct{}
 
+type pagerProcessRunner func(*exec.Cmd, tea.ExecCallback) tea.Cmd
+
 type watchModel struct {
+	ctx         context.Context
 	workspace   string
 	delivery    string
 	store       *journal.Store
@@ -35,6 +40,7 @@ type watchModel struct {
 	interval    time.Duration
 	ticker      watchTicker
 	poll        watchPollState
+	generation  uint64
 	navigation  panelNavigation
 	style       Style
 	height      int
@@ -45,11 +51,19 @@ type watchModel struct {
 	progress    progressAnimation
 	progressSet bool
 	spawn       func(argv []string, dir, logPath string) error
+	pagerRunner pagerProcessRunner
 
-	answering      bool
-	answerEditor   textarea.Model
-	answerQuestion string
-	answerTask     string
+	answering        bool
+	answerEditor     textarea.Model
+	answerQuestion   string
+	answerTask       string
+	answerDelivery   string
+	answerExecution  int
+	answerQuestionID string
+	resumeDelivery   string
+	resumeTask       string
+	resumeExecution  int
+	resumePending    bool
 
 	picking        bool
 	deliveryPicker list.Model
@@ -85,7 +99,7 @@ func newPollingWatchModel(workspace, delivery string, store *journal.Store, reco
 		ticker = tea.Tick
 	}
 	style.Frame = 0
-	m := watchModel{workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker, focus: focusTable, spawn: spawnDetached}
+	m := watchModel{ctx: context.Background(), workspace: workspace, delivery: delivery, store: store, records: records, style: style, height: 40, now: now, currentTime: now(), interval: interval, ticker: ticker, focus: focusTable, spawn: spawnDetached, pagerRunner: tea.ExecProcess}
 	m.refresh(true)
 	if store != nil && delivery != "" {
 		if state, err := m.pollState(m.currentTime); err == nil {
@@ -139,9 +153,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.pollCmd()
 				}
 			}
+			m.deliveryPicker, cmd = m.deliveryPicker.Update(msg)
+			return m, cmd
 		}
-		m.deliveryPicker, cmd = m.deliveryPicker.Update(msg)
-		return m, cmd
 	}
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
@@ -153,6 +167,11 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			key = "pageUp"
 		case "pgdown":
 			key = "pageDown"
+		}
+		if key == "R" && m.resumePending && m.delivery == m.resumeDelivery && m.panel.Detail.Task == m.resumeTask {
+			m.resumeAnsweredDelivery()
+			m.refresh(false)
+			return m, nil
 		}
 		if key == "r" && m.canAnswer() {
 			cmd = m.openAnswer()
@@ -183,8 +202,8 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.navigation.move(key, m.panel, max(1, len(panelTaskIDs(m.viewport))))
 		path := panelKeyAction(key, m.workspace, m.panel, &m.navigation)
 		if pager := strings.Fields(os.Getenv("PAGER")); path != "" && len(pager) > 0 {
-			process := exec.Command(pager[0], append(pager[1:], path)...)
-			cmd = tea.ExecProcess(process, func(err error) tea.Msg { return pagerDoneMsg{err: err} })
+			process := exec.CommandContext(m.ctx, pager[0], append(pager[1:], path)...)
+			cmd = m.pagerRunner(process, func(err error) tea.Msg { return pagerDoneMsg{err: err} })
 		}
 	case tea.MouseWheelMsg:
 		key := "down"
@@ -205,6 +224,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizePicker()
 		}
 	case journalMsg:
+		if msg.identity.delivery != m.delivery || msg.identity.generation != m.generation {
+			return m, nil
+		}
+		if msg.identity.logPath != panelLogPath(m.workspace, m.panel) {
+			return m, m.pollCmd()
+		}
 		if msg.err != nil {
 			m.navigation.notice = msg.err.Error()
 			return m, m.pollCmd()
@@ -213,7 +238,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wasEasing := m.progress.active
 		m.records, m.poll = msg.records, msg.poll
 		m.refresh(!msg.logLoaded)
-		if msg.logLoaded {
+		if msg.logLoaded && msg.identity.logPath != panelLogPath(m.workspace, m.panel) {
+			m.refresh(true)
+		} else if msg.logLoaded {
 			m.panel.LogLines, m.panel.LogTitle = msg.logLines, msg.logTitle
 			m.logOffset = min(m.logOffset, m.maxLogOffset())
 			m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
@@ -227,6 +254,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.pollCmd(), spinner, progress)
 	case watchPollMsg:
+		if msg.identity.delivery != m.delivery || msg.identity.generation != m.generation {
+			return m, nil
+		}
+		if msg.identity.logPath != panelLogPath(m.workspace, m.panel) {
+			return m, m.pollCmd()
+		}
 		m.poll = msg.state
 		return m, m.pollCmd()
 	case clockMsg:
@@ -259,6 +292,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.navigation.notice = msg.err.Error()
 		}
 	default:
+		if m.picking {
+			m.deliveryPicker, cmd = m.deliveryPicker.Update(msg)
+		}
 		return m, cmd
 	}
 	m.refresh(true)
@@ -352,7 +388,7 @@ func (m watchModel) supplementView() string {
 		content = panelLegend(m.renderStyle())
 	}
 	if m.navigation.notice != "" {
-		content += m.navigation.notice + "\n"
+		content += sanitizePanelText(m.navigation.notice) + "\n"
 	}
 	return content
 }
@@ -420,7 +456,7 @@ func (m watchModel) View() tea.View {
 }
 
 func (m *watchModel) openPicker() error {
-	items, err := deliveryItems(m.workspace, m.store, m.currentTime)
+	items, err := deliveryItems(m.workspace, m.store, m.currentTime, m.style)
 	if err != nil {
 		return err
 	}
@@ -444,6 +480,8 @@ func (m *watchModel) switchDelivery(delivery string) error {
 	if err != nil {
 		return err
 	}
+	previous := *m
+	m.generation++
 	m.delivery = delivery
 	m.records = records
 	m.navigation = panelNavigation{}
@@ -455,6 +493,7 @@ func (m *watchModel) switchDelivery(delivery string) error {
 	m.refresh(true)
 	state, err := m.pollState(m.currentTime)
 	if err != nil {
+		*m = previous
 		return err
 	}
 	m.poll = state

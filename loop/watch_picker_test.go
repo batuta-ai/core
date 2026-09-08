@@ -44,7 +44,7 @@ func TestPickerListsDeliveries(t *testing.T) {
 	pickerDelivery(t, store, "newer-open", "third-plan", now.Add(-5*time.Minute), now.Add(-2*time.Minute), "", routing.GraphTaskRunning)
 	writePresenceFixture(t, root, "newer-open", now)
 
-	items, err := deliveryItems(root, store, now)
+	items, err := deliveryItems(root, store, now, Style{Lang: "en", Glyphs: "unicode", Frame: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,6 +70,94 @@ func TestPickerListsDeliveries(t *testing.T) {
 	picker.SetFilterText("second-plan")
 	if got := picker.VisibleItems(); len(got) != 1 || got[0].(deliveryItem).id != "newer-done" {
 		t.Fatalf("filtered items=%v", got)
+	}
+}
+
+func TestPickerSanitisesItems(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pickerDelivery(t, store, "unsafe-id", "line one\n\tline two\x1b[31mred\x1b[0m \x1b]8;;https://evil.example\x1b\\link\x1b]8;;\x1b\\", now.Add(-time.Minute), now, "", routing.GraphTaskRunning)
+	items, err := deliveryItems(root, store, now, Style{Lang: "en", Glyphs: "unicode", Frame: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items=%d, want 1", len(items))
+	}
+	item := items[0].(deliveryItem)
+	got := item.Title() + " " + item.Description() + " " + item.FilterValue()
+	for _, unsafe := range []string{"\x1b", "[31m", "https://evil.example"} {
+		if strings.Contains(got, unsafe) {
+			t.Fatalf("picker item contains unsafe terminal text %q: %q", unsafe, got)
+		}
+	}
+	for _, want := range []string{"unsafe-id", "line one", "line two", "red link"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("picker item lost safe text %q: %q", want, got)
+		}
+	}
+}
+
+func TestPickerASCIIAndPortuguese(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pickerDelivery(t, store, "active", "plano", now.Add(-time.Hour), now.Add(-2*time.Minute), "", routing.GraphTaskRunning)
+	writePresenceFixture(t, root, "active", now)
+	items, err := deliveryItems(root, store, now, Style{Lang: "pt", Glyphs: "ascii", Frame: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	description := items[0].(deliveryItem).Description()
+	for _, want := range []string{"aberta", "*", "2m atrás"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("ASCII Portuguese description %q missing %q", description, want)
+		}
+	}
+	if strings.ContainsAny(description, "●○✓✗") {
+		t.Fatalf("ASCII picker contains Unicode status glyph: %q", description)
+	}
+}
+
+func TestPickerShowsRealState(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pickerDelivery(t, store, "waiting", "question", now.Add(-3*time.Hour), now.Add(-3*time.Minute), StateWaitingInput, routing.GraphTaskWaitingInput)
+	pickerDelivery(t, store, "canceled", "stopped", now.Add(-2*time.Hour), now.Add(-2*time.Minute), StateCanceled, routing.GraphTaskPending)
+	pickerDelivery(t, store, "open", "active", now.Add(-time.Hour), now.Add(-time.Minute), "", routing.GraphTaskRunning)
+	items, err := deliveryItems(root, store, now, Style{Lang: "en", Glyphs: "unicode", Frame: -1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 3 {
+		t.Fatalf("items=%d, want 3", len(items))
+	}
+	states := make(map[string]deliveryItem, len(items))
+	for _, item := range items {
+		delivery := item.(deliveryItem)
+		states[delivery.id] = delivery
+	}
+	if first := items[0].(deliveryItem); first.id != "open" || first.state != "open" {
+		t.Fatalf("first item = %q/%q, want open delivery first", first.id, first.state)
+	}
+	for id, want := range map[string]string{"waiting": StateWaitingInput, "canceled": StateCanceled} {
+		if got := states[id].state; got != want {
+			t.Errorf("%s state = %q, want %q", id, got, want)
+		}
+	}
+	if !strings.Contains(states["waiting"].Description(), "waiting answer") || !strings.Contains(states["canceled"].Description(), "canceled") {
+		t.Fatalf("real states not displayed: waiting=%q canceled=%q", states["waiting"].Description(), states["canceled"].Description())
 	}
 }
 
@@ -166,5 +254,131 @@ func TestSnapshotStillReportsNoOpenDeliveries(t *testing.T) {
 	}
 	if output.String() != "no open deliveries\n" {
 		t.Fatalf("snapshot=%q", output.String())
+	}
+}
+
+func TestPickerKeepsBackgroundChains(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = storePanelRecords(t, store, "dashboard", records)
+	var durations []time.Duration
+	m := newPollingWatchModel(root, "dashboard", store, records, 37*time.Millisecond, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+	poll, clock, spinner := m.pollCmd(), m.clockCmd(), m.spinnerCmd()
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	m, poll = updateWatch(t, m, poll())
+	if poll == nil || !m.picking {
+		t.Fatal("picker stopped the idle poll chain")
+	}
+	graph.Tasks[0].State = routing.GraphTaskPending
+	storePanelRecords(t, store, "dashboard", []journal.Record{panelRecord(t, KindProgress, "task_2", now, map[string]any{"execution": 1, "criterion": 2, "state": "DONE"}, graph)})
+	msg := poll()
+	m, batch := updateWatch(t, m, msg)
+	if len(m.records) != len(records)+1 || !m.progress.active || !m.picking || batch == nil {
+		t.Fatal("picker did not process journal and start progress animation")
+	}
+	commands, ok := batch().(tea.BatchMsg)
+	if !ok || len(commands) != 2 {
+		t.Fatalf("journal commands=%v, want poll and progress", commands)
+	}
+	var progress tea.Cmd
+	for _, command := range commands {
+		switch msg := command().(type) {
+		case watchPollMsg:
+			m, poll = updateWatch(t, m, msg)
+		case progressTickMsg:
+			m, progress = updateWatch(t, m, msg)
+		default:
+			t.Fatalf("unexpected journal command %T", msg)
+		}
+	}
+	for _, open := range []bool{true, false} {
+		if !open {
+			m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+			if m.picking {
+				t.Fatal("esc did not close picker")
+			}
+		}
+		if poll == nil || clock == nil || spinner == nil || progress == nil {
+			t.Fatal("background chain stopped")
+		}
+		m, poll = updateWatch(t, m, poll())
+		later := m.currentTime.Add(time.Second)
+		clockMsg := clock().(clockMsg)
+		clockMsg.at = later
+		m, clock = updateWatch(t, m, clockMsg)
+		if m.currentTime != later {
+			t.Fatal("clock did not advance")
+		}
+		frame := m.style.Frame
+		m, spinner = updateWatch(t, m, spinner())
+		if m.style.Frame != frame+1 {
+			t.Fatal("spinner did not advance")
+		}
+		frame = m.progress.frame
+		m, progress = updateWatch(t, m, progress())
+		if m.progress.frame != frame+1 {
+			t.Fatal("progress did not advance")
+		}
+		if poll == nil || clock == nil || spinner == nil || progress == nil {
+			t.Fatal("background chain did not reschedule")
+		}
+	}
+}
+
+func TestPickerResizes(t *testing.T) {
+	records, _, now := modelFixture(t)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = storePanelRecords(t, store, "dashboard", records)
+	var durations []time.Duration
+	m := newPollingWatchModel(root, "dashboard", store, records, time.Second, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 20}, {Width: 40, Height: 8}, {Width: 140, Height: 50}} {
+		m, _ = updateWatch(t, m, size)
+		if !m.picking || m.style.Width != size.Width || m.height != size.Height {
+			t.Fatalf("window not handled: width=%d height=%d picking=%v", m.style.Width, m.height, m.picking)
+		}
+		if m.deliveryPicker.Width() != size.Width || m.deliveryPicker.Height() != min(16, max(5, size.Height/2)) {
+			t.Fatalf("picker size=%dx%d after %dx%d", m.deliveryPicker.Width(), m.deliveryPicker.Height(), size.Width, size.Height)
+		}
+	}
+}
+
+func TestPickerShowsRealStateDuringFinalization(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		kind    journal.Kind
+		pending bool
+		want    string
+	}{
+		{"finalizing", kindFinalizing, false, "open"},
+		{"cleanup-pending", kindCleanup, true, "open"},
+		{"cleanup-complete", kindCleanup, false, StateDone},
+		{"terminal-cleanup-pending", KindTerminal, true, "open"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := journal.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pickerDelivery(t, store, "delivery", "plan", now, now, "", routing.GraphTaskIntegrated)
+			record := panelRecord(t, tc.kind, "", now, terminalDetail{State: StateDone, CleanupPending: tc.pending}, routing.DeliveryGraph{})
+			if _, err := store.Append("delivery", record); err != nil {
+				t.Fatal(err)
+			}
+			items, err := deliveryItems(root, store, now, Style{Lang: "en"})
+			if err != nil || len(items) != 1 || items[0].(deliveryItem).state != tc.want {
+				t.Fatalf("items = %v, %v; want %s", items, err, tc.want)
+			}
+		})
 	}
 }
