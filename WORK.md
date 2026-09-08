@@ -97,6 +97,10 @@
 - [x] --abandon, --answer and --resume refuse a delivery whose runner is alive → ticked in the plan before the run, commit 3a8e07aa9069 (trail: .batuta/runs/2026-09-08-loop-deadends-task-9.md, plan loop-deadends, 2026-09-08)
 - [x] docs/loop.md describes the dead ends, the snapshots and the limit fallback → codex (gpt-5.6-sol), commit 99d8dd9dc256 (trail: .batuta/runs/2026-09-08-loop-deadends-task-8.md, plan loop-deadends, 2026-09-08)
 - [x] The review package: manifest, cohorts, findings schema, merge and verdict, all pure → codex (gpt-6-astra), commit 8057f16fa6b2 (trail: .batuta/runs/2026-09-08-review-task-1.md, plan review, 2026-09-08)
+- [x] The review package: manifest, cohorts, findings schema, merge and verdict, all pure → ticked in the plan before the run, commit b5a34d0cffff (trail: .batuta/runs/2026-09-08-review-task-1.md, plan review, 2026-09-08)
+- [x] Reviewer sessions: one read-only executor per cohort, in parallel, through the routing table → codex (gpt-6-astra), commit e802c99ee134 (trail: .batuta/runs/2026-09-08-review-task-2.md, plan review, 2026-09-08)
+- [x] Spec conformance and linter overlap → codex (gpt-5.6-sol), commit 735219ded1c6 (trail: .batuta/runs/2026-09-08-review-task-3.md, plan review, 2026-09-08)
+- [x] batuta review: the subcommand, its artefacts and the printed report → codex (gpt-5.6-sol), commit 1d77034655bc (trail: .batuta/runs/2026-09-08-review-task-4.md, plan review, 2026-09-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
