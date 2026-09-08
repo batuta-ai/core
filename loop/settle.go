@@ -203,7 +203,7 @@ func (r *Runner) cleanupAfterSettlement(ctx context.Context, settlement routing.
 		if err := r.snapshotWorktree(context.WithoutCancel(ctx), taskID, attempt.Execution, wt); err != nil {
 			return err
 		}
-		removeErr := r.git.Remove(context.WithoutCancel(ctx), wt.Root, wt.Branch)
+		removeErr := r.removeWorktree(context.WithoutCancel(ctx), wt.Root, wt.Branch)
 		state, blocker := routing.CleanupRemoved, ""
 		if removeErr != nil {
 			state, blocker = routing.CleanupRetained, "worktree_remove_failed"

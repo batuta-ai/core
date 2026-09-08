@@ -48,7 +48,7 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 	if final {
 		if !r.opts.KeepWorktrees {
 			for _, wt := range r.worktrees {
-				if err := r.git.Remove(ctx, wt.Root, wt.Branch); err != nil {
+				if err := r.removeWorktree(ctx, wt.Root, wt.Branch); err != nil {
 					return state, err
 				}
 			}

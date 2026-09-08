@@ -52,7 +52,7 @@ type attemptContext struct {
 // runAttempt drives one attempt of one task from worktree to candidate or
 // failure. Graph mutations and journal writes happen under r.mu; the
 // executor and the gates run outside it so parallel tasks overlap.
-func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
+func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	r.mu.Lock()
 	task, found := r.graph.Task(taskID)
 	if !found || len(task.Attempts) == 0 {
@@ -76,6 +76,26 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		}
 	}
 	r.mu.Unlock()
+
+	// A canceled executor must finish unwinding before its partial work is
+	// snapshotted. Record the same interruption policy used when replaying a
+	// killed run, now, before Run writes its terminal record.
+	defer func() {
+		if ctx.Err() == nil {
+			return
+		}
+		r.mu.Lock()
+		task, found := r.graph.Task(taskID)
+		running := found && task.State == routing.GraphTaskRunning && len(task.Attempts) == ac.execution && task.Attempts[ac.execution-1].State == routing.GraphTaskRunning
+		r.mu.Unlock()
+		if running {
+			runErr = r.recordFailure(context.WithoutCancel(ctx), ac, nil, blockerInterrupted, []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"})
+		} else if found && task.State == routing.GraphTaskPreparing && len(task.Attempts) == ac.execution {
+			// Cancellation during setup has no running executor to fail. Leave the
+			// preparing attempt resumable and preserve any attached worktree.
+			runErr = r.snapshotWorktree(context.WithoutCancel(ctx), taskID, ac.execution, ac.worktree)
+		}
+	}()
 
 	if ac.runtime.Provider == string(routing.ExecutorSelf) {
 		return r.recordFailure(ctx, ac, nil, blockerSelf, []string{"the routing table escalates this task to `self`, the conducting session, which the loop cannot run"})
@@ -158,7 +178,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		if progressErr != nil {
 			return progressErr
 		}
-		if execErr != nil || !result.RateLimited {
+		if ctx.Err() != nil || execErr != nil || !result.RateLimited {
 			break
 		}
 		if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, ac.worktree); err != nil {
@@ -189,7 +209,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		}
 		fmt.Fprintf(r.out, "%s e%d: %s hit a usage limit; waiting %s before re-running the same attempt (%d/%d)\n", taskID, ac.execution, ac.adapter.Name, delay.Round(time.Second), waits, r.opts.MaxLimitWaits)
 		if err := r.sleep(ctx, delay); err != nil {
-			return nil // canceled while waiting; the attempt resumes as interrupted
+			return nil // the deferred interruption handler parks the attempt
 		}
 	}
 	_ = os.Remove(briefPath)
@@ -197,10 +217,10 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		return fmt.Errorf("loop: close executor log: %w", err)
 	}
 	r.writeLog(taskID, ac.execution, result)
+	if ctx.Err() != nil {
+		return nil // the deferred interruption handler parks the attempt
+	}
 	if execErr != nil {
-		if ctx.Err() != nil {
-			return nil // the run is being canceled; the attempt stays running and resumes as interrupted
-		}
 		return r.recordFailure(ctx, ac, &result, blockerExecutorFailed, []string{"the executor could not start: " + execErr.Error()})
 	}
 	after, err := r.gitState.WorktreeState(ctx, ac.worktree.Root)
@@ -450,7 +470,7 @@ func (r *Runner) ensureWorktree(ctx context.Context, ac *attemptContext, attempt
 	}); err != nil {
 		return err
 	}
-	root, err := r.git.Add(ctx, name, branch, ac.base)
+	root, err := r.addWorktree(ctx, name, branch, ac.base)
 	if err != nil {
 		return fmt.Errorf("loop: %w", err)
 	}
@@ -612,6 +632,12 @@ func (r *Runner) recordBlocked(ctx context.Context, ac attemptContext, result *e
 }
 
 func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext, result *executor.Result, code string, feedback []string, policy routing.FailurePolicy) error {
+	// Cancellation during gates or candidate preparation is an interruption,
+	// not a failed proof or candidate. Keep the usual resumable failure policy.
+	if ctx.Err() != nil {
+		code, policy = blockerInterrupted, routing.ConductingFailurePolicy
+		feedback = []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"}
+	}
 	if err := r.snapshotWorktree(context.WithoutCancel(ctx), ac.taskID, ac.execution, ac.worktree); err != nil {
 		return err
 	}
@@ -664,7 +690,7 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		r.writeTrailVerdict(ac.taskID, "⏫ escalated from "+string(ac.plan.Complexity)+" ("+ac.runtime.Provider+"/"+ac.runtime.Model+" → "+outcome.Runtime.Provider+"/"+outcome.Runtime.Model+")", feedback)
 	}
 	if (outcome.Blocked || outcome.Satisfied || !sameRuntime) && ac.worktree.Root != "" && !r.opts.KeepWorktrees {
-		_ = r.git.Remove(context.WithoutCancel(ctx), ac.worktree.Root, ac.worktree.Branch)
+		_ = r.removeWorktree(context.WithoutCancel(ctx), ac.worktree.Root, ac.worktree.Branch)
 	}
 	return nil
 }

@@ -698,6 +698,182 @@ func TestLoopResumesAfterAStopBetweenWaves(t *testing.T) {
 	}
 }
 
+// The engine holds task two through cancellation so the test can prove that
+// terminal journaling and Run's return both wait for the attempt to unwind.
+func TestRunWaitsForInFlightAttempts(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	exited := make(chan struct{})
+	done := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := f.options("default", &out)
+	opts.Parallel = 2
+	opts.MaxLimitWaits = -1
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable != f.fake || len(command.Args) == 0 || command.Args[0] != "run" {
+			return (publication.ExecRunner{}).Run(ctx, command)
+		}
+		if strings.Contains(strings.Join(command.Args, " "), "# Brief — Add greeting one") {
+			select {
+			case <-started:
+			case <-ctx.Done():
+				return publication.CommandResult{ExitCode: -1}, ctx.Err()
+			}
+			return publication.CommandResult{ExitCode: 1, Stderr: []byte("Rate limit reached")}, nil
+		}
+		if err := os.MkdirAll(filepath.Join(command.Directory, "out"), 0o755); err != nil {
+			return publication.CommandResult{}, err
+		}
+		if err := os.WriteFile(filepath.Join(command.Directory, "out", "2.txt"), []byte("partial greeting\n"), 0o644); err != nil {
+			return publication.CommandResult{}, err
+		}
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		defer close(exited)
+		fmt.Fprintln(command.Observer, "executor finished canceling")
+		return publication.CommandResult{ExitCode: -1}, ctx.Err()
+	})
+	r, err := New(ctx, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Resume-like setup: independent tasks already admitted in distinct waves.
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		wave, err := r.graph.AdmitReadyWave(routing.ReadyWaveInput{IntegrationHeadSHA: f.base, RemainingSlots: 1, ReachableCommits: map[string]bool{f.base: true}})
+		if err != nil || len(wave.TaskIDs) != 1 {
+			t.Fatalf("admit wave: %v, %v", wave, err)
+		}
+		if err := r.record(KindWave, "", map[string]any{"wave": wave.Number, "base": wave.BaseHeadSHA, "tasks": wave.TaskIDs}); err != nil {
+			t.Fatal(err)
+		}
+		r.wavesRun++
+	}
+	var state string
+	var runErr error
+	go func() { defer close(done); state, runErr = r.Run(ctx) }()
+	released := false
+	defer func() {
+		cancel()
+		if !released {
+			close(release)
+		}
+		<-done
+	}()
+	select {
+	case <-canceled:
+	case <-done:
+		t.Fatalf("Run returned before canceling the in-flight attempt: %s, %v", state, runErr)
+	case <-time.After(20 * time.Second):
+		t.Fatal("blocking task did not cancel the in-flight attempt")
+	}
+	select {
+	case <-done:
+		t.Fatal("Run returned while the engine was still unwinding")
+	default:
+	}
+	if kinds(readJournal(t, f, r.Delivery()))[KindTerminal] != 0 {
+		t.Fatal("terminal record written before the engine finished")
+	}
+	close(release)
+	released = true
+	<-done
+	if state != StateBlocked || runErr != nil {
+		t.Fatalf("Run() = %s, %v\n%s", state, runErr, &out)
+	}
+	select {
+	case <-exited:
+	default:
+		t.Fatal("Run returned before the engine exited")
+	}
+	records := readJournal(t, f, r.Delivery())
+	if records[len(records)-1].Kind != KindTerminal {
+		t.Fatal("attempt wrote after terminal record")
+	}
+	var interrupted, parked bool
+	for _, record := range records {
+		if record.TaskID != "task_2" {
+			continue
+		}
+		if record.Kind == KindFailure && strings.Contains(string(record.Detail), `"blocker":"interrupted"`) {
+			interrupted = true
+		}
+		if record.Kind == KindSnapshot {
+			_, ref := snapshotDetail(t, record)
+			if got := f.run(t, "show", ref+":out/2.txt"); got != "partial greeting" {
+				t.Fatalf("parked content = %q", got)
+			}
+			parked = true
+		}
+	}
+	if !interrupted || !parked {
+		t.Fatalf("interrupted=%t parked=%t\n%s", interrupted, parked, &out)
+	}
+	if kinds(records)[KindWave] != 2 {
+		t.Fatal("admitted another wave after blocking")
+	}
+	// Reading the unguarded buffer and journal after return also exercises
+	// the no-late-writes contract under the race detector.
+	before := out.String()
+	journalBefore, err := os.ReadFile(r.store.Path(r.Delivery()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	journalAfter, err := os.ReadFile(r.store.Path(r.Delivery()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != out.String() || !bytes.Equal(journalBefore, journalAfter) {
+		t.Fatal("writes after Run returned")
+	}
+}
+
+func TestRunPreservesCompletedCandidateWhenSiblingBlocks(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	candidate := make(chan struct{})
+	opts := f.options("default", &out)
+	opts.MaxLimitWaits = -1
+	opts.Stdout = writerFunc(func(p []byte) (int, error) {
+		if bytes.Contains(p, []byte("task_2 e1 ✓ candidate")) {
+			close(candidate)
+		}
+		return out.Write(p)
+	})
+	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" && strings.Contains(strings.Join(command.Args, " "), "# Brief — Add greeting one") {
+			select {
+			case <-candidate:
+			case <-ctx.Done():
+				return publication.CommandResult{ExitCode: -1}, ctx.Err()
+			}
+			return publication.CommandResult{ExitCode: 1, Stderr: []byte("Rate limit reached")}, nil
+		}
+		return (publication.ExecRunner{}).Run(ctx, command)
+	})
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if state, err := r.Run(ctx); state != StateBlocked || err != nil {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, &out)
+	}
+	if got, err := os.ReadFile(filepath.Join(f.root, "out", "2.txt")); err != nil || string(got) != "ok\n" {
+		t.Fatalf("completed candidate lost: %q, %v\n%s", got, err, &out)
+	}
+}
+
 func TestLoopResumesAnExecutorKilledMidRun(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer
@@ -1006,7 +1182,10 @@ func TestAnswerRefusesBlockedCeilingTask(t *testing.T) {
 func runToQuestionCeiling(t *testing.T, f fixture, out *bytes.Buffer) *Runner {
 	t.Helper()
 	clock := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
+	var clockMu sync.Mutex
 	nextNow := func() time.Time {
+		clockMu.Lock()
+		defer clockMu.Unlock()
 		clock = clock.Add(time.Second)
 		return clock
 	}

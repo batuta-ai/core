@@ -122,6 +122,7 @@ type Runner struct {
 	now        func() time.Time
 	out        io.Writer
 
+	worktreeMu sync.Mutex // add/remove/prune share the repository worktree registry
 	mu         sync.Mutex
 	worktrees  map[string]attemptWorktree // task:execution
 	feedback   map[string][]string
@@ -133,6 +134,18 @@ type Runner struct {
 	wavesRun   int
 	warnings   []string
 	journaled  bool
+}
+
+// Parallel attempts share the output sink, which may be an unguarded buffer.
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *lockedWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(p)
 }
 
 type attemptWorktree struct {
@@ -392,7 +405,7 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		store:    store, profile: profile, skills: skills, table: table,
 		branch: branch, openedHead: head, parallel: parallel, shell: shell, subprocess: subprocess,
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
-		now: opts.Now, out: opts.Stdout,
+		now: opts.Now, out: &lockedWriter{writer: opts.Stdout},
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
 		candidates: map[string]integration.CandidateEvidence{}, commits: map[string]string{},
 		started: map[string]bool{}, preflights: map[string]integration.PreflightResult{},
@@ -724,9 +737,14 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 		if ctx.Err() != nil {
 			return r.finish(context.WithoutCancel(ctx), StateCanceled)
 		}
+		// Preserve candidates completed before a sibling blocked the delivery.
+		// All attempts have joined, so settlement can safely use the run context.
 		settled, err := r.settleCandidates(ctx)
 		if err != nil {
 			return r.fail(ctx, err)
+		}
+		if r.anyState(routing.GraphTaskBlocked) {
+			return r.finish(ctx, StateBlocked)
 		}
 		if ran > 0 || settled > 0 {
 			continue
@@ -825,7 +843,21 @@ func (r *Runner) locked(kind journal.Kind, taskID string, detail any, mutate fun
 // tasks admitted to a wave, retries, re-executions after a conflict, and
 // continuations after an answer. It returns how many attempts ran.
 func (r *Runner) runPreparingWaves(ctx context.Context) (int, error) {
+	// The batch owns every attempt's context and joins every goroutine before
+	// Run can settle, admit another wave, or write a terminal record.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	r.mu.Lock()
+	if ctx.Err() != nil {
+		r.mu.Unlock()
+		return 0, nil
+	}
+	for _, task := range r.graph.Tasks {
+		if task.State == routing.GraphTaskBlocked {
+			r.mu.Unlock()
+			return 0, nil
+		}
+	}
 	for _, wave := range r.graph.Waves {
 		needsBegin := false
 		for _, taskID := range wave.TaskIDs {
@@ -870,13 +902,21 @@ func (r *Runner) runPreparingWaves(ctx context.Context) (int, error) {
 		wg.Add(1)
 		go func(taskID string) {
 			defer wg.Done()
-			semaphore <- struct{}{}
+			select {
+			case semaphore <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-semaphore }()
-			if ctx.Err() != nil {
+			if ctx.Err() != nil || r.anyState(routing.GraphTaskBlocked) {
 				return
 			}
 			if err := r.runAttempt(ctx, taskID); err != nil {
 				errs <- err
+				cancel()
+			}
+			if r.anyState(routing.GraphTaskBlocked) {
+				cancel()
 			}
 		}(taskID)
 	}
@@ -888,6 +928,20 @@ func (r *Runner) runPreparingWaves(ctx context.Context) (int, error) {
 		}
 	}
 	return len(ready), nil
+}
+
+// Git worktree add exposes its registry entry before setup is complete.
+// A sibling's add/remove may prune that entry, so serialize registry changes.
+func (r *Runner) addWorktree(ctx context.Context, name, branch, base string) (string, error) {
+	r.worktreeMu.Lock()
+	defer r.worktreeMu.Unlock()
+	return r.git.Add(ctx, name, branch, base)
+}
+
+func (r *Runner) removeWorktree(ctx context.Context, root, branch string) error {
+	r.worktreeMu.Lock()
+	defer r.worktreeMu.Unlock()
+	return r.git.Remove(ctx, root, branch)
 }
 
 func (r *Runner) reachable(ctx context.Context, head string) (map[string]bool, error) {
