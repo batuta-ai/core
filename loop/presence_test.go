@@ -18,7 +18,11 @@ func writePresenceFixture(t *testing.T, root, delivery string, at time.Time) str
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"pid":1,"host":"remote","started_at":"2026-09-07T12:00:00Z","refreshed_at":"2026-09-07T12:00:00Z"}`), 0o644); err != nil {
+	payload, err := json.Marshal(presenceLock{PID: 1, Host: "remote", StartedAt: at, RefreshedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chtimes(path, at, at); err != nil {

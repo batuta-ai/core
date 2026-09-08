@@ -23,6 +23,40 @@ type presenceLock struct {
 	RefreshedAt time.Time `json:"refreshed_at"`
 }
 
+func liveDeliveryOwner(workspace, delivery string, now time.Time) (*presenceLock, error) {
+	path := filepath.Join(workspace, journal.Dir, delivery+".lock")
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loop: inspect presence lock: %w", err)
+	}
+	if now.Sub(info.ModTime()) > presenceFresh {
+		return nil, nil
+	}
+	payload, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loop: read presence lock: %w", err)
+	}
+	var lock presenceLock
+	if err := json.Unmarshal(payload, &lock); err != nil {
+		return nil, fmt.Errorf("loop: parse presence lock: %w", err)
+	}
+	return &lock, nil
+}
+
+func refuseLiveDelivery(workspace, delivery string, now time.Time) error {
+	owner, err := liveDeliveryOwner(workspace, delivery, now)
+	if err != nil || owner == nil {
+		return err
+	}
+	return fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", delivery, owner.PID, owner.StartedAt.Format(time.RFC3339))
+}
+
 // Presence observes lock freshness only; it never probes processes or hosts.
 func Presence(workspace, delivery string, now time.Time) (state string, loops int) {
 	state = "none"

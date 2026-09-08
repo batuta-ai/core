@@ -1255,6 +1255,134 @@ func TestAbandonClosesAnOpenDelivery(t *testing.T) {
 	}
 }
 
+func TestAbandonRefusesLiveRunner(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+	delivery := r.Delivery()
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktrees := f.worktrees(t)
+	lockTime := time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC)
+	writePresenceFixture(t, f.root, delivery, lockTime)
+
+	abandonOpts := f.options("default", &out)
+	abandonOpts.Resume = delivery
+	want := "delivery " + delivery + " is owned by pid 1 since " + lockTime.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+	if _, err := Abandon(context.Background(), abandonOpts); err == nil || err.Error() != want {
+		t.Fatalf("Abandon() error = %v", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) || strings.Join(f.worktrees(t), "\n") != strings.Join(worktrees, "\n") {
+		t.Fatal("Abandon() changed the delivery while its runner was live")
+	}
+}
+
+func TestAnswerRefusesLiveRunner(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("ask", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	delivery := r.Delivery()
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockTime := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	writePresenceFixture(t, f.root, delivery, lockTime)
+
+	want := "delivery " + delivery + " is owned by pid 1 since " + lockTime.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+	if _, err := answer(f.root, "1", "hello there", lockTime); err == nil || err.Error() != want {
+		t.Fatalf("Answer() error = %v", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Answer() wrote to the journal while the runner was live")
+	}
+	if _, err := os.Stat(filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md")); err != nil {
+		t.Fatalf("Answer() removed the ask file: %v", err)
+	}
+}
+
+func TestResumeRefusesLiveRunner(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+	delivery := r.Delivery()
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockTime := time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC)
+	writePresenceFixture(t, f.root, delivery, lockTime)
+
+	resumeOpts := f.options("default", &out)
+	resumeOpts.Resume = delivery
+	want := "delivery " + delivery + " is owned by pid 1 since " + lockTime.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+	if _, err := Resume(context.Background(), resumeOpts); err == nil || err.Error() != want {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Resume() wrote to the journal while the runner was live")
+	}
+}
+
+func TestAbandonProceedsWithStaleLock(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run() error = %v", err)
+	}
+	writePresenceFixture(t, f.root, r.Delivery(), time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC).Add(-presenceFresh-time.Second))
+	abandonOpts := f.options("default", &out)
+	abandonOpts.Resume = r.Delivery()
+	if state, err := Abandon(context.Background(), abandonOpts); err != nil || state != StateAbandoned {
+		t.Fatalf("Abandon() = %s, %v", state, err)
+	}
+}
+
 func jsonUnmarshal(payload []byte, target any) error { return json.Unmarshal(payload, target) }
 
 func TestLoopArchivesTheFinishedPlan(t *testing.T) {
@@ -1675,8 +1803,8 @@ func TestLoopWritesPresenceLock(t *testing.T) {
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("stopped lock: %v", err)
 	}
-	// A killed process leaves a lock that the resumed run must overwrite.
-	writePresenceFixture(t, f.root, r.Delivery(), time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC))
+	// A killed process leaves a stale lock that the resumed run must overwrite.
+	writePresenceFixture(t, f.root, r.Delivery(), time.Date(2026, 9, 6, 3, 0, 1, 0, time.UTC).Add(-presenceFresh-time.Second))
 	opts.Resume, opts.MaxWaves = r.Delivery(), 0
 	r, err = Resume(context.Background(), opts)
 	if err != nil {
@@ -1748,5 +1876,34 @@ func TestLoopRemovesPresenceLockOnEnd(t *testing.T) {
 				t.Fatalf("lock after %s: %v", tc.scenario, err)
 			}
 		})
+	}
+}
+
+func TestInterruptSummaryNamesWorktrees(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	ctx, cancel := context.WithCancel(context.Background())
+	opts := f.options("slow", &out)
+	opts.Parallel = 1
+	opts.Runner = commandRunnerFunc(func(commandCtx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+			cancel()
+		}
+		return (publication.ExecRunner{}).Run(commandCtx, command)
+	})
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(ctx); err != nil || state != StateCanceled {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	worktrees := f.worktrees(t)
+	if len(worktrees) != 1 {
+		t.Fatalf("worktrees = %v, want one", worktrees)
+	}
+	want := filepath.Join(f.root, ".batuta", "worktrees", worktrees[0])
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("interrupt summary does not name %s:\n%s", want, out.String())
 	}
 }

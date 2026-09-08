@@ -65,6 +65,7 @@ type SummaryTask struct {
 	Blocker  string `json:"blocker,omitempty"`
 	Question string `json:"question,omitempty"`
 	Story    string `json:"story"`
+	Worktree string `json:"worktree,omitempty"`
 }
 
 func (r *Runner) summaryLocked() Summary {
@@ -75,6 +76,10 @@ func (r *Runner) summaryLocked() Summary {
 		if len(task.Attempts) > 0 {
 			last := task.Attempts[len(task.Attempts)-1]
 			entry.Executor, entry.Model = last.Runtime.Provider, last.Runtime.Model
+			entry.Worktree = r.worktrees[attemptKey(task.TaskID, last.Execution)].Root
+			if entry.Worktree == "" {
+				entry.Worktree = last.WorktreeRoot
+			}
 			if last.Question != nil && last.Question.Answer == nil {
 				entry.Question = last.Question.Prompt
 			}
@@ -142,7 +147,11 @@ func (r *Runner) printSummary(state string, summary Summary) {
 		fmt.Fprintf(r.out, "  ❓ %s %s asks: %s\n     batuta loop --answer %s \"<text>\"\n", task.ID, task.Title, task.Question, task.ID)
 	}
 	for _, task := range summary.Pending {
-		fmt.Fprintf(r.out, "  ⏸ %s %s not run (%s)\n", task.ID, task.Title, pendingReason(task))
+		worktree := ""
+		if task.Worktree != "" {
+			worktree = ", worktree " + task.Worktree
+		}
+		fmt.Fprintf(r.out, "  ⏸ %s %s not run (%s%s)\n", task.ID, task.Title, pendingReason(task), worktree)
 	}
 	fmt.Fprintf(r.out, "journal   %s\n", filepath.Join(journal.Dir, r.delivery+".jsonl"))
 }
@@ -442,6 +451,10 @@ func terminalState(records []journal.Record) string {
 // Answer records the human's answer to a parked task and returns the
 // delivery to resume. taskRef is `task_N` or `N`.
 func Answer(workspace, taskRef, text string) (string, error) {
+	return answer(workspace, taskRef, text, time.Now().UTC())
+}
+
+func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 	root, store, err := openStore(workspace)
 	if err != nil {
 		return "", err
@@ -476,6 +489,9 @@ func Answer(workspace, taskRef, text string) (string, error) {
 		if attempt.Question == nil {
 			continue
 		}
+		if err := refuseLiveDelivery(root, id, now); err != nil {
+			return "", err
+		}
 		answer := routing.TaskAnswer{
 			QuestionOperationID: attempt.Question.RequestID, LoopRunID: attempt.ChildRunID,
 			Generation: 1, NodeID: "loop", ItemIndex: 0, Value: text,
@@ -501,6 +517,9 @@ func Answer(workspace, taskRef, text string) (string, error) {
 func Abandon(ctx context.Context, opts Options) (string, error) {
 	r, err := prepare(ctx, opts)
 	if err != nil {
+		return "", err
+	}
+	if err := refuseLiveDelivery(r.root, opts.Resume, r.now()); err != nil {
 		return "", err
 	}
 	records, err := r.store.Read(opts.Resume)

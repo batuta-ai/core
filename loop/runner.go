@@ -240,6 +240,9 @@ func Resume(ctx context.Context, opts Options) (*Runner, error) {
 	if !journal.ValidDeliveryID(opts.Resume) {
 		return nil, fmt.Errorf("loop: %q is not a delivery id", opts.Resume)
 	}
+	if err := refuseLiveDelivery(r.root, opts.Resume, r.now()); err != nil {
+		return nil, err
+	}
 	records, err := r.store.Read(opts.Resume)
 	if err != nil {
 		return nil, fmt.Errorf("loop: %w", err)
