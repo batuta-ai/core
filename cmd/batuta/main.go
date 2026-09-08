@@ -27,6 +27,8 @@ import (
 	"github.com/batuta-ai/core/inventory/adapters"
 	"github.com/batuta-ai/core/loop"
 	"github.com/batuta-ai/core/publication"
+	"github.com/batuta-ai/core/review"
+	"github.com/batuta-ai/core/routing"
 	"github.com/batuta-ai/core/worktree"
 )
 
@@ -43,6 +45,7 @@ Usage:
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
   batuta watch     [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
+  batuta review    [--base <ref>] [--worktree] [--spec <plan>] [--cohort-files N] [--parallel N] [--reviewer <executor/model>] [--full] [--out <dir>]
   batuta gate tree --snapshot [--dir <d>]
   batuta gate tree --before '<json>' [--dir <d>]
   batuta gate tests --command "<cmd>" [--dir <d>] [--timeout <duration>]
@@ -72,6 +75,9 @@ watch      Live dashboard of a delivery (the most recent open one by
            submits.
 trail      One line per journal record of a delivery (the latest by
            default).
+review     Read-only, cohort-based delivery review through the configured
+           executor adapter. Writes manifest.json, findings.json, review.md
+           and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK.
 
 inventory  Redacted snapshot of the executor CLIs installed on this machine
            (codex, opencode, cursor-agent, claude, agy, compozy): versions,
@@ -113,6 +119,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runWatch(args[1:], stdout, stderr)
 	case "trail":
 		return runTrail(args[1:], stdout)
+	case "review":
+		return runReview(args[1:], stdout, stderr)
 	case "gate":
 		return runGate(args[1:], stdout)
 	case "help", "--help", "-h":
@@ -140,7 +148,7 @@ func version() string {
 
 // commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "roadmap", "trail", "version", "watch"}
+var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "review", "roadmap", "trail", "version", "watch"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
@@ -594,6 +602,253 @@ func loopExit(state string) error {
 	default:
 		return &ExitError{Code: 2, State: state}
 	}
+}
+
+var (
+	reviewNow            = time.Now
+	reviewSessionOptions = func(root string, parallel int) review.SessionOptions {
+		return review.SessionOptions{Root: root, Parallel: parallel}
+	}
+)
+
+func runReview(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("review", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	base := flags.String("base", "", "base git ref (default: the branch point or HEAD)")
+	includeWorktree := flags.Bool("worktree", false, "include untracked, non-ignored files")
+	spec := flags.String("spec", "", "plan slug or plan file whose criteria are the review spec")
+	cohortFiles := flags.Int("cohort-files", review.CohortFiles, "maximum files per cohort")
+	parallel := flags.Int("parallel", 1, "reviewer sessions to run in parallel")
+	reviewer := flags.String("reviewer", "", "reviewer override as executor/model")
+	full := flags.Bool("full", false, "ignore prior review state and review from --base")
+	out := flags.String("out", "", "artifact directory (default: .batuta/reviews/<date>-<slug>)")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("review accepts flags only")
+	}
+	if *cohortFiles < 1 || *parallel < 1 {
+		return errors.New("review requires positive --cohort-files and --parallel values")
+	}
+	root, err := workspaceRoot("")
+	if err != nil {
+		return err
+	}
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		return err
+	}
+	git := publication.GitClient{Executable: gitPath, Runner: publication.ExecRunner{}}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	baseline, err := git.WorktreeState(ctx, root)
+	if err != nil {
+		return err
+	}
+	trackedBaseline, err := trackedChangeSignatures(root, baseline.HeadSHA)
+	if err != nil {
+		return err
+	}
+	slug, err := reviewSlug(root, *spec)
+	if err != nil {
+		return err
+	}
+	sessionSlug := reviewNow().Format("2006-01-02") + "-" + slug
+	directory := *out
+	if directory == "" {
+		directory = filepath.Join(root, ".batuta", "reviews", sessionSlug)
+	} else if !filepath.IsAbs(directory) {
+		directory = filepath.Join(root, directory)
+	}
+	requestedBase := *base
+	if requestedBase == "" {
+		requestedBase, err = defaultReviewBase(root, *includeWorktree)
+		if err != nil {
+			return err
+		}
+	}
+	resolvedBase, err := resolveArtifactReviewBase(root, directory, requestedBase, *full)
+	if err != nil {
+		return err
+	}
+	manifest, err := review.BuildManifest(root, resolvedBase, nil, review.ManifestOptions{Worktree: *includeWorktree, CohortFiles: *cohortFiles})
+	if err != nil {
+		return err
+	}
+	tablePayload, err := os.ReadFile(filepath.Join(root, ".batuta", "routing.md"))
+	if err != nil {
+		return errors.New("review: .batuta/routing.md is missing — run /batuta-init first")
+	}
+	table, err := routing.ParseRoutingTable(tablePayload)
+	if err != nil {
+		return fmt.Errorf("review: %w", err)
+	}
+	runtime, err := review.ReviewerRuntimeFromTable(table, routing.DomainGeneral, *reviewer)
+	if err != nil {
+		return err
+	}
+	options := reviewSessionOptions(root, *parallel)
+	cohorts, err := review.RunCohorts(ctx, manifest, runtime, options)
+	if err != nil {
+		return reviewSessionError(ctx, git, root, baseline, trackedBaseline, err)
+	}
+	var sweep *review.SpecSweep
+	if *spec != "" {
+		rules, err := review.LoadSpecCriteria(root, slug)
+		if err != nil {
+			return fmt.Errorf("review: load spec %s: %w", slug, err)
+		}
+		result, err := review.RunSpecSweep(ctx, manifest, rules, runtime, options)
+		if err != nil {
+			return reviewSessionError(ctx, git, root, baseline, trackedBaseline, err)
+		}
+		sweep = &result
+	}
+	after, stateErr := git.WorktreeState(ctx, root)
+	if stateErr != nil || after != baseline {
+		paths := changedTrackedPaths(root, baseline.HeadSHA, trackedBaseline)
+		if len(paths) == 0 {
+			paths = []string{"worktree state changed"}
+		}
+		return fmt.Errorf("review: source tree changed during review: %s", strings.Join(paths, ", "))
+	}
+	report := review.BuildReport(manifest, cohorts, sweep)
+	if err := review.WriteArtifacts(directory, report, review.ReviewState{Head: after.HeadSHA}); err != nil {
+		return err
+	}
+	if err := review.PrintReport(stdout, report); err != nil {
+		return err
+	}
+	switch report.Verdict {
+	case review.Ship:
+		return nil
+	case review.FixBeforeShip:
+		return &ExitError{Code: 2, State: string(report.Verdict)}
+	default:
+		return &ExitError{Code: 3, State: string(report.Verdict)}
+	}
+}
+
+func reviewSessionError(ctx context.Context, git publication.GitClient, root string, baseline publication.WorktreeState, trackedBaseline map[string]string, sessionErr error) error {
+	after, stateErr := git.WorktreeState(ctx, root)
+	if stateErr == nil && after == baseline {
+		return sessionErr
+	}
+	paths := changedTrackedPaths(root, baseline.HeadSHA, trackedBaseline)
+	if len(paths) == 0 {
+		paths = []string{"worktree state changed"}
+	}
+	return fmt.Errorf("review: source tree changed during review: %s", strings.Join(paths, ", "))
+}
+
+func resolveArtifactReviewBase(root, directory, base string, full bool) (string, error) {
+	if full {
+		return base, nil
+	}
+	payload, err := os.ReadFile(filepath.Join(directory, "state.json"))
+	if os.IsNotExist(err) {
+		return base, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("review: read prior state: %w", err)
+	}
+	if len(payload) > 1<<20 {
+		return "", errors.New("review: prior state exceeds 1 MiB")
+	}
+	var state review.ReviewState
+	if json.Unmarshal(payload, &state) != nil || state.Head == "" || strings.TrimSpace(state.Head) != state.Head || strings.ContainsAny(state.Head, "\x00\r\n") {
+		return "", errors.New("review: prior state has an invalid head")
+	}
+	verify := exec.Command("git", "-C", root, "rev-parse", "--verify", "--end-of-options", state.Head+"^{commit}")
+	resolved, err := verify.Output()
+	if err != nil {
+		return "", errors.New("review: prior head is unavailable")
+	}
+	head := strings.TrimSpace(string(resolved))
+	if err := exec.Command("git", "-C", root, "merge-base", "--is-ancestor", head, "HEAD").Run(); err != nil {
+		return "", errors.New("review: prior head is not an ancestor of HEAD")
+	}
+	return head, nil
+}
+
+func reviewSlug(root, spec string) (string, error) {
+	if spec != "" {
+		name := strings.TrimSuffix(filepath.Base(spec), filepath.Ext(spec))
+		name = strings.TrimPrefix(name, "plan-")
+		if _, err := review.LoadSpecCriteria(root, name); err != nil {
+			return "", fmt.Errorf("review: load spec %s: %w", name, err)
+		}
+		return name, nil
+	}
+	output, err := exec.Command("git", "-C", root, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
+	if err != nil {
+		return "detached-head", nil
+	}
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(string(output))) {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			b.WriteRune(r)
+			lastDash = false
+		} else if !lastDash && b.Len() > 0 {
+			b.WriteByte('-')
+			lastDash = true
+		}
+	}
+	return strings.Trim(b.String(), "-"), nil
+}
+
+func defaultReviewBase(root string, includeWorktree bool) (string, error) {
+	if includeWorktree {
+		return "HEAD", nil
+	}
+	for _, candidate := range []string{"main", "origin/main", "master", "origin/master", "@{upstream}", "HEAD^", "HEAD"} {
+		cmd := exec.Command("git", "-C", root, "merge-base", "HEAD", candidate)
+		if output, err := cmd.Output(); err == nil && strings.TrimSpace(string(output)) != "" {
+			return strings.TrimSpace(string(output)), nil
+		}
+	}
+	return "", errors.New("review: cannot determine a default base; pass --base <ref>")
+}
+
+func trackedChangeSignatures(root, beforeHead string) (map[string]string, error) {
+	output, err := exec.Command("git", "-C", root, "diff", "--name-only", "-z", beforeHead, "--").Output()
+	if err != nil {
+		return nil, fmt.Errorf("review: list tracked changes: %w", err)
+	}
+	signatures := make(map[string]string)
+	for _, name := range bytes.Split(output, []byte{0}) {
+		if len(name) == 0 {
+			continue
+		}
+		diff, err := exec.Command("git", "-C", root, "diff", "--binary", "--no-ext-diff", beforeHead, "--", string(name)).Output()
+		if err != nil {
+			return nil, fmt.Errorf("review: inspect tracked change %q: %w", name, err)
+		}
+		signatures[string(name)] = string(diff)
+	}
+	return signatures, nil
+}
+
+func changedTrackedPaths(root, beforeHead string, baseline map[string]string) []string {
+	after, err := trackedChangeSignatures(root, beforeHead)
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for name, signature := range after {
+		if baseline[name] != signature {
+			paths = append(paths, name)
+		}
+	}
+	for name := range baseline {
+		if _, exists := after[name]; !exists {
+			paths = append(paths, name)
+		}
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func runWatch(args []string, stdout, stderr io.Writer) error {

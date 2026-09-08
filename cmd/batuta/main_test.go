@@ -13,8 +13,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/loop"
+	"github.com/batuta-ai/core/publication"
+	"github.com/batuta-ai/core/review"
 	"github.com/batuta-ai/core/routing"
 )
 
@@ -115,6 +118,229 @@ func TestUsageListsWatchFlagsAndKeys(t *testing.T) {
 			t.Errorf("usage is missing watch option or key %q", want)
 		}
 	}
+}
+
+func TestCapabilitiesListsReview(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"capabilities"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var got capabilities
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got.Commands, "review") {
+		t.Fatalf("capabilities.commands = %v, missing review", got.Commands)
+	}
+}
+
+func TestUsage(t *testing.T) {
+	for _, want := range []string{"batuta review", "--base", "--worktree", "--spec", "--cohort-files", "--parallel", "--reviewer", "--full", "--out"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage is missing %q", want)
+		}
+	}
+}
+
+func TestReviewWritesArtefacts(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	restore := stubReviewSessions(t, nil, nil)
+	defer restore()
+	out := filepath.Join(root, "artifacts")
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"review", "--base", base, "--out", out}, &stdout, &stderr); err != nil {
+		t.Fatalf("review = %v\n%s", err, &stderr)
+	}
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+		if _, err := os.Stat(filepath.Join(out, name)); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	printed, err := os.ReadFile(filepath.Join(out, "review.md"))
+	if err != nil || string(printed) != stdout.String() {
+		t.Fatalf("review.md does not match stdout: %v\nfile=%q\nout=%q", err, printed, stdout.String())
+	}
+}
+
+func TestReviewExitCodes(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		finding  *review.Finding
+		wantCode int
+	}{
+		{name: "ship", wantCode: 0},
+		{name: "fix before ship", finding: &review.Finding{Severity: review.Major, Kind: review.Defect, File: "change.go", Line: 3, Premise: "Wrong result", Path: "Call path", Verdict: "Fails", Fix: "Correct it"}, wantCode: 2},
+		{name: "rework", finding: &review.Finding{Severity: review.Blocker, Kind: review.Defect, File: "change.go", Line: 3, Premise: "Build breaks", Path: "Compile", Verdict: "Fails", Fix: "Restore it"}, wantCode: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, base := reviewCommandRepo(t)
+			t.Chdir(root)
+			var findings []review.Finding
+			if tc.finding != nil {
+				findings = []review.Finding{*tc.finding}
+			}
+			restore := stubReviewSessions(t, findings, nil)
+			defer restore()
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"review", "--base", base, "--out", filepath.Join(root, "out")}, &stdout, &stderr)
+			if tc.wantCode == 0 {
+				if err != nil {
+					t.Fatalf("review = %v", err)
+				}
+				return
+			}
+			var exit *ExitError
+			if !errors.As(err, &exit) || exit.Code != tc.wantCode {
+				t.Fatalf("review error = %#v, want exit %d", err, tc.wantCode)
+			}
+		})
+	}
+}
+
+func TestReviewPrintsReport(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	finding := review.Finding{Severity: review.Minor, Kind: review.Advisory, File: "change.go", Line: 3, Premise: "Name is vague", Path: "Rename", Fix: "Use a precise name"}
+	restore := stubReviewSessions(t, []review.Finding{finding}, nil)
+	defer restore()
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"review", "--base", base, "--out", filepath.Join(root, "out")}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Files:", "Cohorts:", "Coverage:", "minor · change.go:3 · Name is vague · Use a precise name", "Suppressed overlaps: 0", "Verdict: SHIP"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("report is missing %q:\n%s", want, &stdout)
+		}
+	}
+}
+
+func TestReviewRefusesTreeChange(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	restore := stubReviewRunner(t, func(_ context.Context, _ publication.Command) (publication.CommandResult, error) {
+		if err := os.WriteFile(filepath.Join(root, "tracked.go"), []byte("package changed\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return publication.CommandResult{Stdout: []byte("<<<FINDINGS\nFINDINGS>>>\n")}, nil
+	})
+	defer restore()
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"review", "--base", base, "--out", filepath.Join(root, "out")}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "tracked.go") || strings.Contains(err.Error(), "change.go") {
+		t.Fatalf("review error = %v, want changed tracked path", err)
+	}
+}
+
+func reviewCommandRepo(t *testing.T) (string, string) {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Skip("git not on PATH")
+	}
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runGit := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command(git, append([]string{"-C", root}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_AUTHOR_NAME=Review Test", "GIT_AUTHOR_EMAIL=review@example.test", "GIT_COMMITTER_NAME=Review Test", "GIT_COMMITTER_EMAIL=review@example.test")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	runGit("init", "-q")
+	if err := os.MkdirAll(filepath.Join(root, ".batuta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	files := map[string]string{
+		".gitignore":         ".batuta/reviews/\nout/\nartifacts/\n",
+		".batuta/profile.md": "Stack: Go\nMethodology: TDD\nTest: go test ./...\nTemplate: templates/generic.md\n",
+		".batuta/routing.md": "| Lane | Domain | Executor | Model |\n|---|---|---|---|\n| high | * | codex | review-model |\n",
+		"tracked.go":         "package tracked\n",
+		"change.go":          "package changed\n",
+	}
+	for name, payload := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(payload), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit("add", ".")
+	runGit("-c", "commit.gpgsign=false", "commit", "-qm", "base")
+	base := runGit("rev-parse", "HEAD")
+	if err := os.WriteFile(filepath.Join(root, "change.go"), []byte("package changed\n\nvar Changed = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root, base
+}
+
+func stubReviewSessions(t *testing.T, findings []review.Finding, sweep *review.SpecSweep) func() {
+	t.Helper()
+	return stubReviewRunner(t, func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+		if len(command.Args) == 0 || command.Args[0] != "--read-only" || command.Directory == "" {
+			t.Fatalf("review invocation = %+v", command)
+		}
+		if sweep != nil && strings.Contains(command.Args[len(command.Args)-1], "<<<CRITERIA") {
+			var lines strings.Builder
+			lines.WriteString("<<<CRITERIA\n")
+			for _, result := range sweep.Results {
+				payload, err := json.Marshal(result)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines.Write(payload)
+				lines.WriteByte('\n')
+			}
+			lines.WriteString("CRITERIA>>>\n")
+			return publication.CommandResult{Stdout: []byte(lines.String())}, nil
+		}
+		var output strings.Builder
+		output.WriteString("<<<FINDINGS\n")
+		for _, finding := range findings {
+			payload, err := json.Marshal(finding)
+			if err != nil {
+				t.Fatal(err)
+			}
+			output.Write(payload)
+			output.WriteByte('\n')
+		}
+		output.WriteString("FINDINGS>>>\n")
+		return publication.CommandResult{Stdout: []byte(output.String())}, nil
+	})
+}
+
+type mainReviewRunner func(context.Context, publication.Command) (publication.CommandResult, error)
+
+func (f mainReviewRunner) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	return f(ctx, command)
+}
+
+func stubReviewRunner(t *testing.T, runner mainReviewRunner) func() {
+	t.Helper()
+	skills := t.TempDir()
+	for name, payload := range map[string]string{
+		"adapters/codex.md":    "---\nname: codex\nrun: fake-reviewer --write {brief}\nreadonly: fake-reviewer --read-only {model_flags} {prompt}\nmodel_flags: --model {model}\navailable: fake-reviewer --version\nmodels: fake-reviewer models\nfinished: exit_code\n---\n",
+		"templates/generic.md": "## Conventions for briefs\nKeep changes scoped.\n",
+	} {
+		path := filepath.Join(skills, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(payload), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := reviewSessionOptions
+	reviewSessionOptions = func(root string, parallel int) review.SessionOptions {
+		return review.SessionOptions{
+			Root: root, Skills: skills, Parallel: parallel,
+			Subprocess: &executor.Subprocess{Runner: runner, Lookup: func(string) (string, error) { return filepath.Join(skills, "fake-reviewer"), nil }},
+		}
+	}
+	return func() { reviewSessionOptions = previous }
 }
 
 func TestWatchHelpListsFlagsAndKeys(t *testing.T) {
