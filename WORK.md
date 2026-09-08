@@ -1,9 +1,11 @@
 # WORK — core
 
 ## In progress
-- [ ] queue after beta.20: skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
+- [ ] queue after beta.21: skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
+- [x] queue after beta.20 (superseded): skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
 
 ## Done
+- [x] review-proofs plan shipped: #78 (commit subject keeps case, word-boundary cut; agy gemini-3.8-flash-low first attempt) and #80 (review runs proof-backed criteria itself; codex gpt-6-astra first attempt), blocker of review round 1 fixed by codex gpt-5.6-sol (96c5950), round 2 SHIP → conductor (2026-09-08)
 - [x] feat/loop-hardening shipped: batuta review round 9 SHIP (0 findings), core PR #75 merged (3e64e13), release v1.1.0-beta.20, host PR #74 → v0.4.16 pins it; issues #70 #71 #67 #54 #57 closed; PR #72 closed as superseded → conductor (2026-09-08)
 - [x] round-8 review fixes: --answer ages a malformed lock and binds ownership to the answerable delivery → codex (codex/gpt-6-astra), primeira tentativa, commit e0fc087 em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round8.md)
 - [x] round-7 review fixes: terminal record last, deletion list kept, --answer refuses a running task with the ownership message → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round7.md)
