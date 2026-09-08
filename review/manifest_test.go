@@ -307,3 +307,38 @@ func TestManifestHandlesSubmoduleGitlink(t *testing.T) {
 		})
 	}
 }
+
+func TestManifestFileReplacedByDirectory(t *testing.T) {
+	for _, name := range []string{"pkg", "odd name", "quoted\"\tname", "café"} {
+		t.Run(name, func(t *testing.T) {
+			root := reviewRepo(t)
+			writeTestFile(t, root, name, "old file\n")
+			gitTest(t, root, "add", ".")
+			gitTest(t, root, "commit", "-qm", "file")
+			gitTest(t, root, "rm", "--", name)
+			writeTestFile(t, root, name+"/a.go", "package child\nvar New = true\n")
+			gitTest(t, root, "add", ".")
+			manifest, err := BuildManifest(root, "HEAD", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(manifest.Files) != 2 {
+				t.Fatalf("files = %+v", manifest.Files)
+			}
+			parent, child := manifest.Files[0], manifest.Files[1]
+			if parent.Path != name || parent.Added != 0 || parent.Deleted != 1 || !slices.Equal(parent.Hunks, []Hunk{{Start: 0, Count: 0}}) {
+				t.Errorf("deleted parent = %+v", parent)
+			}
+			if child.Added != 2 || child.Deleted != 0 || manifest.Cohorts[0].ChangedLines != 3 {
+				t.Errorf("manifest = %+v", manifest)
+			}
+			prompt, err := BuildCohortPrompt(root, manifest, Cohort{Files: []string{name}}, "", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(prompt, "package child") || strings.Contains(prompt, "Allowed new lines") || !strings.Contains(prompt, "-old file") {
+				t.Fatalf("contaminated parent prompt: %s", prompt)
+			}
+		})
+	}
+}

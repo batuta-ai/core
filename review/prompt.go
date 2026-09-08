@@ -51,9 +51,11 @@ func BuildSpecPrompt(manifest Manifest, rules []SpecRule) string {
 	b.WriteString(specInstructions)
 	b.WriteString("\nDiff summary (base " + manifest.Base + "):\n")
 	for _, file := range manifest.Files {
-		if file.Selected && !file.Ignored {
-			fmt.Fprintf(&b, "%s (+%d -%d)\n", file.Path, file.Added, file.Deleted)
+		fmt.Fprintf(&b, "%s (+%d -%d) [selected=%t ignored=%t", file.Path, file.Added, file.Deleted, file.Selected, file.Ignored)
+		if file.IgnoreReason != "" {
+			fmt.Fprintf(&b, " reason=%s", file.IgnoreReason)
 		}
+		b.WriteString("]\n")
 	}
 	b.WriteString("\nBound acceptance criteria:\n")
 	for i, rule := range rules {
@@ -122,12 +124,8 @@ func BuildCohortPrompt(root string, manifest Manifest, cohort Cohort, rubric str
 func cohortDiff(root string, workspace *os.Root, base string, file File) ([]byte, error) {
 	var diff []byte
 	if file.Status != "?" {
-		args := []string{"diff", "-U0", "--inter-hunk-context=0", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--no-relative", "--ignore-submodules=none", "--submodule=short", base, "--", file.Path}
-		if file.OldPath != "" {
-			args = append(args, file.OldPath)
-		}
 		var err error
-		diff, err = gitOutput(root, args...)
+		diff, err = trackedFileDiff(root, base, file)
 		if err != nil {
 			return nil, err
 		}

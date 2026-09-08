@@ -134,7 +134,7 @@ func StateAfterReport(report Report, head string) IncrementalState {
 		files[file.Path] = file
 	}
 	for index, cohort := range report.Manifest.Cohorts {
-		if covered[index] {
+		if covered[index] && (report.Spec == nil || report.Spec.Covered) {
 			continue
 		}
 		pending := PendingCohort{}

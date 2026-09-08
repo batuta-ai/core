@@ -91,9 +91,10 @@ spec coverage produces `REWORK`.
 
 If `.batuta/profile.md` declares a `Lint:` command, Batuta runs it before the
 review sessions and retains diagnostics anchored to selected new-side lines.
-Reviewer findings whose ranges overlap a linter diagnostic are suppressed from
-the merged findings; the report counts these overlaps so automated and human
-signals are not presented twice. Truncated lint stdout or stderr fails the
+Reviewer findings are suppressed from the merged findings only when their ranges
+overlap a linter diagnostic and both have matching, non-empty normalised rules.
+The report counts these overlaps so automated and human signals are not presented
+twice. Truncated lint stdout or stderr fails the
 review instead of treating the retained prefix as complete diagnostics.
 
 ## Incremental rounds

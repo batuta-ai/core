@@ -42,7 +42,7 @@ func TestStateAfterReportRequiresCompleteCoverage(t *testing.T) {
 	}{
 		{"missing cohort", nil, nil, "base", 1},
 		{"uncovered", []CohortResult{{Cohort: 0}}, nil, "base", 1},
-		{"spec incomplete", []CohortResult{{Cohort: 0, Covered: true}}, &SpecSweep{}, "base", 0},
+		{"spec incomplete", []CohortResult{{Cohort: 0, Covered: true}}, &SpecSweep{}, "base", 1},
 		{"covered", []CohortResult{{Cohort: 0, Covered: true}}, &SpecSweep{Covered: true}, "head", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -81,5 +81,44 @@ func TestPendingManifestDoesNotSelectOtherUntrackedFiles(t *testing.T) {
 	}
 	if len(manifest.Cohorts) != 1 || !slices.Equal(manifest.Cohorts[0].Files, []string{"pending.go"}) {
 		t.Fatalf("manifest = %+v", manifest)
+	}
+}
+
+func TestStateKeepsPendingWhileSpecUncovered(t *testing.T) {
+	root := reviewRepo(t)
+	base := gitTest(t, root, "rev-parse", "HEAD")
+	writeTestFile(t, root, "new.go", "package new\n")
+	manifest, err := BuildManifest(root, base, nil, ManifestOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := BuildReport(manifest, []CohortResult{{Cohort: 0, Covered: true}}, &SpecSweep{})
+	state := StateAfterReport(report, "later-head")
+	if state.Head != base || len(state.Pending) != 1 || len(state.Pending[0].Files) != 1 || state.Pending[0].Files[0].Path != "new.go" {
+		t.Fatalf("uncovered spec lost pending file: %+v", state)
+	}
+	filename := filepath.Join(t.TempDir(), "state.json")
+	if err := WriteIncrementalState(filename, state); err != nil {
+		t.Fatal(err)
+	}
+	state, err = LoadIncrementalState(root, filename, base, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, root, "unrelated.go", "package unrelated\n")
+	retry, err := BuildIncrementalManifest(root, state, ManifestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retry.Files) != 1 || retry.Files[0].Path != "new.go" || !retry.Files[0].Untracked {
+		t.Fatalf("retry = %+v", retry)
+	}
+	prompt := BuildSpecPrompt(retry, []SpecRule{{ID: "task-1.1", Text: "new.go is present"}})
+	if !strings.Contains(prompt, "new.go (+1 -0)") {
+		t.Fatalf("incomplete retry: %s", prompt)
+	}
+	completed := StateAfterReport(BuildReport(retry, []CohortResult{{Cohort: 0, Covered: true}}, &SpecSweep{Covered: true}), "later-head")
+	if completed.Head != "later-head" || len(completed.Pending) != 0 {
+		t.Fatalf("completed = %+v", completed)
 	}
 }

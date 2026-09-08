@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -254,16 +253,17 @@ func CheckArtifactPaths(root string, paths []string) ([]string, error) {
 				if relative == "." {
 					break
 				}
-				cmd := exec.Command("git", "-C", root, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", relative)
-				if err := cmd.Run(); err == nil {
-					// Directory pathspecs also match descendants. Only the leaf
-					// or an actual non-directory parent can be overwritten.
-					info, statErr := os.Stat(current)
-					if current == destination || statErr != nil || !info.IsDir() {
+				entries, err := gitOutput(root, "ls-files", "--stage", "-z", "--", filepath.ToSlash(relative))
+				if err != nil {
+					return nil, fmt.Errorf("review: check tracked artifact destination: %w", err)
+				}
+				for record := range bytes.SplitSeq(entries, []byte{0}) {
+					_, name, ok := bytes.Cut(record, []byte{'\t'})
+					if ok && (string(name) == filepath.ToSlash(relative) || current == destination) {
+						// Exact index entries include gitlinks, even when their
+						// working-tree representation is a directory.
 						return nil, fmt.Errorf("review: artifact destination overlaps tracked path %q", relative)
 					}
-				} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
-					return nil, fmt.Errorf("review: check tracked artifact destination: %w", err)
 				}
 			}
 		}

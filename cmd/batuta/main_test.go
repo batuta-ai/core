@@ -1233,3 +1233,40 @@ func TestResumeDryRunLeavesNoLock(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewInterruptedReportsCancellation(t *testing.T) {
+	root, _ := reviewCommandRepo(t)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := publication.GitClient{Executable: gitPath, Runner: publication.ExecRunner{}}
+	baseline, err := git.WorktreeState(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err = reviewSessionError(ctx, git, root, baseline, nil, context.Canceled)
+	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "source tree changed") {
+		t.Fatalf("interrupted review = %v", err)
+	}
+}
+
+func TestReviewStateErrorIsNotMutation(t *testing.T) {
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateErr := errors.New("git unavailable")
+	sessionErr := errors.New("review executor failed")
+	git := publication.GitClient{Executable: gitPath, Runner: mainReviewRunner(func(context.Context, publication.Command) (publication.CommandResult, error) {
+		return publication.CommandResult{}, stateErr
+	})}
+	for _, failure := range []error{nil, sessionErr} {
+		err := reviewSessionError(context.Background(), git, t.TempDir(), publication.WorktreeState{}, nil, failure)
+		if !errors.Is(err, stateErr) || (failure != nil && !errors.Is(err, failure)) || strings.Contains(err.Error(), "source tree changed") {
+			t.Fatalf("state failure = %v", err)
+		}
+	}
+}

@@ -179,11 +179,7 @@ func parseNameStatus(data []byte) ([]File, error) {
 
 func inspectFile(root string, workspace *os.Root, base string, file *File) error {
 	if file.Status != "?" {
-		args := []string{"diff", "-U0", "--inter-hunk-context=0", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--no-relative", "--ignore-submodules=none", "--submodule=short", base, "--", file.Path}
-		if file.OldPath != "" {
-			args = append(args, file.OldPath)
-		}
-		diff, err := gitOutput(root, args...)
+		diff, err := trackedFileDiff(root, base, *file)
 		if err != nil {
 			return err
 		}
@@ -223,6 +219,53 @@ func inspectFile(root string, workspace *os.Root, base string, file *File) error
 	file.IgnoreReason = ignoreReason(file.Path, content)
 	file.Ignored = file.IgnoreReason != ""
 	return nil
+}
+
+// Literal pathspecs still match descendants, so both accounting and prompts
+// must retain only the patch whose old and new identities match this entry.
+func trackedFileDiff(root, base string, file File) ([]byte, error) {
+	args := []string{"diff", "-U0", "--inter-hunk-context=0", "--no-color", "--no-ext-diff", "--no-textconv", "--find-renames", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=none", "--submodule=short", base, "--", file.Path}
+	oldPath := file.Path
+	if file.OldPath != "" {
+		oldPath = file.OldPath
+		args = append(args, file.OldPath)
+	}
+	diff, err := gitOutput(root, args...)
+	if err != nil {
+		return nil, err
+	}
+	var selected []byte
+	keep := false
+	for line := range bytes.SplitAfterSeq(diff, []byte{'\n'}) {
+		if header, ok := strings.CutPrefix(string(line), "diff --git "); ok {
+			keep = diffHeaderMatches(strings.TrimSuffix(header, "\n"), "a/"+oldPath, "b/"+file.Path)
+		}
+		if keep {
+			selected = append(selected, line...)
+		}
+	}
+	return selected, nil
+}
+
+func diffHeaderMatches(header, oldPath, newPath string) bool {
+	decode := func(value string) string {
+		if strings.HasPrefix(value, "\"") {
+			decoded, err := strconv.Unquote(value)
+			if err != nil {
+				return ""
+			}
+			return decoded
+		}
+		return value
+	}
+	// Git leaves spaces unquoted, but quotes control characters and non-ASCII
+	// bytes. Compare both full paths at each possible delimiter.
+	for i := range len(header) {
+		if header[i] == ' ' && decode(header[:i]) == oldPath && decode(header[i+1:]) == newPath {
+			return true
+		}
+	}
+	return false
 }
 
 func workspaceContent(root *os.Root, name string, whole bool) ([]byte, error) {

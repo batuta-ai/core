@@ -140,3 +140,34 @@ func TestReportEscapesControlCharacters(t *testing.T) {
 		t.Fatal("finding path changed")
 	}
 }
+
+func TestArtifactsRefuseGitlinkDestination(t *testing.T) {
+	root := reviewRepo(t)
+	source := reviewRepo(t)
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+		writeTestFile(t, source, "reports/"+name, "tracked artifact\n")
+	}
+	gitTest(t, source, "add", ".")
+	gitTest(t, source, "commit", "-qm", "artifacts")
+	gitTest(t, root, "-c", "protocol.file.allow=always", "submodule", "add", source, "module")
+	gitTest(t, root, "commit", "-qm", "submodule")
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+		writeTestFile(t, root, "module/reports/"+name, "local edits\n")
+	}
+	for _, directory := range []string{"module/reports", "module/new-reports"} {
+		out := filepath.Join(root, directory)
+		_, err := CheckArtifactPaths(root, ArtifactPaths(out))
+		if err == nil {
+			t.Errorf("accepted gitlink destination %s", directory)
+		}
+	}
+	for _, filename := range ArtifactPaths(filepath.Join(root, "module/reports")) {
+		payload, err := os.ReadFile(filename)
+		if err != nil || string(payload) != "local edits\n" {
+			t.Fatalf("artifact changed: %q, %v", payload, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "module/new-reports")); !os.IsNotExist(err) {
+		t.Fatalf("created destination: %v", err)
+	}
+}

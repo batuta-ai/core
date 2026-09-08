@@ -59,3 +59,24 @@ func TestPromptMentionsOversized(t *testing.T) {
 		}
 	}
 }
+
+func TestSpecPromptListsWholeInventory(t *testing.T) {
+	manifest := Manifest{Base: "base", Files: []File{
+		{Path: "source.go", Selected: true, Added: 1},
+		{Path: "go.sum", Ignored: true, IgnoreReason: "lock", Added: 2, Deleted: 1},
+		{Path: "generated.go", Ignored: true, IgnoreReason: "generated", Added: 3},
+		{Path: "unselected.go", Added: 4},
+	}}
+	prompt := BuildSpecPrompt(manifest, []SpecRule{{ID: "task-1.1", Text: "go.sum records the required checksums"}})
+	for _, want := range []string{
+		"source.go (+1 -0) [selected=true ignored=false]",
+		"go.sum (+2 -1) [selected=false ignored=true reason=lock]",
+		"generated.go (+3 -0) [selected=false ignored=true reason=generated]",
+		"unselected.go (+4 -0) [selected=false ignored=false]",
+		"go.sum records the required checksums",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("missing %q in prompt: %s", want, prompt)
+		}
+	}
+}

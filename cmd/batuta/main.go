@@ -735,7 +735,10 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 		sweep = &result
 	}
 	after, stateErr := git.WorktreeState(ctx, root)
-	if stateErr != nil || after != baseline {
+	if stateErr != nil {
+		return fmt.Errorf("review: verify source tree: %w", stateErr)
+	}
+	if after != baseline {
 		paths := changedTrackedPaths(root, baseline.HeadSHA, trackedBaseline)
 		if len(paths) == 0 {
 			paths = []string{"worktree state changed"}
@@ -780,14 +783,17 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 
 func reviewSessionError(ctx context.Context, git publication.GitClient, root string, baseline publication.WorktreeState, trackedBaseline map[string]string, sessionErr error) error {
 	after, stateErr := git.WorktreeState(ctx, root)
-	if stateErr == nil && after == baseline {
+	if stateErr != nil {
+		return errors.Join(sessionErr, fmt.Errorf("review: verify source tree: %w", stateErr))
+	}
+	if after == baseline {
 		return sessionErr
 	}
 	paths := changedTrackedPaths(root, baseline.HeadSHA, trackedBaseline)
 	if len(paths) == 0 {
 		paths = []string{"worktree state changed"}
 	}
-	return fmt.Errorf("review: source tree changed during review: %s", strings.Join(paths, ", "))
+	return errors.Join(sessionErr, fmt.Errorf("review: source tree changed during review: %s", strings.Join(paths, ", ")))
 }
 
 // Exclude only the authorized artifact files from the publication tree guard;
