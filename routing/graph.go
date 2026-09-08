@@ -1561,11 +1561,12 @@ func validateGraphTaskAttempt(attempt GraphTaskAttempt, expectedExecution int, t
 			return ErrInvalidDeliveryGraph
 		}
 	case GraphTaskIntegrated:
-		satisfied := attempt.AlreadySatisfied && attempt.CandidateCommitSHA == "" && attempt.VerificationDigest == "" && attempt.CandidateEvidence == nil
+		satisfied := attempt.AlreadySatisfied && attempt.CandidateCommitSHA == "" && attempt.VerificationDigest == "" &&
+			attempt.CandidateEvidence == nil && attempt.TokensUsed == nil
 		candidate := !attempt.AlreadySatisfied && canonicalGitSHA.MatchString(attempt.CandidateCommitSHA) &&
 			canonicalSHA256.MatchString(attempt.VerificationDigest)
 		if attempt.WorktreeID == "" || !boundedArgument(attempt.ChildRunID) || (!satisfied && !candidate) ||
-			attempt.TerminalStatus != "" || attempt.BlockerCode != "" || attempt.TokensUsed != nil || attempt.Conflict != nil {
+			attempt.TerminalStatus != "" || attempt.BlockerCode != "" || attempt.Conflict != nil {
 			return ErrInvalidDeliveryGraph
 		}
 	case GraphTaskBlocked:
@@ -1769,7 +1770,7 @@ func validateCleanupOperations(graph *DeliveryGraph) error {
 	return nil
 }
 
-func validateDeliveryGraphTransition(before, after *DeliveryGraph) error {
+func validateDeliveryGraphTransition(before, after *DeliveryGraph, generation RoutingGeneration) error {
 	if before == nil || after == nil || len(before.Tasks) != len(after.Tasks) ||
 		len(after.Waves) < len(before.Waves) || len(after.Waves) > len(before.Waves)+1 ||
 		len(after.Integrations) < len(before.Integrations) || len(after.Integrations) > len(before.Integrations)+1 ||
@@ -1793,14 +1794,14 @@ func validateDeliveryGraphTransition(before, after *DeliveryGraph) error {
 		return ErrDeliveryConflict
 	}
 	for index := range before.Tasks {
-		if err := validateGraphTaskTransition(before.Tasks[index], after.Tasks[index]); err != nil {
+		if err := validateGraphTaskTransition(before.Tasks[index], after.Tasks[index], generation); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateGraphTaskTransition(before, after GraphTask) error {
+func validateGraphTaskTransition(before, after GraphTask, generation RoutingGeneration) error {
 	if before.TaskID != after.TaskID || before.AuthoredIndex != after.AuthoredIndex ||
 		!slices.Equal(before.Dependencies, after.Dependencies) || before.Domain != after.Domain ||
 		before.Complexity != after.Complexity {
@@ -1840,6 +1841,10 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 	} else if before.BlockerCode != after.BlockerCode {
 		return ErrDeliveryConflict
 	}
+	var fallback RuntimeValue
+	if len(before.Attempts) > 0 {
+		fallback, _ = nextRuntimeForTask(generation, before, before.Attempts[len(before.Attempts)-1].Runtime)
+	}
 	if len(after.Attempts) == len(before.Attempts) {
 		for index := range before.Attempts {
 			if index < len(before.Attempts)-1 {
@@ -1848,7 +1853,7 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 				}
 				continue
 			}
-			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index]); err != nil {
+			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index], fallback); err != nil {
 				return err
 			}
 		}
@@ -1886,12 +1891,12 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 			}
 		} else if before.Attempts[index].State == GraphTaskRunning &&
 			after.Attempts[index].State == GraphTaskBlocked {
-			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index]); err != nil {
+			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index], fallback); err != nil {
 				return err
 			}
 		} else if before.Attempts[index].State == GraphTaskRunning &&
 			after.Attempts[index].State == GraphTaskIntegrated && after.Attempts[index].AlreadySatisfied {
-			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index]); err != nil {
+			if err := validateGraphAttemptTransition(before.Attempts[index], after.Attempts[index], fallback); err != nil {
 				return err
 			}
 		} else if !reflect.DeepEqual(before.Attempts[index], after.Attempts[index]) {
@@ -1919,8 +1924,25 @@ func validateGraphTaskTransition(before, after GraphTask) error {
 	return nil
 }
 
-func validateGraphAttemptTransition(before, after GraphTaskAttempt) error {
-	if before.Execution != after.Execution || before.Runtime != after.Runtime || before.BaseHeadSHA != after.BaseHeadSHA ||
+func validateGraphAttemptTransition(before, after GraphTaskAttempt, fallback RuntimeValue) error {
+	if before.Runtime != after.Runtime {
+		if before.State != GraphTaskRunning || after.State != GraphTaskRunning ||
+			fallback.Provider == "" || fallback.Provider == string(ExecutorSelf) || after.Runtime != fallback ||
+			after.LimitOrigin == nil || *after.LimitOrigin != attemptInitialRuntime(before) ||
+			!boundedArgument(after.ChildRunID) || (before.ChildRunID != "" && before.ChildRunID != after.ChildRunID) {
+			return ErrInvalidDeliveryTransition
+		}
+		unchanged := after
+		unchanged.Runtime, unchanged.LimitOrigin, unchanged.ChildRunID = before.Runtime, before.LimitOrigin, before.ChildRunID
+		if !reflect.DeepEqual(before, unchanged) {
+			return ErrDeliveryConflict
+		}
+		return nil
+	}
+	if !reflect.DeepEqual(before.LimitOrigin, after.LimitOrigin) {
+		return ErrDeliveryConflict
+	}
+	if before.Execution != after.Execution || before.BaseHeadSHA != after.BaseHeadSHA ||
 		graphAttemptRunExecution(before) != graphAttemptRunExecution(after) ||
 		(!graphTaskTransitionAllowed(before.State, after.State) &&
 			!(before.State == GraphTaskRunning && after.State == GraphTaskIntegrated && after.AlreadySatisfied)) {

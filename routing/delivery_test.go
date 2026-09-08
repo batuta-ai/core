@@ -3,6 +3,7 @@ package routing
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -517,7 +518,7 @@ func TestTerminalDeliveryRejectsNewAttemptsAtDomainAndJournalBoundaries(t *testi
 
 			after := delivery
 			after.Attempts = append(append([]DeliveryAttempt(nil), delivery.Attempts...), proposed)
-			if err := validateDeliveryTransition(delivery, after); !errors.Is(err, ErrInvalidDeliveryTransition) {
+			if err := validateDeliveryTransition(delivery, after, validGenerationFixture(t)); !errors.Is(err, ErrInvalidDeliveryTransition) {
 				t.Fatalf("validateDeliveryTransition() error = %v, want ErrInvalidDeliveryTransition", err)
 			}
 		})
@@ -790,4 +791,232 @@ func TestValidateDeliveryAcceptsRecordsCreatedUnderAnEarlierCeiling(t *testing.T
 			t.Fatalf("%s: validateDelivery() error = %v, want %v", tc.name, err, tc.wantErr)
 		}
 	}
+}
+
+func TestLimitFallbackPersistsThroughOwnershipStore(t *testing.T) {
+	t.Parallel()
+	for _, runID := range []string{"", "child-run-1"} {
+		t.Run("initial-run-"+runID, func(t *testing.T) {
+			store, delivery, generation := persistedRunningFallbackDelivery(t, runID)
+			origin := delivery.Graph.Tasks[0].Attempts[0].Runtime
+			for _, fallback := range generation.Cells[0].Fallbacks {
+				if fallback.ProviderID == string(ExecutorSelf) {
+					break
+				}
+				want := RuntimeValue{Provider: fallback.ProviderID, Model: fallback.ModelID, Reasoning: fallback.Reasoning}
+				before := loadGraphDelivery(t, store, delivery)
+				mutateGraphDelivery(t, store, delivery, func(graph *DeliveryGraph) error {
+					next, found, err := graph.RecordLimitFallback("task_1", 1, "child-run-1", generation)
+					if err != nil || !found || next != want {
+						t.Fatalf("RecordLimitFallback() = %+v, %v, %v", next, found, err)
+					}
+					return nil
+				})
+				got := loadGraphDelivery(t, store, delivery)
+				expected := cloneDeliveryGraph(before)
+				expected.Tasks[0].Attempts[0].Runtime = want
+				expected.Tasks[0].Attempts[0].LimitOrigin = &origin
+				expected.Tasks[0].Attempts[0].ChildRunID = "child-run-1"
+				if !reflect.DeepEqual(got, expected) {
+					t.Fatalf("fallback changed attempt identity: got %+v, want %+v", got.Tasks[0], expected.Tasks[0])
+				}
+				journal, _, err := store.Load(delivery.WorkspaceID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.Save(delivery.WorkspaceID, journal); err != nil {
+					t.Fatalf("Save(fallback) = %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestRuntimeChangeStillRejectedOutsideLimitFallback(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(*GraphTaskAttempt)
+	}{
+		{"missing origin", func(a *GraphTaskAttempt) { a.LimitOrigin = nil }},
+		{"wrong origin", func(a *GraphTaskAttempt) {
+			a.LimitOrigin = &RuntimeValue{Provider: "claude", Model: "opus", Reasoning: "high"}
+		}},
+		{"skipped fallback", func(a *GraphTaskAttempt) {
+			a.Runtime = RuntimeValue{Provider: "claude", Model: "opus", Reasoning: "high"}
+		}},
+		{"unknown target", func(a *GraphTaskAttempt) { a.Runtime.Model = "unlisted" }},
+		{"changed execution", func(a *GraphTaskAttempt) { a.Execution++ }},
+		{"changed base", func(a *GraphTaskAttempt) { a.BaseHeadSHA = graphGitSHA("other-base") }},
+		{"changed worktree", func(a *GraphTaskAttempt) { a.WorktreeID = "other-worktree" }},
+		{"changed run", func(a *GraphTaskAttempt) { a.ChildRunID = "other-run" }},
+		{"missing run", func(a *GraphTaskAttempt) { a.ChildRunID = "" }},
+		{"changed allowance", func(a *GraphTaskAttempt) { a.TokenAllowance++ }},
+		{"changed state", func(a *GraphTaskAttempt) {
+			a.State = GraphTaskCandidate
+			a.CandidateCommitSHA = graphGitSHA("candidate")
+			a.VerificationDigest = digestFixture("verified")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store, delivery, generation := persistedRunningFallbackDelivery(t, "child-run-1")
+			before := loadGraphDelivery(t, store, delivery)
+			err := store.WithLockedJournal(delivery.WorkspaceID, func(tx *JournalTx) error {
+				graph := tx.Journal.Deliveries[delivery.DeliveryID].Graph
+				if _, _, err := graph.RecordLimitFallback("task_1", 1, "child-run-1", generation); err != nil {
+					return err
+				}
+				test.mutate(&graph.Tasks[0].Attempts[0])
+				graph.Tasks[0].State = graph.Tasks[0].Attempts[0].State
+				return tx.Persist()
+			})
+			if !errors.Is(err, ErrInvalidDeliveryTransition) && !errors.Is(err, ErrDeliveryConflict) {
+				t.Fatalf("persist invalid fallback = %v, want transition rejection", err)
+			}
+			if !reflect.DeepEqual(loadGraphDelivery(t, store, delivery), before) {
+				t.Fatal("rejected fallback changed durable graph")
+			}
+		})
+	}
+}
+
+func TestIntegratedCandidatePersistsTokens(t *testing.T) {
+	t.Parallel()
+	for _, used := range []int64{0, 37} {
+		t.Run(fmt.Sprintf("tokens-%d", used), func(t *testing.T) {
+			store, delivery, generation := persistedRunningFallbackDelivery(t, "child-run-1")
+			base := delivery.InitialWorktreeFingerprint.HeadSHA
+			commit := graphGitSHA("candidate")
+			mutateGraphDelivery(t, store, delivery, func(graph *DeliveryGraph) error {
+				_, err := graph.RecordCandidate("task_1", 1, TaskCandidate{
+					ChildRunID: "child-run-1", BaseHeadSHA: base, CommitSHA: commit,
+					VerificationDigest: digestFixture("verification"), TokensUsed: used,
+				})
+				return err
+			})
+			mutateGraphDelivery(t, store, delivery, func(graph *DeliveryGraph) error {
+				result, err := graph.SettleWave(WaveSettlement{
+					OperationID: digestFixture("settle-operation"), RequestDigest: digestFixture("settle-request"),
+					Wave: 1, StartingHeadSHA: base, OrderedTaskIDs: []string{"task_1"},
+					CandidateCommitSHAs: []string{commit}, AcceptedTaskIDs: []string{"task_1"},
+					AcceptedCommitSHAs: []string{commit}, IntegratedCommitSHAs: []string{commit}, FinalHeadSHA: commit,
+				}, generation)
+				if err != nil || result.Disposition != SettlementAllIntegrated {
+					t.Fatalf("SettleWave() = %+v, %v", result, err)
+				}
+				return nil
+			})
+			journal, _, err := store.Load(delivery.WorkspaceID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Save(delivery.WorkspaceID, journal); err != nil {
+				t.Fatalf("Save(integrated candidate) = %v", err)
+			}
+			graph := loadGraphDelivery(t, store, delivery)
+			attempt := graph.Tasks[0].Attempts[0]
+			if attempt.State != GraphTaskIntegrated || attempt.AlreadySatisfied || attempt.TokensUsed == nil || *attempt.TokensUsed != used {
+				t.Fatalf("integrated attempt = %+v, want tokens %d", attempt, used)
+			}
+			if total, err := graph.CumulativeTokens(); err != nil || total != used {
+				t.Fatalf("CumulativeTokens() = %d, %v, want %d", total, err, used)
+			}
+		})
+	}
+}
+
+func TestAlreadySatisfiedRequiresNilTokens(t *testing.T) {
+	t.Parallel()
+	store, delivery, generation := persistedRunningFallbackDelivery(t, "child-run-1")
+	mutateGraphDelivery(t, store, delivery, func(graph *DeliveryGraph) error {
+		result, err := graph.RecordFailureWithPolicy("task_1", 1, TaskFailure{
+			ChildRunID: "child-run-1", TerminalStatus: "failed", BlockerCode: BlockerAlreadySatisfied,
+		}, generation, delivery.InitialWorktreeFingerprint.HeadSHA, ConductingFailurePolicy)
+		if err != nil || !result.Satisfied {
+			t.Fatalf("RecordFailureWithPolicy(already satisfied) = %+v, %v", result, err)
+		}
+		return nil
+	})
+	before := loadGraphDelivery(t, store, delivery)
+	if !before.Tasks[0].Attempts[0].AlreadySatisfied || before.Tasks[0].Attempts[0].TokensUsed != nil {
+		t.Fatalf("already satisfied attempt = %+v", before.Tasks[0].Attempts[0])
+	}
+	for _, used := range []int64{0, 37} {
+		journal, _, err := store.Load(delivery.WorkspaceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		journal.Deliveries[delivery.DeliveryID].Graph.Tasks[0].Attempts[0].TokensUsed = &used
+		if err := store.Save(delivery.WorkspaceID, journal); !errors.Is(err, ErrInvalidDeliveryGraph) {
+			t.Fatalf("Save(already satisfied, tokens %d) = %v, want ErrInvalidDeliveryGraph", used, err)
+		}
+		if !reflect.DeepEqual(loadGraphDelivery(t, store, delivery), before) {
+			t.Fatal("rejected tokens changed durable graph")
+		}
+	}
+}
+
+func persistedRunningFallbackDelivery(t *testing.T, runID string) (*OwnershipStore, DeliveryRecord, RoutingGeneration) {
+	t.Helper()
+	store, err := NewOwnershipStore(tempDir(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery := validDeliveryFixture(t)
+	delivery.Attempts = nil
+	generation := validGenerationFixture(t)
+	selected := generation.Rules[0].Runtime
+	generation.Cells = []RoutingCell{{
+		Domain: DomainFrontend, Complexity: ComplexityHigh, TaskIDs: []string{"task_1"},
+		Selected: RuntimeCandidate{ProviderID: selected.Provider, ModelID: selected.Model, Reasoning: selected.Reasoning},
+		Fallbacks: []RuntimeCandidate{
+			{ProviderID: "codex", ModelID: "gpt-5.6-terra", Reasoning: "high"},
+			{ProviderID: "claude", ModelID: "opus", Reasoning: "high"},
+		}, FallbackLimit: 2,
+	}}
+	generation, err = finalizeGeneration(generation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery.RoutingGenerationDigest = generation.Digest
+	delivery.Graph, err = NewDeliveryGraph(delivery.TaskSnapshot, generation, delivery.InitialWorktreeFingerprint.HeadSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := emptyRoutingJournal()
+	journal.Generations[generation.Digest] = generation
+	journal.CurrentGeneration = generation.Digest
+	journal.Deliveries[delivery.DeliveryID] = delivery
+	if err := store.Save(delivery.WorkspaceID, journal); err != nil {
+		t.Fatalf("Save(initial graph) = %v", err)
+	}
+	mutateGraphDelivery(t, store, delivery, func(graph *DeliveryGraph) error {
+		wave, err := graph.AdmitReadyWave(ReadyWaveInput{IntegrationHeadSHA: delivery.InitialWorktreeFingerprint.HeadSHA, RemainingSlots: 1, ReachableCommits: map[string]bool{}})
+		if err != nil {
+			return err
+		}
+		if err := graph.BeginWaveAttempts(wave.Number, generation); err != nil {
+			return err
+		}
+		return graph.ReserveAttemptTokens("task_1", 1, 100)
+	})
+	mutateGraphDelivery(t, store, delivery, func(graph *DeliveryGraph) error {
+		if _, err := graph.AttachWorktree("task_1", 1, GraphWorktree{ID: "task-worktree-1", Root: "/workspace/task-1", Ready: true}); err != nil {
+			return err
+		}
+		graph.Tasks[0].Attempts[0].ChildRunID = runID
+		return nil
+	})
+	delivery.Graph = loadGraphDelivery(t, store, delivery)
+	return store, delivery, generation
+}
+
+func loadGraphDelivery(t *testing.T, store *OwnershipStore, delivery DeliveryRecord) *DeliveryGraph {
+	t.Helper()
+	journal, exists, err := store.Load(delivery.WorkspaceID)
+	if err != nil || !exists {
+		t.Fatalf("Load() = exists %v, error %v", exists, err)
+	}
+	return journal.Deliveries[delivery.DeliveryID].Graph
 }

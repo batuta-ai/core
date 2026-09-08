@@ -439,7 +439,7 @@ func validateAttempt(attempt DeliveryAttempt, expectedNumber int) error {
 	return nil
 }
 
-func validateDeliveryTransition(before, after DeliveryRecord) error {
+func validateDeliveryTransition(before, after DeliveryRecord, generation RoutingGeneration) error {
 	if before.State != DeliveryStateActive && len(before.Attempts) != len(after.Attempts) {
 		return ErrInvalidDeliveryTransition
 	}
@@ -455,7 +455,7 @@ func validateDeliveryTransition(before, after DeliveryRecord) error {
 		if before.Graph != nil || after.Graph != nil {
 			return ErrDeliveryConflict
 		}
-	} else if err := validateDeliveryGraphTransition(before.Graph, after.Graph); err != nil {
+	} else if err := validateDeliveryGraphTransition(before.Graph, after.Graph, generation); err != nil {
 		return err
 	}
 	for index := range before.Attempts {
