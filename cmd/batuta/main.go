@@ -650,16 +650,37 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	var rules []review.SpecRule
+	if *spec != "" {
+		rules, err = review.LoadSpecCriteria(root, *spec)
+		if err != nil {
+			return fmt.Errorf("review: load spec %s: %w", *spec, err)
+		}
+	}
 	slug, err := reviewSlug(root, *spec)
 	if err != nil {
 		return err
 	}
+	branch, err := reviewSlug(root, "")
+	if err != nil {
+		return err
+	}
+	key := branch
+	if *spec != "" {
+		key += "-" + slug
+	}
+	statePath := filepath.Join(root, ".batuta", "reviews", "state", key+".json")
 	sessionSlug := reviewNow().Format("2006-01-02") + "-" + slug
 	directory := *out
 	if directory == "" {
 		directory = filepath.Join(root, ".batuta", "reviews", sessionSlug)
 	} else if !filepath.IsAbs(directory) {
 		directory = filepath.Join(root, directory)
+	}
+	artifactPaths := append(review.ArtifactPaths(directory), statePath)
+	resolvedPaths, err := review.CheckArtifactPaths(root, artifactPaths)
+	if err != nil {
+		return err
 	}
 	requestedBase := *base
 	if requestedBase == "" {
@@ -668,11 +689,11 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	resolvedBase, err := resolveArtifactReviewBase(root, directory, requestedBase, *full)
+	state, err := review.LoadIncrementalState(root, statePath, requestedBase, *full)
 	if err != nil {
 		return err
 	}
-	manifest, err := review.BuildManifest(root, resolvedBase, nil, review.ManifestOptions{Worktree: *includeWorktree, CohortFiles: *cohortFiles})
+	manifest, err := review.BuildIncrementalManifest(root, state, review.ManifestOptions{Worktree: *includeWorktree, CohortFiles: *cohortFiles})
 	if err != nil {
 		return err
 	}
@@ -695,10 +716,6 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	}
 	var sweep *review.SpecSweep
 	if *spec != "" {
-		rules, err := review.LoadSpecCriteria(root, slug)
-		if err != nil {
-			return fmt.Errorf("review: load spec %s: %w", slug, err)
-		}
 		result, err := review.RunSpecSweep(ctx, manifest, rules, runtime, options)
 		if err != nil {
 			return reviewSessionError(ctx, git, root, baseline, trackedBaseline, err)
@@ -714,7 +731,26 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("review: source tree changed during review: %s", strings.Join(paths, ", "))
 	}
 	report := review.BuildReport(manifest, cohorts, sweep)
-	if err := review.WriteArtifacts(directory, report, review.ReviewState{Head: after.HeadSHA}); err != nil {
+	state = review.StateAfterReport(report, after.HeadSHA)
+	if _, err := review.CheckArtifactPaths(root, artifactPaths); err != nil {
+		return err
+	}
+	publicationGit := git
+	publicationGit.Runner = reviewPublicationRunner{paths: resolvedPaths, runner: git.Runner}
+	beforePublication, err := publicationGit.WorktreeState(ctx, root)
+	if err != nil {
+		return err
+	}
+	if err := review.WriteArtifacts(directory, report, state); err != nil {
+		return err
+	}
+	if err := reviewSessionError(ctx, publicationGit, root, beforePublication, trackedBaseline, nil); err != nil {
+		return err
+	}
+	if err := review.WriteIncrementalState(statePath, state); err != nil {
+		return err
+	}
+	if err := reviewSessionError(ctx, publicationGit, root, beforePublication, trackedBaseline, nil); err != nil {
 		return err
 	}
 	if err := review.PrintReport(stdout, report); err != nil {
@@ -742,43 +778,33 @@ func reviewSessionError(ctx context.Context, git publication.GitClient, root str
 	return fmt.Errorf("review: source tree changed during review: %s", strings.Join(paths, ", "))
 }
 
-func resolveArtifactReviewBase(root, directory, base string, full bool) (string, error) {
-	if full {
-		return base, nil
+// Exclude only the authorized artifact files from the publication tree guard;
+// other tracked, staged and untracked changes still invalidate the review.
+type reviewPublicationRunner struct {
+	paths  []string
+	runner publication.CommandRunner
+}
+
+func (r reviewPublicationRunner) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	if len(command.Args) > 0 {
+		switch command.Args[0] {
+		case "status", "diff", "ls-files":
+			command.Args = append(command.Args, "--", ".")
+			for _, filename := range r.paths {
+				relative, err := filepath.Rel(command.Directory, filename)
+				if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+					command.Args = append(command.Args, ":(top,literal,exclude)"+filepath.ToSlash(relative))
+				}
+			}
+		}
 	}
-	payload, err := os.ReadFile(filepath.Join(directory, "state.json"))
-	if os.IsNotExist(err) {
-		return base, nil
-	}
-	if err != nil {
-		return "", fmt.Errorf("review: read prior state: %w", err)
-	}
-	if len(payload) > 1<<20 {
-		return "", errors.New("review: prior state exceeds 1 MiB")
-	}
-	var state review.ReviewState
-	if json.Unmarshal(payload, &state) != nil || state.Head == "" || strings.TrimSpace(state.Head) != state.Head || strings.ContainsAny(state.Head, "\x00\r\n") {
-		return "", errors.New("review: prior state has an invalid head")
-	}
-	verify := exec.Command("git", "-C", root, "rev-parse", "--verify", "--end-of-options", state.Head+"^{commit}")
-	resolved, err := verify.Output()
-	if err != nil {
-		return "", errors.New("review: prior head is unavailable")
-	}
-	head := strings.TrimSpace(string(resolved))
-	if err := exec.Command("git", "-C", root, "merge-base", "--is-ancestor", head, "HEAD").Run(); err != nil {
-		return "", errors.New("review: prior head is not an ancestor of HEAD")
-	}
-	return head, nil
+	return r.runner.Run(ctx, command)
 }
 
 func reviewSlug(root, spec string) (string, error) {
 	if spec != "" {
 		name := strings.TrimSuffix(filepath.Base(spec), filepath.Ext(spec))
 		name = strings.TrimPrefix(name, "plan-")
-		if _, err := review.LoadSpecCriteria(root, name); err != nil {
-			return "", fmt.Errorf("review: load spec %s: %w", name, err)
-		}
 		return name, nil
 	}
 	output, err := exec.Command("git", "-C", root, "symbolic-ref", "--quiet", "--short", "HEAD").Output()
@@ -796,7 +822,11 @@ func reviewSlug(root, spec string) (string, error) {
 			lastDash = true
 		}
 	}
-	return strings.Trim(b.String(), "-"), nil
+	slug := strings.Trim(b.String(), "-")
+	if slug == "" {
+		slug = "branch"
+	}
+	return slug, nil
 }
 
 func defaultReviewBase(root string, includeWorktree bool) (string, error) {

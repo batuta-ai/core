@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -115,7 +116,7 @@ func PrintReport(w io.Writer, report Report) error {
 }
 
 // WriteArtifacts persists all machine and human outputs for manual PR attachment.
-func WriteArtifacts(directory string, report Report, state ReviewState) error {
+func WriteArtifacts(directory string, report Report, state IncrementalState) error {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return fmt.Errorf("review: create artifact directory: %w", err)
 	}
@@ -187,4 +188,70 @@ func cleanReportText(value string) string {
 
 func markdownCell(value string) string {
 	return strings.ReplaceAll(cleanReportText(value), "|", "\\|")
+}
+
+// ArtifactPaths lists every destination before publication can create anything.
+func ArtifactPaths(directory string) []string {
+	var paths []string
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+		paths = append(paths, filepath.Join(directory, name))
+	}
+	return paths
+}
+
+// CheckArtifactPaths resolves directory symlinks and refuses tracked destinations
+// or parents, including a tracked symlink at the original destination.
+func CheckArtifactPaths(root string, paths []string) ([]string, error) {
+	root, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	var resolved []string
+	for _, filename := range paths {
+		absolute, err := filepath.Abs(filename)
+		if err != nil {
+			return nil, err
+		}
+		canonical, err := resolveArtifactPath(absolute)
+		if err != nil {
+			return nil, fmt.Errorf("review: resolve artifact destination: %w", err)
+		}
+		for _, destination := range []string{absolute, canonical} {
+			for current := destination; current != filepath.Dir(current); current = filepath.Dir(current) {
+				relative, err := filepath.Rel(root, current)
+				if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+					break
+				}
+				if relative == "." {
+					break
+				}
+				cmd := exec.Command("git", "-C", root, "--literal-pathspecs", "ls-files", "--error-unmatch", "--", relative)
+				if err := cmd.Run(); err == nil {
+					// Directory pathspecs also match descendants. Only the leaf
+					// or an actual non-directory parent can be overwritten.
+					info, statErr := os.Stat(current)
+					if current == destination || statErr != nil || !info.IsDir() {
+						return nil, fmt.Errorf("review: artifact destination overlaps tracked path %q", relative)
+					}
+				} else if exit, ok := err.(*exec.ExitError); !ok || exit.ExitCode() != 1 {
+					return nil, fmt.Errorf("review: check tracked artifact destination: %w", err)
+				}
+			}
+		}
+		resolved = append(resolved, canonical)
+	}
+	return resolved, nil
+}
+
+func resolveArtifactPath(filename string) (string, error) {
+	if _, err := os.Lstat(filename); err == nil {
+		return filepath.EvalSymlinks(filename)
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	parent, err := resolveArtifactPath(filepath.Dir(filename))
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(parent, filepath.Base(filename)), nil
 }

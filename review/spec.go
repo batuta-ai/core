@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +18,8 @@ import (
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
+
+var specSlug = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 type SpecRule struct {
 	ID    string `json:"id"`
@@ -74,17 +79,44 @@ func SpecCriteria(plan routing.Plan) []SpecRule {
 	return rules
 }
 
-// LoadSpecCriteria loads a plan by slug and returns all of its acceptance rules.
-func LoadSpecCriteria(root, slug string) ([]SpecRule, error) {
-	loader, err := routing.NewPlanLoader(root)
-	if err != nil {
-		return nil, err
+// LoadSpecCriteria reads explicit paths directly; slugs prefer active, archived,
+// then legacy plans. Parsing always uses the selected file's contents.
+func LoadSpecCriteria(root, spec string) ([]SpecRule, error) {
+	paths := []string{spec}
+	slug := strings.TrimPrefix(strings.TrimSuffix(filepath.Base(spec), filepath.Ext(spec)), "plan-")
+	if !filepath.IsAbs(spec) && !strings.ContainsAny(spec, "/\\") && filepath.Ext(spec) == "" {
+		if !specSlug.MatchString(spec) {
+			return nil, routing.ErrInvalidSlug
+		}
+		slug = spec
+		paths = []string{routing.PlanPath(spec), filepath.Join(".batuta", "plans", "done", spec+".md"), filepath.Join(".batuta", "plan-"+spec+".md")}
 	}
-	plan, err := loader.LoadPlan(slug)
-	if err != nil {
-		return nil, err
+	for _, filename := range paths {
+		if !filepath.IsAbs(filename) {
+			filename = filepath.Join(root, filename)
+		}
+		file, err := os.Open(filename)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		payload, readErr := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+		closeErr := file.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+		plan, err := routing.ParsePlan(slug, payload)
+		if err != nil {
+			return nil, err
+		}
+		return SpecCriteria(plan), nil
 	}
-	return SpecCriteria(plan), nil
+	return nil, fmt.Errorf("review: plan %q is unavailable", spec)
 }
 
 // RunSpecSweep runs one read-only session for the complete spec. Invalid or

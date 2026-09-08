@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -818,5 +819,246 @@ func TestDryRunListsLimitFallbacks(t *testing.T) {
 	err := run([]string{"loop", "--workspace", t.TempDir(), "--dry-run", "--limit-horizon", "45m"}, &out, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
 		t.Fatalf("limit-horizon flag: %v\n%s", err, &stderr)
+	}
+}
+
+func reviewGit(t *testing.T, root string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_AUTHOR_NAME=Review Test", "GIT_AUTHOR_EMAIL=review@example.test", "GIT_COMMITTER_NAME=Review Test", "GIT_COMMITTER_EMAIL=review@example.test")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func readReviewJSON(t *testing.T, name string, value any) {
+	t.Helper()
+	payload, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(payload, value); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReviewStateSurvivesDatedDirectories(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	reviewGit(t, root, "checkout", "-qb", "feature/review")
+	reviewGit(t, root, "commit", "-qam", "change")
+	head := reviewGit(t, root, "rev-parse", "HEAD")
+	restore := stubReviewSessions(t, nil, nil)
+	defer restore()
+	previous := reviewNow
+	defer func() { reviewNow = previous }()
+	for day := 8; day <= 9; day++ {
+		reviewNow = func() time.Time { return time.Date(2026, 9, day, 0, 0, 0, 0, time.UTC) }
+		if err := run([]string{"review", "--base", base}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var manifest review.Manifest
+	readReviewJSON(t, filepath.Join(root, ".batuta/reviews/2026-09-09-feature-review/manifest.json"), &manifest)
+	if manifest.Base != head || len(manifest.Cohorts) != 0 {
+		t.Fatalf("second round = %+v, want empty diff from %s", manifest, head)
+	}
+	var state review.ReviewState
+	readReviewJSON(t, filepath.Join(root, ".batuta/reviews/state/feature-review.json"), &state)
+	if state.Head != head {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestReviewKeepsCheckpointWhenUncovered(t *testing.T) {
+	for _, previousRound := range []bool{false, true} {
+		t.Run(fmt.Sprint(previousRound), func(t *testing.T) {
+			root, base := reviewCommandRepo(t)
+			t.Chdir(root)
+			reviewGit(t, root, "checkout", "-qb", "pending")
+			if previousRound {
+				restore := stubReviewSessions(t, nil, nil)
+				if err := run([]string{"review", "--base", base, "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+					t.Fatal(err)
+				}
+				restore()
+			}
+			reviewGit(t, root, "commit", "-qam", "change")
+			restore := stubReviewRunner(t, func(context.Context, publication.Command) (publication.CommandResult, error) {
+				return publication.CommandResult{ExitCode: 1}, nil
+			})
+			defer restore()
+			err := run([]string{"review", "--base", base, "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{})
+			var exit *ExitError
+			if !errors.As(err, &exit) || exit.Code != 3 {
+				t.Fatalf("review = %v", err)
+			}
+			var state struct {
+				Head    string
+				Pending []struct{ Files []review.File }
+			}
+			readReviewJSON(t, filepath.Join(root, ".batuta/reviews/state/pending.json"), &state)
+			if state.Head != base || len(state.Pending) != 1 || len(state.Pending[0].Files) != 1 || len(state.Pending[0].Files[0].Hunks) == 0 {
+				t.Fatalf("state lost checkpoint or pending hunks: %+v", state)
+			}
+		})
+	}
+}
+
+func TestReviewCarriesPendingCohorts(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	reviewGit(t, root, "checkout", "-qb", "pending")
+	reviewGit(t, root, "commit", "-qam", "change")
+	if err := os.WriteFile(filepath.Join(root, "new.go"), []byte("package fresh\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	restore := stubReviewRunner(t, func(context.Context, publication.Command) (publication.CommandResult, error) {
+		return publication.CommandResult{ExitCode: 1}, nil
+	})
+	err := run([]string{"review", "--base", base, "--worktree", "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{})
+	restore()
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 3 {
+		t.Fatalf("review = %v", err)
+	}
+	var prompts []string
+	restore = stubReviewRunner(t, func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+		prompts = append(prompts, command.Args[len(command.Args)-1])
+		return publication.CommandResult{Stdout: []byte("<<<FINDINGS\nFINDINGS>>>\n")}, nil
+	})
+	defer restore()
+	if err := run([]string{"review", "--base", base, "--out", "artifacts"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(strings.Join(prompts, "\n"), "new.go") || !strings.Contains(strings.Join(prompts, "\n"), "change.go") {
+		t.Fatalf("pending files not reviewed: %v", prompts)
+	}
+	var state struct {
+		Head    string
+		Pending []json.RawMessage
+	}
+	readReviewJSON(t, filepath.Join(root, ".batuta/reviews/state/pending.json"), &state)
+	if state.Head != reviewGit(t, root, "rev-parse", "HEAD") || len(state.Pending) != 0 {
+		t.Fatalf("state = %+v", state)
+	}
+}
+
+func TestReviewRefusesOutOverTrackedFiles(t *testing.T) {
+	for _, symlink := range []bool{false, true} {
+		for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+			t.Run(fmt.Sprintf("%s/symlink=%t", name, symlink), func(t *testing.T) {
+				root, base := reviewCommandRepo(t)
+				t.Chdir(root)
+				if err := os.Mkdir(filepath.Join(root, "reports"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				tracked := filepath.Join(root, "reports", name)
+				if err := os.WriteFile(tracked, []byte("preserve source\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				reviewGit(t, root, "add", "reports")
+				reviewGit(t, root, "commit", "-qm", "tracked report")
+				out := "reports"
+				if symlink {
+					out = filepath.Join(t.TempDir(), "alias")
+					if err := os.Symlink(filepath.Join(root, "reports"), out); err != nil {
+						t.Fatal(err)
+					}
+				}
+				restore := stubReviewSessions(t, nil, nil)
+				defer restore()
+				err := run([]string{"review", "--base", base, "--out", out}, &bytes.Buffer{}, &bytes.Buffer{})
+				if err == nil || !strings.Contains(err.Error(), "tracked") {
+					t.Fatalf("review = %v, want refusal", err)
+				}
+				payload, readErr := os.ReadFile(tracked)
+				if readErr != nil || string(payload) != "preserve source\n" {
+					t.Fatalf("tracked source overwritten: %q, %v", payload, readErr)
+				}
+				entries, err := os.ReadDir(filepath.Join(root, "reports"))
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("wrote artifacts before refusing: %v, %v", entries, err)
+				}
+			})
+		}
+	}
+}
+
+func TestReviewChecksTreeAfterArtefacts(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ -f '" + root + "/out/review.md' ]; then\n  echo 'package tampered' > '" + root + "/tracked.go'\nfi\nexec '" + realGit + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	restore := stubReviewSessions(t, nil, nil)
+	defer restore()
+	err = run([]string{"review", "--base", base, "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "source tree changed") {
+		t.Fatalf("review = %v, want post-publication tree check", err)
+	}
+	states, err := filepath.Glob(filepath.Join(root, ".batuta/reviews/state/*.json"))
+	if err != nil || len(states) != 0 {
+		t.Fatalf("checkpoint published after mutation: %v, %v", states, err)
+	}
+}
+
+func TestReviewSpecPath(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	reviewGit(t, root, "checkout", "-qb", "feature/spec")
+	for _, location := range []string{"plans", "plans/done"} {
+		dir := filepath.Join(root, ".batuta", location)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		plan := "# Plan — Spec\n**Goal:** Review\n**Status:** approved\n## Tasks\n- [ ] 1. Check — docs/low\n      Accept: criteria from " + location + "\n"
+		if err := os.WriteFile(filepath.Join(dir, "delivery.md"), []byte(plan), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sawSpec := false
+	restore := stubReviewRunner(t, func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+		prompt := command.Args[len(command.Args)-1]
+		if strings.Contains(prompt, "<<<CRITERIA") {
+			sawSpec = true
+			if !strings.Contains(prompt, "criteria from plans/done") {
+				t.Errorf("wrong spec: %s", prompt)
+			}
+			return publication.CommandResult{Stdout: []byte("<<<CRITERIA\n{\"id\":\"task-1.1\",\"status\":\"satisfied\",\"path\":\"change.go:3\"}\nCRITERIA>>>\n")}, nil
+		}
+		return publication.CommandResult{Stdout: []byte("<<<FINDINGS\nFINDINGS>>>\n")}, nil
+	})
+	defer restore()
+	if err := run([]string{"review", "--base", base, "--spec", ".batuta/plans/done/delivery.md", "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if !sawSpec {
+		t.Fatal("no spec sweep")
+	}
+	if _, err := os.Stat(filepath.Join(root, ".batuta/reviews/state/feature-spec-delivery.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReviewAllowsUntrackedArtifactDirectory(t *testing.T) {
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	restore := stubReviewSessions(t, nil, nil)
+	defer restore()
+	if err := run([]string{"review", "--base", base, "--out", "reports/new"}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "reports/new/review.md")); err != nil {
+		t.Fatal(err)
 	}
 }

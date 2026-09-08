@@ -77,7 +77,11 @@ Premise → Improvement → Fix.
 ## Spec conformance and linter overlap
 
 With `--spec <plan>`, Batuta loads every acceptance criterion from the named
-plan and runs a separate read-only sweep over the complete diff. The sweep must
+plan and runs a separate read-only sweep over the complete diff. An explicit
+path (for example, `--spec .batuta/plans/done/review.md`) loads that exact file.
+A slug searches `.batuta/plans/<slug>.md`, then
+`.batuta/plans/done/<slug>.md`, then the legacy `.batuta/plan-<slug>.md`.
+The criteria are loaded once before reviewer sessions start. The sweep must
 return each criterion in order as `satisfied`, `violated`, or `not-applicable`,
 with an evidence path. A violated criterion, malformed response, or incomplete
 spec coverage produces `REWORK`.
@@ -90,22 +94,36 @@ signals are not presented twice.
 
 ## Incremental rounds
 
-The output directory's `state.json` records the reviewed HEAD. A later review
-using the same directory starts from that commit when it is still an ancestor
-of the current HEAD, so the next round covers only new changes. Pass `--full`
-to ignore prior state and review from `--base` again. Missing, invalid, or
-non-ancestor state is reported instead of silently widening or narrowing the
-review.
+Incremental state lives in `.batuta/reviews/state/<key>.json`. The key is the
+sanitised branch name, with `-<spec-slug>` appended when `--spec` is supplied.
+It is independent of the date and `--out`, so later rounds continue from the
+last covered HEAD even when their report directory changes. The saved HEAD must
+still be an ancestor of the current HEAD.
+
+Incomplete cohort or spec coverage keeps the previous checkpoint (the resolved
+base on the first round). Uncovered cohorts are saved as pending file lists with
+hunk ranges. The next round rebuilds the diff from that checkpoint, including
+pending untracked files even without `--worktree`; reverted changes disappear
+from the rebuilt diff. Complete coverage advances the checkpoint and clears
+pending cohorts.
+
+Pass `--full` to ignore prior state and review from `--base` again. Missing state
+starts from the requested base; invalid or non-ancestor state is reported as an
+error. Dated report directories retain a `state.json` copy for inspection, but
+incremental rounds read the stable state file.
 
 ## Artefacts and verdict
 
 The default artefact directory is `.batuta/reviews/<date>-<slug>`; `--out`
-selects another directory. Batuta writes atomically:
+selects another directory. Before writing, Batuta refuses destinations that
+overlap tracked files, including paths reached through directory symlinks.
+It checks the source tree again after publication, excluding only the declared
+artifact files. Batuta writes each file atomically:
 
 - `manifest.json`: the complete diff inventory and cohort assignment.
 - `findings.json`: accepted, deduplicated, unsuppressed findings.
 - `review.md`: the same human walkthrough printed to stdout.
-- `state.json`: the reviewed HEAD used by incremental rounds.
+- `state.json`: a copy of the covered checkpoint and any pending cohorts.
 
 The conductor, not a reviewer, derives the verdict from accepted evidence:
 

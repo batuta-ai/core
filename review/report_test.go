@@ -56,7 +56,7 @@ func TestWriteArtifactsPersistsThePrintedReportVerbatim(t *testing.T) {
 	if err := PrintReport(&printed, report); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteArtifacts(out, report, ReviewState{Head: "0123456789abcdef"}); err != nil {
+	if err := WriteArtifacts(out, report, IncrementalState{Head: "0123456789abcdef"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {

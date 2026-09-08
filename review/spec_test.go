@@ -110,3 +110,37 @@ func TestSpecSweepVerdicts(t *testing.T) {
 		t.Fatalf("criteria=%+v verdict=%s", criteria, Verdict(nil, criteria))
 	}
 }
+
+func TestLoadSpecCriteriaFromPathAndDone(t *testing.T) {
+	root := t.TempDir()
+	plan := func(criterion string) string {
+		return "# Plan — Spec\n**Goal:** Review\n**Status:** approved\n## Tasks\n- [ ] 1. Check — docs/low\n      Accept: " + criterion + "\n"
+	}
+	writeTestFile(t, root, ".batuta/plans/delivery.md", plan("active criterion"))
+	writeTestFile(t, root, ".batuta/plans/done/delivery.md", plan("archived criterion"))
+	writeTestFile(t, root, ".batuta/plans/done/archive.md", plan("archive-only criterion"))
+	writeTestFile(t, root, ".batuta/plan-legacy.md", plan("legacy criterion"))
+	for _, tc := range []struct{ spec, want string }{
+		{"delivery", "active criterion"},
+		{"archive", "archive-only criterion"},
+		{"legacy", "legacy criterion"},
+		{".batuta/plans/done/delivery.md", "archived criterion"},
+		{filepath.Join(root, ".batuta/plans/done/delivery.md"), "archived criterion"},
+	} {
+		t.Run(tc.spec, func(t *testing.T) {
+			rules, err := LoadSpecCriteria(root, tc.spec)
+			if err != nil || len(rules) != 1 || rules[0].Text != tc.want {
+				t.Fatalf("rules=%+v err=%v, want %q", rules, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadSpecCriteriaPreservesNumericSlugs(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, ".batuta/plans/done/2026-review.md", "# Plan — Spec\n**Goal:** Review\n**Status:** approved\n## Tasks\n- [ ] 1. Check — docs/low\n      Accept: numeric slug works\n")
+	rules, err := LoadSpecCriteria(root, "2026-review")
+	if err != nil || len(rules) != 1 || rules[0].Text != "numeric slug works" {
+		t.Fatalf("rules=%+v err=%v", rules, err)
+	}
+}
