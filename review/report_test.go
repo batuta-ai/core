@@ -49,6 +49,26 @@ func TestReportPrintsWalkthroughAndOrdersFindings(t *testing.T) {
 	}
 }
 
+func TestReportMarksOversizedCohort(t *testing.T) {
+	manifest := Manifest{
+		Base:  "0123456789abcdef",
+		Files: []File{{Path: "loop/loop_test.go", Selected: true, Added: 1443}},
+		Cohorts: []Cohort{{
+			Files:        []string{"loop/loop_test.go"},
+			ChangedLines: 1443,
+			Oversized:    true,
+		}},
+	}
+	report := BuildReport(manifest, []CohortResult{{Cohort: 0, Files: []string{"loop/loop_test.go"}, Covered: true}}, nil)
+	var out bytes.Buffer
+	if err := PrintReport(&out, report); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Cohort 1: loop/loop_test.go (1443 changed lines, oversized)"; !strings.Contains(out.String(), want) {
+		t.Fatalf("report is missing %q:\n%s", want, out.String())
+	}
+}
+
 func TestWriteArtifactsPersistsThePrintedReportVerbatim(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "review")
 	report := BuildReport(Manifest{Base: "base"}, nil, nil)

@@ -40,3 +40,22 @@ func TestCohortPromptUntracked(t *testing.T) {
 		t.Fatalf("prompt=%s err=%v", prompt, err)
 	}
 }
+
+func TestPromptMentionsOversized(t *testing.T) {
+	t.Parallel()
+	root := reviewRepo(t)
+	writeTestFile(t, root, "huge.go", strings.Repeat("line\n", CohortLines+1))
+	manifest, err := BuildManifest(root, "HEAD", nil, ManifestOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := BuildCohortPrompt(root, manifest, manifest.Cohorts[0], "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"oversized", "exceeds the usual", "review it in full"} {
+		if !strings.Contains(strings.ToLower(prompt), want) {
+			t.Fatalf("oversized prompt is missing %q:\n%s", want, prompt)
+		}
+	}
+}

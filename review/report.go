@@ -84,7 +84,14 @@ func PrintReport(w io.Writer, report Report) error {
 		for i, name := range cohort.Files {
 			names[i] = escapeReportPath(name)
 		}
-		if _, err := fmt.Fprintf(w, "- Cohort %d: %s — %s\n", cohort.Cohort+1, strings.Join(names, ", "), status); err != nil {
+		details := strings.Join(names, ", ")
+		if cohort.Cohort >= 0 && cohort.Cohort < len(report.Manifest.Cohorts) {
+			manifestCohort := report.Manifest.Cohorts[cohort.Cohort]
+			if manifestCohort.Oversized {
+				details = fmt.Sprintf("%s (%d changed lines, oversized)", details, manifestCohort.ChangedLines)
+			}
+		}
+		if _, err := fmt.Fprintf(w, "- Cohort %d: %s — %s\n", cohort.Cohort+1, details, status); err != nil {
 			return err
 		}
 	}

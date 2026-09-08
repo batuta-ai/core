@@ -79,6 +79,9 @@ func BuildCohortPrompt(root string, manifest Manifest, cohort Cohort, rubric str
 	for _, section := range conventions {
 		b.WriteString("\n" + section + "\n")
 	}
+	if cohort.Oversized {
+		fmt.Fprintf(&b, "\nThis oversized cohort's file exceeds the usual %d changed-line budget. Review it in full.\n", CohortLines)
+	}
 	b.WriteString("\nCohort hunks (verbatim):\n")
 	seen := map[string]bool{}
 	for _, name := range cohort.Files {

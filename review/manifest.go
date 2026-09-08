@@ -43,6 +43,7 @@ type File struct {
 type Cohort struct {
 	Files        []string `json:"files"`
 	ChangedLines int      `json:"changed_lines"`
+	Oversized    bool     `json:"oversized,omitempty"`
 }
 
 type Manifest struct {
@@ -316,9 +317,10 @@ func buildCohorts(files []File, limit int) ([]Cohort, error) {
 		}
 		lines := file.Added + file.Deleted
 		if lines > CohortLines {
-			return nil, fmt.Errorf("review: %q has %d changed lines, exceeding the indivisible cohort limit of %d", file.Path, lines, CohortLines)
+			cohorts = append(cohorts, Cohort{Files: []string{file.Path}, ChangedLines: lines, Oversized: true})
+			continue
 		}
-		if len(cohorts) == 0 || len(cohorts[len(cohorts)-1].Files) == limit || cohorts[len(cohorts)-1].ChangedLines+lines > CohortLines {
+		if len(cohorts) == 0 || cohorts[len(cohorts)-1].Oversized || len(cohorts[len(cohorts)-1].Files) == limit || cohorts[len(cohorts)-1].ChangedLines+lines > CohortLines {
 			cohorts = append(cohorts, Cohort{})
 		}
 		cohort := &cohorts[len(cohorts)-1]

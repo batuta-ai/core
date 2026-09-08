@@ -158,9 +158,34 @@ func TestCohortsRespectLimits(t *testing.T) {
 			t.Fatal("file assigned more than once")
 		}
 	}
-	writeTestFile(t, root, "huge.go", strings.Repeat("line\n", 1201))
-	if _, err := BuildManifest(root, "HEAD", nil, ManifestOptions{Worktree: true}); err == nil || !strings.Contains(err.Error(), "huge.go") {
-		t.Fatalf("oversized file must fail explicitly: %v", err)
+	for i, cohort := range m.Cohorts {
+		if cohort.Oversized {
+			t.Fatalf("ordinary cohort %d marked oversized: %+v", i, cohort)
+		}
+	}
+}
+
+func TestOversizedFileGetsOwnCohort(t *testing.T) {
+	root := reviewRepo(t)
+	for name, lines := range map[string]int{
+		"00.go": 700,
+		"01.go": CohortLines + 1,
+		"02.go": 500,
+		"03.go": 700,
+	} {
+		writeTestFile(t, root, name, strings.Repeat("line\n", lines))
+	}
+	m, err := BuildManifest(root, "HEAD", nil, ManifestOptions{Worktree: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Cohort{
+		{Files: []string{"00.go"}, ChangedLines: 700},
+		{Files: []string{"01.go"}, ChangedLines: CohortLines + 1, Oversized: true},
+		{Files: []string{"02.go", "03.go"}, ChangedLines: CohortLines},
+	}
+	if !reflect.DeepEqual(m.Cohorts, want) {
+		t.Fatalf("cohorts = %+v, want %+v", m.Cohorts, want)
 	}
 }
 

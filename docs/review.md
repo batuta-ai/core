@@ -27,8 +27,9 @@ reviewer.
 
 Selected paths are grouped deterministically in manifest order. A cohort holds
 at most eight files by default (`--cohort-files` changes this) and at most 1,200
-changed lines. A single file over that line limit is rejected rather than split,
-so every reviewer receives whole-file ownership within the delivery diff.
+changed lines when it combines files. An oversized file is reviewed in full as
+its own cohort and marked `oversized` in the manifest and walkthrough, so every
+reviewer receives whole-file ownership within the delivery diff.
 
 ## Reviewer runtime
 
