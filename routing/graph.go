@@ -17,6 +17,7 @@ const (
 	MaxDeliveryTasks              = 64
 	MaxTaskExecutions             = 4
 	BlockerNeedsConductingSession = "needs_conducting_session"
+	BlockerQuestionAtCeiling      = "question_at_ceiling"
 
 	maxQuestionBytes              = 2 << 10
 	maxChoiceBytes                = 512
@@ -629,7 +630,7 @@ func (g *DeliveryGraph) RecordQuestion(
 	question TaskQuestion,
 	startedAt time.Time,
 ) (bool, error) {
-	if g == nil || !boundedArgument(taskID) || execution < 1 || execution >= MaxTaskExecutions ||
+	if g == nil || !boundedArgument(taskID) || execution < 1 || execution > MaxTaskExecutions ||
 		!boundedArgument(childRunID) || !validTaskQuestion(&question) || question.Answer != nil ||
 		startedAt.IsZero() || startedAt.Location() != time.UTC {
 		return false, ErrInvalidDeliveryTransition
@@ -641,7 +642,10 @@ func (g *DeliveryGraph) RecordQuestion(
 	}
 	attempt := &task.Attempts[execution-1]
 	if attempt.Question != nil {
-		if task.State != GraphTaskWaitingInput || attempt.State != GraphTaskWaitingInput ||
+		waiting := task.State == GraphTaskWaitingInput && attempt.State == GraphTaskWaitingInput
+		blockedAtCeiling := execution == MaxTaskExecutions && task.State == GraphTaskBlocked && attempt.State == GraphTaskBlocked &&
+			task.BlockerCode == BlockerQuestionAtCeiling && attempt.BlockerCode == BlockerQuestionAtCeiling
+		if (!waiting && !blockedAtCeiling) ||
 			attempt.ChildRunID != childRunID || !reflect.DeepEqual(attempt.Question, &question) {
 			return false, ErrInvalidDeliveryTransition
 		}
@@ -653,6 +657,17 @@ func (g *DeliveryGraph) RecordQuestion(
 	}
 	attempt.ChildRunID = childRunID
 	attempt.Question = cloneTaskQuestion(&question)
+	if execution == MaxTaskExecutions {
+		attempt.State = GraphTaskBlocked
+		attempt.BlockerCode = BlockerQuestionAtCeiling
+		task.State = GraphTaskBlocked
+		task.BlockerCode = BlockerQuestionAtCeiling
+		if err := validateGraphTask(*task, "pending"); err != nil {
+			return false, err
+		}
+		*g = *candidate
+		return false, nil
+	}
 	attempt.State = GraphTaskWaitingInput
 	task.State = GraphTaskWaitingInput
 	if _, err := candidate.ReconcileHumanPause(startedAt); err != nil {

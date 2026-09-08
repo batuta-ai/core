@@ -535,7 +535,7 @@ func TestDeliveryGraphSuspendsWallOnlyWhenEveryActiveTaskWaitsForHuman(t *testin
 	}
 }
 
-func TestDeliveryGraphRejectsQuestionOnFourthExecution(t *testing.T) {
+func TestRecordQuestionAtCeilingBlocks(t *testing.T) {
 	t.Parallel()
 
 	record := validDeliveryFixture(t)
@@ -546,9 +546,25 @@ func TestDeliveryGraphRejectsQuestionOnFourthExecution(t *testing.T) {
 	base := task.Attempts[0]
 	base.State = GraphTaskRunning
 	base.Question = nil
-	task.Attempts = []GraphTaskAttempt{base, base, base, base}
-	for index := range task.Attempts {
-		task.Attempts[index].Execution = index + 1
+	base.ChildRunID = ""
+	task.Attempts = []GraphTaskAttempt{base}
+	for execution := 1; execution < MaxTaskExecutions; execution++ {
+		question := TaskQuestion{
+			RequestID:     digestFixture(fmt.Sprintf("question-%d", execution)),
+			Prompt:        fmt.Sprintf("Choose behavior %d", execution),
+			ContextDigest: digestFixture(fmt.Sprintf("context-%d", execution)),
+		}
+		runID := "loop-task-1"
+		if _, err := record.Graph.RecordQuestion("task_1", execution, runID, question, record.CreatedAt.Add(time.Duration(execution)*time.Minute)); err != nil {
+			t.Fatalf("RecordQuestion(%d) error = %v", execution, err)
+		}
+		answer := TaskAnswer{
+			QuestionOperationID: question.RequestID, LoopRunID: runID,
+			Generation: execution, NodeID: "loop", Value: "continue",
+		}
+		if _, _, err := record.Graph.RecordAnswer("task_1", execution, answer, record.CreatedAt.Add(time.Duration(execution)*time.Minute+time.Second)); err != nil {
+			t.Fatalf("RecordAnswer(%d) error = %v", execution, err)
+		}
 	}
 
 	question := TaskQuestion{
@@ -556,8 +572,19 @@ func TestDeliveryGraphRejectsQuestionOnFourthExecution(t *testing.T) {
 		Prompt:        "Choose the final behavior",
 		ContextDigest: "sha256:74bad2ae825e22fc7be89dad88e81cd9d68d80f8d0e9465dbed4b90992f12d99",
 	}
-	if _, err := record.Graph.RecordQuestion("task_1", 4, "loop-task-4", question, record.CreatedAt.Add(time.Minute)); !errors.Is(err, ErrInvalidDeliveryTransition) {
-		t.Fatalf("RecordQuestion(fourth execution) error = %v, want ErrInvalidDeliveryTransition", err)
+	ceilingStartedAt := record.CreatedAt.Add(MaxTaskExecutions * time.Minute)
+	if replay, err := record.Graph.RecordQuestion("task_1", MaxTaskExecutions, "loop-task-1", question, ceilingStartedAt); err != nil || replay {
+		t.Fatalf("RecordQuestion(fourth execution) replay=%v error=%v", replay, err)
+	}
+	task = &record.Graph.Tasks[0]
+	attempt := task.Attempts[MaxTaskExecutions-1]
+	if task.State != GraphTaskBlocked || task.BlockerCode != BlockerQuestionAtCeiling ||
+		attempt.State != GraphTaskBlocked || attempt.BlockerCode != BlockerQuestionAtCeiling ||
+		attempt.Question == nil || !reflect.DeepEqual(*attempt.Question, question) {
+		t.Fatalf("task after ceiling question = %#v", task)
+	}
+	if replay, err := record.Graph.RecordQuestion("task_1", MaxTaskExecutions, "loop-task-1", question, ceilingStartedAt); err != nil || !replay {
+		t.Fatalf("RecordQuestion(replay) replay=%v error=%v", replay, err)
 	}
 }
 

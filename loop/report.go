@@ -471,9 +471,10 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	blockedAtCeiling := false
 	for _, id := range ids {
 		records, err := store.Read(id)
-		if err != nil || len(records) == 0 || terminalState(records) != "" {
+		if err != nil || len(records) == 0 {
 			continue
 		}
 		last := records[len(records)-1]
@@ -482,6 +483,14 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 			continue
 		}
 		task := graphTask(&graph, taskID)
+		if task != nil && task.State == routing.GraphTaskBlocked && task.BlockerCode == routing.BlockerQuestionAtCeiling &&
+			len(task.Attempts) > 0 && task.Attempts[len(task.Attempts)-1].Question != nil {
+			blockedAtCeiling = true
+			continue
+		}
+		if terminalState(records) != "" {
+			continue
+		}
 		if task == nil || task.State != routing.GraphTaskWaitingInput || len(task.Attempts) == 0 {
 			continue
 		}
@@ -496,7 +505,7 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 			QuestionOperationID: attempt.Question.RequestID, LoopRunID: attempt.ChildRunID,
 			Generation: 1, NodeID: "loop", ItemIndex: 0, Value: text,
 		}
-		if _, _, err := graph.RecordAnswer(taskID, attempt.Execution, answer, time.Now().UTC()); err != nil {
+		if _, _, err := graph.RecordAnswer(taskID, attempt.Execution, answer, now); err != nil {
 			return "", fmt.Errorf("loop: record answer: %w", err)
 		}
 		graphJSON, _ := json.Marshal(graph)
@@ -508,6 +517,9 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 		_ = json.Unmarshal(records[0].Detail, &opened)
 		_ = os.Remove(filepath.Join(root, ".batuta", "asks", opened.Slug+"-"+strings.ReplaceAll(taskID, "_", "-")+".md"))
 		return id, nil
+	}
+	if blockedAtCeiling {
+		return "", fmt.Errorf("loop: %s is blocked at the execution ceiling; answer the question in a new plan or an interactive cycle", taskID)
 	}
 	return "", fmt.Errorf("loop: no open delivery has %s waiting for an answer", taskID)
 }

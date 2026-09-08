@@ -104,6 +104,18 @@ case "${FAKE_SCENARIO:-default}" in
   ask)
     if [ "$n" = 1 ] && [ -z "$answered" ]; then echo "BATUTA-QUESTION: which greeting?"; exit 0; fi
     if [ "$n" = 1 ]; then echo "$answered" > out/1.txt; else echo "ok" > out/$n.txt; fi;;
+  question-at-ceiling)
+    if [ "$n" = 1 ]; then
+      case "$answered" in
+        "") question="choose the first behavior";;
+        first) question="choose the second behavior";;
+        second) question="choose the third behavior";;
+        *) question="choose the final behavior";;
+      esac
+      echo "BATUTA-QUESTION: $question"
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   slow)
     if [ "$n" = 1 ]; then sleep 30; fi
     echo "ok" > out/$n.txt;;
@@ -923,6 +935,94 @@ func TestLoopParksAQuestionAndResumesWithTheAnswer(t *testing.T) {
 	if content, _ := os.ReadFile(filepath.Join(f.root, "out", "1.txt")); strings.TrimSpace(string(content)) != "hello there" {
 		t.Fatalf("out/1.txt = %q, want the answer", content)
 	}
+}
+
+func TestLoopQuestionAtCeilingBlocks(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r := runToQuestionCeiling(t, f, &out)
+
+	wantLine := "blocked · question at the execution ceiling · answer by hand and re-plan"
+	if !strings.Contains(out.String(), wantLine) {
+		t.Fatalf("output does not contain %q:\n%s", wantLine, out.String())
+	}
+	ask := filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md")
+	content, err := os.ReadFile(ask)
+	if err != nil || !strings.Contains(string(content), "choose the final behavior") ||
+		!strings.Contains(string(content), "Answer by hand in a new plan or an interactive cycle") {
+		t.Fatalf("ceiling ask file = %v\n%s", err, content)
+	}
+	records := readJournal(t, f, r.Delivery())
+	if terminalState(records) != StateBlocked {
+		t.Fatalf("terminal state = %q, want %q", terminalState(records), StateBlocked)
+	}
+	var blockedFailure bool
+	for _, record := range records {
+		if record.Kind == KindFailure && record.TaskID == "task_1" &&
+			strings.Contains(string(record.Detail), `"blocker":"`+routing.BlockerQuestionAtCeiling+`"`) &&
+			strings.Contains(string(record.Detail), `"blocked":true`) {
+			blockedFailure = true
+		}
+	}
+	if !blockedFailure {
+		t.Fatalf("ceiling failure was not recorded\n%s", out.String())
+	}
+	last := records[len(records)-1]
+	var graph routing.DeliveryGraph
+	if err := json.Unmarshal(last.Graph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	task := graphTask(&graph, "task_1")
+	if task == nil || task.State != routing.GraphTaskBlocked || len(task.Attempts) != routing.MaxTaskExecutions ||
+		task.Attempts[routing.MaxTaskExecutions-1].Question == nil ||
+		task.Attempts[routing.MaxTaskExecutions-1].Question.Prompt != "choose the final behavior" {
+		t.Fatalf("blocked graph task = %#v", task)
+	}
+}
+
+func TestAnswerRefusesBlockedCeilingTask(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	runToQuestionCeiling(t, f, &out)
+	if _, err := Answer(f.root, "1", "too late"); err == nil ||
+		!strings.Contains(err.Error(), "task_1 is blocked at the execution ceiling; answer the question in a new plan or an interactive cycle") {
+		t.Fatalf("Answer(blocked ceiling) error = %v", err)
+	}
+}
+
+func runToQuestionCeiling(t *testing.T, f fixture, out *bytes.Buffer) *Runner {
+	t.Helper()
+	clock := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
+	nextNow := func() time.Time {
+		clock = clock.Add(time.Second)
+		return clock
+	}
+	opts := f.options("question-at-ceiling", out)
+	opts.Now = nextNow
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	for execution, value := range []string{"first", "second", "third"} {
+		if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+			t.Fatalf("Run(execution %d) = %s, %v\n%s", execution+1, state, err, out.String())
+		}
+		delivery, err := answer(f.root, "1", value, nextNow())
+		if err != nil {
+			t.Fatalf("Answer(execution %d) error = %v", execution+1, err)
+		}
+		opts = f.options("question-at-ceiling", out)
+		opts.Now = nextNow
+		opts.Resume = delivery
+		r, err = Resume(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("Resume(execution %d) error = %v", execution+2, err)
+		}
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run(execution %d) = %s, %v\n%s", routing.MaxTaskExecutions, state, err, out.String())
+	}
+	return r
 }
 
 func TestLoopContinuationVerifiesTheWorktreeAgainstTheBase(t *testing.T) {

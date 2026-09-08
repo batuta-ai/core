@@ -17,19 +17,20 @@ import (
 
 // Blocker codes the loop records on a failed attempt.
 const (
-	blockerExecutorFailed = "executor_failed"
-	blockerRateLimited    = "rate_limited"
-	blockerTimedOut       = "timed_out"
-	blockerNoChanges      = "no_changes"
-	blockerTestsFailed    = "tests_failed"
-	blockerScope          = "scope_violation"
-	blockerProof          = "proof_failed"
-	blockerVerifier       = "verifier_incomplete"
-	blockerInstall        = "install_failed"
-	blockerInterrupted    = "interrupted"
-	blockerCandidate      = "candidate_invalid"
-	blockerSelf           = routing.BlockerNeedsConductingSession
-	blockerUnsafeQuestion = "question_unsafe"
+	blockerExecutorFailed  = "executor_failed"
+	blockerRateLimited     = "rate_limited"
+	blockerTimedOut        = "timed_out"
+	blockerNoChanges       = "no_changes"
+	blockerTestsFailed     = "tests_failed"
+	blockerScope           = "scope_violation"
+	blockerProof           = "proof_failed"
+	blockerVerifier        = "verifier_incomplete"
+	blockerInstall         = "install_failed"
+	blockerInterrupted     = "interrupted"
+	blockerCandidate       = "candidate_invalid"
+	blockerSelf            = routing.BlockerNeedsConductingSession
+	blockerQuestionCeiling = routing.BlockerQuestionAtCeiling
+	blockerUnsafeQuestion  = "question_unsafe"
 	// blockerAlreadySatisfied is not a failure: the criteria held before the
 	// executor touched anything, so there is no candidate to integrate. The
 	// task is ticked in the plan at the end without a commit.
@@ -463,6 +464,17 @@ func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result e
 		return r.recordFailure(ctx, ac, &result, blockerUnsafeQuestion, []string{"the executor asked a question the journal cannot carry (a path, a token or over 2000 bytes): " + executor.Tail([]byte(result.Question), 1)})
 	}
 	askPath := filepath.Join(r.root, ".batuta", "asks", r.plan.Slug+"-"+strings.ReplaceAll(ac.taskID, "_", "-")+".md")
+	if err := os.MkdirAll(filepath.Dir(askPath), 0o755); err != nil {
+		return fmt.Errorf("loop: create ask directory: %w", err)
+	}
+	atCeiling := ac.execution == routing.MaxTaskExecutions
+	body := fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer with:\n\n    batuta loop --answer %s \"<your answer>\"\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt, ac.taskID)
+	if atCeiling {
+		body = fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer by hand in a new plan or an interactive cycle; this task has reached the execution ceiling.\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt)
+	}
+	if err := os.WriteFile(askPath, []byte(body), 0o644); err != nil {
+		return fmt.Errorf("loop: write ask file: %w", err)
+	}
 	err := r.locked(KindQuestion, ac.taskID, map[string]any{"execution": ac.execution, "run_id": ac.runID, "question": question.Prompt, "request_id": question.RequestID, "ask_path": askPath}, func() error {
 		if _, err := r.graph.RecordQuestion(ac.taskID, ac.execution, ac.runID, question, r.now()); err != nil {
 			return fmt.Errorf("loop: record question: %w", err)
@@ -472,9 +484,17 @@ func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result e
 	if err != nil {
 		return err
 	}
-	_ = os.MkdirAll(filepath.Dir(askPath), 0o755)
-	body := fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer with:\n\n    batuta loop --answer %s \"<your answer>\"\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt, ac.taskID)
-	_ = os.WriteFile(askPath, []byte(body), 0o644)
+	if atCeiling {
+		feedback := []string{"answer by hand and re-plan"}
+		if err := r.locked(KindFailure, ac.taskID, map[string]any{
+			"execution": ac.execution, "blocker": blockerQuestionCeiling, "status": "failed", "feedback": feedback, "blocked": true,
+		}, nil); err != nil {
+			return err
+		}
+		fmt.Fprintf(r.out, "%s e%d ✗ blocked · question at the execution ceiling · answer by hand and re-plan\n", ac.taskID, ac.execution)
+		r.writeTrailVerdict(ac.taskID, "❌ blocked — "+blockerQuestionCeiling, feedback)
+		return nil
+	}
 	fmt.Fprintf(r.out, "%s asks: %s\n  answer: batuta loop --answer %s \"<text>\"\n", ac.taskID, question.Prompt, ac.taskID)
 	return nil
 }
