@@ -29,9 +29,14 @@
       Scope: inventory/adapters/cursor.go, inventory/adapters/opencode.go, inventory/adapters/codex.go, inventory/adapters/adapters_test.go, inventory/adapters/testdata, inventory/inventory.go, inventory/inventory_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: the cursor adapter's probes are exactly `--version`, `status`, `models` and no `mcp` probe or `mcp list-tools` expansion exists in any adapter → go test ./inventory/adapters -run 'TestCursorProbesAreVersionStatusModels|TestNoAdapterProbesMCP' -count=1; `normalizeCursor` still resolves version and models from the fixtures → go test ./inventory/adapters -run TestNormalizeCursor -count=1; doctor prints one note per probe that exceeded 5 s → go test ./cmd/batuta -run TestDoctorNotesSlowProbe -count=1
 - [ ] 8. docs/loop.md describes the dead ends, the snapshots and the limit fallback — docs/medium
-      Depends on: 2, 3, 4, 5, 6
+      Depends on: 2, 3, 4, 5, 6, 9
       Scope: docs/loop.md, README.md, README.pt-BR.md
       Accept: `docs/loop.md` keeps every heading, and its failure section names every blocker code (`needs_conducting_session`, `question_at_ceiling`, `already_satisfied`, `rate_limited`, `timed_out`, `verifier_incomplete`, `tests_failed`, `scope_violation`, `no_changes`, `candidate_invalid`, `question_unsafe`, `install_failed`, `interrupted`) with what the loop does next, the snapshot policy and the `limit_fallback` record → test "$(grep -c '^## ' docs/loop.md)" -ge "$(git show HEAD:docs/loop.md | grep -c '^## ')" && grep -q 'question_at_ceiling' docs/loop.md && grep -q 'needs_conducting_session' docs/loop.md && grep -q 'limit_fallback' docs/loop.md && grep -q 'wip(batuta)' docs/loop.md; both READMEs' loop paragraph mentions the limit fallback in one sentence → grep -q 'limit' README.md && grep -q 'limite' README.pt-BR.md
+
+- [ ] 9. --abandon, --answer and --resume refuse a delivery whose runner is alive — backend/medium
+      Depends on: 3
+      Scope: loop/report.go, loop/report_test.go, loop/runner.go, loop/presence.go, loop/presence_test.go, loop/loop_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go
+      Accept: when `.batuta/journal/<delivery>.lock` is fresh (refreshed within 15 s) `batuta loop --abandon`, `--answer` and `--resume` exit 1 with `delivery <id> is owned by pid N since <time>; stop it or wait for waiting_input` and write nothing → go test ./loop -run 'TestAbandonRefusesLiveRunner|TestAnswerRefusesLiveRunner|TestResumeRefusesLiveRunner' -count=1; a stale or missing lock lets them proceed as today → go test ./loop -run 'TestAbandonProceedsWithStaleLock' -count=1; the interrupted-run summary names the worktrees it left behind so nothing is orphaned silently → go test ./loop -run TestInterruptSummaryNamesWorktrees -count=1
 
 ## Decisions and context
 
@@ -52,5 +57,7 @@ Every Go command in the sandbox is prefixed with `HOME=/private/tmp/batuta-home 
 **Task 6.** The fallback runtime is `nextRuntimeForTask(generation, task, runtime)` (routing) — the same cell walk the escalation uses, so no new column in `.batuta/routing.md` for now (#54's `Limit fallback` column is deferred; say so in docs). The switch keeps `execution` and `runID`, records `limit_fallback` `{execution, from, to, reset_at, waits}`, and runs the brief again in the same worktree. `--limit-horizon` is a `time.Duration` flag on `batuta loop` stored in `Options.LimitHorizon` (default 2h); `executor.ResetTime` already parses the reset time when the message names one.
 
 **Task 7.** Probes are the maps at the top of each adapter (`inventory/adapters/cursor.go` lines 10–12: `ids`, `args`, `order`; the `expand` step builds `mcp list-tools` probes at line 36). Drop `mcp` from the three adapters and the expansion from cursor; delete the fixtures that only served them. The slow-probe note comes from the probe durations the inventory already measures (or add a duration per probe result); doctor prints `note: <executor> <probe> took 7.2s (budget 5s)`.
+
+**Task 9.** The lock and `Presence` come from plan `watch-answer` (`loop/presence.go`); `Abandon` and `Answer` live in `loop/report.go` (lines 444 and 501), `Resume` in `loop/runner.go` line 235. On 2026-09-08 the conductor abandoned a delivery whose runner was still executing another wave (a parked question does not end a run when independent tasks remain) and two runners then shared the branch; this task makes that impossible.
 
 **Task 8.** Task 5 of plan `roadmap` once replaced `docs/loop.md` with a stub; the first criterion counts headings against `HEAD` so that cannot happen again. Extend the existing failure section; do not move it.
