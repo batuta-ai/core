@@ -40,9 +40,10 @@ default is one.
 
 Reviewers may inspect surrounding repository code, but may report findings only
 on new-side lines inside their cohort hunks. Batuta checks the worktree signature
-before and after each attempt and again after the complete batch. Any write,
-unattributable tree change, incomplete output, or exhausted reviewer attempt
-leaves the affected coverage incomplete; incomplete coverage produces `REWORK`.
+before and after each attempt and again after the complete batch. Any write or
+unattributable tree change fails the review with `exit 1` and no artefacts.
+Incomplete output or an exhausted reviewer attempt leaves the affected coverage
+incomplete; incomplete coverage produces `REWORK`.
 
 ## Findings contract
 
@@ -108,9 +109,10 @@ from the rebuilt diff. Complete coverage advances the checkpoint and clears
 pending cohorts.
 
 Pass `--full` to ignore prior state and review from `--base` again. Missing state
-starts from the requested base; invalid or non-ancestor state is reported as an
-error. Dated report directories retain a `state.json` copy for inspection, but
-incremental rounds read the stable state file.
+starts a first round from the requested base; a missing state file therefore
+starts a first round from the requested base. Invalid or non-ancestor state is
+reported as an error. Dated report directories retain a `state.json` copy for
+inspection, but incremental rounds read the stable state file.
 
 ## Artefacts and verdict
 

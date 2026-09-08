@@ -184,11 +184,11 @@ exit `1` with the reason on stderr.
   loop snapshots tracked, staged, unstaged, and untracked executor work to
   `refs/batuta/parked/<slug>/<task>-e<execution>`. The synthetic commit is
   named `wip(batuta): <slug> <task> e<execution> parked`, leaves the real HEAD,
-  index, and files untouched, and is journaled as a `snapshot` record. A
-  same-runtime retry keeps the worktree; a fresh escalation or cleanup may
-  remove it only after that snapshot succeeds. Final bookkeeping deletes only
-  parked refs whose complete tree is already present in branch history and
-  reports every remaining recovery ref in the terminal summary.
+  index, and files untouched, and is journaled as a `worktree_snapshotted`
+  record. A same-runtime retry keeps the worktree; a fresh escalation or
+  cleanup may remove it only after that snapshot succeeds. Final bookkeeping
+  deletes only parked refs whose complete tree is already present in branch
+  history and reports every remaining recovery ref in the terminal summary.
 - **User-authored command lines** (`Test:`, `Install:`, proofs) run through
   `sh -c` with stdin closed, a timeout and bounded output; they come from
   files the user wrote and approved. **Executor lines never see a shell**:
