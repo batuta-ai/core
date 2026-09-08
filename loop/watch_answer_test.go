@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -21,10 +22,12 @@ func answerWatch(t *testing.T) (watchModel, *journal.Store) {
 	t.Helper()
 	records, graph, now := keyRecords(t)
 	graph.Tasks[1].State = routing.GraphTaskWaitingInput
-	graph.Tasks[1].Attempts[0].Question = &routing.TaskQuestion{Prompt: "Which format?"}
-	records = append(records, panelRecord(t, KindQuestion, "task_2", now, map[string]any{"execution": 1, "question": "Which format?"}, graph))
+	graph.Tasks[1].Attempts[0].Question = &routing.TaskQuestion{Prompt: "Which format?", RequestID: "format-question"}
+	records = append(records, panelRecord(t, KindQuestion, "task_2", now, map[string]any{"execution": 1, "question": "Which format?", "request_id": "format-question"}, graph))
 	root, store := keyStore(t, records)
-	return newWatchModel(root, records, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time { return now }), store
+	m := newWatchModel(root, records, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time { return now })
+	m.delivery = "demo"
+	return m, store
 }
 
 func resumableAnswerWatch(t *testing.T) watchModel {
@@ -39,7 +42,11 @@ func resumableAnswerWatch(t *testing.T) watchModel {
 		t.Fatalf("park question: %s, %v", state, err)
 	}
 	records := readJournal(t, f, r.Delivery())
-	return newPollingWatchModel(f.root, r.Delivery(), r.store, records, time.Second, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, time.Now, nil)
+	now := records[len(records)-1].At
+	ticker := func(_ time.Duration, tick func(time.Time) tea.Msg) tea.Cmd {
+		return func() tea.Msg { return tick(now) }
+	}
+	return newPollingWatchModel(f.root, r.Delivery(), r.store, records, time.Second, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time { return now }, ticker)
 }
 
 func TestAnswerOverlayOpens(t *testing.T) {
@@ -109,7 +116,9 @@ func TestAnswerOverlaySubmits(t *testing.T) {
 				t.Fatalf("park question: %s, %v", state, err)
 			}
 			records := readJournal(t, f, r.Delivery())
-			m := newWatchModel(f.root, records, Style{Width: 120, Lang: "en"}, nil)
+			now := records[len(records)-1].At
+			m := newWatchModel(f.root, records, Style{Width: 120, Lang: "en"}, func() time.Time { return now })
+			m.delivery = r.Delivery()
 			m.spawn = func([]string, string, string) error { return nil }
 			m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
 			m, _ = updateWatch(t, m, tea.PasteMsg{Content: "  first line\nsecond line  \n"})
@@ -157,7 +166,7 @@ func TestAnswerResumesDetached(t *testing.T) {
 	}
 }
 
-func TestAnswerResumeErrorNotice(t *testing.T) {
+func TestAnswerClosesEditorOnSpawnError(t *testing.T) {
 	m := resumableAnswerWatch(t)
 	m.spawn = func([]string, string, string) error { return errors.New("spawn denied") }
 	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
@@ -168,9 +177,9 @@ func TestAnswerResumeErrorNotice(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantCommand := strings.Join([]string{exe, "loop", "--resume", m.delivery}, " ")
-	if !m.answering || m.answerEditor.Value() != "use JSON" || !strings.Contains(m.navigation.notice, "spawn denied") || !strings.Contains(m.navigation.notice, wantCommand) {
-		t.Fatalf("spawn failure lost draft or manual command: %q", m.navigation.notice)
+	wantCommand := recoveryCommand(exe, m.workspace, m.delivery)
+	if m.answering || m.answerEditor.Focused() || m.answerEditor.Value() != "" || !strings.Contains(m.navigation.notice, "spawn denied") || !strings.Contains(m.navigation.notice, wantCommand) {
+		t.Fatalf("spawn failure left editor open or lost manual command: %q", m.navigation.notice)
 	}
 }
 
@@ -280,5 +289,186 @@ func TestAnswerOverlayPreservesDraftOnError(t *testing.T) {
 	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
 	if !m.answering || m.answerEditor.Value() != "keep this draft" || !strings.Contains(m.navigation.notice, "no open delivery") {
 		t.Fatalf("failed submission lost draft or error: %q", m.navigation.notice)
+	}
+}
+
+func TestAnswerOverlaySubmitsBoundAnswer(t *testing.T) {
+	for _, change := range []string{"delivery", "question", "execution"} {
+		t.Run(change, func(t *testing.T) {
+			m := resumableAnswerWatch(t)
+			shown := m.delivery
+			before := answerRecords(t, m.store, shown)
+			copyAnswerDelivery(t, m.store, "aaa-other", before)
+			m.spawn = func([]string, string, string) error { return nil }
+			m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+			m.answerEditor.SetValue("use JSON")
+			if change == "delivery" {
+				m.delivery = "aaa-other"
+			} else {
+				var graph routing.DeliveryGraph
+				if err := json.Unmarshal(before[len(before)-1].Graph, &graph); err != nil {
+					t.Fatal(err)
+				}
+				task := graphTask(&graph, m.panel.Detail.Task)
+				attempt := &task.Attempts[len(task.Attempts)-1]
+				if change == "question" {
+					attempt.Question.RequestID += "-new"
+				} else {
+					taskID, runID, question := task.TaskID, attempt.ChildRunID, *attempt.Question
+					next, _, err := graph.RecordAnswer(taskID, attempt.Execution, routing.TaskAnswer{
+						QuestionOperationID: question.RequestID, LoopRunID: runID,
+						Generation: 1, NodeID: "loop", Value: "earlier answer",
+					}, m.currentTime)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if _, err := graph.RecordQuestion(taskID, next, runID, question, m.currentTime); err != nil {
+						t.Fatal(err)
+					}
+					task = graphTask(&graph, taskID)
+					attempt = &task.Attempts[len(task.Attempts)-1]
+				}
+				record := panelRecord(t, KindQuestion, task.TaskID, m.currentTime, map[string]any{"execution": attempt.Execution, "request_id": attempt.Question.RequestID, "question": attempt.Question.Prompt}, graph)
+				if _, err := m.store.Append(shown, record); err != nil {
+					t.Fatal(err)
+				}
+				m.records = answerRecords(t, m.store, shown)
+				m.refresh(false)
+			}
+			m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+			after := answerRecords(t, m.store, shown)
+			if len(answerRecords(t, m.store, "aaa-other")) != len(before) {
+				t.Fatal("answered another delivery")
+			}
+			if change == "delivery" {
+				if m.answering || len(after) != len(before)+1 || after[len(after)-1].Kind != KindAnswer {
+					t.Fatalf("shown delivery not answered: %s", m.navigation.notice)
+				}
+			} else if !m.answering || m.answerEditor.Value() != "use JSON" || after[len(after)-1].Kind == KindAnswer {
+				t.Fatalf("stale %s accepted or draft lost: %s", change, m.navigation.notice)
+			}
+		})
+	}
+}
+
+func TestAnswerRefusesWhileRunnerOwnsDelivery(t *testing.T) {
+	m := resumableAnswerWatch(t)
+	before := answerRecords(t, m.store, m.delivery)
+	m.spawn = func([]string, string, string) error { t.Fatal("spawned while runner owns delivery"); return nil }
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m.answerEditor.SetValue("use JSON")
+	lock := writePresenceFixture(t, m.workspace, m.delivery, m.currentTime)
+	original, err := os.ReadFile(lock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if !m.answering || !m.answerEditor.Focused() || m.answerEditor.Value() != "use JSON" || m.navigation.notice != "loop still running · wait for waiting_input" {
+		t.Fatalf("live runner refusal lost draft or notice: answering=%v notice=%q", m.answering, m.navigation.notice)
+	}
+	if len(answerRecords(t, m.store, m.delivery)) != len(before) {
+		t.Fatal("answer recorded while runner owns delivery")
+	}
+	after, err := os.ReadFile(lock)
+	if err != nil || !bytes.Equal(original, after) {
+		t.Fatalf("runner lock changed: %v", err)
+	}
+	if _, err := answerDelivery(m.workspace, m.delivery, m.answerTask, m.answerExecution, m.answerQuestionID, "use JSON", m.currentTime); err == nil || err.Error() != m.navigation.notice {
+		t.Fatalf("bound API did not refuse: %v", err)
+	}
+	if len(answerRecords(t, m.store, m.delivery)) != len(before) {
+		t.Fatal("bound API recorded while runner owns delivery")
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	m.spawn = func([]string, string, string) error { return nil }
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if m.answering || len(answerRecords(t, m.store, m.delivery)) != len(before)+1 {
+		t.Fatalf("answer refused after owner released: %s", m.navigation.notice)
+	}
+}
+
+func TestResumeRetryDoesNotRecordAgain(t *testing.T) {
+	m := resumableAnswerWatch(t)
+	shown, task := m.delivery, m.panel.Detail.Task
+	before := answerRecords(t, m.store, shown)
+	spawns := 0
+	m.spawn = func([]string, string, string) error { spawns++; return errors.New("spawn denied") }
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	m.answerEditor.SetValue("use JSON")
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 's', Mod: tea.ModCtrl})
+	if m.answering || spawns != 1 {
+		t.Fatalf("answer did not leave retryable resume: %s", m.navigation.notice)
+	}
+	// A stale panel must not reopen the question after its answer was recorded.
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
+	if m.answering {
+		t.Fatal("reopened an answered question")
+	}
+	m.navigation.selected = "task_2"
+	m.refresh(false)
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if spawns != 1 {
+		t.Fatal("retried from another task")
+	}
+	m.navigation.selected = task
+	m.refresh(false)
+	m.delivery = "another-delivery"
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if spawns != 1 {
+		t.Fatal("retried from another delivery")
+	}
+	m.delivery = shown
+	lock := writePresenceFixture(t, m.workspace, shown, m.currentTime)
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if spawns != 1 || m.navigation.notice != "loop still running · wait for waiting_input" {
+		t.Fatal("retry ignored live runner")
+	}
+	if err := os.Remove(lock); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if spawns != 2 || !strings.Contains(m.navigation.notice, "spawn denied") {
+		t.Fatal("failed retry lost notice")
+	}
+	m.spawn = func(argv []string, dir, logPath string) error {
+		spawns++
+		if argv[len(argv)-1] != shown || dir != m.workspace {
+			t.Fatalf("retry changed delivery: %q %q", argv, dir)
+		}
+		return nil
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if spawns != 3 || m.answering || m.navigation.notice != "" {
+		t.Fatalf("retry failed: %s", m.navigation.notice)
+	}
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'R', Text: "R"})
+	if spawns != 3 {
+		t.Fatal("successful retry remained pending")
+	}
+	after := answerRecords(t, m.store, shown)
+	if len(after) != len(before)+1 || after[len(after)-1].Kind != KindAnswer {
+		t.Fatal("resume retry recorded another answer")
+	}
+}
+
+func TestRecoveryCommandIsQuoted(t *testing.T) {
+	for _, exe := range []string{"batuta", "/tool dir/batuta's $(exit 7); binary"} {
+		workspace := "/workspace dir/it's $(exit 8); `exit 9` \"quoted\""
+		delivery := "delivery's $(exit 10); value"
+		command := recoveryCommand(exe, workspace, delivery)
+		if !strings.Contains(command, "'loop' '--workspace'") || !strings.Contains(command, "'--resume'") {
+			t.Fatalf("not every argument is quoted: %s", command)
+		}
+		output, err := exec.Command("sh", "-c", "set -- "+command+"; printf '%s\\0' \"$@\"").Output()
+		if err != nil {
+			t.Fatalf("parse recovery command: %v", err)
+		}
+		got := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
+		want := []string{exe, "loop", "--workspace", workspace, "--resume", delivery}
+		if !slices.Equal(got, want) {
+			t.Fatalf("recovery arguments = %q, want %q", got, want)
+		}
 	}
 }

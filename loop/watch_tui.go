@@ -46,10 +46,17 @@ type watchModel struct {
 	progressSet bool
 	spawn       func(argv []string, dir, logPath string) error
 
-	answering      bool
-	answerEditor   textarea.Model
-	answerQuestion string
-	answerTask     string
+	answering        bool
+	answerEditor     textarea.Model
+	answerQuestion   string
+	answerTask       string
+	answerDelivery   string
+	answerExecution  int
+	answerQuestionID string
+	resumeDelivery   string
+	resumeTask       string
+	resumeExecution  int
+	resumePending    bool
 
 	picking        bool
 	deliveryPicker list.Model
@@ -153,6 +160,11 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			key = "pageUp"
 		case "pgdown":
 			key = "pageDown"
+		}
+		if key == "R" && m.resumePending && m.delivery == m.resumeDelivery && m.panel.Detail.Task == m.resumeTask {
+			m.resumeAnsweredDelivery()
+			m.refresh(false)
+			return m, nil
 		}
 		if key == "r" && m.canAnswer() {
 			cmd = m.openAnswer()

@@ -538,12 +538,33 @@ func Answer(workspace, taskRef, text string) (string, error) {
 	return answer(workspace, taskRef, text, time.Now().UTC())
 }
 
+// AnswerDelivery records an answer only for the specified delivery and question.
+func AnswerDelivery(workspace, delivery, task, questionID, text string) (string, error) {
+	return answerDelivery(workspace, delivery, task, 0, questionID, text, time.Now().UTC())
+}
+
+func answerDelivery(workspace, delivery, task string, execution int, questionID, text string, now time.Time) (string, error) {
+	if !journal.ValidDeliveryID(delivery) || strings.TrimSpace(questionID) == "" {
+		return "", errors.New("loop: the answer requires a delivery and question ID")
+	}
+	return answerSelected(workspace, delivery, task, execution, questionID, text, now)
+}
+
 func answer(workspace, taskRef, text string, now time.Time) (string, error) {
+	return answerSelected(workspace, "", taskRef, 0, "", text, now)
+}
+
+func answerSelected(workspace, delivery, taskRef string, execution int, questionID, text string, now time.Time) (string, error) {
 	root, store, err := openStore(workspace)
 	if err != nil {
 		return "", err
 	}
 	_ = root
+	if delivery != "" {
+		if state, _ := Presence(root, delivery, now); state == "running" {
+			return "", errors.New("loop still running · wait for waiting_input")
+		}
+	}
 	taskID := taskRef
 	if _, err := strconv.Atoi(taskRef); err == nil {
 		taskID = "task_" + taskRef
@@ -551,9 +572,14 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 	if strings.TrimSpace(text) == "" {
 		return "", errors.New("loop: the answer is empty")
 	}
-	ids, err := store.List()
-	if err != nil {
-		return "", err
+	var ids []string
+	if delivery != "" {
+		ids = []string{delivery}
+	} else {
+		ids, err = store.List()
+		if err != nil {
+			return "", err
+		}
 	}
 	blockedAtCeiling := false
 	for _, id := range ids {
@@ -584,6 +610,9 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 		}
 		ownership, err := acquireDeliveryOwnership(context.Background(), root, id, now)
 		if err != nil {
+			if state, _ := Presence(root, id, now); delivery != "" && state == "running" {
+				return "", errors.New("loop still running · wait for waiting_input")
+			}
 			return "", err
 		}
 		records, err = store.Read(id)
@@ -611,6 +640,9 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 				return "", err
 			}
 			continue
+		}
+		if delivery != "" && (attempt.Question.RequestID != questionID || (execution != 0 && attempt.Execution != execution)) {
+			return "", errors.Join(errors.New("loop: the shown question is no longer waiting for an answer"), ownership.stop())
 		}
 		answer := routing.TaskAnswer{
 			QuestionOperationID: attempt.Question.RequestID, LoopRunID: attempt.ChildRunID,
