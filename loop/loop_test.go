@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/publication"
@@ -38,6 +39,7 @@ done
 text=$1
 state="${FAKE_STATE:-/tmp}"
 if [ "$mode" = "verify" ]; then
+  if [ "${FAKE_SCENARIO:-default}" = satisfied-unverified ]; then exit 0; fi
   if [ "${FAKE_SCENARIO:-default}" = unsigned-config ]; then
     git config --show-origin commit.gpgsign > "$state/verifier-git-config"
   fi
@@ -55,6 +57,32 @@ answered=""; answered=$(printf '%s\n' "$text" | sed -n 's/^The answer: //p' | he
 echo "fake executor: task $n model $model retry $retry scenario ${FAKE_SCENARIO:-default}"
 mkdir -p out
 case "${FAKE_SCENARIO:-default}" in
+  continuation-*)
+    if [ "$n" = 1 ]; then
+      if [ "$retry" = 1 ] || [ -n "$answered" ]; then exit 0; fi
+      echo "ok" > out/1.txt
+      case "$FAKE_SCENARIO" in
+        *-staged) git add out/1.txt;;
+        *-committed) git add out/1.txt; git commit -q -m "wip: greeting one";;
+      esac
+      case "$FAKE_SCENARIO" in
+        continuation-ask-*) echo "BATUTA-QUESTION: keep this greeting?"; exit 0;;
+        *) exit 1;;
+      esac
+    fi
+    echo "ok" > out/$n.txt;;
+  satisfied-*)
+    if [ "$n" = 1 ]; then
+      case "$FAKE_SCENARIO" in
+        satisfied-restored)
+          if [ "$retry" = 0 ]; then echo "partial" > out/1.txt; exit 1; fi
+          git restore out/1.txt;;
+        satisfied-metadata) echo "metadata" >> .batuta/profile.md; echo "scratch" > .batuta/scratch.txt;;
+        satisfied-empty-commit) git commit -q --allow-empty -m "wip: no tree change";;
+      esac
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   unsigned-config)
     git config --show-origin commit.gpgsign
     if [ "$n" = 3 ] && [ "$retry" = 0 ]; then exit 1; fi
@@ -828,6 +856,172 @@ func TestLoopParksAQuestionAndResumesWithTheAnswer(t *testing.T) {
 	}
 	if content, _ := os.ReadFile(filepath.Join(f.root, "out", "1.txt")); strings.TrimSpace(string(content)) != "hello there" {
 		t.Fatalf("out/1.txt = %q, want the answer", content)
+	}
+}
+
+func TestLoopContinuationVerifiesTheWorktreeAgainstTheBase(t *testing.T) {
+	for _, continuation := range []string{"ask", "retry"} {
+		for _, tree := range []string{"untracked", "tracked", "staged", "committed"} {
+			t.Run(continuation+"/"+tree, func(t *testing.T) {
+				f := setup(t)
+				if tree == "tracked" {
+					if err := os.MkdirAll(filepath.Join(f.root, "out"), 0o755); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.WriteFile(filepath.Join(f.root, "out", "1.txt"), []byte("old\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					f.run(t, "add", "out/1.txt")
+					f.run(t, "commit", "-q", "-m", "chore: old greeting")
+				}
+				base := f.run(t, "rev-parse", "HEAD")
+				var out bytes.Buffer
+				scenario := "continuation-" + continuation + "-" + tree
+				r, err := New(context.Background(), f.options(scenario, &out))
+				if err != nil {
+					t.Fatal(err)
+				}
+				state, err := r.Run(context.Background())
+				if continuation == "ask" {
+					if err != nil || state != StateWaitingInput {
+						t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+					}
+					delivery, err := Answer(f.root, "1", "keep it")
+					if err != nil {
+						t.Fatal(err)
+					}
+					opts := f.options(scenario, &out)
+					opts.Resume = delivery
+					r, err = Resume(context.Background(), opts)
+					if err != nil {
+						t.Fatal(err)
+					}
+					state, err = r.Run(context.Background())
+				}
+				if err != nil {
+					t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+				}
+				var finished, verified, candidate bool
+				for _, record := range readJournal(t, f, r.Delivery()) {
+					if record.TaskID != "task_1" {
+						continue
+					}
+					switch record.Kind {
+					case KindFinished:
+						var detail struct {
+							Execution   int                       `json:"execution"`
+							TreeChanged bool                      `json:"tree_changed"`
+							BaseHeadSHA string                    `json:"base_head_sha"`
+							Before      publication.WorktreeState `json:"before"`
+							After       publication.WorktreeState `json:"after"`
+						}
+						if err := json.Unmarshal(record.Detail, &detail); err != nil {
+							t.Fatal(err)
+						}
+						if !detail.TreeChanged {
+							t.Fatalf("retained work was not a candidate: %s", record.Detail)
+						}
+						if detail.Execution == 2 {
+							finished = true
+							if detail.BaseHeadSHA != base || detail.Before.HeadSHA == "" || detail.Before != detail.After {
+								t.Fatalf("continuation signatures = %s", record.Detail)
+							}
+						}
+					case KindGates:
+						var report gates.Report
+						if err := json.Unmarshal(record.Detail, &report); err != nil {
+							t.Fatal(err)
+						}
+						if report.Execution == 2 {
+							verified = report.Passed && report.Tree.Pass && report.Tests.Pass && report.Scope.Pass && len(report.Proofs) == 1 && report.Proofs[0].Pass
+						}
+					case KindCandidate:
+						candidate = true
+					case KindFailure:
+						if strings.Contains(string(record.Detail), blockerAlreadySatisfied) {
+							t.Fatalf("retained work marked already satisfied: %s", record.Detail)
+						}
+					}
+				}
+				if state != StateDone || !finished || !verified || !candidate {
+					t.Fatalf("state=%s finished=%t verified=%t candidate=%t\n%s", state, finished, verified, candidate, out.String())
+				}
+				if content, err := os.ReadFile(filepath.Join(f.root, "out", "1.txt")); err != nil || string(content) != "ok\n" {
+					t.Fatalf("integrated greeting = %q, %v", content, err)
+				}
+				if commits := f.run(t, "log", "--format=%s", base+"..HEAD", "--", "out/1.txt"); commits != "feat: add greeting one" {
+					t.Fatalf("greeting commits = %q", commits)
+				}
+			})
+		}
+	}
+}
+
+func TestLoopAlreadySatisfiedOnlyWhenWorktreeEqualsBase(t *testing.T) {
+	for _, scenario := range []string{"satisfied", "satisfied-restored", "satisfied-metadata", "satisfied-empty-commit", "satisfied-broken", "satisfied-unverified"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := setup(t)
+			if err := os.MkdirAll(filepath.Join(f.root, "out"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			content := "ok\n"
+			if scenario == "satisfied-broken" {
+				content = "BROKEN\n"
+			}
+			if err := os.WriteFile(filepath.Join(f.root, "out", "1.txt"), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f.run(t, "add", "out/1.txt")
+			f.run(t, "commit", "-q", "-m", "chore: existing greeting")
+			base := f.run(t, "rev-parse", "HEAD")
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options(scenario, &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+				t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+			}
+			var satisfied, verified bool
+			treeChanged := true
+			for _, record := range readJournal(t, f, r.Delivery()) {
+				if record.TaskID != "task_1" {
+					continue
+				}
+				switch record.Kind {
+				case KindFinished:
+					var detail struct {
+						TreeChanged bool `json:"tree_changed"`
+					}
+					if err := json.Unmarshal(record.Detail, &detail); err != nil {
+						t.Fatal(err)
+					}
+					treeChanged = detail.TreeChanged
+				case KindGates:
+					var report gates.Report
+					if err := json.Unmarshal(record.Detail, &report); err != nil {
+						t.Fatal(err)
+					}
+					verified = report.Passed && report.Tests.Pass && report.Verifier != nil && report.Verifier.Pass
+				case KindFailure:
+					if strings.Contains(string(record.Detail), blockerAlreadySatisfied) {
+						satisfied = true
+						if treeChanged || !verified {
+							t.Fatalf("already satisfied without base equality and green gates: %s", record.Detail)
+						}
+					}
+				case KindCandidate:
+					t.Fatalf("base-equivalent tree produced a candidate: %s", record.Detail)
+				}
+			}
+			wantSatisfied := scenario != "satisfied-broken" && scenario != "satisfied-unverified"
+			if treeChanged || satisfied != wantSatisfied {
+				t.Fatalf("tree_changed=%t already_satisfied=%t, want false/%t\n%s", treeChanged, satisfied, wantSatisfied, out.String())
+			}
+			if commits := f.run(t, "log", "--format=%s", base+"..HEAD", "--", "out/1.txt"); commits != "" {
+				t.Fatalf("base-equivalent tree was committed: %s", commits)
+			}
+		})
 	}
 }
 

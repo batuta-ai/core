@@ -11,6 +11,7 @@ import (
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/integration"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
 
@@ -208,22 +209,27 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	if err != nil {
 		return fmt.Errorf("loop: snapshot %s: %w", ac.worktree.Name, err)
 	}
+	treeChanged, err := r.treeChangedFromBase(ctx, ac.worktree.Root, ac.base)
+	if err != nil {
+		return fmt.Errorf("loop: compare %s against base %s: %w", ac.worktree.Name, ac.base, err)
+	}
 	if err := r.locked(KindFinished, taskID, map[string]any{
 		"execution": ac.execution, "exit_code": result.ExitCode, "finished": result.Finished, "timed_out": result.TimedOut,
 		"rate_limited": result.RateLimited, "duration_ms": result.Duration.Milliseconds(), "question": result.Question,
-		"stdout_bytes": len(result.Stdout), "stderr_bytes": len(result.Stderr), "tree_changed": before != after,
+		"stdout_bytes": len(result.Stdout), "stderr_bytes": len(result.Stderr), "tree_changed": treeChanged,
+		"base_head_sha": ac.base, "before": before, "after": after,
 	}, nil); err != nil {
 		return err
 	}
 
 	if result.Finished && result.Question != "" {
-		return r.recordQuestion(ctx, ac, result, before != after)
+		return r.recordQuestion(ctx, ac, result, treeChanged)
 	}
 
 	report := gates.Report{TaskID: taskID, Execution: ac.execution}
 	report.Finished = gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, executor.Tail(append(result.Stdout, result.Stderr...), 30))
-	report.Tree = gates.Tree(before, after)
-	silent := before == after
+	report.Tree = gates.Verdict{Name: "tree", Pass: true, Signal: "the worktree differs from the attempt's base"}
+	silent := !treeChanged
 	if report.Finished.Pass && !silent {
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		changed, err := r.git.ChangedPaths(ctx, ac.worktree.Root, ac.base)
@@ -237,10 +243,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 			report.Verifier = &verdict
 		}
 	} else if silent && report.Finished.Pass {
-		// The session wrote nothing. Either the task was already done on the
-		// base (the verifier decides, against the real code) or the executor
-		// gave up silently. Neither yields a candidate: a satisfied task is
-		// ticked in the plan at the end; a silent give-up is a failure.
+		// Base equality is established before running gates on this tree;
+		// earlier executions may have left work even if this one wrote nothing.
+		report.Tree.Signal = "the worktree equals the attempt's base"
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "nothing changed"}
 		if len(criteria) > 0 {
@@ -255,7 +260,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 				return r.recordBlocked(ctx, ac, &result, blockerAlreadySatisfied, []string{"gates 2 and 3 green against the base commit: the criteria already hold; nothing to commit"})
 			}
 		}
-		report.Tree = gates.Verdict{Name: "tree", Pass: false, Signal: "silent: the session wrote nothing and the criteria do not all hold on the base"}
+		report.Tree = gates.Verdict{Name: "tree", Pass: false, Signal: "silent: the worktree equals the base and the criteria do not all hold on the base"}
 	} else {
 		report.Tests = gates.Verdict{Name: "tests", Pass: false, Signal: "skipped: the executor did not finish"}
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "not evaluated"}
@@ -272,6 +277,35 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		return r.recordFailure(ctx, ac, &result, code, feedback)
 	}
 	return r.recordCandidate(ctx, ac, report, result)
+}
+
+func (r *Runner) treeChangedFromBase(ctx context.Context, root, base string) (bool, error) {
+	diff, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable: r.git.Git, Directory: root,
+		Args:        []string{"diff", "--quiet", "--no-ext-diff", base, "--", ".", ":(top,exclude).batuta"},
+		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+	})
+	if diff.ExitCode == 1 {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if diff.ExitCode != 0 {
+		return false, fmt.Errorf("git diff exited %d", diff.ExitCode)
+	}
+	untracked, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable: r.git.Git, Directory: root,
+		Args:        []string{"ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(top,exclude).batuta"},
+		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+	})
+	if err != nil {
+		return false, err
+	}
+	if untracked.ExitCode != 0 || untracked.StdoutTruncated || untracked.StderrTruncated {
+		return false, fmt.Errorf("git ls-files returned incomplete evidence (exit %d)", untracked.ExitCode)
+	}
+	return len(untracked.Stdout) > 0, nil
 }
 
 func reportedDoneProofFailures(feedback []string, criteria []gates.Criterion, proofs []gates.Verdict, progress []executor.ProgressEvent) []string {
