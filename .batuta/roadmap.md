@@ -8,3 +8,4 @@ Written 2026-09-07 night from the open issues (#70, #71, #67, #54, #57) and the 
 - [x] 4. Watch review fixes: answer binding, poll identity, presence lock, overlay sanitising, picker fallbacks → plans/watch-review-fixes.md
 - [x] 5. Hardening review fixes 2: crash-safe ownership lock, bounded parked-ref cleanup, honest review state → plans/hardening-review-fixes-2.md
 - [x] 6. Watch answer editor: Enter sends, ctrl+j or shift+enter newline → plans/watch-submit-keys.md
+- [ ] 7. Hardening review fixes 3: honest reset time, staged work parked, recoverable finish, exact review manifests → plans/hardening-review-fixes-3.md
