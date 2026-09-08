@@ -189,6 +189,28 @@ exit `1` with the reason on stderr.
   cleanup may remove it only after that snapshot succeeds. Final bookkeeping
   deletes only parked refs whose complete tree is already present in branch
   history and reports every remaining recovery ref in the terminal summary.
+  An unmerged (conflicted) index is copied and serialized into separate trees:
+  `-index` retains normal stage-zero entries, and `-index-stage-1`,
+  `-index-stage-2`, and `-index-stage-3` retain the conflicted base, ours, and
+  theirs entries at their original paths, including file modes. Absent stages
+  need no tree. These recovery refs protect staged blobs without resolving or
+  changing the real index; the working-directory snapshot still includes the
+  unresolved file contents. The summary lists conflicted paths for retained
+  stage refs. Use `git show <ref>:<path>` to recover a specific version.
+- **Finalization can be retried.** A `delivery_finalizing` checkpoint records
+  the result, original plan path, recovery refs, and pending cleanup and
+  bookkeeping before worktrees are removed or the plan is archived. Cleanup
+  and bookkeeping completion are tracked separately. If archival, staging,
+  or the bookkeeping commit fails, the journal records the error and the
+  summary prints `batuta loop --resume <delivery>` and
+  `batuta loop --abandon <delivery>` recovery commands. Either command retries
+  finalization with its original result without running tasks again. Recovery
+  accepts a plan already moved into `plans/done/`, repeats any unfinished
+  staging and commit, and avoids duplicate WORK.md entries or bookkeeping
+  commits, including interruption after a successful commit. A terminal
+  record is appended only after bookkeeping succeeds; a separate checkpoint
+  preserves that success if the final append is interrupted. Cleanup failures
+  remain retryable through the same commands.
 - **User-authored command lines** (`Test:`, `Install:`, proofs) run through
   `sh -c` with stdin closed, a timeout and bounded output; they come from
   files the user wrote and approved. **Executor lines never see a shell**:

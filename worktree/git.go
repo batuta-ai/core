@@ -251,20 +251,78 @@ func (p GitProvider) Park(ctx context.Context, root, ref, message string) (strin
 		if err := os.WriteFile(stagedPath, index, 0o600); err != nil {
 			return "", err
 		}
-		staged, err := p.runEnvironment(ctx, root, nil, []string{"GIT_INDEX_FILE=" + stagedPath}, "write-tree")
+		stagedEnv := []string{"GIT_INDEX_FILE=" + stagedPath}
+		if err := p.parkConflictStages(ctx, root, ref, message, head, stagedEnv); err != nil {
+			return "", err
+		}
+		staged, err := p.runEnvironment(ctx, root, nil, stagedEnv, "write-tree")
 		if err != nil {
 			return "", err
 		}
 		if stagedTree := strings.TrimSpace(string(staged.Stdout)); stagedTree != tree {
-			if _, err := p.parkTree(ctx, root, ref+"-index", message+" (index)", head, stagedTree); err != nil {
+			if _, err := p.parkTree(ctx, root, ref+"-index", message+" (index)", head, stagedTree, false); err != nil {
 				return "", err
 			}
 		}
 	}
-	return p.parkTree(ctx, root, ref, message, head, tree)
+	return p.parkTree(ctx, root, ref, message, head, tree, false)
 }
 
-func (p GitProvider) parkTree(ctx context.Context, root, ref, message, head, tree string) (string, error) {
+// parkConflictStages serializes each side separately: a single Git tree cannot
+// represent multiple stages or directory/file conflicts between those stages.
+// All commands use the copied index; the executor's index remains untouched.
+func (p GitProvider) parkConflictStages(ctx context.Context, root, ref, message, head string, env []string) error {
+	entries, err := p.runEnvironment(ctx, root, nil, env, "ls-files", "--stage", "-z")
+	if err != nil {
+		return err
+	}
+	var stages [4]bytes.Buffer
+	for _, entry := range bytes.Split(entries.Stdout, []byte{0}) {
+		if len(entry) == 0 {
+			continue
+		}
+		metadata, path, ok := bytes.Cut(entry, []byte{'\t'})
+		fields := strings.Fields(string(metadata))
+		if !ok || len(fields) != 3 {
+			return errors.New("worktree: invalid index entry")
+		}
+		stage, err := strconv.Atoi(fields[2])
+		if err != nil || stage < 0 || stage > 3 {
+			return errors.New("worktree: invalid index stage")
+		}
+		fmt.Fprintf(&stages[stage], "%s %s\t%s\x00", fields[0], fields[1], path)
+	}
+	if stages[1].Len()+stages[2].Len()+stages[3].Len() == 0 {
+		return nil
+	}
+	// Rebuild the copy once per nonzero stage, then leave stage zero ready for
+	// the ordinary index snapshot. Per-stage paths cannot collide with each other.
+	for _, stage := range []int{1, 2, 3, 0} {
+		if stage != 0 && stages[stage].Len() == 0 {
+			continue
+		}
+		if _, err := p.runEnvironment(ctx, root, nil, env, "read-tree", "--empty"); err != nil {
+			return err
+		}
+		if _, err := p.runEnvironment(ctx, root, stages[stage].Bytes(), env, "update-index", "-z", "--index-info"); err != nil {
+			return err
+		}
+		if stage == 0 {
+			break
+		}
+		tree, err := p.runEnvironment(ctx, root, nil, env, "write-tree")
+		if err != nil {
+			return err
+		}
+		stageRef := fmt.Sprintf("%s-index-stage-%d", ref, stage)
+		if _, err := p.parkTree(ctx, root, stageRef, message+" (conflicted index)", head, strings.TrimSpace(string(tree.Stdout)), true); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p GitProvider) parkTree(ctx context.Context, root, ref, message, head, tree string, preserveStage bool) (string, error) {
 	old, err := p.run(ctx, p.Root, "show-ref", "--verify", "--hash", "--", ref)
 	if err == nil {
 		previous := strings.TrimSpace(string(old.Stdout))
@@ -297,7 +355,8 @@ func (p GitProvider) parkTree(ctx context.Context, root, ref, message, head, tre
 		if err != nil {
 			return "", err
 		}
-		if integrated {
+		// Keep the stage identity even when its blobs are already integrated.
+		if integrated && !preserveStage {
 			return "", nil
 		}
 		if _, err := p.run(ctx, p.Root, "update-ref", ref, head); err != nil {
@@ -333,8 +392,9 @@ func (p GitProvider) parkTree(ctx context.Context, root, ref, message, head, tre
 }
 
 type ParkedRef struct {
-	Ref string `json:"ref"`
-	SHA string `json:"sha"`
+	Ref       string   `json:"ref"`
+	SHA       string   `json:"sha"`
+	Conflicts []string `json:"conflicted_paths,omitempty"`
 }
 
 // Parked lists the delivery's refs, including snapshots from removed worktrees.
@@ -352,7 +412,17 @@ func (p GitProvider) Parked(ctx context.Context, slug string) ([]ParkedRef, erro
 		if len(parts) != 2 || !gitSHA.MatchString(parts[1]) {
 			return nil, errors.New("worktree: invalid parked ref")
 		}
-		refs = append(refs, ParkedRef{Ref: parts[0], SHA: parts[1]})
+		ref := ParkedRef{Ref: parts[0], SHA: parts[1]}
+		for stage := 1; stage <= 3; stage++ {
+			if strings.HasSuffix(ref.Ref, fmt.Sprintf("-index-stage-%d", stage)) {
+				paths, err := p.run(ctx, p.Root, "ls-tree", "-r", "--name-only", "-z", ref.SHA)
+				if err != nil {
+					return nil, err
+				}
+				ref.Conflicts = strings.Split(strings.TrimSuffix(string(paths.Stdout), "\x00"), "\x00")
+			}
+		}
+		refs = append(refs, ref)
 	}
 	return refs, nil
 }

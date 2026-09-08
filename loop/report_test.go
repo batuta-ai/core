@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
 
@@ -166,5 +167,175 @@ func TestFinishSurvivesWorktreeRemovalFailure(t *testing.T) {
 				t.Fatal("cleanup retry repeated bookkeeping")
 			}
 		})
+	}
+}
+
+func finishedTasksForBookkeeping(t *testing.T) (fixture, *Runner, *bytes.Buffer) {
+	t.Helper()
+	f := setup(t)
+	plan := "# Plan — Greetings\n\n**Goal:** Greeting.\n**Created:** 2026-09-06 · **Status:** approved\n\n## Tasks\n- [ ] 1. Add greeting one — backend/low\n      Scope: out/1.txt\n      Accept: greeting exists → test -f out/1.txt\n"
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-qm", "test: one task")
+	out := new(bytes.Buffer)
+	opts := f.options("default", out)
+	opts.MaxWaves, opts.KeepWorktrees = 1, true
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("stop: %v", err)
+	}
+	r.opts.MaxWaves, r.opts.KeepWorktrees = 0, false
+	out.Reset()
+	return f, r, out
+}
+
+func TestFinishRecordsTerminalAfterBookkeeping(t *testing.T) {
+	f, r, out := finishedTasksForBookkeeping(t)
+	r.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		if cmd.Directory == f.root && len(cmd.Args) > 0 && cmd.Args[0] == "commit" {
+			records := readJournal(t, f, r.Delivery())
+			if pendingFinalization(records) == nil {
+				t.Error("no recovery checkpoint before bookkeeping commit")
+			}
+			if terminalState(records) != "" {
+				t.Error("delivery ended before bookkeeping")
+			}
+			return publication.CommandResult{ExitCode: 1}, errors.New("injected bookkeeping failure")
+		}
+		return (publication.ExecRunner{}).Run(ctx, cmd)
+	})
+	if state, err := r.Run(context.Background()); err == nil || state != StateDone {
+		t.Fatalf("finish = %s, %v", state, err)
+	}
+	records := readJournal(t, f, r.Delivery())
+	if records[len(records)-1].Kind == KindTerminal || !strings.Contains(string(records[len(records)-1].Detail), "injected bookkeeping failure") {
+		t.Fatalf("bookkeeping failure not journaled: %s %s", records[len(records)-1].Kind, records[len(records)-1].Detail)
+	}
+	if !strings.Contains(out.String(), "batuta loop --resume "+r.Delivery()) {
+		t.Fatalf("missing recovery command: %s", out)
+	}
+}
+
+func TestResumeRepeatsFailedBookkeeping(t *testing.T) {
+	for _, failure := range []string{"move", "stage", "commit", "after-commit", "before-terminal"} {
+		for _, retry := range []string{"resume", "abandon"} {
+			t.Run(failure+"/"+retry, func(t *testing.T) {
+				f, r, out := finishedTasksForBookkeeping(t)
+				done := filepath.Join(f.root, ".batuta", "plans", "done")
+				if failure == "move" {
+					if err := os.WriteFile(done, []byte("block archive directory"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				interrupted := errors.New("interrupted after bookkeeping commit")
+				r.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+					if cmd.Directory == f.root && len(cmd.Args) > 0 {
+						if (failure == "stage" && cmd.Args[0] == "add") || (failure == "commit" && cmd.Args[0] == "commit") {
+							return publication.CommandResult{ExitCode: 1}, errors.New("injected bookkeeping failure")
+						}
+						if failure == "after-commit" && cmd.Args[0] == "commit" {
+							result, err := (publication.ExecRunner{}).Run(ctx, cmd)
+							if err != nil {
+								return result, err
+							}
+							panic(interrupted)
+						}
+					}
+					return (publication.ExecRunner{}).Run(ctx, cmd)
+				})
+				func() {
+					defer func() {
+						if got := recover(); got != nil && got != interrupted {
+							panic(got)
+						}
+					}()
+					state, err := r.Run(context.Background())
+					if state != StateDone || (failure != "before-terminal" && err == nil) {
+						t.Fatalf("finish = %s, %v", state, err)
+					}
+				}()
+				if failure == "move" {
+					if err := os.Remove(done); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if failure == "before-terminal" {
+					// Simulate losing only the final terminal append after bookkeeping completed.
+					path := filepath.Join(f.root, journal.Dir, r.Delivery()+".jsonl")
+					data, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					lines := bytes.Split(bytes.TrimSpace(data), []byte("\n"))
+					if err := os.WriteFile(path, append(bytes.Join(lines[:len(lines)-1], []byte("\n")), '\n'), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				before := readJournal(t, f, r.Delivery())
+				head := f.run(t, "rev-parse", "HEAD")
+				opts := f.options("default", out)
+				opts.Resume = r.Delivery()
+				opts.Now = func() time.Time { return time.Date(2026, 9, 7, 3, 0, 0, 0, time.UTC) }
+				if retry == "resume" {
+					resumed, err := Resume(context.Background(), opts)
+					if err != nil {
+						t.Fatalf("resume: %v", err)
+					}
+					if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
+						t.Fatalf("retry = %s, %v", state, err)
+					}
+				} else if state, err := Abandon(context.Background(), opts); err != nil || state != StateDone {
+					t.Fatalf("abandon retry = %s, %v", state, err)
+				}
+				after := readJournal(t, f, r.Delivery())
+				if terminalState(after) != StateDone {
+					t.Fatal("retry did not finalize")
+				}
+				for _, rec := range after[len(before):] {
+					if rec.Kind == KindStarted {
+						t.Fatal("retry re-ran tasks")
+					}
+				}
+				work := f.run(t, "show", "HEAD:WORK.md")
+				if strings.Count(work, "Add greeting one →") != 1 {
+					t.Fatalf("duplicate WORK entry: %s", work)
+				}
+				if !strings.Contains(f.run(t, "show", "HEAD:.batuta/plans/done/greetings.md"), "- [x] 1.") {
+					t.Fatal("plan was not archived and committed")
+				}
+				if got := f.run(t, "status", "--porcelain"); got != "" {
+					t.Fatalf("bookkeeping left changes: %s", got)
+				}
+				if (failure == "after-commit" || failure == "before-terminal") && f.run(t, "rev-parse", "HEAD") != head {
+					t.Fatal("retry duplicated successful bookkeeping commit")
+				}
+			})
+		}
+	}
+}
+
+func TestBookkeepingDoesNotHideAnotherDelivery(t *testing.T) {
+	f, r, _ := finishedTasksForBookkeeping(t)
+	r.mu.Lock()
+	summary := r.summaryLocked()
+	r.mu.Unlock()
+	if err := r.writeWork(summary, StateDone); err != nil {
+		t.Fatal(err)
+	}
+	r.delivery = "greetings-20260906-040001"
+	if err := r.writeWork(summary, StateDone); err != nil {
+		t.Fatal(err)
+	}
+	work, err := os.ReadFile(filepath.Join(f.root, "WORK.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(work), "Add greeting one →") != 2 {
+		t.Fatalf("new delivery was suppressed: %s", work)
 	}
 }

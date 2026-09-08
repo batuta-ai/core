@@ -450,3 +450,91 @@ func TestParkPreservesStagedIndex(t *testing.T) {
 		t.Fatalf("lost staged work: %q", got)
 	}
 }
+
+func TestParkWithUnmergedIndex(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	root, err := p.Add(ctx, "conflicted", "batuta/demo/conflicted", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// NUL-delimited index records exercise paths which cannot be split on whitespace.
+	path := "conflict name\twith newline\n.txt"
+	var entries strings.Builder
+	for stage, body := range []string{"base\n", "ours\n", "theirs\n"} {
+		blob, err := p.runInput(ctx, root, []byte(body), "hash-object", "-w", "--stdin")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(&entries, "100644 %s %d\t%s\x00", strings.TrimSpace(string(blob.Stdout)), stage+1, path)
+	}
+	if _, err := p.runInput(ctx, root, []byte(entries.String()), "update-index", "-z", "--index-info"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, path), []byte("unresolved working content\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idx, err := p.run(ctx, root, "rev-parse", "--git-path", "index")
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexPath := strings.TrimSpace(string(idx.Stdout))
+	before, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "refs/batuta/parked/demo/conflicted-e1"
+	sha, err := p.Park(ctx, root, ref, "wip: park conflicts")
+	if err != nil || sha == "" {
+		t.Fatalf("Park = %q, %v", sha, err)
+	}
+	after, err := os.ReadFile(indexPath)
+	if err != nil || string(before) != string(after) {
+		t.Fatalf("real index changed: %v", err)
+	}
+	if got := string(p.Show(ctx, root, ref, path)); got != "unresolved working content\n" {
+		t.Fatalf("working content = %q", got)
+	}
+	for stage, body := range []string{"base\n", "ours\n", "theirs\n"} {
+		if got := string(p.Show(ctx, root, fmt.Sprintf("%s-index-stage-%d", ref, stage+1), path)); got != body {
+			t.Fatalf("stage %d = %q", stage+1, got)
+		}
+	}
+	if again, err := p.Park(ctx, root, ref, "wip: park conflicts"); err != nil || again != "" {
+		t.Fatalf("repeat Park = %q, %v", again, err)
+	}
+}
+
+func TestParkWithUnmergedIndexStageMatchesHead(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	root, err := p.Add(ctx, "conflicted", "batuta/demo/conflicted", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ours, err := p.run(ctx, root, "rev-parse", "HEAD:README.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := p.runInput(ctx, root, []byte("theirs\n"), "hash-object", "-w", "--stdin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := fmt.Sprintf("0 %s\tREADME.md\x00100644 %s 2\tREADME.md\x00100644 %s 3\tREADME.md\x00", strings.Repeat("0", 40), strings.TrimSpace(string(ours.Stdout)), strings.TrimSpace(string(theirs.Stdout)))
+	if _, err := p.runInput(ctx, root, []byte(entries), "update-index", "-z", "--index-info"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("conflicted\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref := "refs/batuta/parked/demo/conflicted-e1"
+	if _, err := p.Park(ctx, root, ref, "wip: park"); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(p.Show(ctx, root, ref+"-index-stage-2", "README.md")); got != "# demo\n" {
+		t.Fatalf("lost stage identity for integrated tree: %q", got)
+	}
+	if _, err := p.run(ctx, root, "show-ref", "--verify", ref+"-index-stage-1"); err == nil {
+		t.Fatal("invented absent base stage")
+	}
+}

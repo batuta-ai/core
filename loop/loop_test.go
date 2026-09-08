@@ -57,6 +57,13 @@ answered=""; answered=$(printf '%s\n' "$text" | sed -n 's/^The answer: //p' | he
 echo "fake executor: task $n model $model retry $retry scenario ${FAKE_SCENARIO:-default}"
 mkdir -p out
 case "${FAKE_SCENARIO:-default}" in
+  unmerged-index)
+    for stage in 1 2 3; do
+      blob=$(printf 'stage %s\n' "$stage" | git hash-object -w --stdin)
+      printf '100644 %s %s\tout/conflicted.txt\n' "$blob" "$stage"
+    done | git update-index --index-info
+    echo 'unresolved working content' > out/conflicted.txt
+    exit 1;;
   continuation-*)
     if [ "$n" = 1 ]; then
       if [ "$retry" = 1 ] || [ -n "$answered" ]; then exit 0; fi
@@ -3001,5 +3008,42 @@ func TestLoopParksStagedWork(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no staged recovery ref")
+	}
+}
+
+func TestLoopParksConflictedWorktree(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("unmerged-index", &out)
+	opts.Parallel = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	if len(f.worktrees(t)) != 0 {
+		t.Fatal("conflicted worktrees not cleaned")
+	}
+	refs, err := r.git.Parked(context.Background(), r.plan.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ref := range refs {
+		if strings.HasSuffix(ref.Ref, "-index-stage-3") {
+			found = true
+			if got := f.run(t, "show", ref.Ref+":out/conflicted.txt"); got != "stage 3" {
+				t.Fatalf("lost theirs: %q", got)
+			}
+		}
+	}
+	if !found || !strings.Contains(out.String(), "conflicted paths:") || !strings.Contains(out.String(), "out/conflicted.txt") {
+		t.Fatalf("missing conflict recovery summary: %s", &out)
+	}
+	records := readJournal(t, f, r.Delivery())
+	if len(snapshotRecords(t, f, r.Delivery())) == 0 || terminalState(records) != StateBlocked {
+		t.Fatal("failure handling did not finalize")
 	}
 }

@@ -23,16 +23,21 @@ import (
 	"github.com/batuta-ai/core/worktree"
 )
 
+const kindFinalizing journal.Kind = "delivery_finalizing"
+
 type terminalDetail struct {
-	State          string            `json:"state"`
-	Summary        Summary           `json:"summary"`
-	CleanupPending bool              `json:"cleanup_pending,omitempty"`
-	CleanupError   string            `json:"cleanup_error,omitempty"`
-	Worktrees      []attemptWorktree `json:"retained_worktrees,omitempty"`
+	BookkeepingPending bool              `json:"bookkeeping_pending,omitempty"`
+	BookkeepingError   string            `json:"bookkeeping_error,omitempty"`
+	PlanPath           string            `json:"plan_path,omitempty"`
+	State              string            `json:"state"`
+	Summary            Summary           `json:"summary"`
+	CleanupPending     bool              `json:"cleanup_pending,omitempty"`
+	CleanupError       string            `json:"cleanup_error,omitempty"`
+	Worktrees          []attemptWorktree `json:"retained_worktrees,omitempty"`
 }
 
 // finish snapshots executor work before cleanup, then persists the retained
-// refs and bookkeeping result. Cleanup failures remain retryable.
+// refs and bookkeeping result. Checkpoint before either destructive operation.
 func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 	if err := r.snapshotWorktrees(ctx); err != nil {
 		return state, err
@@ -46,7 +51,6 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 	detail.Summary.Parked = parked
 	r.mu.Unlock()
 	final := state == StateDone || state == StateBlocked || state == StateAbandoned
-	var cleanupErr error
 	if final {
 		if !r.opts.KeepWorktrees {
 			seen := map[string]bool{}
@@ -58,11 +62,46 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 			}
 			slices.SortFunc(detail.Worktrees, func(a, b attemptWorktree) int { return strings.Compare(a.Root, b.Root) })
 		}
-		cleanupErr = r.cleanFinalization(ctx, &detail)
-		if err := r.bookkeeping(ctx, state, detail.Summary); err != nil {
-			r.printFinalization(detail)
-			return state, errors.Join(cleanupErr, err)
+		detail.CleanupPending, detail.BookkeepingPending = true, true
+		detail.PlanPath = r.plan.Path
+		if err := r.checkpointFinalization(detail); err != nil {
+			return state, err
 		}
+		return r.completeFinalization(ctx, detail)
+	}
+	return r.recordFinalization(detail, nil)
+}
+
+func (r *Runner) checkpointFinalization(detail terminalDetail) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.record(kindFinalizing, "", detail); err != nil {
+		return err
+	}
+	r.pendingFinish = &detail
+	return nil
+}
+
+func (r *Runner) completeFinalization(ctx context.Context, detail terminalDetail) (string, error) {
+	var cleanupErr, bookkeepingErr error
+	if detail.CleanupPending {
+		cleanupErr = r.cleanFinalization(ctx, &detail)
+	}
+	if detail.BookkeepingPending {
+		bookkeepingErr = r.bookkeeping(ctx, detail.State, detail.Summary)
+		detail.BookkeepingPending = bookkeepingErr != nil
+		detail.BookkeepingError = errorString(bookkeepingErr)
+	}
+	// A separate completed-bookkeeping checkpoint closes the interruption window
+	// between committing and appending the terminal record. Earlier checkpoints
+	// can safely repeat bookkeeping when the commit succeeded but was not recorded.
+	checkpointErr := r.checkpointFinalization(detail)
+	if bookkeepingErr != nil || checkpointErr != nil {
+		r.printFinalization(detail)
+		if checkpointErr != nil {
+			fmt.Fprintf(r.out, "finalization checkpoint: %s\nretry with batuta loop --resume %s or batuta loop --abandon %s\n", checkpointErr, r.delivery, r.delivery)
+		}
+		return detail.State, errors.Join(cleanupErr, bookkeepingErr, checkpointErr)
 	}
 	return r.recordFinalization(detail, cleanupErr)
 }
@@ -93,13 +132,22 @@ func (r *Runner) recordFinalization(detail terminalDetail, cleanupErr error) (st
 	r.mu.Lock()
 	r.terminal = detail.State
 	err := r.record(KindTerminal, "", detail)
+	if err == nil {
+		r.pendingFinish = nil
+	}
 	r.mu.Unlock()
 	r.printFinalization(detail)
+	if err != nil {
+		fmt.Fprintf(r.out, "terminal record: %s\nretry with batuta loop --resume %s or batuta loop --abandon %s\n", err, r.delivery, r.delivery)
+	}
 	return detail.State, errors.Join(cleanupErr, err)
 }
 
 func (r *Runner) printFinalization(detail terminalDetail) {
 	r.printSummary(detail.State, detail.Summary)
+	if detail.BookkeepingPending {
+		fmt.Fprintf(r.out, "bookkeeping pending: %s\nretry with batuta loop --resume %s or batuta loop --abandon %s\n", detail.BookkeepingError, r.delivery, r.delivery)
+	}
 	if detail.CleanupPending {
 		fmt.Fprintf(r.out, "cleanup pending: %s\nretry with batuta loop --resume %s or --abandon %s\n", detail.CleanupError, r.delivery, r.delivery)
 	}
@@ -107,11 +155,11 @@ func (r *Runner) printFinalization(detail terminalDetail) {
 
 func pendingFinalization(records []journal.Record) *terminalDetail {
 	for i := len(records) - 1; i >= 0; i-- {
-		if records[i].Kind != KindTerminal {
+		if records[i].Kind != KindTerminal && records[i].Kind != kindFinalizing {
 			continue
 		}
 		var detail terminalDetail
-		if json.Unmarshal(records[i].Detail, &detail) == nil && detail.CleanupPending {
+		if json.Unmarshal(records[i].Detail, &detail) == nil && (records[i].Kind == kindFinalizing || detail.CleanupPending) {
 			return &detail
 		}
 		return nil
@@ -129,14 +177,14 @@ func (r *Runner) restoreFinalization(records []journal.Record, opened openedDeta
 	}
 	r.graph = &graph
 	r.delivery, r.plan.Slug = r.opts.Resume, opened.Slug
+	r.plan.Path = detail.PlanPath
+	r.planPath = filepath.Join(r.root, detail.PlanPath)
 	r.journaled, r.pendingFinish = true, detail
 	return nil
 }
 
 func (r *Runner) retryFinalization(ctx context.Context) (string, error) {
-	detail := *r.pendingFinish
-	err := r.cleanFinalization(ctx, &detail)
-	return r.recordFinalization(detail, err)
+	return r.completeFinalization(ctx, *r.pendingFinish)
 }
 
 func (r *Runner) snapshotWorktrees(ctx context.Context) error {
@@ -294,6 +342,9 @@ func (r *Runner) printSummary(state string, summary Summary) {
 	}
 	for _, ref := range summary.Parked {
 		fmt.Fprintf(r.out, "  %s %s kept (unmerged work)\n", ref.Ref, ref.SHA)
+		if len(ref.Conflicts) > 0 {
+			fmt.Fprintf(r.out, "    conflicted paths: %q\n", ref.Conflicts)
+		}
 	}
 	fmt.Fprintf(r.out, "journal   %s\n", filepath.Join(journal.Dir, r.delivery+".jsonl"))
 }
@@ -308,29 +359,39 @@ func pendingReason(task SummaryTask) string {
 // bookkeeping ticks integrated tasks in the plan, sets Status: done when
 // every task is integrated, appends the WORK.md lines and commits them.
 func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary) error {
-	planChanged, err := r.tickPlan(summary)
+	_, err := r.tickPlan(summary)
 	if err != nil {
 		return err
 	}
 	if err := r.writeWork(summary, state); err != nil {
 		return err
 	}
-	if planChanged {
-		args := []string{"add", "-A", "--", r.plan.Path}
-		if r.planPath != filepath.Join(r.root, r.plan.Path) {
-			args = append(args, filepath.Join(".batuta", "plans"))
-		}
-		roadmap := filepath.Join(".batuta", "roadmap.md")
-		if _, err := os.Stat(filepath.Join(r.root, roadmap)); err == nil {
-			args = append(args, roadmap)
-		} else if !errors.Is(err, os.ErrNotExist) {
+	// Stage even when retrying an already ticked plan. The source may already
+	// be archived, or its removal may already have been committed.
+	paths := []string{r.planPath}
+	original := filepath.Join(r.root, r.plan.Path)
+	if original != r.planPath {
+		tracked, err := r.git.Runner.Run(ctx, publication.Command{
+			Executable: r.git.Git, Args: []string{"ls-files", "-z", "--", r.plan.Path}, Directory: r.root,
+		})
+		if err != nil {
 			return err
 		}
-		if _, err := r.git.Runner.Run(ctx, publication.Command{
-			Executable: r.git.Git, Args: args, Directory: r.root,
-		}); err != nil {
-			return fmt.Errorf("loop: stage plan bookkeeping: %w", err)
+		if len(tracked.Stdout) > 0 {
+			paths = append(paths, original)
 		}
+	}
+	roadmap := filepath.Join(r.root, ".batuta", "roadmap.md")
+	if _, err := os.Stat(roadmap); err == nil {
+		paths = append(paths, roadmap)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	args := append([]string{"add", "-A", "--"}, paths...)
+	if _, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable: r.git.Git, Args: args, Directory: r.root,
+	}); err != nil {
+		return fmt.Errorf("loop: stage plan bookkeeping: %w", err)
 	}
 	message := fmt.Sprintf("chore(batuta): %s — loop %s\n\n%d integrated, %d blocked. Delivery %s.\n", r.plan.Slug, state, len(summary.Integrated), len(summary.Blocked), r.delivery)
 	if _, err := r.git.Commit(ctx, message, "WORK.md"); err != nil {
@@ -346,6 +407,11 @@ var (
 
 func (r *Runner) tickPlan(summary Summary) (bool, error) {
 	payload, err := os.ReadFile(r.planPath)
+	if errors.Is(err, os.ErrNotExist) {
+		// Archival may have succeeded before staging or journaling failed.
+		r.planPath = filepath.Join(r.root, ".batuta", "plans", "done", r.plan.Slug+".md")
+		payload, err = os.ReadFile(r.planPath)
+	}
 	if err != nil {
 		return false, err
 	}
@@ -398,19 +464,21 @@ func (r *Runner) tickPlan(summary Summary) (bool, error) {
 			}
 		}
 	}
-	if !changed {
-		return false, nil
-	}
-	if err := os.WriteFile(r.planPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
-		return false, err
+	if changed {
+		if err := os.WriteFile(r.planPath, []byte(strings.Join(lines, "\n")), 0o644); err != nil {
+			return false, err
+		}
 	}
 	if allDone {
 		done := filepath.Join(r.root, ".batuta", "plans", "done", r.plan.Slug+".md")
 		if err := os.MkdirAll(filepath.Dir(done), 0o755); err != nil {
 			return false, err
 		}
-		if err := os.Rename(r.planPath, done); err != nil {
-			return false, err
+		if r.planPath != done {
+			if err := os.Rename(r.planPath, done); err != nil {
+				return false, err
+			}
+			changed = true
 		}
 		r.planPath = done
 		roadmap := filepath.Join(r.root, ".batuta", "roadmap.md")
@@ -422,7 +490,7 @@ func (r *Runner) tickPlan(summary Summary) (bool, error) {
 			return false, err
 		}
 	}
-	return true, nil
+	return changed, nil
 }
 
 func (r *Runner) writeWork(summary Summary, state string) error {
@@ -438,21 +506,27 @@ func (r *Runner) writeWork(summary Summary, state string) error {
 	date := r.now().Format("2006-01-02")
 	var done, blocked []string
 	for _, task := range summary.Integrated {
+		if strings.Contains(content, "(trail: "+r.trailRelative(task.ID)+", delivery "+r.delivery+",") {
+			continue
+		}
 		if task.Satisfied {
-			done = append(done, fmt.Sprintf("- [x] %s → %s, already satisfied on the base %s, no commit (trail: %s, plan %s, %s)", task.Title, task.Story, short(task.Base), r.trailRelative(task.ID), r.plan.Slug, date))
+			done = append(done, fmt.Sprintf("- [x] %s → %s, already satisfied on the base %s, no commit (trail: %s, delivery %s, plan %s, %s)", task.Title, task.Story, short(task.Base), r.trailRelative(task.ID), r.delivery, r.plan.Slug, date))
 			continue
 		}
 		if task.Commit == "" {
 			continue
 		}
-		done = append(done, fmt.Sprintf("- [x] %s → %s, commit %s (trail: %s, plan %s, %s)", task.Title, task.Story, short(task.Commit), r.trailRelative(task.ID), r.plan.Slug, date))
+		done = append(done, fmt.Sprintf("- [x] %s → %s, commit %s (trail: %s, delivery %s, plan %s, %s)", task.Title, task.Story, short(task.Commit), r.trailRelative(task.ID), r.delivery, r.plan.Slug, date))
 	}
 	for _, task := range summary.Blocked {
-		if task.Blocker == blockerAlreadySatisfied {
-			done = append(done, fmt.Sprintf("- [x] %s → %s, already satisfied on the base, no commit (trail: %s, plan %s, %s)", task.Title, task.Story, r.trailRelative(task.ID), r.plan.Slug, date))
+		if strings.Contains(content, "(trail: "+r.trailRelative(task.ID)+", delivery "+r.delivery+",") {
 			continue
 		}
-		blocked = append(blocked, fmt.Sprintf("- [ ] %s → %s, aborted: %s (trail: %s, plan %s, %s)", task.Title, task.Story, task.Blocker, r.trailRelative(task.ID), r.plan.Slug, date))
+		if task.Blocker == blockerAlreadySatisfied {
+			done = append(done, fmt.Sprintf("- [x] %s → %s, already satisfied on the base, no commit (trail: %s, delivery %s, plan %s, %s)", task.Title, task.Story, r.trailRelative(task.ID), r.delivery, r.plan.Slug, date))
+			continue
+		}
+		blocked = append(blocked, fmt.Sprintf("- [ ] %s → %s, aborted: %s (trail: %s, delivery %s, plan %s, %s)", task.Title, task.Story, task.Blocker, r.trailRelative(task.ID), r.delivery, r.plan.Slug, date))
 	}
 	content = appendUnderHeading(content, "## Done", done)
 	if len(blocked) > 0 {

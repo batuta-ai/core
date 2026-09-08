@@ -3,6 +3,7 @@
 ## In progress
 
 ## Done
+- [x] round-5 review fixes: Park tolerates an unmerged index, finalisation survives bookkeeping failures → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-round5.md)
 - [x] batuta review: an oversized file becomes its own cohort, never an error → codex (codex/gpt-5.6-sol), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-review-oversized.md)
 - [x] loop: Run waits for in-flight attempts, output serialised, loop tests race-free → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/loop-hardening (trail: .batuta/runs/2026-09-08-loop-races.md)
 - [x] watch renders inside the terminal: narrow selection marker ❯, honest emoji widths, hard height cap → codex (codex/gpt-6-astra), primeira tentativa, commit em feat/watch-tui (trail: .batuta/runs/2026-09-07-watch-render-fix.md)
