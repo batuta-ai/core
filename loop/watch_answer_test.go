@@ -43,9 +43,8 @@ func resumableAnswerWatch(t *testing.T) watchModel {
 	}
 	records := readJournal(t, f, r.Delivery())
 	now := records[len(records)-1].At
-	ticker := func(_ time.Duration, tick func(time.Time) tea.Msg) tea.Cmd {
-		return func() tea.Msg { return tick(now) }
-	}
+	var durations []time.Duration
+	ticker := immediateTicker(now, &durations)
 	return newPollingWatchModel(f.root, r.Delivery(), r.store, records, time.Second, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time { return now }, ticker)
 }
 

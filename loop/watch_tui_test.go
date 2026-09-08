@@ -568,12 +568,13 @@ func TestWatchStaysOpenOnTerminalStateWithoutTaskAttention(t *testing.T) {
 }
 
 func TestWatchViewNeverExceedsWindowHeight(t *testing.T) {
+	now := time.Date(2026, time.September, 8, 0, 0, 0, 0, time.UTC)
 	for _, size := range [][2]int{{120, 30}, {120, 24}, {80, 20}, {60, 12}, {120, 1}} {
 		for _, legend := range []bool{false, true} {
 			for _, notice := range []bool{false, true} {
 				for _, answer := range []bool{false, true} {
 					t.Run(fmt.Sprintf("%dx%d/legend=%v/notice=%v/answer=%v", size[0], size[1], legend, notice, answer), func(t *testing.T) {
-						m := newWatchModel(t.TempDir(), nil, Style{Width: size[0], Lang: "en", Glyphs: "unicode", Colour: true}, time.Now)
+						m := newWatchModel(t.TempDir(), nil, Style{Width: size[0], Lang: "en", Glyphs: "unicode", Colour: true}, func() time.Time { return now })
 						m.height = size[1]
 						if answer {
 							m.openAnswer()
