@@ -236,3 +236,86 @@ func TestParkPreservesWorktreeIndexAndBranch(t *testing.T) {
 		t.Fatalf("lost parked work: %q", got)
 	}
 }
+
+func TestParkProtectsCommittedWork(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	branch := "batuta/demo/task-1-e1"
+	root, err := p.Add(ctx, "demo-task-1-e1", branch, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "committed.txt"), []byte("executor work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "committed.txt"}, {"commit", "-qm", "wip: executor work"}} {
+		if out, err := exec.Command(p.Git, append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	head, err := p.Head(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "refs/batuta/parked/demo/task-1-e1"
+	sha, err := p.Park(ctx, root, ref, "wip: park")
+	if err != nil || sha != head {
+		t.Fatalf("Park = %q, %v; want HEAD %s", sha, err, head)
+	}
+	if err := p.Remove(ctx, root, branch); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(p.Show(ctx, p.Root, ref, "committed.txt")); got != "executor work\n" {
+		t.Fatalf("lost committed work: %q", got)
+	}
+	if out, err := exec.Command(p.Git, "-C", p.Root, "rev-parse", ref).Output(); err != nil || strings.TrimSpace(string(out)) != head {
+		t.Fatalf("recovery ref = %s, %v; want %s", out, err, head)
+	}
+}
+
+func TestParkSkipsOnlyWhenAlreadyPreserved(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	root, err := p.Add(ctx, "demo-task-1-e1", "batuta/demo/task-1-e1", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := "refs/batuta/parked/demo/task-1-e1"
+	if sha, err := p.Park(ctx, root, ref, "wip: park"); err != nil || sha != "" {
+		t.Fatalf("integrated Park = %s, %v", sha, err)
+	}
+	if refs, err := p.Parked(ctx, "demo"); err != nil || len(refs) != 0 {
+		t.Fatalf("integrated refs = %v, %v", refs, err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sha, err := p.Park(ctx, root, ref, "wip: park")
+	if err != nil || sha == "" {
+		t.Fatalf("dirty Park = %s, %v", sha, err)
+	}
+	if again, err := p.Park(ctx, root, ref, "wip: park"); err != nil || again != "" {
+		t.Fatalf("preserved Park = %s, %v", again, err)
+	}
+	refs, err := p.Parked(ctx, "demo")
+	if err != nil || len(refs) != 1 || refs[0].SHA != sha {
+		t.Fatalf("preserved refs = %v, %v", refs, err)
+	}
+	// The executor can commit the parked tree on a different ancestry.
+	// Preserve that HEAD too, even though its tree matches the old snapshot.
+	for _, args := range [][]string{{"add", "new.txt"}, {"commit", "-qm", "wip: executor commits parked tree"}} {
+		if out, err := exec.Command(p.Git, append([]string{"-C", root}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	head, err := p.Head(ctx, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if saved, err := p.Park(ctx, root, ref, "wip: park"); err != nil || saved != head {
+		t.Fatalf("committed Park = %s, %v; want HEAD %s", saved, err, head)
+	}
+	if again, err := p.Park(ctx, root, ref, "wip: park"); err != nil || again != "" {
+		t.Fatalf("preserved committed Park = %s, %v", again, err)
+	}
+}

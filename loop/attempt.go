@@ -711,7 +711,34 @@ func (r *Runner) snapshotWorktree(ctx context.Context, taskID string, execution 
 		return fmt.Errorf("loop: park %s: %w", wt.Name, err)
 	}
 	if sha == "" {
-		return nil
+		head, err := r.git.Head(ctx, wt.Root)
+		if err != nil {
+			return err
+		}
+		integrated, err := r.git.IsAncestor(ctx, head, "refs/heads/"+r.branch)
+		if err != nil {
+			return err
+		}
+		if integrated {
+			return nil
+		}
+		parked, err := r.git.Parked(ctx, r.plan.Slug)
+		if err != nil {
+			return err
+		}
+		for _, saved := range parked {
+			if saved.Ref != ref {
+				continue
+			}
+			preserved, err := r.git.IsAncestor(ctx, head, saved.SHA)
+			if err != nil {
+				return err
+			}
+			if preserved {
+				return nil
+			}
+		}
+		return fmt.Errorf("loop: park %s: empty snapshot leaves unmerged HEAD %s unprotected", wt.Name, head)
 	}
 	return r.locked(KindSnapshot, taskID, map[string]any{
 		"execution": execution, "worktree": wt, "ref": ref, "sha": sha,

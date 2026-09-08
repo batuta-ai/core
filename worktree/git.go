@@ -202,7 +202,8 @@ func (p GitProvider) Remove(ctx context.Context, path, branch string) error {
 }
 
 // Park saves the working tree under ref without changing HEAD, the real
-// index, or any files. An unchanged tree needs no new snapshot.
+// index, or any files. A tree already protected by a recovery ref or
+// integration history needs no new snapshot.
 func (p GitProvider) Park(ctx context.Context, root, ref, message string) (string, error) {
 	if !strings.HasPrefix(ref, "refs/batuta/parked/") || strings.TrimSpace(message) == "" {
 		return "", errors.New("worktree: invalid park request")
@@ -231,19 +232,45 @@ func (p GitProvider) Park(ctx context.Context, root, ref, message string) (strin
 		return "", err
 	}
 	tree := strings.TrimSpace(string(treeResult.Stdout))
-	previous := head
 	old, err := p.run(ctx, p.Root, "show-ref", "--verify", "--hash", "--", ref)
 	if err == nil {
-		previous = strings.TrimSpace(string(old.Stdout))
+		previous := strings.TrimSpace(string(old.Stdout))
+		previousTree, err := p.run(ctx, p.Root, "rev-parse", previous+"^{tree}")
+		if err != nil {
+			return "", err
+		}
+		if tree == strings.TrimSpace(string(previousTree.Stdout)) {
+			preserved, err := p.IsAncestor(ctx, head, previous)
+			if err != nil {
+				return "", err
+			}
+			if preserved {
+				return "", nil
+			}
+		}
 	} else if old.ExitCode != 1 && old.ExitCode != 128 {
 		return "", err
 	}
-	previousTree, err := p.run(ctx, p.Root, "rev-parse", previous+"^{tree}")
+	headTree, err := p.run(ctx, root, "rev-parse", head+"^{tree}")
 	if err != nil {
 		return "", err
 	}
-	if tree == strings.TrimSpace(string(previousTree.Stdout)) {
-		return "", nil
+	if tree == strings.TrimSpace(string(headTree.Stdout)) {
+		integrationHead, err := p.Head(ctx, p.Root)
+		if err != nil {
+			return "", err
+		}
+		integrated, err := p.IsAncestor(ctx, head, integrationHead)
+		if err != nil {
+			return "", err
+		}
+		if integrated {
+			return "", nil
+		}
+		if _, err := p.run(ctx, p.Root, "update-ref", ref, head); err != nil {
+			return "", err
+		}
+		return head, nil
 	}
 	for _, field := range []struct{ key, author, committer string }{
 		{"user.name", "GIT_AUTHOR_NAME=", "GIT_COMMITTER_NAME="},

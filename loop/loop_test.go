@@ -98,6 +98,14 @@ case "${FAKE_SCENARIO:-default}" in
       exit 0
     fi
     echo "ok" > out/$n.txt;;
+  committed-broken)
+    if [ "$n" = 1 ]; then
+      echo "BROKEN by $model" > out/1.txt
+      git add out/1.txt
+      git diff --cached --quiet || git commit -q -m "wip: committed broken greeting"
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   always-broken)
     if [ "$n" = 1 ]; then echo "BROKEN by $model" > out/1.txt; exit 0; fi
     echo "ok" > out/$n.txt;;
@@ -2520,6 +2528,17 @@ func snapshotRecords(t *testing.T, f fixture, delivery string) []journal.Record 
 	return snapshots
 }
 
+func taskSnapshotRecords(t *testing.T, f fixture, delivery, taskID string) []journal.Record {
+	t.Helper()
+	var snapshots []journal.Record
+	for _, record := range snapshotRecords(t, f, delivery) {
+		if record.TaskID == taskID {
+			snapshots = append(snapshots, record)
+		}
+	}
+	return snapshots
+}
+
 func snapshotDetail(t *testing.T, record journal.Record) (string, string) {
 	t.Helper()
 	var detail struct {
@@ -2545,7 +2564,7 @@ func TestLoopSnapshotsBeforeQuestion(t *testing.T) {
 	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
 		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
 	}
-	snapshots := snapshotRecords(t, f, r.Delivery())
+	snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
 	if len(snapshots) != 1 {
 		t.Fatalf("snapshots = %d, want 1", len(snapshots))
 	}
@@ -2578,7 +2597,7 @@ func TestLoopSnapshotsBeforeRetry(t *testing.T) {
 			if state, err := r.Run(context.Background()); err != nil || state != StateDone {
 				t.Fatalf("Run = %s, %v\n%s", state, err, &out)
 			}
-			snapshots := snapshotRecords(t, f, r.Delivery())
+			snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
 			if len(snapshots) == 0 {
 				t.Fatal("retry lost its partial work")
 			}
@@ -2609,7 +2628,7 @@ func TestLoopSnapshotsBeforeCleanup(t *testing.T) {
 	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
 		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
 	}
-	snapshots := snapshotRecords(t, f, r.Delivery())
+	snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
 	if len(snapshots) != 2 {
 		t.Fatalf("snapshots = %d, want two distinct trees", len(snapshots))
 	}
@@ -2642,11 +2661,15 @@ func TestLoopKeepsParkedRefsUntilTerminal(t *testing.T) {
 	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
 		t.Fatalf("Run = %v\n%s", err, &out)
 	}
-	snapshots := snapshotRecords(t, f, r.Delivery())
-	if len(snapshots) != 1 {
-		t.Fatalf("snapshots = %d", len(snapshots))
+	snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want partial work and committed candidate", len(snapshots))
 	}
-	sha, ref := snapshotDetail(t, snapshots[0])
+	partial, partialRef := snapshotDetail(t, snapshots[0])
+	sha, ref := snapshotDetail(t, snapshots[1])
+	if ref != partialRef || f.run(t, "rev-parse", partial+"^{tree}") != f.run(t, "rev-parse", sha+"^{tree}") {
+		t.Fatal("candidate snapshot did not preserve the partial-work tree under the same ref")
+	}
 	if got := f.run(t, "rev-parse", ref); got != sha {
 		t.Fatal("ref removed before terminal record")
 	}
@@ -2671,11 +2694,15 @@ func TestLoopDeletesIntegratedParkedRefs(t *testing.T) {
 	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
 		t.Fatalf("Run = %v\n%s", err, &out)
 	}
-	snapshots := snapshotRecords(t, f, r.Delivery())
-	if len(snapshots) != 1 {
-		t.Fatalf("snapshots = %d", len(snapshots))
+	snapshots := taskSnapshotRecords(t, f, r.Delivery(), "task_1")
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want partial work and committed candidate", len(snapshots))
 	}
-	sha, ref := snapshotDetail(t, snapshots[0])
+	partial, partialRef := snapshotDetail(t, snapshots[0])
+	sha, ref := snapshotDetail(t, snapshots[1])
+	if ref != partialRef || f.run(t, "rev-parse", partial+"^{tree}") != f.run(t, "rev-parse", sha+"^{tree}") {
+		t.Fatal("candidate snapshot did not preserve the partial-work tree under the same ref")
+	}
 	if got := f.run(t, "rev-parse", ref); got != sha {
 		t.Fatal("ref already deleted")
 	}
@@ -2719,5 +2746,126 @@ func TestTrailListsSnapshots(t *testing.T) {
 		if !strings.Contains(trail.String(), sha) {
 			t.Fatalf("trail omitted %s:\n%s", sha, &trail)
 		}
+	}
+}
+
+func runCommittedWorkCleanup(t *testing.T) (fixture, *Runner, string) {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("committed-broken", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	return f, r, out.String()
+}
+
+func committedFailureSnapshots(t *testing.T, f fixture, r *Runner) []journal.Record {
+	t.Helper()
+	var failed []journal.Record
+	for _, record := range snapshotRecords(t, f, r.Delivery()) {
+		if record.TaskID == "task_1" {
+			failed = append(failed, record)
+			continue
+		}
+		// Integration can preserve a sibling's tree under a different commit.
+		// Terminal cleanup must remove that candidate's recovery ref.
+		_, ref := snapshotDetail(t, record)
+		if got := f.run(t, "for-each-ref", "--format=%(refname)", ref); got != "" {
+			t.Fatalf("integrated sibling ref remains: %s", got)
+		}
+	}
+	if len(failed) != 2 {
+		t.Fatalf("failed-task snapshots = %d, want low and escalated committed work", len(failed))
+	}
+	return failed
+}
+
+func TestLoopParksCommittedWorkBeforeCleanup(t *testing.T) {
+	f, r, _ := runCommittedWorkCleanup(t)
+	snapshots := committedFailureSnapshots(t, f, r)
+	for _, record := range snapshots {
+		sha, ref := snapshotDetail(t, record)
+		if got := f.run(t, "rev-parse", ref); got != sha {
+			t.Fatalf("lost %s", ref)
+		}
+		if got := f.run(t, "show", "-s", "--format=%s", ref); got != "wip: committed broken greeting" {
+			t.Fatalf("parked ref does not point at executor HEAD: %s", got)
+		}
+		if got := f.run(t, "show", ref+":out/1.txt"); !strings.HasPrefix(got, "BROKEN by fake-") {
+			t.Fatalf("lost committed content: %q", got)
+		}
+	}
+	if got := f.worktrees(t); len(got) != 0 {
+		t.Fatalf("worktrees remain: %v", got)
+	}
+	if got := f.run(t, "for-each-ref", "--format=%(refname)", "refs/heads/batuta/"); got != "" {
+		t.Fatalf("attempt branches remain: %s", got)
+	}
+}
+
+func TestLoopSummaryListsParkedCommittedWork(t *testing.T) {
+	f, r, out := runCommittedWorkCleanup(t)
+	snapshots := committedFailureSnapshots(t, f, r)
+	parked, err := r.git.Parked(context.Background(), r.plan.Slug)
+	if err != nil || len(parked) != len(snapshots) {
+		t.Fatalf("recovery refs = %v, %v; want only failed-task snapshots", parked, err)
+	}
+	for _, record := range snapshots {
+		sha, ref := snapshotDetail(t, record)
+		if !strings.Contains(out, ref+" "+sha+" kept (unmerged work)") {
+			t.Fatalf("missing recovery ref in summary:\n%s", out)
+		}
+	}
+}
+
+func TestLoopParksCommittedWorkBeforeCleanupFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(ctx, f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt := attemptWorktree{Name: "greetings-task-1-e1", Branch: "batuta/greetings/task-1-e1"}
+	wt.Root, err = r.git.Add(ctx, wt.Name, wt.Branch, f.base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed := f
+	committed.root = wt.Root
+	if err := os.WriteFile(filepath.Join(wt.Root, "committed.txt"), []byte("work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	committed.run(t, "add", "committed.txt")
+	committed.run(t, "commit", "-qm", "wip: executor work")
+	head := committed.run(t, "rev-parse", "HEAD")
+	ref := "refs/batuta/parked/greetings/task-1-e1"
+	if sha, err := r.git.Park(ctx, wt.Root, ref, "wip: park"); err != nil || sha != head {
+		t.Fatalf("Park = %s, %v", sha, err)
+	}
+	runner := r.git.Runner
+	removed := false
+	r.git.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		result, err := runner.Run(ctx, command)
+		// Lose the recovery ref after Park observes it, before the caller checks preservation.
+		if !removed && strings.Join(command.Args, " ") == "merge-base --is-ancestor "+head+" "+head {
+			removed = true
+			f.run(t, "update-ref", "-d", ref)
+		}
+		return result, err
+	})
+	err = r.recordBlocked(ctx, attemptContext{taskID: "task_1", execution: 1, worktree: wt}, nil, blockerTestsFailed, nil)
+	if !removed || err == nil || !strings.Contains(err.Error(), "unprotected") {
+		t.Fatalf("missing preservation error: removed=%t err=%v", removed, err)
+	}
+	if _, err := os.Stat(wt.Root); err != nil {
+		t.Fatalf("worktree removed despite failed preservation: %v", err)
+	}
+	if got := f.run(t, "rev-parse", "refs/heads/"+wt.Branch); got != head {
+		t.Fatalf("unprotected branch lost: %s", got)
 	}
 }
