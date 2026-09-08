@@ -161,6 +161,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		if execErr != nil || !result.RateLimited {
 			break
 		}
+		if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, ac.worktree); err != nil {
+			return err
+		}
 		now := r.now()
 		result.ResetAt = executor.ResetTime(string(result.Stdout)+"\n"+string(result.Stderr), now)
 		if waits >= r.opts.MaxLimitWaits || (!result.ResetAt.IsZero() && result.ResetAt.Sub(now) > r.opts.LimitHorizon) {
@@ -442,6 +445,11 @@ func (r *Runner) ensureWorktree(ctx context.Context, ac *attemptContext, attempt
 		}
 	}
 	name, branch := r.worktreeName(ac.taskID, ac.execution), r.branchName(ac.taskID, ac.execution)
+	if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, attemptWorktree{
+		Name: name, Branch: branch, Root: filepath.Join(r.root, ".batuta", "worktrees", name),
+	}); err != nil {
+		return err
+	}
 	root, err := r.git.Add(ctx, name, branch, ac.base)
 	if err != nil {
 		return fmt.Errorf("loop: %w", err)
@@ -507,6 +515,9 @@ func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates
 }
 
 func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result executor.Result, treeChanged bool) error {
+	if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, ac.worktree); err != nil {
+		return err
+	}
 	question := routing.TaskQuestion{
 		RequestID: digestString("question:" + ac.runID + ":" + result.Question), Prompt: result.Question,
 		ContextDigest: digestString(string(result.Stdout)),
@@ -601,6 +612,9 @@ func (r *Runner) recordBlocked(ctx context.Context, ac attemptContext, result *e
 }
 
 func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext, result *executor.Result, code string, feedback []string, policy routing.FailurePolicy) error {
+	if err := r.snapshotWorktree(context.WithoutCancel(ctx), ac.taskID, ac.execution, ac.worktree); err != nil {
+		return err
+	}
 	status := "failed"
 	if code == blockerInterrupted {
 		status = "stalled"
@@ -653,6 +667,29 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		_ = r.git.Remove(context.WithoutCancel(ctx), ac.worktree.Root, ac.worktree.Branch)
 	}
 	return nil
+}
+
+func (r *Runner) snapshotWorktree(ctx context.Context, taskID string, execution int, wt attemptWorktree) error {
+	if wt.Root == "" {
+		return nil
+	}
+	if _, err := os.Stat(wt.Root); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	ref := "refs/batuta/parked/" + strings.TrimPrefix(wt.Branch, "batuta/")
+	message := fmt.Sprintf("wip(batuta): %s %s e%d parked", r.plan.Slug, taskID, execution)
+	sha, err := r.git.Park(ctx, wt.Root, ref, message)
+	if err != nil {
+		return fmt.Errorf("loop: park %s: %w", wt.Name, err)
+	}
+	if sha == "" {
+		return nil
+	}
+	return r.locked(KindSnapshot, taskID, map[string]any{
+		"execution": execution, "worktree": wt, "ref": ref, "sha": sha,
+	}, nil)
 }
 
 func blockerCode(report gates.Report, result executor.Result, silent bool) string {

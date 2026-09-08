@@ -145,3 +145,94 @@ func TestCommitRecordsBookkeepingAtTheRoot(t *testing.T) {
 		t.Fatal("New(non-repo) should fail")
 	}
 }
+
+func TestParkPreservesWorktreeIndexAndBranch(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command(p.Git, append([]string{"-C", dir}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	write := func(root, path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, path)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, path), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(p.Root, ".batuta/profile.md", "original\n")
+	run(p.Root, "add", "-A")
+	run(p.Root, "commit", "-qm", "chore: profile")
+	base = run(p.Root, "rev-parse", "HEAD")
+	branch := "batuta/demo/task-1-e1"
+	root, err := p.Add(ctx, "demo-task-1-e1", branch, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(root, "README.md", "staged\n")
+	run(root, "add", "README.md")
+	write(root, "README.md", "unstaged\n")
+	write(root, "new.txt", "untracked\n")
+	write(root, ".batuta/profile.md", "changed\n")
+	write(root, ".batuta/brief.md", "private runtime state\n")
+	indexPath := run(root, "rev-parse", "--git-path", "index")
+	indexBefore, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusBefore := run(root, "status", "--porcelain=v1", "--untracked-files=all")
+	run(root, "config", "commit.gpgsign", "true")
+	ref := "refs/batuta/parked/demo/task-1-e1"
+	message := "wip(batuta): demo task_1 e1 parked"
+	sha, err := p.Park(ctx, root, ref, message)
+	if err != nil || sha == "" {
+		t.Fatalf("Park() = %s, %v", sha, err)
+	}
+	if got := run(p.Root, "rev-parse", ref); got != sha {
+		t.Fatalf("ref = %s, want %s", got, sha)
+	}
+	if got := run(root, "rev-parse", "HEAD"); got != base {
+		t.Fatalf("HEAD moved to %s", got)
+	}
+	if got := run(root, "symbolic-ref", "--short", "HEAD"); got != branch {
+		t.Fatalf("branch = %s", got)
+	}
+	indexAfter, err := os.ReadFile(indexPath)
+	if err != nil || string(indexBefore) != string(indexAfter) {
+		t.Fatalf("index changed: %v", err)
+	}
+	if got := run(root, "status", "--porcelain=v1", "--untracked-files=all"); got != statusBefore {
+		t.Fatalf("status changed: %s", got)
+	}
+	if got := run(root, "show", "-s", "--format=%P%n%s%n%an%n%ae", sha); got != base+"\n"+message+"\nt\nt@example.com" {
+		t.Fatalf("snapshot metadata: %s", got)
+	}
+	for path, want := range map[string]string{"README.md": "unstaged", "new.txt": "untracked", ".batuta/profile.md": "original"} {
+		if got := run(root, "show", sha+":"+path); got != want {
+			t.Fatalf("%s = %q, want %q", path, got, want)
+		}
+	}
+	if got := run(root, "ls-tree", "-r", "--name-only", sha); strings.Contains(got, ".batuta/brief.md") {
+		t.Fatalf("runtime file snapshotted: %s", got)
+	}
+	if again, err := p.Park(ctx, root, ref, message); err != nil || again != "" {
+		t.Fatalf("unchanged Park = %s, %v", again, err)
+	}
+	write(root, "new.txt", "revised\n")
+	next, err := p.Park(ctx, root, ref, message)
+	if err != nil || next == "" || next == sha {
+		t.Fatalf("changed Park = %s, %v", next, err)
+	}
+	if err := p.Remove(ctx, root, branch); err != nil {
+		t.Fatal(err)
+	}
+	if got := run(p.Root, "show", ref+":new.txt"); got != "revised" {
+		t.Fatalf("lost parked work: %q", got)
+	}
+}

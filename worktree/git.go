@@ -201,6 +201,137 @@ func (p GitProvider) Remove(ctx context.Context, path, branch string) error {
 	return first
 }
 
+// Park saves the working tree under ref without changing HEAD, the real
+// index, or any files. An unchanged tree needs no new snapshot.
+func (p GitProvider) Park(ctx context.Context, root, ref, message string) (string, error) {
+	if !strings.HasPrefix(ref, "refs/batuta/parked/") || strings.TrimSpace(message) == "" {
+		return "", errors.New("worktree: invalid park request")
+	}
+	if _, err := p.run(ctx, p.Root, "check-ref-format", ref); err != nil {
+		return "", err
+	}
+	head, err := p.Head(ctx, root)
+	if err != nil {
+		return "", err
+	}
+	scratch, err := os.MkdirTemp("", "batuta-park-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(scratch)
+	env := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
+	if _, err := p.runEnvironment(ctx, root, nil, env, "read-tree", head); err != nil {
+		return "", err
+	}
+	if _, err := p.runEnvironment(ctx, root, nil, env, "add", "-A", "--", ".", ":(top,exclude).batuta"); err != nil {
+		return "", err
+	}
+	treeResult, err := p.runEnvironment(ctx, root, nil, env, "write-tree")
+	if err != nil {
+		return "", err
+	}
+	tree := strings.TrimSpace(string(treeResult.Stdout))
+	previous := head
+	old, err := p.run(ctx, p.Root, "show-ref", "--verify", "--hash", "--", ref)
+	if err == nil {
+		previous = strings.TrimSpace(string(old.Stdout))
+	} else if old.ExitCode != 1 && old.ExitCode != 128 {
+		return "", err
+	}
+	previousTree, err := p.run(ctx, p.Root, "rev-parse", previous+"^{tree}")
+	if err != nil {
+		return "", err
+	}
+	if tree == strings.TrimSpace(string(previousTree.Stdout)) {
+		return "", nil
+	}
+	for _, field := range []struct{ key, author, committer string }{
+		{"user.name", "GIT_AUTHOR_NAME=", "GIT_COMMITTER_NAME="},
+		{"user.email", "GIT_AUTHOR_EMAIL=", "GIT_COMMITTER_EMAIL="},
+	} {
+		result, err := p.run(ctx, root, "config", "--get", field.key)
+		if err != nil {
+			return "", err
+		}
+		value := strings.TrimSpace(string(result.Stdout))
+		env = append(env, field.author+value, field.committer+value)
+	}
+	env = append(env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=commit.gpgsign", "GIT_CONFIG_VALUE_0=false")
+	commit, err := p.runEnvironment(ctx, root, nil, env, "commit-tree", tree, "-p", head, "-m", message)
+	if err != nil {
+		return "", err
+	}
+	sha := strings.TrimSpace(string(commit.Stdout))
+	if !gitSHA.MatchString(sha) {
+		return "", errors.New("worktree: invalid parked commit")
+	}
+	if _, err := p.run(ctx, p.Root, "update-ref", ref, sha); err != nil {
+		return "", err
+	}
+	return sha, nil
+}
+
+type ParkedRef struct {
+	Ref string `json:"ref"`
+	SHA string `json:"sha"`
+}
+
+// Parked lists the delivery's refs, including snapshots from removed worktrees.
+func (p GitProvider) Parked(ctx context.Context, slug string) ([]ParkedRef, error) {
+	if !safeName(slug) {
+		return nil, errors.New("worktree: invalid parked slug")
+	}
+	result, err := p.run(ctx, p.Root, "for-each-ref", "--format=%(refname) %(objectname)", "refs/batuta/parked/"+slug+"/")
+	if err != nil {
+		return nil, err
+	}
+	var refs []ParkedRef
+	for _, line := range nonempty(string(result.Stdout)) {
+		parts := strings.Fields(line)
+		if len(parts) != 2 || !gitSHA.MatchString(parts[1]) {
+			return nil, errors.New("worktree: invalid parked ref")
+		}
+		refs = append(refs, ParkedRef{Ref: parts[0], SHA: parts[1]})
+	}
+	return refs, nil
+}
+
+// CleanParked deletes only snapshots whose complete tree is already in the
+// integration branch's history. Squashed commits need not share ancestry.
+func (p GitProvider) CleanParked(ctx context.Context, slug, branch string) ([]ParkedRef, error) {
+	refs, err := p.Parked(ctx, slug)
+	if err != nil || len(refs) == 0 {
+		return refs, err
+	}
+	result, err := p.run(ctx, p.Root, "log", "--format=%T", "refs/heads/"+branch, "--")
+	if err != nil {
+		return nil, err
+	}
+	trees := map[string]bool{}
+	for _, tree := range nonempty(string(result.Stdout)) {
+		trees[tree] = true
+	}
+	var kept []ParkedRef
+	for _, ref := range refs {
+		commit, err := p.run(ctx, p.Root, "cat-file", "-p", ref.SHA)
+		if err != nil {
+			return nil, err
+		}
+		tree := strings.TrimPrefix(firstLine(string(commit.Stdout)), "tree ")
+		if !gitSHA.MatchString(tree) {
+			return nil, errors.New("worktree: invalid parked tree")
+		}
+		if !trees[tree] {
+			kept = append(kept, ref)
+			continue
+		}
+		if _, err := p.run(ctx, p.Root, "update-ref", "-d", ref.Ref, ref.SHA); err != nil {
+			return nil, err
+		}
+	}
+	return kept, nil
+}
+
 // ChangedPaths lists what a worktree changed against its base: committed
 // paths (base...HEAD) plus anything still uncommitted or untracked.
 func (p GitProvider) ChangedPaths(ctx context.Context, dir, baseSHA string) ([]string, error) {
@@ -306,11 +437,18 @@ func (p GitProvider) run(ctx context.Context, dir string, args ...string) (publi
 }
 
 func (p GitProvider) runInput(ctx context.Context, dir string, stdin []byte, args ...string) (publication.CommandResult, error) {
+	return p.runEnvironment(ctx, dir, stdin, nil, args...)
+}
+
+func (p GitProvider) runEnvironment(ctx context.Context, dir string, stdin []byte, environment []string, args ...string) (publication.CommandResult, error) {
 	result, err := p.Runner.Run(ctx, publication.Command{
 		Executable: p.Git, Args: args, Directory: dir, Stdin: stdin,
-		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+		Environment: append([]string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"}, environment...),
 		StdoutLimit: 16 << 20, StderrLimit: 64 << 10,
 	})
+	if result.StdoutTruncated || result.StderrTruncated {
+		return result, errors.New("worktree: git output exceeded bound")
+	}
 	if err != nil {
 		detail := strings.TrimSpace(string(result.Stderr))
 		if detail == "" {

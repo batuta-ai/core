@@ -33,6 +33,7 @@ const (
 	KindWave          journal.Kind = "wave_admitted"
 	KindAttempts      journal.Kind = "attempts_begun"
 	KindWorktree      journal.Kind = "worktree_attached"
+	KindSnapshot      journal.Kind = "worktree_snapshotted"
 	KindStarted       journal.Kind = "executor_started"
 	KindProgress      journal.Kind = "task_progress"
 	KindFinished      journal.Kind = "executor_finished"

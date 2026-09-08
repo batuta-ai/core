@@ -2207,3 +2207,216 @@ func TestInterruptSummaryNamesWorktrees(t *testing.T) {
 		t.Fatalf("interrupt summary does not name %s:\n%s", want, out.String())
 	}
 }
+
+func snapshotRecords(t *testing.T, f fixture, delivery string) []journal.Record {
+	t.Helper()
+	var snapshots []journal.Record
+	for _, record := range readJournal(t, f, delivery) {
+		if record.Kind == "worktree_snapshotted" {
+			snapshots = append(snapshots, record)
+		}
+	}
+	return snapshots
+}
+
+func snapshotDetail(t *testing.T, record journal.Record) (string, string) {
+	t.Helper()
+	var detail struct {
+		SHA string `json:"sha"`
+		Ref string `json:"ref"`
+	}
+	if err := json.Unmarshal(record.Detail, &detail); err != nil {
+		t.Fatal(err)
+	}
+	if detail.SHA == "" || !strings.HasPrefix(detail.Ref, "refs/batuta/parked/greetings/task-") {
+		t.Fatalf("invalid snapshot: %s", record.Detail)
+	}
+	return detail.SHA, detail.Ref
+}
+
+func TestLoopSnapshotsBeforeQuestion(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("continuation-ask-staged", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	snapshots := snapshotRecords(t, f, r.Delivery())
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snapshots))
+	}
+	sha, ref := snapshotDetail(t, snapshots[0])
+	if got := f.run(t, "show", ref+":out/1.txt"); got != "ok" {
+		t.Fatalf("parked content = %q", got)
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind == KindQuestion && record.Seq <= snapshots[0].Seq {
+			t.Fatal("question preceded snapshot")
+		}
+	}
+	wt := r.worktrees[attemptKey("task_1", 1)]
+	if got := f.run(t, "rev-parse", wt.Branch); got != f.base {
+		t.Fatalf("park moved branch: %s (%s)", got, sha)
+	}
+}
+
+func TestLoopSnapshotsBeforeRetry(t *testing.T) {
+	for _, scenario := range []string{"continuation-retry-untracked", "limit-within"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options(scenario, &out)
+			opts.Environment = append(opts.Environment, "FAKE_RESET_AT=2026-09-06T03:00:00Z")
+			r, err := New(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+				t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+			}
+			snapshots := snapshotRecords(t, f, r.Delivery())
+			if len(snapshots) == 0 {
+				t.Fatal("retry lost its partial work")
+			}
+			sha, _ := snapshotDetail(t, snapshots[0])
+			want := "ok"
+			if scenario == "limit-within" {
+				want = "partial"
+			}
+			if got := f.run(t, "show", sha+":out/1.txt"); got != want {
+				t.Fatalf("snapshot content = %q", got)
+			}
+			for _, record := range readJournal(t, f, r.Delivery()) {
+				if record.TaskID == "task_1" && (record.Kind == KindFailure || record.Kind == KindLimitWait) && record.Seq <= snapshots[0].Seq {
+					t.Fatal("retry scheduled before snapshot")
+				}
+			}
+		})
+	}
+}
+
+func TestLoopSnapshotsBeforeCleanup(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("always-broken", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+		t.Fatalf("Run = %s, %v\n%s", state, err, &out)
+	}
+	snapshots := snapshotRecords(t, f, r.Delivery())
+	if len(snapshots) != 2 {
+		t.Fatalf("snapshots = %d, want two distinct trees", len(snapshots))
+	}
+	for _, record := range snapshots {
+		sha, ref := snapshotDetail(t, record)
+		if got := f.run(t, "rev-parse", ref); got != sha {
+			t.Fatalf("lost %s", ref)
+		}
+		if got := f.run(t, "show", sha+":out/1.txt"); !strings.HasPrefix(got, "BROKEN by") {
+			t.Fatalf("lost work: %q", got)
+		}
+		if !strings.Contains(out.String(), sha) || !strings.Contains(out.String(), "kept (unmerged work)") {
+			t.Fatalf("missing retained snapshot in summary:\n%s", &out)
+		}
+	}
+	if got := f.worktrees(t); len(got) != 0 {
+		t.Fatalf("worktrees remain: %v", got)
+	}
+}
+
+func TestLoopKeepsParkedRefsUntilTerminal(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("continuation-retry-untracked", &out)
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run = %v\n%s", err, &out)
+	}
+	snapshots := snapshotRecords(t, f, r.Delivery())
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %d", len(snapshots))
+	}
+	sha, ref := snapshotDetail(t, snapshots[0])
+	if got := f.run(t, "rev-parse", ref); got != sha {
+		t.Fatal("ref removed before terminal record")
+	}
+	if got := f.worktrees(t); len(got) != 0 {
+		t.Fatalf("worktrees remain: %v", got)
+	}
+	if kinds(readJournal(t, f, r.Delivery()))[KindTerminal] != 0 {
+		t.Fatal("unexpected terminal record")
+	}
+}
+
+func TestLoopDeletesIntegratedParkedRefs(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("continuation-retry-untracked", &out)
+	opts.Parallel = 1
+	opts.MaxWaves = 1
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); !errors.Is(err, ErrStopped) {
+		t.Fatalf("Run = %v\n%s", err, &out)
+	}
+	snapshots := snapshotRecords(t, f, r.Delivery())
+	if len(snapshots) != 1 {
+		t.Fatalf("snapshots = %d", len(snapshots))
+	}
+	sha, ref := snapshotDetail(t, snapshots[0])
+	if got := f.run(t, "rev-parse", ref); got != sha {
+		t.Fatal("ref already deleted")
+	}
+	if err := exec.Command(f.git, "-C", f.root, "merge-base", "--is-ancestor", sha, "HEAD").Run(); err == nil {
+		t.Fatal("test requires a parked commit outside integration ancestry")
+	}
+	opts.MaxWaves = 0
+	opts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("resume = %s, %v\n%s", state, err, &out)
+	}
+	if got := f.run(t, "for-each-ref", "--format=%(refname)", ref); got != "" {
+		t.Fatalf("integrated parked ref retained: %s", got)
+	}
+}
+
+func TestTrailListsSnapshots(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("continuation-ask-untracked", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	snapshots := snapshotRecords(t, f, r.Delivery())
+	if len(snapshots) == 0 {
+		t.Fatal("no snapshots")
+	}
+	var trail bytes.Buffer
+	if err := Trail(f.root, r.Delivery(), &trail); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range snapshots {
+		sha, _ := snapshotDetail(t, record)
+		if !strings.Contains(trail.String(), sha) {
+			t.Fatalf("trail omitted %s:\n%s", sha, &trail)
+		}
+	}
+}

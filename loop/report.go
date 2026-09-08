@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -27,16 +28,35 @@ import (
 // commit. Non-final states (waiting for an answer, canceled) leave the tree
 // untouched so the integration chain can continue on --resume.
 func (r *Runner) finish(ctx context.Context, state string) (string, error) {
+	if err := r.snapshotWorktrees(ctx); err != nil {
+		return state, err
+	}
+	parked, err := r.git.Parked(ctx, r.plan.Slug)
+	if err != nil {
+		return state, err
+	}
 	r.mu.Lock()
 	r.terminal = state
 	summary := r.summaryLocked()
-	err := r.record(KindTerminal, "", map[string]any{"state": state, "summary": summary})
+	summary.Parked = parked
+	err = r.record(KindTerminal, "", map[string]any{"state": state, "summary": summary})
 	r.mu.Unlock()
 	if err != nil {
 		return state, err
 	}
 	final := state == StateDone || state == StateBlocked || state == StateAbandoned
 	if final {
+		if !r.opts.KeepWorktrees {
+			for _, wt := range r.worktrees {
+				if err := r.git.Remove(ctx, wt.Root, wt.Branch); err != nil {
+					return state, err
+				}
+			}
+		}
+		summary.Parked, err = r.git.CleanParked(ctx, r.plan.Slug, r.branch)
+		if err != nil {
+			return state, err
+		}
 		if err := r.bookkeeping(ctx, state, summary); err != nil {
 			return state, err
 		}
@@ -45,13 +65,48 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 	return state, nil
 }
 
+func (r *Runner) snapshotWorktrees(ctx context.Context) error {
+	// Retries can bind several executions to one directory. Visit the latest
+	// binding first so a terminal snapshot names the execution that wrote it.
+	r.mu.Lock()
+	keys := make([]string, 0, len(r.worktrees))
+	for key := range r.worktrees {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	slices.Reverse(keys)
+	worktrees := make(map[string]attemptWorktree, len(keys))
+	for _, key := range keys {
+		worktrees[key] = r.worktrees[key]
+	}
+	r.mu.Unlock()
+	seen := map[string]bool{}
+	for _, key := range keys {
+		wt := worktrees[key]
+		if seen[wt.Root] {
+			continue
+		}
+		seen[wt.Root] = true
+		taskID, execution, _ := strings.Cut(key, ":")
+		n, err := strconv.Atoi(execution)
+		if err != nil {
+			return err
+		}
+		if err := r.snapshotWorktree(ctx, taskID, n, wt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Summary is the terminal report of a delivery.
 type Summary struct {
-	Integrated []SummaryTask `json:"integrated"`
-	Blocked    []SummaryTask `json:"blocked"`
-	Waiting    []SummaryTask `json:"waiting"`
-	Pending    []SummaryTask `json:"pending"`
-	Waves      int           `json:"waves"`
+	Parked     []worktree.ParkedRef `json:"parked,omitempty"`
+	Integrated []SummaryTask        `json:"integrated"`
+	Blocked    []SummaryTask        `json:"blocked"`
+	Waiting    []SummaryTask        `json:"waiting"`
+	Pending    []SummaryTask        `json:"pending"`
+	Waves      int                  `json:"waves"`
 }
 
 type SummaryTask struct {
@@ -162,6 +217,9 @@ func (r *Runner) printSummary(state string, summary Summary) {
 			worktree = ", worktree " + task.Worktree
 		}
 		fmt.Fprintf(r.out, "  ⏸ %s %s not run (%s%s)\n", task.ID, task.Title, pendingReason(task), worktree)
+	}
+	for _, ref := range summary.Parked {
+		fmt.Fprintf(r.out, "  %s %s kept (unmerged work)\n", ref.Ref, ref.SHA)
 	}
 	fmt.Fprintf(r.out, "journal   %s\n", filepath.Join(journal.Dir, r.delivery+".jsonl"))
 }
@@ -579,6 +637,7 @@ func Abandon(ctx context.Context, opts Options) (string, error) {
 	}
 	r.delivery = opts.Resume
 	r.generation = opened.Generation
+	r.branch = opened.Branch
 	var graph routing.DeliveryGraph
 	if err := json.Unmarshal(records[len(records)-1].Graph, &graph); err != nil {
 		return "", err
@@ -593,11 +652,6 @@ func Abandon(ctx context.Context, opts Options) (string, error) {
 			if json.Unmarshal(record.Detail, &detail) == nil {
 				r.worktrees[attemptKey(record.TaskID, detail.Execution)] = detail.Worktree
 			}
-		}
-	}
-	if !opts.KeepWorktrees {
-		for _, wt := range r.worktrees {
-			_ = r.git.Remove(ctx, wt.Root, wt.Branch)
 		}
 	}
 	if entries, err := r.git.Status(ctx, r.root, false); err == nil && len(entries) > 0 {
@@ -766,6 +820,8 @@ func recordSummary(record journal.Record) string {
 		return summary
 	case KindCandidate:
 		return pick("execution", "commit")
+	case KindSnapshot:
+		return pick("execution", "sha", "ref")
 	case KindFailure:
 		return pick("execution", "blocker", "blocked", "same_runtime")
 	case KindSettled:
