@@ -80,3 +80,13 @@
 - [x] Inventory never starts an agent turn: cursor, opencode and codex adapters drop probes without a consumer; doctor notes slow probes → codex (gpt-5.6-sol), commit afcf4d11ea8c (trail: .batuta/runs/2026-09-08-loop-deadends-task-7.md, plan loop-deadends, 2026-09-08)
 - [x] --abandon, --answer and --resume refuse a delivery whose runner is alive → codex (gpt-5.6-sol), 1 retry, commit 8842df4d0d54 (trail: .batuta/runs/2026-09-08-loop-deadends-task-9.md, plan loop-deadends, 2026-09-08)
 - [x] A question on the last allowed execution blocks the task with the question preserved → codex (gpt-5.6-sol), 1 retry, already satisfied on the base, no commit (trail: .batuta/runs/2026-09-08-loop-deadends-task-4.md, plan loop-deadends, 2026-09-08)
+- [x] A continuation is judged against the attempt's base, never against the execution's start → ticked in the plan before the run, commit 16a141656754 (trail: .batuta/runs/2026-09-08-loop-deadends-task-1.md, plan loop-deadends, 2026-09-08)
+- [x] Escalation to self blocks the task in RecordFailure instead of planning an execution the loop cannot run → ticked in the plan before the run, commit 16a141656754 (trail: .batuta/runs/2026-09-08-loop-deadends-task-3.md, plan loop-deadends, 2026-09-08)
+- [x] A question on the last allowed execution blocks the task with the question preserved → codex (gpt-5.6-sol), commit 61fc76379ee3 (trail: .batuta/runs/2026-09-08-loop-deadends-task-4.md, plan loop-deadends, 2026-09-08)
+- [x] An already-satisfied task does not end the delivery; dependents run and the delivery finishes on its own terms → codex (gpt-5.6-sol), commit 1009933f0d35 (trail: .batuta/runs/2026-09-08-loop-deadends-task-5.md, plan loop-deadends, 2026-09-08)
+- [x] A usage limit that outlasts the wait budget falls back to the next runtime on the same execution → codex (gpt-6-astra), commit aced9f7c1256 (trail: .batuta/runs/2026-09-08-loop-deadends-task-6.md, plan loop-deadends, 2026-09-08)
+- [x] Inventory never starts an agent turn: cursor, opencode and codex adapters drop probes without a consumer; doctor notes slow probes → ticked in the plan before the run, commit 16a141656754 (trail: .batuta/runs/2026-09-08-loop-deadends-task-7.md, plan loop-deadends, 2026-09-08)
+- [x] --abandon, --answer and --resume refuse a delivery whose runner is alive → ticked in the plan before the run, commit 16a141656754 (trail: .batuta/runs/2026-09-08-loop-deadends-task-9.md, plan loop-deadends, 2026-09-08)
+
+## Blocked
+- [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
