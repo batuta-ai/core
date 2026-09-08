@@ -5,10 +5,10 @@
 **Created:** 2026-09-08 · **Status:** approved
 
 ## Tasks
-- [ ] 1. The answer binds to the shown delivery and question and refuses while a runner owns the delivery — backend/high
+- [x] 1. The answer binds to the shown delivery and question and refuses while a runner owns the delivery — backend/high
       Scope: loop/watch_answer.go, loop/watch_answer_test.go, loop/report.go, loop/report_test.go, loop/watch_tui.go, loop/watch_tui_test.go
       Accept: `loop.Answer` gains a delivery-bound form (`AnswerDelivery(workspace, delivery, task, questionID, text)`) and the overlay submits with the shown delivery, the attempt's execution and the question's `request_id`, so a second delivery waiting on the same task id is untouched → go test ./loop -run 'TestAnswerBindsToDelivery|TestAnswerOverlaySubmitsBoundAnswer' -count=1; when the delivery's presence lock is fresh (a runner still owns it), submission records nothing, keeps the editor open and shows `loop still running · wait for waiting_input` → go test ./loop -run TestAnswerRefusesWhileRunnerOwnsDelivery -count=1; after a successful record the editor closes even when the spawn fails, the spawn-error notice stays, and a separate key (`R` on the same task) retries the resume without re-recording → go test ./loop -run 'TestAnswerClosesEditorOnSpawnError|TestResumeRetryDoesNotRecordAgain' -count=1; the manual recovery command in notices shell-quotes every argument and names the workspace → go test ./loop -run TestRecoveryCommandIsQuoted -count=1
-- [ ] 2. Poll results carry their identity; the picker never starves the background chains — backend/high
+- [x] 2. Poll results carry their identity; the picker never starves the background chains — backend/high
       Scope: loop/watch_tui.go, loop/watch_tui_test.go, loop/watch_poll.go, loop/watch_poll_test.go, loop/watch_picker.go, loop/watch_picker_test.go
       Accept: every `journalMsg` carries the delivery id, a generation counter bumped on delivery switch, and the log path it read, and the model drops results whose delivery, generation or log path differ from the current ones, keeping exactly one poll chain → go test ./loop -run 'TestPollResultsTaggedAndStaleDropped|TestSinglePollChainAfterSwitch' -count=1; while the picker is open, poll, clock, animation and `WindowSizeMsg` are still handled and the picker is resized, and closing it with esc leaves every chain running → go test ./loop -run 'TestPickerKeepsBackgroundChains|TestPickerResizes' -count=1
 - [ ] 3. The presence lock is owned and symlink-safe; the pager is cancellable — backend/medium
@@ -17,7 +17,7 @@
 - [ ] 4. Overlay text is sanitised; the picker honours glyphs and language and shows real states — backend/medium
       Scope: loop/watch_answer.go, loop/watch_answer_test.go, loop/watch_picker.go, loop/watch_picker_test.go, loop/panel_labels.go, loop/panel_render.go, loop/panel_render_test.go
       Accept: the question text, the notice and every picker item pass through the renderer's sanitiser (control characters, CSI, OSC and hyperlink sequences stripped; newline and tab kept) before reaching `tea.View` → go test ./loop -run 'TestOverlaySanitisesQuestion|TestPickerSanitisesItems' -count=1; picker items use the style's glyph set and the language's labels, and the displayed state is the delivery's real state (`waiting_input`, `canceled`, …) while the sort still puts open deliveries first → go test ./loop -run 'TestPickerASCIIAndPortuguese|TestPickerShowsRealState' -count=1
-- [ ] 5. Deterministic time in every watch test — testing/low
+- [x] 5. Deterministic time in every watch test — testing/low
       Scope: loop/watch_answer_test.go, loop/watch_tui_test.go, loop/watch_poll_test.go
       Accept: no watch test schedules a real `tea.Tick`: every fixture injects the immediate ticker and a fixed clock, and the suite's watch tests finish under two seconds → go test ./loop -run 'TestWatch|TestAnswer|TestPicker|TestPoll' -count=1 -timeout 60s
 

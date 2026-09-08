@@ -113,6 +113,9 @@
 - [x] batuta review: stable incremental state, pending cohorts carried over, artefacts never overwrite tracked files, --spec takes paths and archived plans → codex (gpt-6-astra), commit de384b45e017 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-4.md, plan hardening-review-fixes, 2026-09-08)
 - [x] Review package robustness: submodule gitlinks, escaped filenames, strict spec output, lint failures surfaced, overlap needs rule identity → codex (gpt-6-astra), commit 5a849ec5e63f (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-5.md, plan hardening-review-fixes, 2026-09-08)
 - [x] Docs drift: journal kind name, changed-tree error path, missing state semantics → codex (gpt-5.4-mini), commit 022df13c2dee (trail: .batuta/runs/2026-09-08-hardening-review-fixes-task-6.md, plan hardening-review-fixes, 2026-09-08)
+- [x] The answer binds to the shown delivery and question and refuses while a runner owns the delivery → codex (gpt-6-astra), commit 52d4bfd5c757 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-1.md, plan watch-review-fixes, 2026-09-08)
+- [x] Poll results carry their identity; the picker never starves the background chains → codex (gpt-6-astra), commit 5b87e4145bca (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-2.md, plan watch-review-fixes, 2026-09-08)
+- [x] Deterministic time in every watch test → codex (gpt-5.4-mini), commit 5689162d7369 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-5.md, plan watch-review-fixes, 2026-09-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
