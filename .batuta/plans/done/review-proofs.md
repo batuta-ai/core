@@ -2,13 +2,13 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:d8b592b68c43 -->
 
 **Goal:** Close core #80 and #78. `batuta review --spec` settles every criterion that carries a proof command by running that proof in the reviewed tree, and hands only arrow-less criteria to the read-only spec sweep, so a criterion is never `violated` for lack of permission to run tests. The loop's integration commit keeps the task title's case (an acronym or a file name such as `PRD-v1.md` stays as written) and cuts a long subject at a word boundary.
-**Created:** 2026-09-08 · **Status:** approved
+**Created:** 2026-09-08 · **Status:** done
 
 ## Tasks
-- [ ] 1. The integration commit subject keeps the title's case and cuts at a word boundary — backend/low
+- [x] 1. The integration commit subject keeps the title's case and cuts at a word boundary — backend/low
       Scope: loop/attempt.go, loop/attempt_test.go
       Accept: the first letter is lowercased only when the second character is a lowercase letter, so "PRD-v1.md in English" and "gofmt the tree" keep their first character and "Download deadline" becomes "download deadline" → go test ./loop -run TestCommitMessageKeepsCase -count=1; a title longer than 68 characters is cut at the last space before the limit, without a trailing space, comma, colon or dash, and a title without spaces is cut at 68 → go test ./loop -run TestCommitMessageCutsAtWordBoundary -count=1; the kind detection (feat, fix, docs, test, refactor, chore) and the trailer are unchanged → go test ./loop -run 'TestCommitMessage' -count=1 && go vet ./loop
-- [ ] 2. batuta review runs proof-backed criteria in the reviewed tree and sends only arrow-less criteria to the spec sweep — backend/high
+- [x] 2. batuta review runs proof-backed criteria in the reviewed tree and sends only arrow-less criteria to the spec sweep — backend/high
       Scope: review/spec.go, review/spec_test.go, review/prompt.go, review/prompt_test.go, review/report.go, review/report_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go, docs/review.md
       Accept: a rule with a proof is settled by running the proof through gates.Proofs in the review root, satisfied on exit 0 and violated otherwise, with a path that names the command and its exit status, and never reaches the sweep prompt → go test ./review -run 'TestSpecProofsRunInTree|TestSpecPromptOmitsProofRules' -count=1; the sweep receives and must answer exactly the arrow-less rules, and the merged results come back in the plan's order with every rule present → go test ./review -run 'TestSpecSweepMergesProofAndSweepResults|TestSpecSweepVerdicts' -count=1; a proof that changes the source tree fails the review with an error naming the criterion, before any reviewer session starts → go test ./cmd/batuta -run TestReviewRefusesProofThatChangesTree -count=1; a plan whose rules all carry proofs runs no sweep session at all and the report still lists every criterion → go test ./cmd/batuta -run TestReviewWithOnlyProofRulesRunsNoSweep -count=1; docs/review.md explains the split in the spec section and keeps every heading → test "$(grep -c '^## ' docs/review.md)" -ge "$(git show HEAD:docs/review.md | grep -c '^## ')" && grep -q 'gates' docs/review.md; package and builds → go test ./review ./cmd/batuta -count=1 && GOOS=windows go build ./... && GOOS=linux go build ./...
 

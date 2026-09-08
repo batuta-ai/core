@@ -136,6 +136,8 @@
 - [x] Enter submits the answer; ctrl+j and shift+enter insert a newline; the footer says so → codex (gpt-5.6-sol), commit 8ebe72a5e688 (trail: .batuta/runs/2026-09-08-watch-submit-keys-task-1.md, plan watch-submit-keys, 2026-09-08)
 - [x] Loop: bounded reset-time parsing, empty-journal takeover, staged work parked, recoverable finish, deterministic stop-between-waves test → codex (gpt-6-astra), commit 950cdceaa264 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-3-task-1.md, plan hardening-review-fixes-3, 2026-09-08)
 - [x] Review: patches by file identity, no publication beneath gitlinks, cancellation is not mutation, whole inventory for the spec sweep, pending files kept while the sweep is uncovered, docs → codex (gpt-6-astra), commit 6cc933d6c0b4 (trail: .batuta/runs/2026-09-08-hardening-review-fixes-3-task-2.md, plan hardening-review-fixes-3, 2026-09-08)
+- [x] The integration commit subject keeps the title's case and cuts at a word boundary → agy (gemini-3.8-flash-low), commit f5b5f3150ac1 (trail: .batuta/runs/2026-09-08-review-proofs-task-1.md, delivery review-proofs-20260908-200509, plan review-proofs, 2026-09-08)
+- [x] batuta review runs proof-backed criteria in the reviewed tree and sends only arrow-less criteria to the spec sweep → codex (gpt-6-astra), commit 043124adb5d1 (trail: .batuta/runs/2026-09-08-review-proofs-task-2.md, delivery review-proofs-20260908-200509, plan review-proofs, 2026-09-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
