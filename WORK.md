@@ -124,6 +124,9 @@
 - [x] Deterministic time in every watch test → ticked in the plan before the run, commit a197c50ae779 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-5.md, plan watch-review-fixes, 2026-09-08)
 - [x] CleanParked walks history with bounded output → codex (gpt-5.6-sol), commit c8dcab7ad13b (trail: .batuta/runs/2026-09-08-hardening-review-fixes-2-task-2.md, plan hardening-review-fixes-2, 2026-09-08)
 - [x] Review honesty: truncated lint output is an error, the state key is exact, --worktree does not move the base → codex (gpt-5.6-sol), commit 7f27bb0db59b (trail: .batuta/runs/2026-09-08-hardening-review-fixes-2-task-3.md, plan hardening-review-fixes-2, 2026-09-08)
+- [x] The ownership lock is crash-safe, takeover is serialised across processes, and every caller releases it → codex (gpt-6-astra), commit dfcce257ebce (trail: .batuta/runs/2026-09-08-hardening-review-fixes-2-task-1.md, plan hardening-review-fixes-2, 2026-09-08)
+- [x] CleanParked walks history with bounded output → ticked in the plan before the run, commit e4eadbc9b93e (trail: .batuta/runs/2026-09-08-hardening-review-fixes-2-task-2.md, plan hardening-review-fixes-2, 2026-09-08)
+- [x] Review honesty: truncated lint output is an error, the state key is exact, --worktree does not move the base → ticked in the plan before the run, commit e4eadbc9b93e (trail: .batuta/runs/2026-09-08-hardening-review-fixes-2-task-3.md, plan hardening-review-fixes-2, 2026-09-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

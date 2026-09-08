@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** Close the 8 findings of the third `batuta review` round on this branch (spec `loop-deadends`: 28/28 criteria satisfied; 5 blockers, 3 majors; all accepted): the delivery ownership lock survives crashes and concurrent takeovers and is released by every caller, `CleanParked` never exceeds the command output bound, and the review CLI rejects truncated lint output, keys its state by exact identity and keeps the base independent of `--worktree`.
-**Created:** 2026-09-08 · **Status:** approved
+**Created:** 2026-09-08 · **Status:** done
 
 ## Tasks
-- [ ] 1. The ownership lock is crash-safe, takeover is serialised across processes, and every caller releases it — backend/high
+- [x] 1. The ownership lock is crash-safe, takeover is serialised across processes, and every caller releases it — backend/high
       Scope: loop/presence.go, loop/presence_test.go, loop/flock_unix.go, loop/flock_windows.go, loop/runner.go, loop/roadmap.go, loop/loop_test.go, loop/report.go, loop/report_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: the heartbeat writes the lock through a temporary file and an atomic rename so a reader never sees an empty or partial JSON, and a malformed lock older than the freshness window is recoverable through the same guarded path [2] → go test ./loop -run 'TestPresenceHeartbeatIsAtomic|TestPresenceRecoversMalformedStaleLock' -count=1 -race; acquisition, stale takeover and removal happen under a cross-process guard (a sibling guard file locked with flock on unix and LockFileEx on windows), identity and freshness are rechecked under the guard, and two concurrent stale takeovers leave exactly one owner [3] → go test ./loop -run 'TestConcurrentStaleTakeoversLeaveOneOwner' -count=1 -race; the contention test asserts one successful owner and one error (the ownership message is asserted only on initialised locks) [1] → go test ./loop -run 'TestConcurrentResumesLeaveOneOwner' -count=5 -race; `Resume` returns a runner whose exported `Release()` drops the lock and stops the heartbeat, `cmd/batuta` defers it right after `Resume` succeeds including the `--dry-run` path, and a dry-run leaves no lock behind [8] → go test ./loop -run TestReleaseDropsOwnership -count=1 && go test ./cmd/batuta -run TestResumeDryRunLeavesNoLock -count=1
 - [x] 2. CleanParked walks history with bounded output — backend/medium
