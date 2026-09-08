@@ -48,17 +48,25 @@ type deliveryOwnership struct {
 
 func liveDeliveryOwner(workspace, delivery string, now time.Time) (*presenceLock, error) {
 	path := filepath.Join(workspace, journal.Dir, delivery+".lock")
-	lock, _, err := inspectPresence(path)
+	lock, info, err := inspectPresence(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("loop: inspect presence lock: %w", err)
+	if err := presenceInspectionError(info, err, now); err != nil {
+		return nil, err
 	}
-	if now.Sub(lock.RefreshedAt) > presenceFresh {
+	if lock == nil || now.Sub(lock.RefreshedAt) > presenceFresh {
 		return nil, nil
 	}
 	return lock, nil
+}
+
+func presenceInspectionError(info os.FileInfo, err error, now time.Time) error {
+	// Only parse errors return an inode; never recover symlinks or I/O failures.
+	if err != nil && (info == nil || now.Sub(info.ModTime()) <= presenceFresh) {
+		return fmt.Errorf("loop: inspect presence lock: %w", err)
+	}
+	return nil
 }
 
 func guardPresence(path string) (func(), error) {
@@ -214,9 +222,8 @@ func takePresence(ctx context.Context, path, delivery string, now time.Time, tim
 	if errors.Is(err, os.ErrNotExist) {
 		return acquirePresenceGuarded(ctx, path, now, timing...)
 	}
-	// Only parse errors return an inode; never recover symlinks or I/O failures.
-	if err != nil && (info == nil || now.Sub(info.ModTime()) <= presenceFresh) {
-		return nil, fmt.Errorf("loop: inspect presence lock: %w", err)
+	if err := presenceInspectionError(info, err, now); err != nil {
+		return nil, err
 	}
 	if owner != nil && now.Sub(owner.RefreshedAt) <= presenceFresh {
 		return nil, fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", delivery, owner.PID, owner.StartedAt.Format(time.RFC3339))

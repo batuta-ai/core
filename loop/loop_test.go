@@ -1831,6 +1831,153 @@ func TestAbandonRefusesLiveRunner(t *testing.T) {
 	}
 }
 
+func TestAnswerRecoversMalformedStaleLock(t *testing.T) {
+	for _, age := range []time.Duration{0, presenceFresh, presenceFresh + time.Second} {
+		t.Run(age.String(), func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("ask", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+				t.Fatalf("Run() = %s, %v", state, err)
+			}
+			now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+			at := now.Add(-age)
+			path := writePresenceFixture(t, f.root, r.Delivery(), at)
+			payload := []byte(`{"pid":`)
+			if err := os.WriteFile(path, payload, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path, at, at); err != nil {
+				t.Fatal(err)
+			}
+			before := readJournal(t, f, r.Delivery())
+			id, err := answer(f.root, "1", "hello there", now)
+			after := readJournal(t, f, r.Delivery())
+			if age <= presenceFresh {
+				if err == nil || !strings.Contains(err.Error(), "parse presence lock") {
+					t.Fatalf("fresh malformed lock: Answer() = %q, %v", id, err)
+				}
+				if len(after) != len(before) {
+					t.Fatal("fresh malformed lock allowed a journal mutation")
+				}
+				if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, payload) {
+					t.Fatalf("fresh malformed lock changed: %q, %v", got, err)
+				}
+				return
+			}
+			if err != nil || id != r.Delivery() {
+				t.Fatalf("stale malformed lock: Answer() = %q, %v", id, err)
+			}
+			if len(after) != len(before)+1 || after[len(after)-1].Kind != KindAnswer {
+				t.Fatal("answer was not recorded")
+			}
+			// The recovered lock is released after the answer is recorded.
+			if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("recovered answer lock remains: %v", err)
+			}
+		})
+	}
+}
+
+func TestAnswerSkipsOwnedFinishedDelivery(t *testing.T) {
+	for _, state := range []routing.GraphTaskState{routing.GraphTaskIntegrated, routing.GraphTaskBlocked, routing.GraphTaskPending, routing.GraphTaskWaitingInput} {
+		t.Run(string(state), func(t *testing.T) {
+			f, r, now := answerDeliveryPair(t, state, state == routing.GraphTaskIntegrated || state == routing.GraphTaskWaitingInput)
+			before := answerRecords(t, r.store, "newer")
+			lock := writePresenceFixture(t, f.root, "newer", now)
+			lockBefore, err := os.ReadFile(lock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			id, err := answer(f.root, "1", "hello there", now)
+			if err != nil || id != r.Delivery() {
+				t.Fatalf("Answer() = %q, %v; want older delivery %q", id, err, r.Delivery())
+			}
+			if after := readJournal(t, f, r.Delivery()); after[len(after)-1].Kind != KindAnswer {
+				t.Fatal("older delivery did not receive the answer")
+			}
+			if len(answerRecords(t, r.store, "newer")) != len(before) {
+				t.Fatal("newer delivery changed")
+			}
+			if got, err := os.ReadFile(lock); err != nil || !bytes.Equal(got, lockBefore) {
+				t.Fatalf("newer delivery lock changed: %q, %v", got, err)
+			}
+		})
+	}
+}
+
+func TestAnswerReturnsOwnershipErrorAsFallback(t *testing.T) {
+	for _, waiting := range []bool{false, true} {
+		t.Run(fmt.Sprintf("waiting=%v", waiting), func(t *testing.T) {
+			f, r, now := answerDeliveryPair(t, routing.GraphTaskIntegrated, true)
+			writePresenceFixture(t, f.root, "newer", now)
+			owned := "newer"
+			if waiting {
+				owned = r.Delivery()
+				writePresenceFixture(t, f.root, owned, now)
+			} else {
+				if err := os.Remove(filepath.Join(f.root, journal.Dir, r.Delivery()+".jsonl")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := answerRecords(t, r.store, owned)
+			want := "delivery " + owned + " is owned by pid 1 since " + now.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+			if _, err := answer(f.root, "1", "hello there", now); err == nil || err.Error() != want {
+				t.Fatalf("Answer() error = %v; want %q", err, want)
+			}
+			if len(answerRecords(t, r.store, owned)) != len(before) {
+				t.Fatal("owned delivery changed")
+			}
+		})
+	}
+}
+
+func answerDeliveryPair(t *testing.T, newerState routing.GraphTaskState, terminal bool) (fixture, *Runner, time.Time) {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("ask", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	records := readJournal(t, f, r.Delivery())
+	copyAnswerDelivery(t, r.store, "newer", records)
+	var graph routing.DeliveryGraph
+	if err := json.Unmarshal(records[len(records)-1].Graph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	graphTask(&graph, "task_1").State = newerState
+	data, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := journal.Record{Kind: KindStarted, Graph: data}
+	if terminal {
+		record.Kind = KindTerminal
+		record.Detail = json.RawMessage(`{"state":"done"}`)
+	}
+	if _, err := r.store.Append("newer", record); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	for id, at := range map[string]time.Time{r.Delivery(): now.Add(-time.Minute), "newer": now} {
+		if err := os.Chtimes(filepath.Join(f.root, journal.Dir, id+".jsonl"), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ids, err := r.store.List()
+	if err != nil || len(ids) != 2 || ids[0] != "newer" {
+		t.Fatalf("delivery order = %v, %v", ids, err)
+	}
+	return f, r, now
+}
+
 func TestAnswerRefusesLiveRunner(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer

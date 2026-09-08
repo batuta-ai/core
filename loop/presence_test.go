@@ -311,7 +311,7 @@ func TestPresenceRecoversMalformedStaleLock(t *testing.T) {
 		for _, stale := range []bool{false, true} {
 			t.Run(fmt.Sprintf("payload=%q/stale=%v", payload, stale), func(t *testing.T) {
 				root := t.TempDir()
-				now := time.Now().UTC()
+				now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
 				at := now
 				if stale {
 					at = now.Add(-presenceFresh - time.Second)
@@ -323,6 +323,13 @@ func TestPresenceRecoversMalformedStaleLock(t *testing.T) {
 				if err := os.Chtimes(path, at, at); err != nil {
 					t.Fatal(err)
 				}
+				owner, inspectErr := liveDeliveryOwner(root, "delivery", now)
+				if owner != nil || (stale && inspectErr != nil) || (!stale && inspectErr == nil) {
+					t.Fatalf("preliminary inspection = %+v, %v", owner, inspectErr)
+				}
+				if got, err := os.ReadFile(path); err != nil || string(got) != payload {
+					t.Fatalf("preliminary inspection changed lock: %q, %v", got, err)
+				}
 				ownership, err := acquireDeliveryOwnership(context.Background(), root, "delivery", now)
 				if !stale {
 					if err == nil {
@@ -333,6 +340,9 @@ func TestPresenceRecoversMalformedStaleLock(t *testing.T) {
 				}
 				if err != nil {
 					t.Fatal(err)
+				}
+				if lock := readPresenceLock(t, path); lock.PID != os.Getpid() || !lock.StartedAt.Equal(now) {
+					t.Fatalf("replacement lock = %+v", lock)
 				}
 				if err := ownership.stop(); err != nil {
 					t.Fatal(err)

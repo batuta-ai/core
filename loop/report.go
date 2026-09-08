@@ -833,6 +833,7 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 		}
 	}
 	blockedAtCeiling := false
+	var ownershipErr error
 	for _, id := range ids {
 		records, err := store.Read(id)
 		if err != nil || len(records) == 0 {
@@ -844,13 +845,21 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 			continue
 		}
 		task := graphTask(&graph, taskID)
+		terminal := terminalState(records) != ""
 		if task != nil {
 			owner, err := liveDeliveryOwner(root, id, now)
 			if err != nil {
 				return "", err
 			}
 			if owner != nil {
-				return "", fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", id, owner.PID, owner.StartedAt.Format(time.RFC3339))
+				err := fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", id, owner.PID, owner.StartedAt.Format(time.RFC3339))
+				if delivery != "" || (!terminal && (task.State == routing.GraphTaskWaitingInput || task.State == routing.GraphTaskRunning)) {
+					return "", err
+				}
+				if ownershipErr == nil {
+					ownershipErr = err
+				}
+				continue
 			}
 		}
 		if task != nil && task.State == routing.GraphTaskBlocked && task.BlockerCode == routing.BlockerQuestionAtCeiling &&
@@ -858,7 +867,7 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 			blockedAtCeiling = true
 			continue
 		}
-		if terminalState(records) != "" {
+		if terminal {
 			continue
 		}
 		if task == nil || task.State != routing.GraphTaskWaitingInput || len(task.Attempts) == 0 {
@@ -923,6 +932,9 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 	}
 	if blockedAtCeiling {
 		return "", fmt.Errorf("loop: %s is blocked at the execution ceiling; answer the question in a new plan or an interactive cycle", taskID)
+	}
+	if ownershipErr != nil {
+		return "", ownershipErr
 	}
 	return "", fmt.Errorf("loop: no open delivery has %s waiting for an answer", taskID)
 }
