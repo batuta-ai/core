@@ -168,3 +168,97 @@ func TestSnapshotStillReportsNoOpenDeliveries(t *testing.T) {
 		t.Fatalf("snapshot=%q", output.String())
 	}
 }
+
+func TestPickerKeepsBackgroundChains(t *testing.T) {
+	records, graph, now := modelFixture(t)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = storePanelRecords(t, store, "dashboard", records)
+	var durations []time.Duration
+	m := newPollingWatchModel(root, "dashboard", store, records, 37*time.Millisecond, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+	poll, clock, spinner := m.pollCmd(), m.clockCmd(), m.spinnerCmd()
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	m, poll = updateWatch(t, m, poll())
+	if poll == nil || !m.picking {
+		t.Fatal("picker stopped the idle poll chain")
+	}
+	graph.Tasks[0].State = routing.GraphTaskPending
+	storePanelRecords(t, store, "dashboard", []journal.Record{panelRecord(t, KindProgress, "task_2", now, map[string]any{"execution": 1, "criterion": 2, "state": "DONE"}, graph)})
+	msg := poll()
+	m, batch := updateWatch(t, m, msg)
+	if len(m.records) != len(records)+1 || !m.progress.active || !m.picking || batch == nil {
+		t.Fatal("picker did not process journal and start progress animation")
+	}
+	commands, ok := batch().(tea.BatchMsg)
+	if !ok || len(commands) != 2 {
+		t.Fatalf("journal commands=%v, want poll and progress", commands)
+	}
+	var progress tea.Cmd
+	for _, command := range commands {
+		switch msg := command().(type) {
+		case watchPollMsg:
+			m, poll = updateWatch(t, m, msg)
+		case progressTickMsg:
+			m, progress = updateWatch(t, m, msg)
+		default:
+			t.Fatalf("unexpected journal command %T", msg)
+		}
+	}
+	for _, open := range []bool{true, false} {
+		if !open {
+			m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+			if m.picking {
+				t.Fatal("esc did not close picker")
+			}
+		}
+		if poll == nil || clock == nil || spinner == nil || progress == nil {
+			t.Fatal("background chain stopped")
+		}
+		m, poll = updateWatch(t, m, poll())
+		later := m.currentTime.Add(time.Second)
+		clockMsg := clock().(clockMsg)
+		clockMsg.at = later
+		m, clock = updateWatch(t, m, clockMsg)
+		if m.currentTime != later {
+			t.Fatal("clock did not advance")
+		}
+		frame := m.style.Frame
+		m, spinner = updateWatch(t, m, spinner())
+		if m.style.Frame != frame+1 {
+			t.Fatal("spinner did not advance")
+		}
+		frame = m.progress.frame
+		m, progress = updateWatch(t, m, progress())
+		if m.progress.frame != frame+1 {
+			t.Fatal("progress did not advance")
+		}
+		if poll == nil || clock == nil || spinner == nil || progress == nil {
+			t.Fatal("background chain did not reschedule")
+		}
+	}
+}
+
+func TestPickerResizes(t *testing.T) {
+	records, _, now := modelFixture(t)
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = storePanelRecords(t, store, "dashboard", records)
+	var durations []time.Duration
+	m := newPollingWatchModel(root, "dashboard", store, records, time.Second, Style{Width: 120}, func() time.Time { return now }, immediateTicker(now, &durations))
+	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'd', Text: "d"})
+	for _, size := range []tea.WindowSizeMsg{{Width: 80, Height: 20}, {Width: 40, Height: 8}, {Width: 140, Height: 50}} {
+		m, _ = updateWatch(t, m, size)
+		if !m.picking || m.style.Width != size.Width || m.height != size.Height {
+			t.Fatalf("window not handled: width=%d height=%d picking=%v", m.style.Width, m.height, m.picking)
+		}
+		if m.deliveryPicker.Width() != size.Width || m.deliveryPicker.Height() != min(16, max(5, size.Height/2)) {
+			t.Fatalf("picker size=%dx%d after %dx%d", m.deliveryPicker.Width(), m.deliveryPicker.Height(), size.Width, size.Height)
+		}
+	}
+}

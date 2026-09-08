@@ -80,7 +80,7 @@ func TestWatchModelKeys(t *testing.T) {
 	graph.Tasks[1].State = routing.GraphTaskWaitingInput
 	graph.Tasks[1].Attempts[0].Question = &routing.TaskQuestion{Prompt: "Which format?"}
 	records = append(records, panelRecord(t, KindQuestion, "task_2", now, map[string]any{"execution": 1, "question": "Which format?"}, graph))
-	m, _ = updateWatch(t, m, journalMsg{records: records})
+	m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: records})
 	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'r', Text: "r"})
 	if !m.answering {
 		t.Fatal("answer editor did not open")
@@ -159,12 +159,12 @@ func TestWatchLogFollowsTailUntilScrolled(t *testing.T) {
 	records, _, now := modelFixture(t)
 	m := newWatchModel(t.TempDir(), records, Style{Width: 120}, func() time.Time { return now })
 	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: 'l', Text: "l"})
-	m, _ = updateWatch(t, m, journalMsg{records: records, logLoaded: true, logLines: []string{"one", "two", "three", "four", "five", "old", "tail"}})
+	m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: records, logLoaded: true, logLines: []string{"one", "two", "three", "four", "five", "old", "tail"}})
 	if m.logOffset != 0 || !strings.Contains(m.View().Content, "tail") {
 		t.Fatal("tail-following journal update did not show the new tail")
 	}
 	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
-	m, _ = updateWatch(t, m, journalMsg{records: records, logLoaded: true, logLines: []string{"zero", "one", "two", "three", "four", "five", "old", "tail", "new"}})
+	m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: records, logLoaded: true, logLines: []string{"zero", "one", "two", "three", "four", "five", "old", "tail", "new"}})
 	if m.logOffset != 1 || strings.Contains(m.View().Content, "new") {
 		t.Fatalf("journal update lost scroll position: offset=%d\n%s", m.logOffset, m.View().Content)
 	}
@@ -215,7 +215,7 @@ func TestWatchModelViewMatchesRender(t *testing.T) {
 			for _, width := range []int{120, 80, 60} {
 				style := Style{Width: width, Lang: "en", Glyphs: "ascii"}
 				m := newWatchModel(root, nil, style, func() time.Time { return now })
-				m, _ = updateWatch(t, m, journalMsg{records: records})
+				m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: records})
 				m, _ = updateWatch(t, m, tea.WindowSizeMsg{Width: width, Height: 40})
 				if m.style.Width != width || m.height != 40 {
 					t.Fatalf("size = %d x %d", m.style.Width, m.height)
@@ -255,12 +255,12 @@ func TestWatchModelJournalFollowsAndPreservesSelection(t *testing.T) {
 	graph.Tasks[2].State = routing.GraphTaskRunning
 	graph.Tasks[2].Attempts = []routing.GraphTaskAttempt{{Execution: 1}}
 	fresh := append(records, panelRecord(t, KindStarted, "task_3", now, map[string]any{"execution": 1}, graph))
-	m, _ = updateWatch(t, m, journalMsg{records: fresh})
+	m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: fresh})
 	if m.panel.Detail.Task != "task_3" {
 		t.Fatal("fresh journal did not follow active task")
 	}
 	m, _ = updateWatch(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
-	m, _ = updateWatch(t, m, journalMsg{records: fresh})
+	m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: fresh})
 	if m.panel.Detail.Task != "task_2" {
 		t.Fatal("fresh journal discarded explicit selection")
 	}
@@ -268,7 +268,7 @@ func TestWatchModelJournalFollowsAndPreservesSelection(t *testing.T) {
 	if m.panel.Detail.Task != "task_3" || m.navigation.selected != "" {
 		t.Fatal("follow did not resume")
 	}
-	m, _ = updateWatch(t, m, journalMsg{})
+	m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity()})
 	if m.View().Content != strings.TrimSuffix(Render(PanelModel(nil, now, ""), m.renderStyle()), "\n") {
 		t.Fatal("empty journal retained stale view")
 	}
@@ -278,7 +278,7 @@ func TestWatchProgramNavigates(t *testing.T) {
 	records, _, now := modelFixture(t)
 	m := newWatchModel(t.TempDir(), records, Style{Width: 120, Lang: "en", Glyphs: "ascii"}, func() time.Time { return now })
 	m.navigation.selected = "task_1"
-	m, _ = updateWatch(t, m, journalMsg{records: records})
+	m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: records})
 	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 40))
 	t.Cleanup(func() { _ = tm.Quit() })
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
@@ -345,7 +345,7 @@ func TestWatchStaysOpenOnTerminalState(t *testing.T) {
 			}
 			records = append(records, panelRecord(t, KindTerminal, "", now, map[string]any{"state": test.state}, graph))
 			m := newWatchModel(t.TempDir(), nil, Style{Width: 120, Lang: "en", Glyphs: "unicode"}, func() time.Time { return now })
-			m, cmd := updateWatch(t, m, journalMsg{records: records})
+			m, cmd := updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: records})
 
 			if cmd != nil {
 				if _, quit := cmd().(tea.QuitMsg); quit {
@@ -462,7 +462,7 @@ func TestWatchSpinnerTicksOnlyWhileRunning(t *testing.T) {
 
 	graph.Tasks[1].State = routing.GraphTaskIntegrated
 	stopped := append(records, panelRecord(t, KindProgress, "task_2", now, map[string]any{"execution": 1, "criterion": 3, "state": "DONE"}, graph))
-	m, _ = updateWatch(t, m, journalMsg{records: stopped})
+	m, _ = updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: stopped})
 	count := len(durations)
 	frame := m.style.Frame
 	m, cmd = updateWatch(t, m, spinnerTickMsg{})
@@ -479,7 +479,7 @@ func TestWatchSpinnerTicksOnlyWhileRunning(t *testing.T) {
 	if slices.Contains(durations[count:], 80*time.Millisecond) {
 		t.Fatalf("idle model scheduled spinner: %v", durations[count:])
 	}
-	idle, cmd = updateWatch(t, idle, journalMsg{records: records})
+	idle, cmd = updateWatch(t, idle, journalMsg{identity: idle.pollIdentity(), records: records})
 	if cmd == nil || durations[len(durations)-1] != 80*time.Millisecond {
 		t.Fatalf("running journal did not start spinner: durations=%v command=%v", durations, cmd != nil)
 	}
@@ -498,7 +498,7 @@ func TestWatchProgressEases(t *testing.T) {
 	graph.Tasks[2].State = routing.GraphTaskRunning
 	graph.Tasks[2].Attempts = []routing.GraphTaskAttempt{{Execution: 1}}
 	fresh := append(records, panelRecord(t, KindStarted, "task_3", now, map[string]any{"execution": 1}, graph))
-	m, cmd := updateWatch(t, m, journalMsg{records: fresh})
+	m, cmd := updateWatch(t, m, journalMsg{identity: m.pollIdentity(), records: fresh})
 	if cmd == nil || durations[len(durations)-1] != 30*time.Millisecond {
 		t.Fatalf("progress change did not start easing: durations=%v command=%v", durations, cmd != nil)
 	}

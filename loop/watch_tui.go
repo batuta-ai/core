@@ -13,6 +13,7 @@ import (
 )
 
 type journalMsg struct {
+	identity  watchPollIdentity
 	records   []journal.Record
 	logLines  []string
 	logTitle  string
@@ -35,6 +36,7 @@ type watchModel struct {
 	interval    time.Duration
 	ticker      watchTicker
 	poll        watchPollState
+	generation  uint64
 	navigation  panelNavigation
 	style       Style
 	height      int
@@ -146,9 +148,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.pollCmd()
 				}
 			}
+			m.deliveryPicker, cmd = m.deliveryPicker.Update(msg)
+			return m, cmd
 		}
-		m.deliveryPicker, cmd = m.deliveryPicker.Update(msg)
-		return m, cmd
 	}
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
@@ -217,6 +219,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resizePicker()
 		}
 	case journalMsg:
+		if msg.identity.delivery != m.delivery || msg.identity.generation != m.generation {
+			return m, nil
+		}
+		if msg.identity.logPath != panelLogPath(m.workspace, m.panel) {
+			return m, m.pollCmd()
+		}
 		if msg.err != nil {
 			m.navigation.notice = msg.err.Error()
 			return m, m.pollCmd()
@@ -225,7 +233,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		wasEasing := m.progress.active
 		m.records, m.poll = msg.records, msg.poll
 		m.refresh(!msg.logLoaded)
-		if msg.logLoaded {
+		if msg.logLoaded && msg.identity.logPath != panelLogPath(m.workspace, m.panel) {
+			m.refresh(true)
+		} else if msg.logLoaded {
 			m.panel.LogLines, m.panel.LogTitle = msg.logLines, msg.logTitle
 			m.logOffset = min(m.logOffset, m.maxLogOffset())
 			m.viewport = m.navigation.viewport(m.panel, m.renderStyle(), m.viewportHeight())
@@ -239,6 +249,12 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(m.pollCmd(), spinner, progress)
 	case watchPollMsg:
+		if msg.identity.delivery != m.delivery || msg.identity.generation != m.generation {
+			return m, nil
+		}
+		if msg.identity.logPath != panelLogPath(m.workspace, m.panel) {
+			return m, m.pollCmd()
+		}
 		m.poll = msg.state
 		return m, m.pollCmd()
 	case clockMsg:
@@ -271,6 +287,9 @@ func (m watchModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.navigation.notice = msg.err.Error()
 		}
 	default:
+		if m.picking {
+			m.deliveryPicker, cmd = m.deliveryPicker.Update(msg)
+		}
 		return m, cmd
 	}
 	m.refresh(true)
@@ -456,6 +475,8 @@ func (m *watchModel) switchDelivery(delivery string) error {
 	if err != nil {
 		return err
 	}
+	previous := *m
+	m.generation++
 	m.delivery = delivery
 	m.records = records
 	m.navigation = panelNavigation{}
@@ -467,6 +488,7 @@ func (m *watchModel) switchDelivery(delivery string) error {
 	m.refresh(true)
 	state, err := m.pollState(m.currentTime)
 	if err != nil {
+		*m = previous
 		return err
 	}
 	m.poll = state
