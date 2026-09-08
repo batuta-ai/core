@@ -132,6 +132,11 @@ func TestCommitMessageCutsAtWordBoundary(t *testing.T) {
 			title:    "This is a long title that needs to be cut here- and-more-words-exceeding-limit",
 			expected: "this is a long title that needs to be cut here",
 		},
+		{
+			name:     "space at byte 68 is the word boundary",
+			title:    strings.Repeat("a", 62) + " word, and more words",
+			expected: strings.Repeat("a", 62) + " word",
+		},
 	}
 
 	for _, tt := range tests {

@@ -798,11 +798,11 @@ func commitMessage(task routing.PlanTask, slug string) string {
 		byteCount := 0
 		for _, r := range title {
 			runeBytes := len(string(r))
-			if byteCount+runeBytes > 68 {
-				break
-			}
 			if r == ' ' {
 				lastSpace = byteCount
+			}
+			if byteCount+runeBytes > 68 {
+				break
 			}
 			byteCount += runeBytes
 		}
