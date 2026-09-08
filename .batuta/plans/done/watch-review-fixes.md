@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:8ddd757ea7e2 -->
 
 **Goal:** Close the 13 findings of the read-only review of `batuta watch` (codex/gpt-6-astra, 2026-09-08, `.batuta/runs/2026-09-07-review-watch-astra.review.md`): the answer overlay binds to the shown delivery and question and never races a live runner, poll results carry their identity, the presence lock is owned and symlink-safe, untrusted overlay text is sanitised, the picker keeps the background chains alive and honours `--ascii`/`--lang`, the pager and the recovery command are safe, and one test stops using real time. Refs core #64.
-**Created:** 2026-09-08 · **Status:** approved
+**Created:** 2026-09-08 · **Status:** done
 
 ## Tasks
 - [x] 1. The answer binds to the shown delivery and question and refuses while a runner owns the delivery — backend/high
@@ -11,10 +11,10 @@
 - [x] 2. Poll results carry their identity; the picker never starves the background chains — backend/high
       Scope: loop/watch_tui.go, loop/watch_tui_test.go, loop/watch_poll.go, loop/watch_poll_test.go, loop/watch_picker.go, loop/watch_picker_test.go
       Accept: every `journalMsg` carries the delivery id, a generation counter bumped on delivery switch, and the log path it read, and the model drops results whose delivery, generation or log path differ from the current ones, keeping exactly one poll chain → go test ./loop -run 'TestPollResultsTaggedAndStaleDropped|TestSinglePollChainAfterSwitch' -count=1; while the picker is open, poll, clock, animation and `WindowSizeMsg` are still handled and the picker is resized, and closing it with esc leaves every chain running → go test ./loop -run 'TestPickerKeepsBackgroundChains|TestPickerResizes' -count=1
-- [ ] 3. The presence lock is owned and symlink-safe; the pager is cancellable — backend/medium
+- [x] 3. The presence lock is owned and symlink-safe; the pager is cancellable — backend/medium
       Scope: loop/presence.go, loop/presence_test.go, loop/runner.go, loop/loop_test.go, loop/watch_tui.go, loop/watch_tui_test.go, loop/panel_keys.go, loop/panel_keys_test.go, loop/panel.go, loop/panel_test.go
       Accept: the lock is created with `O_CREATE|O_EXCL|O_WRONLY` (or opened `O_NOFOLLOW` where the platform has it) and refreshed and removed through the owning handle only; a runner that finds a fresh lock owned by another pid refuses to start with `delivery <id> is owned by pid N since <time>`; a stale lock is taken over; a symlink at the lock path is an error, never followed → go test ./loop -run 'TestPresenceLockExclusive|TestPresenceRefusesLiveOwner|TestPresenceTakesOverStaleLock|TestPresenceRefusesSymlink' -count=1; the pager runs under the watch context and cancelling the watch ends the pager wait, verified with an injected process runner → go test ./loop -run TestPagerCancelsWithWatch -count=1
-- [ ] 4. Overlay text is sanitised; the picker honours glyphs and language and shows real states — backend/medium
+- [x] 4. Overlay text is sanitised; the picker honours glyphs and language and shows real states — backend/medium
       Scope: loop/watch_answer.go, loop/watch_answer_test.go, loop/watch_picker.go, loop/watch_picker_test.go, loop/watch_tui.go, loop/watch_tui_test.go, loop/panel_labels.go, loop/panel_render.go, loop/panel_render_test.go
       Accept: the question text, the notice and every picker item pass through the renderer's sanitiser (control characters, CSI, OSC and hyperlink sequences stripped; newline and tab kept) before reaching `tea.View` → go test ./loop -run 'TestOverlaySanitisesQuestion|TestPickerSanitisesItems' -count=1; picker items use the style's glyph set and the language's labels, and the displayed state is the delivery's real state (`waiting_input`, `canceled`, …) while the sort still puts open deliveries first → go test ./loop -run 'TestPickerASCIIAndPortuguese|TestPickerShowsRealState' -count=1
 - [x] 5. Deterministic time in every watch test — testing/low

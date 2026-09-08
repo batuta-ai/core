@@ -116,6 +116,11 @@
 - [x] The answer binds to the shown delivery and question and refuses while a runner owns the delivery → codex (gpt-6-astra), commit 52d4bfd5c757 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-1.md, plan watch-review-fixes, 2026-09-08)
 - [x] Poll results carry their identity; the picker never starves the background chains → codex (gpt-6-astra), commit 5b87e4145bca (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-2.md, plan watch-review-fixes, 2026-09-08)
 - [x] Deterministic time in every watch test → codex (gpt-5.4-mini), commit 5689162d7369 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-5.md, plan watch-review-fixes, 2026-09-08)
+- [x] The answer binds to the shown delivery and question and refuses while a runner owns the delivery → ticked in the plan before the run, commit a197c50ae779 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-1.md, plan watch-review-fixes, 2026-09-08)
+- [x] Poll results carry their identity; the picker never starves the background chains → ticked in the plan before the run, commit a197c50ae779 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-2.md, plan watch-review-fixes, 2026-09-08)
+- [x] The presence lock is owned and symlink-safe; the pager is cancellable → codex (gpt-5.6-sol), commit 0251bc9a0662 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-3.md, plan watch-review-fixes, 2026-09-08)
+- [x] Overlay text is sanitised; the picker honours glyphs and language and shows real states → codex (gpt-5.6-sol), commit 6cdc6bb6d530 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-4.md, plan watch-review-fixes, 2026-09-08)
+- [x] Deterministic time in every watch test → ticked in the plan before the run, commit a197c50ae779 (trail: .batuta/runs/2026-09-08-watch-review-fixes-task-5.md, plan watch-review-fixes, 2026-09-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
