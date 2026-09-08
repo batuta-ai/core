@@ -147,6 +147,40 @@ exit `1` with the reason on stderr.
 - **Same-runtime retry keeps the worktree**, so the fix session sees the
   partial work and the brief carries the real cause. An escalation starts
   clean.
+- **Failure outcomes.** The ordinary conducting policy retries once on the
+  same runtime with feedback, escalates once in a fresh worktree, then blocks
+  the task; other ready tasks and later waves continue whenever their
+  dependencies permit. The blocker tells the operator why:
+  - `timed_out` marks the attempt stalled, then follows the ordinary policy.
+  - `verifier_incomplete`, `tests_failed`, `scope_violation`, `no_changes`,
+    `candidate_invalid`, `question_unsafe`, and `install_failed` follow the
+    ordinary policy. So do `executor_failed` and `proof_failed`, the remaining
+    executor and gate blocker codes.
+  - `interrupted` is written as stalled when `--resume` finds an attempt that
+    was still running, then follows the ordinary policy in its preserved
+    worktree.
+  - `needs_conducting_session` blocks immediately when the next escalation is
+    `self`; the task must be completed through an interactive conducting
+    session and then ticked or replanned.
+  - `question_at_ceiling` records the question and blocks immediately instead
+    of creating an impossible continuation; answer it by hand and replan.
+  - `already_satisfied` is a successful no-commit outcome: gates 2 and 3 hold
+    against the attempt base, the task is marked integrated at that base, and
+    the delivery continues to any newly ready dependents.
+  - `rate_limited` spends neither retry nor escalation. The loop waits or uses
+    the `limit_fallback` described above; only after the wait budget and all
+    executable fallbacks are exhausted does it block.
+- **Work is snapshotted before it can be discarded.** Before a question parks
+  an attempt, a usage-limit wait or fallback, any recorded failure or
+  interruption, worktree cleanup, and every terminal delivery record, the
+  loop snapshots tracked, staged, unstaged, and untracked executor work to
+  `refs/batuta/parked/<slug>/<task>-e<execution>`. The synthetic commit is
+  named `wip(batuta): <slug> <task> e<execution> parked`, leaves the real HEAD,
+  index, and files untouched, and is journaled as a `snapshot` record. A
+  same-runtime retry keeps the worktree; a fresh escalation or cleanup may
+  remove it only after that snapshot succeeds. Final bookkeeping deletes only
+  parked refs whose complete tree is already present in branch history and
+  reports every remaining recovery ref in the terminal summary.
 - **User-authored command lines** (`Test:`, `Install:`, proofs) run through
   `sh -c` with stdin closed, a timeout and bounded output; they come from
   files the user wrote and approved. **Executor lines never see a shell**:

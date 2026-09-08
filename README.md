@@ -54,6 +54,9 @@ batuta watch [<delivery>]               live panel dashboard (watch by default)
 batuta trail [<delivery>]               one line per journal record
 ```
 
+When a usage limit outlasts the wait budget, the loop falls back to the next
+executable runtime without spending a retry or escalation.
+
 The dashboard groups tasks by wave and shows execution context, progress
 bars, selected-task detail, attempts, gates G0–G3, commits, and the active
 executor log. It shows loop presence, opens a multi-line answer editor with

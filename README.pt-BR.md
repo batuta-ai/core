@@ -18,6 +18,9 @@ batuta watch [<entrega>]               abre o painel interativo ao vivo
 batuta trail [<entrega>]               mostra os registros do diário
 ```
 
+Quando um limite de uso dura além do orçamento de espera, o loop recorre ao
+próximo runtime executável sem gastar uma nova tentativa nem uma escalação.
+
 O painel mostra contexto, progresso, tarefas, verificações, commits e a saída
 do executor. Ele mostra a presença do loop, abre um editor de resposta com
 várias linhas usando `r`, retoma uma resposta enviada em segundo plano, abre o
