@@ -820,6 +820,72 @@ func TestLoopEscalatesThenBlocksAndReportsExactly(t *testing.T) {
 	}
 }
 
+func TestLoopBlocksInsteadOfCrashingOnSelfEscalation(t *testing.T) {
+	f := setup(t)
+	planPath := filepath.Join(f.root, ".batuta", "plans", "greetings.md")
+	plan, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan = []byte(strings.Replace(string(plan), "Add greeting one — backend/low", "Add greeting one — backend/high", 1))
+	if err := os.WriteFile(planPath, plan, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", planPath)
+	f.run(t, "commit", "-q", "-m", "test: route task one through high lane")
+
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("always-broken", &out))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateBlocked {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if !strings.Contains(out.String(), blockerSelf) {
+		t.Fatalf("output does not name %s:\n%s", blockerSelf, out.String())
+	}
+
+	records := readJournal(t, f, r.Delivery())
+	counts := kinds(records)
+	if counts[KindTerminal] != 1 || counts[KindInterrupted] != 0 {
+		t.Fatalf("journal kinds = %v, want one delivery_terminal and no run_interrupted", counts)
+	}
+	var blockedFailure bool
+	for _, record := range records {
+		if record.Kind == KindFailure && record.TaskID == "task_1" &&
+			strings.Contains(string(record.Detail), `"blocker":"`+blockerSelf+`"`) &&
+			strings.Contains(string(record.Detail), `"blocked":true`) {
+			blockedFailure = true
+		}
+	}
+	if !blockedFailure {
+		t.Fatalf("no blocked failure_recorded with blocker %s\n%s", blockerSelf, out.String())
+	}
+}
+
+func TestLoopRefusesSelfTasksAtPreflight(t *testing.T) {
+	f := setup(t)
+	planPath := filepath.Join(f.root, ".batuta", "plans", "greetings.md")
+	plan, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan = []byte(strings.Replace(string(plan), "Add greeting one — backend/low", "Add greeting one — backend/critical", 1))
+	if err := os.WriteFile(planPath, plan, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", planPath)
+	f.run(t, "commit", "-q", "-m", "test: route task one to self")
+
+	var out bytes.Buffer
+	if _, err := New(context.Background(), f.options("default", &out)); err == nil ||
+		!strings.Contains(err.Error(), "task_1 route to `self` (the conducting session)") {
+		t.Fatalf("New() error = %v, want preflight refusal of self-routed task", err)
+	}
+}
+
 func TestLoopParksAQuestionAndResumesWithTheAnswer(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer

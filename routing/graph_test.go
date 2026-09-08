@@ -1296,3 +1296,51 @@ func TestDeliveryGraphRetriesOnTheSameRuntimeBeforeEscalating(t *testing.T) {
 		t.Fatalf("negative retries error = %v", err)
 	}
 }
+
+func TestRecordFailureBlocksWhenEscalationTargetIsSelf(t *testing.T) {
+	t.Parallel()
+
+	record := validDeliveryFixture(t)
+	record.Attempts = nil
+	generation := validGenerationFixture(t)
+	selected := generation.Rules[0].Runtime
+	generation.Cells = []RoutingCell{{
+		Domain: DomainFrontend, Complexity: ComplexityHigh, TaskIDs: []string{"task_1"},
+		Selected: RuntimeCandidate{ProviderID: selected.Provider, ModelID: selected.Model, Reasoning: selected.Reasoning},
+		Fallbacks: []RuntimeCandidate{{
+			ExecutorID: ExecutorSelf, ProviderID: string(ExecutorSelf), ModelID: "session", Reasoning: "high",
+		}},
+		FallbackLimit: 1,
+	}}
+	generation, _ = finalizeGeneration(generation)
+	graph, err := NewDeliveryGraph(record.TaskSnapshot, generation, record.InitialWorktreeFingerprint.HeadSHA)
+	if err != nil {
+		t.Fatalf("NewDeliveryGraph() error = %v", err)
+	}
+	wave, err := graph.AdmitReadyWave(ReadyWaveInput{
+		IntegrationHeadSHA: record.InitialWorktreeFingerprint.HeadSHA, RemainingSlots: 1, ReachableCommits: map[string]bool{},
+	})
+	if err != nil {
+		t.Fatalf("AdmitReadyWave() error = %v", err)
+	}
+	if err := graph.BeginWaveAttempts(wave.Number, generation); err != nil {
+		t.Fatalf("BeginWaveAttempts() error = %v", err)
+	}
+	if _, err := graph.AttachWorktree("task_1", 1, GraphWorktree{ID: "wt-task-1", Root: "/managed/task-1", Ready: true}); err != nil {
+		t.Fatalf("AttachWorktree() error = %v", err)
+	}
+
+	result, err := graph.RecordFailureWithPolicy("task_1", 1, TaskFailure{
+		ChildRunID: "loop-task-1", TerminalStatus: "failed", BlockerCode: "implementation_failed", TokensUsed: 10,
+	}, generation, graphGitSHA("base-2"), FailurePolicy{RetryAllowed: true})
+	if err != nil {
+		t.Fatalf("RecordFailureWithPolicy() error = %v", err)
+	}
+	if !result.Blocked {
+		t.Fatalf("RecordFailureWithPolicy() = %#v, want blocked", result)
+	}
+	task, _ := graph.Task("task_1")
+	if task.State != GraphTaskBlocked || task.BlockerCode != "needs_conducting_session" || len(task.Attempts) != 1 {
+		t.Fatalf("task after self escalation = %#v, want one blocked attempt with needs_conducting_session", task)
+	}
+}

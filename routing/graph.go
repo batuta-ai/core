@@ -13,9 +13,10 @@ import (
 )
 
 const (
-	MaxParallelTasks  = 4
-	MaxDeliveryTasks  = 64
-	MaxTaskExecutions = 4
+	MaxParallelTasks              = 4
+	MaxDeliveryTasks              = 64
+	MaxTaskExecutions             = 4
+	BlockerNeedsConductingSession = "needs_conducting_session"
 
 	maxQuestionBytes              = 2 << 10
 	maxChoiceBytes                = 512
@@ -810,6 +811,15 @@ func (g *DeliveryGraph) RecordFailureWithPolicy(
 		nextRuntime, eligible = nextRuntimeForTask(generation, *task, attempt.Runtime)
 	}
 	escalated := attempt.Runtime != task.Attempts[0].Runtime
+	if nextRuntime.Provider == string(ExecutorSelf) {
+		task.State = GraphTaskBlocked
+		task.BlockerCode = BlockerNeedsConductingSession
+		if err := validateGraphTask(*task, "pending"); err != nil {
+			return TaskFailureResult{}, err
+		}
+		*g = *candidate
+		return TaskFailureResult{Blocked: true}, nil
+	}
 	if !retryAllowed || execution == MaxTaskExecutions || !eligible || (policy.AbortAfterEscalation && escalated) {
 		task.State = GraphTaskBlocked
 		task.BlockerCode = failure.BlockerCode

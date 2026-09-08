@@ -28,7 +28,7 @@ const (
 	blockerInstall        = "install_failed"
 	blockerInterrupted    = "interrupted"
 	blockerCandidate      = "candidate_invalid"
-	blockerSelf           = "needs_conducting_session"
+	blockerSelf           = routing.BlockerNeedsConductingSession
 	blockerUnsafeQuestion = "question_unsafe"
 	// blockerAlreadySatisfied is not a failure: the criteria held before the
 	// executor touched anything, so there is no candidate to integrate. The
@@ -545,6 +545,10 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		r.mu.Unlock()
 		return fmt.Errorf("loop: record failure of %s: %w", ac.taskID, ferr)
 	}
+	recordedBlocker := code
+	if task, found := r.graph.Task(ac.taskID); outcome.Blocked && found && task.BlockerCode == routing.BlockerNeedsConductingSession {
+		recordedBlocker = task.BlockerCode
+	}
 	sameRuntime := !outcome.Blocked && outcome.Runtime == ac.runtime
 	if !outcome.Blocked {
 		r.feedback[ac.taskID] = feedback
@@ -553,7 +557,7 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		}
 	}
 	detail := map[string]any{
-		"execution": ac.execution, "blocker": code, "status": status, "feedback": feedback, "blocked": outcome.Blocked,
+		"execution": ac.execution, "blocker": recordedBlocker, "status": status, "feedback": feedback, "blocked": outcome.Blocked,
 		"next_execution": ac.execution + 1, "next_runtime": outcome.Runtime, "same_runtime": sameRuntime, "reuse_worktree": sameRuntime && ac.worktree.Root != "",
 	}
 	recordErr := r.record(KindFailure, ac.taskID, detail)
@@ -562,12 +566,12 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		return recordErr
 	}
 	switch {
-	case outcome.Blocked && code == blockerAlreadySatisfied:
+	case outcome.Blocked && recordedBlocker == blockerAlreadySatisfied:
 		fmt.Fprintf(r.out, "%s e%d ✓ already satisfied on the base; no commit\n", ac.taskID, ac.execution)
 		r.writeTrailVerdict(ac.taskID, "✅ already satisfied — no commit", feedback)
 	case outcome.Blocked:
-		fmt.Fprintf(r.out, "%s e%d ✗ %s — aborted (%s)\n", ac.taskID, ac.execution, code, firstLine(strings.Join(feedback, " ")))
-		r.writeTrailVerdict(ac.taskID, "❌ aborted — "+code, feedback)
+		fmt.Fprintf(r.out, "%s e%d ✗ %s — aborted (%s)\n", ac.taskID, ac.execution, recordedBlocker, firstLine(strings.Join(feedback, " ")))
+		r.writeTrailVerdict(ac.taskID, "❌ aborted — "+recordedBlocker, feedback)
 	case sameRuntime:
 		fmt.Fprintf(r.out, "%s e%d ✗ %s — retry on %s/%s with feedback\n", ac.taskID, ac.execution, code, ac.runtime.Provider, ac.runtime.Model)
 	default:
