@@ -1866,6 +1866,52 @@ func TestAnswerRefusesLiveRunner(t *testing.T) {
 	}
 }
 
+func TestAnswerRefusesRunningTaskWithOwnershipMessage(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("ask", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	delivery := r.Delivery()
+	graph := *r.graph
+	graph.Tasks = append([]routing.GraphTask(nil), graph.Tasks...)
+	graph.Tasks[0].State = routing.GraphTaskRunning
+	data, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.store.Append(delivery, journal.Record{Kind: KindStarted, Graph: data}); err != nil {
+		t.Fatal(err)
+	}
+
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lockTime := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	writePresenceFixture(t, f.root, delivery, lockTime)
+
+	want := "delivery " + delivery + " is owned by pid 1 since " + lockTime.Format(time.RFC3339) + "\nstop it or wait for waiting_input"
+	if _, err := answer(f.root, "1", "hello there", lockTime); err == nil || err.Error() != want {
+		t.Fatalf("Answer() error = %v", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(after, before) {
+		t.Fatal("Answer() wrote to the journal while the runner was live")
+	}
+	if _, err := os.Stat(filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md")); err != nil {
+		t.Fatalf("Answer() removed the ask file: %v", err)
+	}
+}
+
 func TestResumeRefusesLiveRunner(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer

@@ -53,7 +53,16 @@ func deliveryItems(workspace string, store *journal.Store, now time.Time, style 
 		if json.Unmarshal(first.Detail, &opened) != nil {
 			continue
 		}
-		state := lastTerminal([]journal.Record{last})
+		state := ""
+		if last.Kind == kindFinalizing || last.Kind == kindCleanup || last.Kind == KindTerminal {
+			var detail terminalDetail
+			if json.Unmarshal(last.Detail, &detail) == nil {
+				state = detail.State
+				if last.Kind == kindFinalizing || detail.CleanupPending || detail.BookkeepingPending {
+					state = "open"
+				}
+			}
+		}
 		if state == "" {
 			state = "open"
 		}

@@ -189,9 +189,13 @@ exit `1` with the reason on stderr.
   cleanup may remove it only after that snapshot succeeds. Finalization first
   computes which refs to retain, then journals that list in the terminal
   record, and only then deletes refs whose complete tree is already present
-  in branch history. A `delivery_cleanup` follow-up records the deletion
-  outcome. Failures print the error and remaining refs and stay retryable;
-  interruption between the terminal record and deletion also stays retryable.
+  in branch history, in the same critical section. `delivery_terminal` stays
+  last and carries both the retained refs and the deletion plan. Failures print
+  the error and remaining refs (all planned deletions if relisting fails).
+  The next `--resume` or `--abandon` checkpoints and retries those deletions
+  before writing another terminal record, without repeating task work or
+  bookkeeping. This also recovers interruption between recording and deletion;
+  an already completed deletion is safe to retry.
   An unmerged (conflicted) index is copied and serialized into separate trees:
   `-index` retains normal stage-zero entries, and `-index-stage-1`,
   `-index-stage-2`, and `-index-stage-3` retain the conflicted base, ours, and

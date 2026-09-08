@@ -71,7 +71,7 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 		}
 		return r.completeFinalization(ctx, detail)
 	}
-	return r.recordFinalization(detail, nil)
+	return r.recordFinalization(ctx, detail, nil)
 }
 
 func (r *Runner) checkpointFinalization(detail terminalDetail) error {
@@ -85,6 +85,18 @@ func (r *Runner) checkpointFinalization(detail terminalDetail) error {
 }
 
 func (r *Runner) completeFinalization(ctx context.Context, detail terminalDetail) (string, error) {
+	// Recovery journals its intent before retrying a terminal record's deletions.
+	// The saved list remains intact on failure, including when refs cannot be listed.
+	if len(detail.Deletions) > 0 {
+		if err := r.checkpointFinalization(detail); err != nil {
+			return detail.State, err
+		}
+		if err := r.deleteFinalizationRefs(ctx, &detail, true); err != nil {
+			checkpointErr := r.checkpointFinalization(detail)
+			r.printFinalization(detail)
+			return detail.State, errors.Join(err, checkpointErr)
+		}
+	}
 	var cleanupErr, bookkeepingErr error
 	if detail.CleanupPending {
 		cleanupErr = r.cleanFinalization(ctx, &detail)
@@ -117,39 +129,52 @@ func (r *Runner) completeFinalization(ctx context.Context, detail terminalDetail
 		r.printFinalization(detail)
 		return detail.State, errors.Join(cleanupErr, deletionErr, checkpointErr)
 	}
-	if _, err := r.recordFinalization(detail, nil); err != nil {
-		return detail.State, errors.Join(cleanupErr, err)
+	return r.recordFinalization(ctx, detail, cleanupErr)
+}
+
+func (r *Runner) deleteFinalizationRefs(ctx context.Context, detail *terminalDetail, retry bool) error {
+	deletions := detail.Deletions
+	var err error
+	if retry {
+		var parked []worktree.ParkedRef
+		parked, err = r.git.Parked(ctx, r.plan.Slug)
+		if err == nil {
+			// A previous attempt may have deleted some or all refs. Keep the saved
+			// SHA for existing refs so a replacement still fails the conditional delete.
+			deletions = nil
+			for _, ref := range detail.Deletions {
+				if slices.ContainsFunc(parked, func(current worktree.ParkedRef) bool { return current.Ref == ref.Ref }) {
+					deletions = append(deletions, ref)
+				}
+			}
+		}
 	}
-	if len(detail.Deletions) == 0 {
-		return detail.State, cleanupErr
+	if err == nil {
+		err = r.git.DeleteParked(ctx, deletions)
 	}
-	deletionErr = r.git.DeleteParked(ctx, detail.Deletions)
-	detail.Deletions = nil
-	if deletionErr != nil {
+	if err != nil {
+		// Conservatively report every planned deletion until a successful relist
+		// proves which refs remain. Never discard the durable retry list here.
+		detail.Summary.Parked = slices.Clone(detail.Summary.Parked)
+		for _, ref := range detail.Deletions {
+			if !slices.ContainsFunc(detail.Summary.Parked, func(kept worktree.ParkedRef) bool { return kept.Ref == ref.Ref }) {
+				detail.Summary.Parked = append(detail.Summary.Parked, ref)
+			}
+		}
 		parked, listErr := r.git.Parked(ctx, r.plan.Slug)
 		if listErr == nil {
 			detail.Summary.Parked = parked
 		}
-		cleanupErr = errors.Join(cleanupErr, deletionErr, listErr)
 		detail.CleanupPending = true
-		detail.CleanupError = errorString(cleanupErr)
-	}
-	r.mu.Lock()
-	followupErr := r.record(kindCleanup, "", detail)
-	if followupErr == nil {
-		r.pendingFinish = nil
-		if detail.CleanupPending {
-			r.pendingFinish = &detail
+		combined := errors.Join(err, listErr)
+		if detail.CleanupError != "" {
+			combined = errors.Join(errors.New(detail.CleanupError), combined)
 		}
+		detail.CleanupError = errorString(combined)
+		return errors.Join(err, listErr)
 	}
-	r.mu.Unlock()
-	if cleanupErr != nil {
-		r.printFinalization(detail)
-	}
-	if followupErr != nil {
-		fmt.Fprintf(r.out, "cleanup record: %s\nretry with batuta loop --resume %s\n", followupErr, r.delivery)
-	}
-	return detail.State, errors.Join(cleanupErr, followupErr)
+	detail.Deletions = nil
+	return nil
 }
 
 func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) error {
@@ -167,10 +192,15 @@ func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) 
 	return cleanupErr
 }
 
-func (r *Runner) recordFinalization(detail terminalDetail, cleanupErr error) (string, error) {
+func (r *Runner) recordFinalization(ctx context.Context, detail terminalDetail, cleanupErr error) (string, error) {
 	r.mu.Lock()
 	err := r.record(KindTerminal, "", detail)
 	if err == nil {
+		// Keep append and deletion in one critical section. The terminal record
+		// retains the deletion plan for crash recovery; no follow-up is appended.
+		if len(detail.Deletions) > 0 {
+			cleanupErr = errors.Join(cleanupErr, r.deleteFinalizationRefs(ctx, &detail, false))
+		}
 		r.terminal = detail.State
 		r.pendingFinish = nil
 		if detail.CleanupPending || len(detail.Deletions) > 0 {
@@ -727,8 +757,13 @@ func (r *Runner) openDeliveries(slug string) []string {
 }
 
 func terminalState(records []journal.Record) string {
-	if pendingFinalization(records) != nil {
-		return ""
+	if pending := pendingFinalization(records); pending != nil {
+		// A terminal deletion plan is retryable even after successful deletion.
+		// It does not reopen a delivery whose task work and finalization finished.
+		last := records[len(records)-1]
+		if last.Kind != KindTerminal || pending.CleanupPending || pending.BookkeepingPending {
+			return ""
+		}
 	}
 	state := ""
 	for _, record := range records {
@@ -809,6 +844,15 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 			continue
 		}
 		task := graphTask(&graph, taskID)
+		if task != nil {
+			owner, err := liveDeliveryOwner(root, id, now)
+			if err != nil {
+				return "", err
+			}
+			if owner != nil {
+				return "", fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", id, owner.PID, owner.StartedAt.Format(time.RFC3339))
+			}
+		}
 		if task != nil && task.State == routing.GraphTaskBlocked && task.BlockerCode == routing.BlockerQuestionAtCeiling &&
 			len(task.Attempts) > 0 && task.Attempts[len(task.Attempts)-1].Question != nil {
 			blockedAtCeiling = true

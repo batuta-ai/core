@@ -350,3 +350,35 @@ func TestPickerResizes(t *testing.T) {
 		}
 	}
 }
+
+func TestPickerShowsRealStateDuringFinalization(t *testing.T) {
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		kind    journal.Kind
+		pending bool
+		want    string
+	}{
+		{"finalizing", kindFinalizing, false, "open"},
+		{"cleanup-pending", kindCleanup, true, "open"},
+		{"cleanup-complete", kindCleanup, false, StateDone},
+		{"terminal-cleanup-pending", KindTerminal, true, "open"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			store, err := journal.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pickerDelivery(t, store, "delivery", "plan", now, now, "", routing.GraphTaskIntegrated)
+			record := panelRecord(t, tc.kind, "", now, terminalDetail{State: StateDone, CleanupPending: tc.pending}, routing.DeliveryGraph{})
+			if _, err := store.Append("delivery", record); err != nil {
+				t.Fatal(err)
+			}
+			items, err := deliveryItems(root, store, now, Style{Lang: "en"})
+			if err != nil || len(items) != 1 || items[0].(deliveryItem).state != tc.want {
+				t.Fatalf("items = %v, %v; want %s", items, err, tc.want)
+			}
+		})
+	}
+}

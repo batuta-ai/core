@@ -341,39 +341,104 @@ func TestBookkeepingDoesNotHideAnotherDelivery(t *testing.T) {
 }
 
 func TestParkedDeletionFailureIsJournaled(t *testing.T) {
+	testParkedDeletionRecovery(t, false, false)
+}
+
+func TestResumeRetriesParkedDeletion(t *testing.T) {
+	for _, abandon := range []bool{false, true} {
+		t.Run(map[bool]string{false: "resume", true: "abandon"}[abandon], func(t *testing.T) {
+			testParkedDeletionRecovery(t, true, abandon)
+		})
+	}
+}
+
+func testParkedDeletionRecovery(t *testing.T, canceled, abandon bool) {
 	f, r, out := finishedTasksForBookkeeping(t)
 	ref := "refs/batuta/parked/greetings/task_1-e1"
 	f.run(t, "update-ref", ref, "HEAD")
 	deleted := false
+	deletionAttempts := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	r.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
 		if len(cmd.Args) > 1 && cmd.Args[0] == "update-ref" && cmd.Args[1] == "-d" {
+			deletionAttempts++
+			if !canceled && deletionAttempts == 1 {
+				return (publication.ExecRunner{}).Run(ctx, cmd)
+			}
 			deleted = true
 			records := readJournal(t, f, r.Delivery())
 			if kinds(records)[KindTerminal] == 0 {
 				t.Error("deleted parked ref before terminal record")
 			}
+			if canceled {
+				cancel()
+				return publication.CommandResult{ExitCode: 1}, ctx.Err()
+			}
 			return publication.CommandResult{ExitCode: 1}, errors.New("injected parked deletion failure")
+		}
+		if deleted && len(cmd.Args) > 0 && cmd.Args[0] == "for-each-ref" {
+			return publication.CommandResult{ExitCode: 1}, errors.New("injected relisting failure")
 		}
 		return (publication.ExecRunner{}).Run(ctx, cmd)
 	})
-	if state, err := r.Run(context.Background()); err == nil || state != StateDone {
+	if state, err := r.Run(ctx); err == nil || state != StateDone {
 		t.Fatalf("finish = %s, %v", state, err)
 	}
 	records := readJournal(t, f, r.Delivery())
-	if !deleted || kinds(records)[KindTerminal] == 0 || records[len(records)-1].Kind == KindTerminal || !strings.Contains(string(records[len(records)-1].Detail), "injected parked deletion failure") {
-		t.Fatalf("deletion failure not journaled after terminal: %+v", records[len(records)-1])
-	}
-	if !strings.Contains(out.String(), "injected parked deletion failure") || !strings.Contains(out.String(), ref) {
-		t.Fatalf("missing cleanup report: %s", out)
-	}
-	opts := f.options("default", out)
-	opts.Resume = r.Delivery()
-	resumed, err := Resume(context.Background(), opts)
-	if err != nil {
+	var detail terminalDetail
+	if err := json.Unmarshal(records[len(records)-1].Detail, &detail); err != nil {
 		t.Fatal(err)
 	}
-	if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
-		t.Fatalf("retry = %s, %v", state, err)
+	if !deleted || records[len(records)-1].Kind != KindTerminal || len(detail.Deletions) == 0 || !strings.Contains(string(records[len(records)-1].Detail), ref) {
+		t.Fatalf("terminal lost pending deletion: %s", records[len(records)-1].Detail)
+	}
+	if !strings.Contains(out.String(), "injected relisting failure") || !strings.Contains(out.String(), ref) || !strings.Contains(out.String(), "cleanup pending") {
+		t.Fatalf("missing cleanup report: %s", out)
+	}
+	if r.pendingFinish == nil || len(r.pendingFinish.Deletions) == 0 {
+		t.Fatal("lost in-memory retry")
+	}
+	for _, deletion := range detail.Deletions {
+		found := false
+		for _, kept := range r.pendingFinish.Summary.Parked {
+			found = found || kept.Ref == deletion.Ref
+		}
+		if !found {
+			t.Fatalf("failed relist omitted potentially retained ref %s", deletion.Ref)
+		}
+	}
+	beforeHead := f.run(t, "rev-parse", "HEAD")
+	opts := f.options("default", out)
+	opts.Resume = r.Delivery()
+	if abandon {
+		if state, err := Abandon(context.Background(), opts); err != nil || state != StateDone {
+			t.Fatalf("abandon retry = %s, %v", state, err)
+		}
+	} else {
+		resumed, err := Resume(context.Background(), opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resumed.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+			if len(cmd.Args) > 1 && cmd.Args[0] == "update-ref" && cmd.Args[1] == "-d" {
+				records := readJournal(t, f, r.Delivery())
+				if records[len(records)-1].Kind == KindTerminal {
+					t.Error("recovery deletion not checkpointed before terminal")
+				}
+			}
+			return (publication.ExecRunner{}).Run(ctx, cmd)
+		})
+		if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
+			t.Fatalf("retry = %s, %v", state, err)
+		}
+	}
+	after := readJournal(t, f, r.Delivery())
+	if after[len(after)-1].Kind != KindTerminal || terminalState(after) != StateDone || pendingFinalization(after) != nil {
+		t.Fatal("recovery did not finish with terminal record")
+	}
+	if f.run(t, "rev-parse", "HEAD") != beforeHead {
+		t.Fatal("deletion retry repeated bookkeeping")
 	}
 	if got := f.run(t, "for-each-ref", "--format=%(refname)", ref); got != "" {
 		t.Fatalf("ref retained: %s", got)
@@ -420,5 +485,50 @@ func TestBookkeepingRecoveryRefusesForeignStagedPaths(t *testing.T) {
 	}
 	if got := f.run(t, "ls-files", "--", foreign); got != "" {
 		t.Fatal("committed foreign path")
+	}
+}
+
+func TestTerminalRecordIsLast(t *testing.T) {
+	f, r, _ := finishedTasksForBookkeeping(t)
+	ref := "refs/batuta/parked/greetings/task_1-e1"
+	f.run(t, "update-ref", ref, "HEAD")
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("finish = %s, %v", state, err)
+	}
+	records := readJournal(t, f, r.Delivery())
+	if records[len(records)-1].Kind != KindTerminal || terminalState(records) != StateDone {
+		t.Fatalf("last record = %+v", records[len(records)-1])
+	}
+	if got := f.run(t, "for-each-ref", "--format=%(refname)", ref); got != "" {
+		t.Fatalf("ref retained: %s", got)
+	}
+	items, err := deliveryItems(f.root, r.store, r.now(), Style{Lang: "en"})
+	if err != nil || len(items) != 1 || items[0].(deliveryItem).state != StateDone {
+		t.Fatalf("picker = %v, %v", items, err)
+	}
+}
+
+func TestResumeRetriesParkedDeletionAlreadyCompleted(t *testing.T) {
+	f, r, out := finishedTasksForBookkeeping(t)
+	f.run(t, "update-ref", "refs/batuta/parked/greetings/task_1-e1", "HEAD")
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("finish = %s, %v", state, err)
+	}
+	before := f.run(t, "rev-parse", "HEAD")
+	opts := f.options("default", out)
+	opts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := resumed.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("retry completed deletion = %s, %v", state, err)
+	}
+	records := readJournal(t, f, r.Delivery())
+	if records[len(records)-1].Kind != KindTerminal || pendingFinalization(records) != nil || terminalState(records) != StateDone {
+		t.Fatal("completed deletion retry did not finalize")
+	}
+	if f.run(t, "rev-parse", "HEAD") != before {
+		t.Fatal("completed deletion retry repeated bookkeeping")
 	}
 }
