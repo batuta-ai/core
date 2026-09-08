@@ -576,3 +576,21 @@ func TestLoopDashboardStillWorks(t *testing.T) {
 		})
 	}
 }
+
+func TestDryRunListsLimitFallbacks(t *testing.T) {
+	var out bytes.Buffer
+	loop.PrintPreview(&out, loop.Preview{Waves: []loop.PreviewWave{{Number: 1, Tasks: []loop.PreviewTask{
+		{ID: "task_1", Executor: "codex", Model: "small", Fallbacks: []string{"claude/large", "self/session"}},
+		{ID: "task_2", Executor: "codex", Model: "large"},
+	}}}})
+	for _, want := range []string{"limit fallback: claude/large", "limit fallback: none"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("dry run missing %q:\n%s", want, &out)
+		}
+	}
+	var stderr bytes.Buffer
+	err := run([]string{"loop", "--workspace", t.TempDir(), "--dry-run", "--limit-horizon", "45m"}, &out, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+		t.Fatalf("limit-horizon flag: %v\n%s", err, &stderr)
+	}
+}

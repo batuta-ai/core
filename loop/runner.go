@@ -29,24 +29,25 @@ import (
 
 // Journal kinds written by the loop.
 const (
-	KindOpened      journal.Kind = "delivery_opened"
-	KindWave        journal.Kind = "wave_admitted"
-	KindAttempts    journal.Kind = "attempts_begun"
-	KindWorktree    journal.Kind = "worktree_attached"
-	KindStarted     journal.Kind = "executor_started"
-	KindProgress    journal.Kind = "task_progress"
-	KindFinished    journal.Kind = "executor_finished"
-	KindQuestion    journal.Kind = "question_recorded"
-	KindAnswer      journal.Kind = "answer_recorded"
-	KindGates       journal.Kind = "gates_reported"
-	KindCandidate   journal.Kind = "candidate_recorded"
-	KindFailure     journal.Kind = "failure_recorded"
-	KindPreflight   journal.Kind = "integration_preflight"
-	KindSettled     journal.Kind = "wave_settled"
-	KindCleanup     journal.Kind = "cleanup"
-	KindTerminal    journal.Kind = "delivery_terminal"
-	KindInterrupted journal.Kind = "run_interrupted"
-	KindLimitWait   journal.Kind = "limit_wait"
+	KindOpened        journal.Kind = "delivery_opened"
+	KindWave          journal.Kind = "wave_admitted"
+	KindAttempts      journal.Kind = "attempts_begun"
+	KindWorktree      journal.Kind = "worktree_attached"
+	KindStarted       journal.Kind = "executor_started"
+	KindProgress      journal.Kind = "task_progress"
+	KindFinished      journal.Kind = "executor_finished"
+	KindQuestion      journal.Kind = "question_recorded"
+	KindAnswer        journal.Kind = "answer_recorded"
+	KindGates         journal.Kind = "gates_reported"
+	KindCandidate     journal.Kind = "candidate_recorded"
+	KindFailure       journal.Kind = "failure_recorded"
+	KindPreflight     journal.Kind = "integration_preflight"
+	KindSettled       journal.Kind = "wave_settled"
+	KindCleanup       journal.Kind = "cleanup"
+	KindTerminal      journal.Kind = "delivery_terminal"
+	KindInterrupted   journal.Kind = "run_interrupted"
+	KindLimitWait     journal.Kind = "limit_wait"
+	KindLimitFallback journal.Kind = "limit_fallback"
 )
 
 // Terminal states of a delivery.
@@ -81,6 +82,7 @@ type Options struct {
 	MaxLimitWaits    int
 	LimitWaitDefault time.Duration
 	LimitBuffer      time.Duration
+	LimitHorizon     time.Duration
 	Sleep            func(context.Context, time.Duration) error
 	Stdout           io.Writer
 	Inventory        func(context.Context) (inventory.InventorySnapshot, error)
@@ -307,6 +309,9 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	}
 	if opts.LimitWaitDefault == 0 {
 		opts.LimitWaitDefault = 30 * time.Minute
+	}
+	if opts.LimitHorizon == 0 {
+		opts.LimitHorizon = 2 * time.Hour
 	}
 	if opts.LimitBuffer == 0 {
 		opts.LimitBuffer = time.Minute
@@ -684,6 +689,11 @@ func PrintPreview(w io.Writer, preview Preview) {
 			}
 			fmt.Fprintf(w, "  %-8s %-16s %s/%s reasoning %s%s%s\n           %s\n           %s\n",
 				task.ID, task.Lane, task.Executor, task.Model, task.Reasoning, fallbacks, depends, task.Title, task.Worktree)
+			limitFallback := "none"
+			if len(task.Fallbacks) > 0 && !strings.HasPrefix(task.Fallbacks[0], "self/") {
+				limitFallback = task.Fallbacks[0]
+			}
+			fmt.Fprintf(w, "           limit fallback: %s\n", limitFallback)
 		}
 	}
 }

@@ -97,6 +97,7 @@ type GraphTaskAttempt struct {
 	Execution          int                    `json:"execution"`
 	RunExecution       int                    `json:"run_execution,omitempty"`
 	Runtime            RuntimeValue           `json:"runtime"`
+	LimitOrigin        *RuntimeValue          `json:"limit_origin,omitempty"`
 	State              GraphTaskState         `json:"state"`
 	BaseHeadSHA        string                 `json:"base_head_sha"`
 	WorktreeIntent     *TaskWorktreeIntent    `json:"worktree_intent,omitempty"`
@@ -742,15 +743,51 @@ func (g *DeliveryGraph) RecordAnswer(
 type FailurePolicy struct {
 	RetryAllowed       bool
 	SameRuntimeRetries int
-	// AbortAfterEscalation blocks the task on the first failure of a runtime
-	// other than the one it started with: the doctrine's "failure after
-	// escalation aborts". False keeps walking the cell's fallbacks.
+	// AbortAfterEscalation blocks on the first failure after a failure-driven
+	// runtime switch; usage-limit fallbacks do not count as escalation.
+	// False keeps walking the cell's fallbacks.
 	AbortAfterEscalation bool
 }
 
 // ConductingFailurePolicy is the skills' doctrine: one retry on the same
 // executor, then one escalation, then abort.
 var ConductingFailurePolicy = FailurePolicy{RetryAllowed: true, SameRuntimeRetries: 1, AbortAfterEscalation: true}
+
+// RecordLimitFallback moves a running execution along its cell without
+// creating an attempt or consuming the conducting failure policy.
+func (g *DeliveryGraph) RecordLimitFallback(taskID string, execution int, runID string, generation RoutingGeneration) (RuntimeValue, bool, error) {
+	if g == nil || !boundedArgument(taskID) || !boundedArgument(runID) || execution < 1 || execution > MaxTaskExecutions {
+		return RuntimeValue{}, false, ErrInvalidDeliveryTransition
+	}
+	recomputed, err := finalizeGeneration(generation)
+	if err != nil || recomputed.Digest != generation.Digest {
+		return RuntimeValue{}, false, ErrInvalidDeliveryGraph
+	}
+	candidate := cloneDeliveryGraph(g)
+	task := graphTaskByID(candidate.Tasks, taskID)
+	if task == nil || len(task.Attempts) != execution || task.State != GraphTaskRunning {
+		return RuntimeValue{}, false, ErrInvalidDeliveryTransition
+	}
+	attempt := &task.Attempts[execution-1]
+	if attempt.State != GraphTaskRunning || (attempt.ChildRunID != "" && attempt.ChildRunID != runID) {
+		return RuntimeValue{}, false, ErrInvalidDeliveryTransition
+	}
+	next, found := nextRuntimeForTask(generation, *task, attempt.Runtime)
+	if !found || next.Provider == string(ExecutorSelf) {
+		return RuntimeValue{}, false, nil
+	}
+	if attempt.LimitOrigin == nil {
+		origin := attempt.Runtime
+		attempt.LimitOrigin = &origin
+	}
+	attempt.Runtime = next
+	attempt.ChildRunID = runID
+	if err := validateGraphTask(*task, "pending"); err != nil {
+		return RuntimeValue{}, false, err
+	}
+	*g = *candidate
+	return next, true, nil
+}
 
 // RecordFailure advances to the next runtime on every failure; see
 // RecordFailureWithPolicy for the retry-then-escalate variant.
@@ -850,8 +887,13 @@ func (g *DeliveryGraph) RecordFailureWithPolicy(
 	if sameRuntimeRuns(task.Attempts[:execution], attempt.Runtime) > policy.SameRuntimeRetries {
 		nextRuntime, eligible = nextRuntimeForTask(generation, *task, attempt.Runtime)
 	}
-	escalated := attempt.Runtime != task.Attempts[0].Runtime
-	if nextRuntime.Provider == string(ExecutorSelf) {
+	escalated := false
+	for index := 1; index < len(task.Attempts); index++ {
+		if attemptInitialRuntime(task.Attempts[index]) != task.Attempts[index-1].Runtime {
+			escalated = true
+		}
+	}
+	if retryAllowed && nextRuntime.Provider == string(ExecutorSelf) {
 		task.State = GraphTaskBlocked
 		task.BlockerCode = BlockerNeedsConductingSession
 		if err := validateGraphTask(*task, "pending"); err != nil {
@@ -1407,7 +1449,7 @@ func validateGraphTask(task GraphTask, authoredStatus string) error {
 			prior := task.Attempts[index-1]
 			continuedAfterAnswer := prior.State == GraphTaskRunning && prior.Question != nil && prior.Question.Answer != nil &&
 				graphAttemptRunExecution(attempt) == graphAttemptRunExecution(prior) &&
-				attempt.Runtime == prior.Runtime && attempt.BaseHeadSHA == prior.BaseHeadSHA &&
+				attemptInitialRuntime(attempt) == prior.Runtime && attempt.BaseHeadSHA == prior.BaseHeadSHA &&
 				reflect.DeepEqual(attempt.WorktreeIntent, prior.WorktreeIntent) &&
 				attempt.WorktreeID == prior.WorktreeID && attempt.WorktreeRoot == prior.WorktreeRoot &&
 				attempt.ChildRunID == prior.ChildRunID
@@ -1479,6 +1521,12 @@ func validateGraphTaskAttempt(attempt GraphTaskAttempt, expectedExecution int, t
 		!validTaskCandidateEvidence(attempt.CandidateEvidence, taskID, attempt.VerificationDigest) {
 		return ErrInvalidDeliveryGraph
 	}
+	if origin := attempt.LimitOrigin; origin != nil {
+		if !boundedArgument(origin.Provider) || !boundedArgument(origin.Model) || !boundedArgument(origin.Reasoning) || *origin == attempt.Runtime {
+			return ErrInvalidDeliveryGraph
+		}
+	}
+
 	if attempt.State != GraphTaskIntegrated && attempt.AlreadySatisfied {
 		return ErrInvalidDeliveryGraph
 	}
@@ -2190,16 +2238,27 @@ func validTaskTerminalStatus(status string) bool {
 	}
 }
 
-// sameRuntimeRuns counts the distinct runs (attempts continued after an
-// answer share a run) that already used this runtime.
+// sameRuntimeRuns counts distinct runs since the last escalation, following
+// limit origins so a usage limit cannot reset the retry budget. Attempts
+// continued after an answer share a run.
 func sameRuntimeRuns(attempts []GraphTaskAttempt, runtime RuntimeValue) int {
 	runs := map[int]struct{}{}
-	for _, attempt := range attempts {
-		if attempt.Runtime == runtime {
-			runs[graphAttemptRunExecution(attempt)] = struct{}{}
+	for index := len(attempts) - 1; index >= 0; index-- {
+		attempt := attempts[index]
+		if attempt.Runtime != runtime {
+			break
 		}
+		runs[graphAttemptRunExecution(attempt)] = struct{}{}
+		runtime = attemptInitialRuntime(attempt)
 	}
 	return len(runs)
+}
+
+func attemptInitialRuntime(attempt GraphTaskAttempt) RuntimeValue {
+	if attempt.LimitOrigin != nil {
+		return *attempt.LimitOrigin
+	}
+	return attempt.Runtime
 }
 
 func nextRuntimeForTask(generation RoutingGeneration, task GraphTask, current RuntimeValue) (RuntimeValue, bool) {
@@ -2372,6 +2431,10 @@ func cloneDeliveryGraph(graph *DeliveryGraph) *DeliveryGraph {
 }
 
 func cloneGraphTaskAttempt(attempt GraphTaskAttempt) GraphTaskAttempt {
+	if attempt.LimitOrigin != nil {
+		origin := *attempt.LimitOrigin
+		attempt.LimitOrigin = &origin
+	}
 	attempt.WorktreeIntent = cloneTaskWorktreeIntent(attempt.WorktreeIntent)
 	if attempt.Question != nil {
 		attempt.Question = cloneTaskQuestion(attempt.Question)

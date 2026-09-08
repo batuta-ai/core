@@ -122,6 +122,19 @@ case "${FAKE_SCENARIO:-default}" in
   conflict)
     if [ "$retry" = 0 ] && [ "$n" != 3 ]; then echo "written by task $n" > shared.txt; fi
     echo "ok" > out/$n.txt;;
+  limit-budget|limit-horizon|limit-within|limit-exhausted)
+    if [ "$n" = 1 ]; then
+      if [ "$model" = fake-low ] || [ "$FAKE_SCENARIO" = limit-exhausted ]; then
+        if [ "$FAKE_SCENARIO" != limit-within ] || [ ! -f "$state/limit-seen" ]; then
+          echo "partial" > out/1.txt
+          touch "$state/limit-seen"
+          echo "Rate limit reached reset_at=$FAKE_RESET_AT" >&2
+          exit 1
+        fi
+      fi
+      test "$(cat out/1.txt)" = partial
+    fi
+    echo "ok" > out/$n.txt;;
   limit)
     if [ "$n" = 1 ] && [ ! -f "$state/limit-seen" ]; then touch "$state/limit-seen"; echo "Rate limit reached for $model, resets 11:10am" >&2; exit 1; fi
     echo "ok" > out/$n.txt;;
@@ -1235,11 +1248,139 @@ func TestLoopReexecutesAConflictingCandidateOnTheNewBase(t *testing.T) {
 	}
 }
 
+func TestLoopFallsBackWhenLimitOutlastsBudget(t *testing.T) {
+	testLoopLimitBudget(t, "limit-budget", 30*time.Minute, 2, StateDone, true)
+}
+
+func TestLoopFallsBackWhenResetBeyondHorizon(t *testing.T) {
+	testLoopLimitBudget(t, "limit-horizon", 3*time.Hour, 0, StateDone, true)
+}
+
+func TestLoopWaitsWhenResetWithinHorizon(t *testing.T) {
+	testLoopLimitBudget(t, "limit-within", 30*time.Minute, 1, StateDone, false)
+}
+
+func TestLoopBlocksRateLimitedWithoutFallback(t *testing.T) {
+	testLoopLimitBudget(t, "limit-exhausted", 3*time.Hour, 2, StateBlocked, false)
+}
+
+func testLoopLimitBudget(t *testing.T, scenario string, resetAfter time.Duration, wantWaits int, wantState string, fallback bool) {
+	t.Helper()
+	f := setup(t)
+	lane := "low"
+	if scenario == "limit-exhausted" {
+		lane = "high"
+	}
+	plan := "# Plan — Greetings\n\n**Goal:** Greeting.\n**Created:** 2026-09-06 · **Status:** approved\n\n## Tasks\n- [ ] 1. Add greeting one — backend/" + lane + "\n      Scope: out/1.txt\n      Accept: greeting exists → test -f out/1.txt\n"
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "test: one limit task")
+	base := f.run(t, "rev-parse", "HEAD")
+	var out bytes.Buffer
+	opts := f.options(scenario, &out)
+	now := time.Date(2026, 9, 6, 3, 0, 0, 0, time.UTC)
+	resetAt := now.Add(resetAfter)
+	opts.Now = func() time.Time { return now }
+	opts.MaxLimitWaits = 2
+	opts.Environment = append(opts.Environment, fmt.Sprintf("FAKE_RESET_AT=%d", resetAt.Unix()))
+	var slept []time.Duration
+	opts.Sleep = func(_ context.Context, delay time.Duration) error { slept = append(slept, delay); return nil }
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != wantState {
+		t.Fatalf("Run() = %s, %v, want %s\n%s", state, err, wantState, &out)
+	}
+	if len(slept) != wantWaits {
+		t.Fatalf("waits = %v, want %d", slept, wantWaits)
+	}
+	for _, delay := range slept {
+		if delay != resetAfter+opts.LimitBuffer {
+			t.Fatalf("wait = %s, want %s", delay, resetAfter+opts.LimitBuffer)
+		}
+	}
+	task, _ := r.graph.Task("task_1")
+	if len(task.Attempts) != 1 || task.Attempts[0].Execution != 1 {
+		t.Fatalf("limit consumed an execution: %+v", task.Attempts)
+	}
+	if wantState == StateBlocked && task.BlockerCode != blockerRateLimited {
+		t.Fatalf("blocker = %s", task.BlockerCode)
+	}
+	records := readJournal(t, f, r.Delivery())
+	counts := kinds(records)
+	if counts[KindTerminal] != 1 || counts[KindLimitWait] != wantWaits {
+		t.Fatalf("journal kinds = %v", counts)
+	}
+	if !fallback {
+		if counts[journal.Kind("limit_fallback")] != 0 {
+			t.Fatalf("unexpected fallback: %v", counts)
+		}
+		return
+	}
+	if counts[journal.Kind("limit_fallback")] != 1 || counts[KindFailure] != 0 || counts[KindStarted] != 2 {
+		t.Fatalf("journal kinds = %v", counts)
+	}
+	var firstStart map[string]any
+	for i, record := range records {
+		if record.Kind == journal.Kind("limit_fallback") {
+			var detail struct {
+				Execution int                  `json:"execution"`
+				From      routing.RuntimeValue `json:"from"`
+				To        routing.RuntimeValue `json:"to"`
+				ResetAt   time.Time            `json:"reset_at"`
+				Waits     int                  `json:"waits"`
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if detail.Execution != 1 || detail.From.Model != "fake-low" || detail.To.Model != "fake-mid" || !detail.ResetAt.Equal(resetAt) || detail.Waits != wantWaits {
+				t.Fatalf("fallback detail = %+v", detail)
+			}
+		}
+		if record.Kind == KindStarted {
+			var detail map[string]any
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if firstStart == nil {
+				firstStart = detail
+				continue
+			}
+			for _, key := range []string{"execution", "run_id", "worktree", "log_path"} {
+				if detail[key] != firstStart[key] {
+					t.Fatalf("fallback changed %s: %v -> %v", key, firstStart[key], detail[key])
+				}
+			}
+			panel := PanelModel(records[:i+1], now, "task_1")
+			if panel.Context.Model != "fake-mid" || panel.Context.Retries != 0 || panel.Context.Escalations != 0 || panel.Header.State == "limit_wait" {
+				t.Fatalf("watch after fallback: %+v", panel)
+			}
+		}
+	}
+	var trail bytes.Buffer
+	if err := Trail(f.root, r.Delivery(), &trail); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(trail.String(), "limit_fallback") || !strings.Contains(trail.String(), "fake-low") || !strings.Contains(trail.String(), "fake-mid") {
+		t.Fatalf("trail misses fallback: %s", &trail)
+	}
+	if commits := f.commitsSince(t, base); len(commits) != 2 || !strings.HasPrefix(commits[0], "feat: add greeting one") || !strings.HasPrefix(commits[1], "chore(batuta): greetings — loop done") {
+		t.Fatalf("commits = %v", commits)
+	}
+	if task.Attempts[0].Runtime.Model != "fake-mid" {
+		t.Fatalf("persisted runtime = %+v", task.Attempts[0].Runtime)
+	}
+}
+
 func TestLoopWaitsOutAUsageLimitWithoutSpendingARetry(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer
 	var slept []time.Duration
 	opts := f.options("limit", &out)
+	opts.LimitHorizon = 24 * time.Hour
 	opts.Sleep = func(_ context.Context, d time.Duration) error { slept = append(slept, d); return nil }
 	r, err := New(context.Background(), opts)
 	if err != nil {

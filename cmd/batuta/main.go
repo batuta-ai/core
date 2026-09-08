@@ -475,6 +475,7 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	maxWaves := flags.Int("max-waves", 0, "stop after N waves (the delivery stays resumable)")
 	keep := flags.Bool("keep-worktrees", false, "keep task worktrees after integration or abort")
 	maxLimitWaits := flags.Int("max-limit-waits", 20, "consecutive usage-limit waits one attempt may take")
+	limitHorizon := flags.Duration("limit-horizon", 2*time.Hour, "switch to the next runtime when a usage-limit reset lies beyond this duration")
 	limitWait := flags.Duration("limit-wait", 30*time.Minute, "wait when a usage-limit message names no reset time")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -501,7 +502,7 @@ func runLoop(args []string, stdout, stderr io.Writer) error {
 	}
 	opts := loop.Options{
 		Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
-		MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait,
+		MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
 		Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
 			root, err := workspaceRoot(*workspace)
 			if err != nil {

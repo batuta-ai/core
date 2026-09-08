@@ -1324,6 +1324,84 @@ func TestDeliveryGraphRetriesOnTheSameRuntimeBeforeEscalating(t *testing.T) {
 	}
 }
 
+func TestLimitFallbackPreservesFailurePolicy(t *testing.T) {
+	for _, limitedExecution := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("execution-%d", limitedExecution), func(t *testing.T) {
+			record := validDeliveryFixture(t)
+			generation := validGenerationFixture(t)
+			selected := generation.Rules[0].Runtime
+			generation.Cells = []RoutingCell{{
+				Domain: DomainFrontend, Complexity: ComplexityHigh, TaskIDs: []string{"task_1"},
+				Selected: RuntimeCandidate{ProviderID: selected.Provider, ModelID: selected.Model, Reasoning: selected.Reasoning},
+				Fallbacks: []RuntimeCandidate{
+					{ProviderID: "codex", ModelID: "gpt-5.6-terra", Reasoning: "high"},
+					{ProviderID: "claude", ModelID: "opus", Reasoning: "high"},
+				},
+				FallbackLimit: 2,
+			}}
+			generation, err := finalizeGeneration(generation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			graph, err := NewDeliveryGraph(record.TaskSnapshot, generation, record.InitialWorktreeFingerprint.HeadSHA)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wave, err := graph.AdmitReadyWave(ReadyWaveInput{IntegrationHeadSHA: record.InitialWorktreeFingerprint.HeadSHA, RemainingSlots: 1, ReachableCommits: map[string]bool{}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := graph.BeginWaveAttempts(wave.Number, generation); err != nil {
+				t.Fatal(err)
+			}
+			for execution := 1; execution <= 3; execution++ {
+				runID := fmt.Sprintf("run-%d", execution)
+				if _, err := graph.AttachWorktree("task_1", execution, GraphWorktree{ID: fmt.Sprintf("wt-%d", execution), Root: fmt.Sprintf("/managed/%d", execution), Ready: true}); err != nil {
+					t.Fatal(err)
+				}
+				if execution == limitedExecution {
+					before, _ := graph.Task("task_1")
+					next, found, err := graph.RecordLimitFallback("task_1", execution, runID, generation)
+					if err != nil || !found || next == before.Attempts[execution-1].Runtime {
+						t.Fatalf("fallback = %+v, %v, %v", next, found, err)
+					}
+					after, _ := graph.Task("task_1")
+					want := before.Attempts[execution-1]
+					origin := want.Runtime
+					want.Runtime, want.LimitOrigin, want.ChildRunID = next, &origin, runID
+					if len(after.Attempts) != execution || !reflect.DeepEqual(after.Attempts[execution-1], want) {
+						t.Fatalf("fallback changed attempt identity: %+v", after.Attempts)
+					}
+					if _, _, err := graph.RecordLimitFallback("task_1", execution, "wrong-run", generation); !errors.Is(err, ErrInvalidDeliveryTransition) {
+						t.Fatalf("wrong run: %v", err)
+					}
+					payload, err := json.Marshal(graph)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var restored DeliveryGraph
+					if err := json.Unmarshal(payload, &restored); err != nil {
+						t.Fatal(err)
+					}
+					graph = &restored
+				}
+				task, _ := graph.Task("task_1")
+				current := task.Attempts[execution-1].Runtime
+				result, err := graph.RecordFailureWithPolicy("task_1", execution, TaskFailure{ChildRunID: runID, TerminalStatus: "failed", BlockerCode: "implementation_failed"}, generation, graphGitSHA(fmt.Sprintf("base-%d", execution)), ConductingFailurePolicy)
+				if err != nil || result.Blocked != (execution == 3) {
+					t.Fatalf("failure %d = %+v, %v", execution, result, err)
+				}
+				if execution == 1 && result.Runtime != current {
+					t.Fatalf("first failure must still retry: %+v", result)
+				}
+				if execution == 2 && result.Runtime == current {
+					t.Fatalf("second failure must still escalate: %+v", result)
+				}
+			}
+		})
+	}
+}
+
 func TestRecordFailureBlocksWhenEscalationTargetIsSelf(t *testing.T) {
 	t.Parallel()
 

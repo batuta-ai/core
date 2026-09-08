@@ -118,32 +118,11 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	if err != nil {
 		return fmt.Errorf("loop: snapshot %s: %w", ac.worktree.Name, err)
 	}
-	request := executor.Request{Brief: brief, BriefFile: briefPath, Cwd: ac.worktree.Root, Model: ac.runtime.Model, Effort: ac.runtime.Reasoning}
-	invocation, err := adapter.Command(request)
-	if err != nil {
-		return fmt.Errorf("loop: %s: %w", adapter.Name, err)
-	}
-	if invocation.UsedFile {
-		if err := os.MkdirAll(filepath.Dir(briefPath), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(briefPath, []byte(brief), 0o644); err != nil {
-			return err
-		}
-	}
 	logPath := r.runLogPath(taskID, ac.execution)
-	relativeLogPath, err := filepath.Rel(r.root, logPath)
+	invocation, err := r.startRuntime(&ac, brief, briefPath, logPath)
 	if err != nil {
-		return fmt.Errorf("loop: relative executor log path: %w", err)
-	}
-	if err := r.locked(KindStarted, taskID, map[string]any{
-		"execution": ac.execution, "run_id": ac.runID, "executor": adapter.Name, "model": ac.runtime.Model,
-		"reasoning": ac.runtime.Reasoning, "argv": redactArgs(invocation, brief), "worktree": ac.worktree.Root,
-		"brief_lines": strings.Count(brief, "\n") + 1, "via_file": invocation.UsedFile, "log_path": filepath.ToSlash(relativeLogPath),
-	}, func() error { r.started[attemptKey(taskID, ac.execution)] = true; return nil }); err != nil {
 		return err
 	}
-	fmt.Fprintf(r.out, "%s e%d → %s/%s in %s\n", taskID, ac.execution, adapter.Name, ac.runtime.Model, filepath.Base(ac.worktree.Root))
 
 	// Each parallel attempt owns its callback and journal error.
 	subprocess := r.subprocess
@@ -167,20 +146,37 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	subprocess.Stderr = logFile
 
 	// Invariant from the harness this loop descends from: a usage limit is
-	// not a failure. Wait for the reset and run the SAME attempt again; it
-	// consumes no retry, no escalation. The cap keeps a run from sleeping
-	// forever on a limit that never lifts.
+	// not a failure. Wait or switch runtimes within the SAME attempt;
+	// neither consumes a retry or escalation.
 	var (
 		result  executor.Result
 		execErr error
 		waits   int
 	)
 	for {
-		result, execErr = subprocess.Execute(ctx, adapter, invocation, r.opts.TaskTimeout)
+		result, execErr = subprocess.Execute(ctx, ac.adapter, invocation, r.opts.TaskTimeout)
 		if progressErr != nil {
 			return progressErr
 		}
-		if execErr != nil || !result.RateLimited || waits >= r.opts.MaxLimitWaits {
+		if execErr != nil || !result.RateLimited {
+			break
+		}
+		now := r.now()
+		result.ResetAt = executor.ResetTime(string(result.Stdout)+"\n"+string(result.Stderr), now)
+		if waits >= r.opts.MaxLimitWaits || (!result.ResetAt.IsZero() && result.ResetAt.Sub(now) > r.opts.LimitHorizon) {
+			switched, err := r.fallbackLimited(&ac, result.ResetAt, waits)
+			if err != nil {
+				return err
+			}
+			if switched {
+				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath)
+				if err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if waits >= r.opts.MaxLimitWaits {
 			break
 		}
 		waits++
@@ -188,14 +184,12 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 		if err := r.locked(KindLimitWait, taskID, map[string]any{"execution": ac.execution, "wait": waits, "seconds": int(delay.Seconds()), "reset_at": result.ResetAt}, nil); err != nil {
 			return err
 		}
-		fmt.Fprintf(r.out, "%s e%d: %s hit a usage limit; waiting %s before re-running the same attempt (%d/%d)\n", taskID, ac.execution, adapter.Name, delay.Round(time.Second), waits, r.opts.MaxLimitWaits)
+		fmt.Fprintf(r.out, "%s e%d: %s hit a usage limit; waiting %s before re-running the same attempt (%d/%d)\n", taskID, ac.execution, ac.adapter.Name, delay.Round(time.Second), waits, r.opts.MaxLimitWaits)
 		if err := r.sleep(ctx, delay); err != nil {
 			return nil // canceled while waiting; the attempt resumes as interrupted
 		}
 	}
-	if invocation.UsedFile {
-		_ = os.Remove(briefPath)
-	}
+	_ = os.Remove(briefPath)
 	if err := logFile.Close(); err != nil {
 		return fmt.Errorf("loop: close executor log: %w", err)
 	}
@@ -275,6 +269,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) error {
 	if !report.Passed {
 		code := blockerCode(report, result, silent)
 		feedback := reportedDoneProofFailures(report.Failures(), criteria, report.Proofs, result.Progress)
+		if code == blockerRateLimited {
+			return r.recordBlocked(ctx, ac, &result, code, feedback)
+		}
 		return r.recordFailure(ctx, ac, &result, code, feedback)
 	}
 	return r.recordCandidate(ctx, ac, report, result)
@@ -326,13 +323,67 @@ func reportedDoneProofFailures(feedback []string, criteria []gates.Criterion, pr
 	return feedback
 }
 
+func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath string) (executor.Invocation, error) {
+	adapter, err := r.adapterLocked(ac.runtime.Provider)
+	if err != nil {
+		return executor.Invocation{}, err
+	}
+	ac.adapter = adapter
+	request := executor.Request{Brief: brief, BriefFile: briefPath, Cwd: ac.worktree.Root, Model: ac.runtime.Model, Effort: ac.runtime.Reasoning}
+	invocation, err := ac.adapter.Command(request)
+	if err != nil {
+		return executor.Invocation{}, fmt.Errorf("loop: %s: %w", ac.adapter.Name, err)
+	}
+	if invocation.UsedFile {
+		if err := os.MkdirAll(filepath.Dir(briefPath), 0o755); err != nil {
+			return executor.Invocation{}, err
+		}
+		if err := os.WriteFile(briefPath, []byte(brief), 0o644); err != nil {
+			return executor.Invocation{}, err
+		}
+	}
+	relativeLogPath, err := filepath.Rel(r.root, logPath)
+	if err != nil {
+		return executor.Invocation{}, fmt.Errorf("loop: relative executor log path: %w", err)
+	}
+	if err := r.locked(KindStarted, ac.taskID, map[string]any{
+		"execution": ac.execution, "run_id": ac.runID, "executor": ac.adapter.Name, "model": ac.runtime.Model,
+		"reasoning": ac.runtime.Reasoning, "argv": redactArgs(invocation, brief), "worktree": ac.worktree.Root,
+		"brief_lines": strings.Count(brief, "\n") + 1, "via_file": invocation.UsedFile, "log_path": filepath.ToSlash(relativeLogPath),
+	}, func() error { r.started[attemptKey(ac.taskID, ac.execution)] = true; return nil }); err != nil {
+		return executor.Invocation{}, err
+	}
+	fmt.Fprintf(r.out, "%s e%d → %s/%s in %s\n", ac.taskID, ac.execution, ac.adapter.Name, ac.runtime.Model, filepath.Base(ac.worktree.Root))
+
+	return invocation, nil
+}
+
+func (r *Runner) fallbackLimited(ac *attemptContext, resetAt time.Time, waits int) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	next, found, err := r.graph.RecordLimitFallback(ac.taskID, ac.execution, ac.runID, r.generation)
+	if err != nil || !found {
+		return false, err
+	}
+	reason := fmt.Sprintf("usage limit: %s/%s → %s/%s", ac.runtime.Provider, ac.runtime.Model, next.Provider, next.Model)
+	err = r.record(KindLimitFallback, ac.taskID, map[string]any{
+		"execution": ac.execution, "from": ac.runtime, "to": next, "reset_at": resetAt, "waits": waits, "reason": reason,
+	})
+	if err != nil {
+		return false, err
+	}
+	ac.runtime = next
+	fmt.Fprintf(r.out, "%s e%d: %s; re-running the same execution\n", ac.taskID, ac.execution, reason)
+	return true, nil
+}
+
 // limitDelay is how long to wait for a usage limit: until the reset the
 // output named plus a buffer, or the default when it named none.
 func (r *Runner) limitDelay(resetAt time.Time) time.Duration {
 	if resetAt.IsZero() {
 		return r.opts.LimitWaitDefault
 	}
-	delay := time.Until(resetAt) + r.opts.LimitBuffer
+	delay := resetAt.Sub(r.now()) + r.opts.LimitBuffer
 	if delay < r.opts.LimitBuffer {
 		delay = r.opts.LimitBuffer
 	}

@@ -13,7 +13,8 @@ list, with the same invariants:
 3. A task is done only when it passes the **four gates**, never on the
    executor's exit code or report.
 4. A **usage limit is not a failure**: the loop waits for the reset and runs
-   the same attempt again, spending no retry and no escalation.
+   the same attempt again, or switches to its next runtime when the wait
+   budget is exhausted, spending no retry and no escalation.
 5. **One commit per task**, integrated onto the branch that was checked out
    when the delivery opened.
 
@@ -103,6 +104,21 @@ exit `1` with the reason on stderr.
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
+- **Usage-limit fallback.** `--max-limit-waits` (default 20) bounds the waits
+  in one attempt. At that cap, or when a named reset is more than
+  `--limit-horizon` (default `2h`) away, the loop walks to the cell's next
+  executable fallback, using the same cell walk as escalation. It reruns the
+  brief in the same worktree with the same execution number and run ID;
+  partial work stays available and no retry or escalation is spent. The wait
+  count stays with the attempt across runtime switches. A reset within the
+  horizon still waits until reset plus the buffer; an unnamed reset uses
+  `--limit-wait` (default `30m`). With no executable fallback left (including
+  `self`), the loop waits the remaining budget, then blocks `rate_limited`.
+  Each switch journals `limit_fallback` with `execution`, `from`, `to`,
+  `reset_at`, and `waits`. The trail shows the switch and watch shows the new
+  runtime without incrementing retries or escalations. `--dry-run` lists the
+  next limit fallback per task, or `none`. Proposal #54's separate **Limit
+  fallback** routing-table column is deferred; no new column is required.
 - **Conflicts keep the same runtime.** A conflicting candidate re-executes on
   the new base with the same executor, model, and reasoning; escalation is
   reserved for verification failures.
