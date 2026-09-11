@@ -46,6 +46,7 @@ type attemptContext struct {
 	plan      routing.PlanTask
 	worktree  attemptWorktree
 	adapter   executor.Adapter
+	request   executor.Request
 	runID     string
 	previous  *routing.GraphTaskAttempt // the answered attempt, on a continuation
 }
@@ -146,9 +147,8 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	}
 
 	// Each parallel attempt owns its callback and journal error.
-	subprocess := r.subprocess
 	var progressErr error
-	subprocess.Progress = func(event executor.ProgressEvent) {
+	progress := func(event executor.ProgressEvent) {
 		if progressErr == nil {
 			progressErr = r.locked(KindProgress, taskID, map[string]any{
 				"execution": ac.execution, "criterion": event.Criterion, "state": event.State,
@@ -163,8 +163,6 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		return fmt.Errorf("loop: open executor log: %w", err)
 	}
 	defer logFile.Close()
-	subprocess.Stdout = logFile
-	subprocess.Stderr = logFile
 
 	// Invariant from the harness this loop descends from: a usage limit is
 	// not a failure. Wait or switch runtimes within the SAME attempt;
@@ -175,7 +173,10 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		waits   int
 	)
 	for {
-		result, execErr = subprocess.Execute(ctx, ac.adapter, invocation, r.opts.TaskTimeout)
+		result, execErr = r.backend.Execute(ctx, executor.Execution{
+			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: r.opts.TaskTimeout,
+			Progress: progress, Stdout: logFile, Stderr: logFile,
+		})
 		if progressErr != nil {
 			return progressErr
 		}
@@ -355,6 +356,7 @@ func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath stri
 	}
 	ac.adapter = adapter
 	request := executor.Request{Brief: brief, BriefFile: briefPath, Cwd: ac.worktree.Root, Model: ac.runtime.Model, Effort: ac.runtime.Reasoning}
+	ac.request = request
 	invocation, err := ac.adapter.Command(request)
 	if err != nil {
 		return executor.Invocation{}, fmt.Errorf("loop: %s: %w", ac.adapter.Name, err)
@@ -515,7 +517,8 @@ func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "no verifier adapter: " + err.Error()}
 	}
 	prompt := gates.VerifierPrompt(ac.plan.Title, criteria, proofs, ac.base)
-	invocation, err := adapter.ReadonlyCommand(executor.Request{Prompt: prompt, Cwd: ac.worktree.Root, Model: model})
+	request := executor.Request{Prompt: prompt, Cwd: ac.worktree.Root, Model: model}
+	invocation, err := adapter.ReadonlyCommand(request)
 	if err != nil {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier invocation: " + err.Error()}
 	}
@@ -523,7 +526,9 @@ func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates
 	if err != nil {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier guard: " + err.Error()}
 	}
-	result, err := r.subprocess.Execute(ctx, adapter, invocation, r.opts.TaskTimeout)
+	result, err := r.verifier.Execute(ctx, executor.Execution{
+		Adapter: adapter, Request: request, Invocation: invocation, Timeout: r.opts.TaskTimeout,
+	})
 	if err != nil {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not start: " + err.Error()}
 	}

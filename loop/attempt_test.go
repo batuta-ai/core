@@ -1,11 +1,55 @@
 package loop
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/batuta-ai/core/executor"
+	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/routing"
 )
+
+type unavailableBackend struct{}
+
+func (unavailableBackend) Execute(context.Context, executor.Execution) (executor.Result, error) {
+	return executor.Result{ExitCode: -1}, errors.New("task backend is unavailable")
+}
+
+func TestVerifierUsesIndependentBackend(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("unsigned-config", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.backend = unavailableBackend{}
+	adapter, err := r.adapterLocked("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ac := attemptContext{
+		adapter: adapter, runtime: routing.RuntimeValue{Provider: "codex", Model: "fake-low"},
+		worktree: attemptWorktree{Root: f.root}, base: f.base,
+		plan: routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Add greeting one"}},
+	}
+	verdict := r.verify(context.Background(), ac, gates.ParseCriteria([]string{"greeting is correct"}), nil)
+	if !verdict.Pass || !strings.HasPrefix(verdict.Signal, "codex/fake-low: ") {
+		t.Fatalf("verify() = %#v", verdict)
+	}
+	evidence, err := os.ReadFile(filepath.Join(f.state, "verifier-git-config"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(evidence), "command line:\tfalse") {
+		t.Fatalf("verifier lost CLI environment: %s", evidence)
+	}
+}
 
 func TestCommitMessageKeepsCase(t *testing.T) {
 	t.Parallel()

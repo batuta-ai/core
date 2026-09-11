@@ -118,7 +118,8 @@ type Runner struct {
 	openedHead string
 	parallel   int
 	shell      gates.ShellRunner
-	subprocess executor.Subprocess
+	backend    executor.Backend
+	verifier   executor.Backend
 	adapters   map[string]executor.Adapter
 	sections   []string
 	missing    []string
@@ -423,7 +424,8 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		gitState: publication.GitClient{Executable: git.Git, Runner: opts.Runner},
 		integ:    integration.GitClient{Executable: git.Git, Runner: opts.Runner},
 		store:    store, profile: profile, skills: skills, table: table,
-		branch: branch, openedHead: head, parallel: parallel, shell: shell, subprocess: subprocess,
+		branch: branch, openedHead: head, parallel: parallel, shell: shell,
+		backend: executor.CLIBackend{Subprocess: subprocess}, verifier: executor.CLIBackend{Subprocess: subprocess},
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
 		now: opts.Now, out: &lockedWriter{writer: opts.Stdout},
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
