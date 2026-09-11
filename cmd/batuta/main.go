@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/inventory/adapters"
@@ -41,7 +42,8 @@ Usage:
   batuta capabilities
   batuta inventory [--workspace <dir>] [--timeout <duration>]
   batuta doctor    [--workspace <dir>] [--json] [--timeout <duration>]
-  batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [<plan>]
+  batuta dispatch  --brief-file <path> --executor <id> --model <id> [--effort <value>] --cwd <worktree> [--transport cli|acp|auto] [--timeout 45m]
+  batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [--transport cli|acp|auto] [<plan>]
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
@@ -58,6 +60,14 @@ Usage:
 capabilities  The subcommands this binary ships, as JSON. Skills probe it
            before calling gate or loop; an older binary fails the probe.
 
+dispatch   One bounded external attempt, compact JSON and private artifacts in
+           the temporary directory. Exit 0 completed, 1 worker failed,
+           2 invalid/unavailable, 3 waiting_input, 4 rate_limited,
+           5 uncertain, 124 timed out, 130 interrupted. Evidence is retained;
+           uncertain work is never replayed. Run acceptance gates separately.
+           CLI is the default. ACP requires qualified runtime evidence;
+           this release has no qualified ACP launches. Auto falls back to CLI
+           before submission. Native tools belong to the interactive host.
 loop       The mechanical conductor over an approved plan
            (.batuta/plan-<slug>.md): routing from .batuta/routing.md, one
            executor session per task in its own worktree through the
@@ -65,7 +75,8 @@ loop       The mechanical conductor over an approved plan
            task integrated onto the checked-out branch, everything
            journaled under .batuta/journal/. Exit 0 when every task
            integrated; 2 blocked; 3 waiting for an answer; 4 waiting for
-           an approved roadmap plan; 130 canceled.
+           an approved roadmap plan; 130 canceled. --transport selects the
+           task transport (default cli); verification stays independently CLI.
 watch      Live dashboard of a delivery (the most recent open one by
            default). --interval sets the journal poll interval; --once prints a
            snapshot; --lang selects labels; --ascii uses ASCII borders and
@@ -80,6 +91,7 @@ trail      One line per journal record of a delivery (the latest by
 review     Read-only, cohort-based delivery review through the configured
            executor adapter. Writes manifest.json, findings.json, review.md
            and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK.
+           The cohort driver uses CLI independently of dispatch transport.
 
 inventory  Redacted snapshot of the executor CLIs installed on this machine
            (codex, opencode, cursor-agent, claude, agy, compozy): versions,
@@ -115,6 +127,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runInventory(args[1:], stdout)
 	case "doctor":
 		return runDoctor(args[1:], stdout)
+	case "dispatch":
+		return runDispatch(args[1:], stdout, stderr)
 	case "loop":
 		return runLoop(args[1:], stdout, stderr)
 	case "watch":
@@ -150,7 +164,7 @@ func version() string {
 
 // commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "review", "roadmap", "trail", "version", "watch"}
+var commands = []string{"capabilities", "dispatch", "doctor", "gate", "inventory", "loop", "review", "roadmap", "trail", "version", "watch"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
@@ -466,11 +480,86 @@ type ExitError struct {
 
 func (e *ExitError) Error() string { return "delivery " + e.State }
 
+func runDispatch(args []string, stdout, stderr io.Writer) error {
+	report := executor.DispatchReport{ExitClass: "invalid_arguments", ExitCode: 2, WorkerExitCode: -1,
+		Receipt: executor.Receipt{Submission: executor.Submission{State: executor.SubmissionNotSubmitted}, Transport: executor.Transport{Outcome: executor.TransportNotStarted}, Worker: executor.WorkerClaim{Outcome: executor.WorkerClaimUnknown}}}
+	finish := func(err error) error {
+		if err != nil {
+			fmt.Fprintln(stderr, "dispatch:", err)
+			if report.ExitCode == 0 {
+				report.ExitClass, report.ExitCode = "uncertain", 5
+			}
+		}
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			return err
+		}
+		if report.ExitCode != 0 {
+			return &ExitError{Code: report.ExitCode, State: report.ExitClass}
+		}
+		return nil
+	}
+	flags := flag.NewFlagSet("dispatch", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	briefFile := flags.String("brief-file", "", "brief file (at most 1 MiB)")
+	executorID := flags.String("executor", "", "external executor adapter ID")
+	model := flags.String("model", "", "explicit model ID")
+	effort := flags.String("effort", "", "reasoning effort")
+	cwd := flags.String("cwd", "", "worktree directory")
+	transport := flags.String("transport", "cli", "cli, acp or auto (no headless native tools)")
+	timeout := flags.Duration("timeout", 45*time.Minute, "time budget for the single attempt")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return finish(err)
+	}
+	if flags.NArg() != 0 || *briefFile == "" || *executorID == "" || *model == "" || *cwd == "" || *timeout <= 0 {
+		return finish(errors.New("dispatch requires --brief-file, --executor, --model, --cwd, a positive timeout and no positional arguments"))
+	}
+	if err := executor.ValidateTransport(*transport); err != nil {
+		return finish(err)
+	}
+	directory, err := filepath.Abs(*cwd)
+	if err != nil {
+		return finish(err)
+	}
+	info, err := os.Stat(*briefFile)
+	if err != nil {
+		return finish(err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return finish(errors.New("dispatch brief must be a regular file of at most 1 MiB"))
+	}
+	file, err := os.Open(*briefFile)
+	if err != nil {
+		return finish(err)
+	}
+	brief, readErr := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err := errors.Join(readErr, file.Close()); err != nil {
+		return finish(err)
+	}
+	skills, err := loop.FindSkills(directory, "")
+	if err != nil {
+		return finish(err)
+	}
+	adapter, err := executor.LoadAdapter(skills, *executorID)
+	if err != nil {
+		return finish(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	report, err = executor.Dispatch(ctx, executor.DispatchOptions{Adapter: adapter,
+		Request:   executor.Request{Brief: string(brief), Cwd: directory, Model: *model, Effort: *effort},
+		Transport: executor.TransportBackend{Mode: *transport}, Timeout: *timeout})
+	return finish(err)
+}
+
 func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	flags := flag.NewFlagSet("loop", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	workspace := flags.String("workspace", "", "repository root (default: current directory)")
 	skills := flags.String("skills", "", "batuta skill directory holding adapters/ and templates/ (default: auto-detected)")
+	transport := flags.String("transport", "cli", "task transport: cli, acp or auto; verifier remains independent CLI")
 	dryRun := flags.Bool("dry-run", false, "show the waves, executors and worktrees; run nothing")
 	roadmap := flags.Bool("roadmap", false, "run the phases in .batuta/roadmap.md in order")
 	resume := flags.String("resume", "", "continue a delivery from its journal")
@@ -488,6 +577,9 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	limitHorizon := flags.Duration("limit-horizon", 2*time.Hour, "switch to the next runtime when a usage-limit reset lies beyond this duration")
 	limitWait := flags.Duration("limit-wait", 30*time.Minute, "wait when a usage-limit message names no reset time")
 	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if err := executor.ValidateTransport(*transport); err != nil {
 		return err
 	}
 	rest := flags.Args()
@@ -511,6 +603,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		return errors.New("--watch requires --dashboard")
 	}
 	opts := loop.Options{
+		Transport: &executor.TransportBackend{Mode: *transport},
 		Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
 		MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
 		Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {

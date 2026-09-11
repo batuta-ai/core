@@ -32,6 +32,193 @@ func TestRunRequiresASubcommand(t *testing.T) {
 	}
 }
 
+func TestDispatchWorker(t *testing.T) {
+	if os.Getenv("BATUTA_DISPATCH_FIXTURE") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) != 5 || args[2] != "chosen-model" || args[3] != "high" {
+		os.Exit(91)
+	}
+	cwd, _ := os.Getwd()
+	want, _ := filepath.EvalSymlinks(args[4])
+	if cwd != want {
+		os.Exit(92)
+	}
+	f, err := os.OpenFile("calls", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		os.Exit(93)
+	}
+	f.WriteString("call\n")
+	f.Close()
+	fmt.Fprintln(os.Stderr, "worker stderr")
+	switch args[1] {
+	case "fail":
+		os.Exit(7)
+	case "question":
+		fmt.Println("BATUTA-QUESTION: choose a path?")
+	case "limit":
+		fmt.Println("usage limit reached")
+		os.Exit(1)
+	default:
+		fmt.Println("worker completed")
+	}
+	os.Exit(0)
+}
+
+func dispatchCommandFixture(t *testing.T, brief string) (string, []string) {
+	t.Helper()
+	root := t.TempDir()
+	skills := t.TempDir()
+	if err := os.Mkdir(filepath.Join(skills, "adapters"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter := fmt.Sprintf("---\nname: fixture\nrun: '%s '-test.run=^TestDispatchWorker$' -- {brief} {model_flags} {cwd}'\nmodel_flags: '--unused'\nreadonly: unused\navailable: must-never-run\nmodels: must-never-run\nfinished: exit_code\nlimit_regex: usage limit reached\n---\n", "\""+os.Args[0]+"\"")
+	adapter = strings.Replace(adapter, "--unused", "{model} {effort}", 1)
+	if err := os.WriteFile(filepath.Join(skills, "adapters", "fixture.md"), []byte(adapter), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	briefPath := filepath.Join(root, "brief.md")
+	if err := os.WriteFile(briefPath, []byte(brief), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BATUTA_SKILLS", skills)
+	t.Setenv("BATUTA_DISPATCH_FIXTURE", "1")
+	return root, []string{"dispatch", "--brief-file", briefPath, "--executor", "fixture", "--model", "chosen-model", "--effort", "high", "--cwd", root}
+}
+
+func TestDispatchCommandReportsOneAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		brief, mode, class string
+		code               int
+	}{
+		{"success", "", "completed", 0}, {"success", "cli", "completed", 0},
+		{"success", "auto", "completed", 0}, {"fail", "cli", "failed", 1},
+		{"question", "cli", "waiting_input", 3}, {"limit", "auto", "rate_limited", 4},
+		{"success", "acp", "unavailable", 2},
+	} {
+		t.Run(tc.brief+tc.mode, func(t *testing.T) {
+			root, args := dispatchCommandFixture(t, tc.brief)
+			if tc.mode != "" {
+				args = append(args, "--transport", tc.mode)
+			}
+			var stdout, stderr bytes.Buffer
+			err := run(args, &stdout, &stderr)
+			var exit *ExitError
+			if tc.code == 0 && err != nil || tc.code != 0 && (!errors.As(err, &exit) || exit.Code != tc.code) {
+				t.Fatalf("exit = %v; stdout=%s stderr=%s", err, &stdout, &stderr)
+			}
+			var report struct {
+				ExitClass string `json:"exit_class"`
+				ExitCode  int    `json:"exit_code"`
+				Backend   string `json:"backend"`
+				Artifacts struct {
+					Directory string `json:"directory"`
+				} `json:"artifacts"`
+				Receipt executor.Receipt `json:"receipt"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+				t.Fatal(err, stdout.String())
+			}
+			if report.ExitClass != tc.class || report.ExitCode != tc.code || stdout.Len() > executor.ReceiptLimit || strings.Contains(stdout.String(), "worker completed") {
+				t.Fatalf("report = %s", &stdout)
+			}
+			if report.Artifacts.Directory == "" {
+				t.Fatal("missing evidence directory")
+			}
+			t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+			for _, name := range []string{"brief.md", "intent.json", "receipt.json", "stdout.log", "stderr.log"} {
+				info, err := os.Lstat(filepath.Join(report.Artifacts.Directory, name))
+				if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+					t.Fatalf("artifact %s: %v, %v", name, info, err)
+				}
+			}
+			persisted, err := os.ReadFile(filepath.Join(report.Artifacts.Directory, "receipt.json"))
+			if err != nil || !bytes.Equal(bytes.TrimSpace(persisted), bytes.TrimSpace(stdout.Bytes())) {
+				t.Fatalf("persisted report differs: %s, %v", persisted, err)
+			}
+			calls, err := os.ReadFile(filepath.Join(root, "calls"))
+			if tc.mode == "acp" {
+				if !os.IsNotExist(err) || report.Receipt.Submission.State != executor.SubmissionNotSubmitted {
+					t.Fatalf("ACP ran or lost non-submission: %s %+v", calls, report)
+				}
+			} else if err != nil || string(calls) != "call\n" || report.Backend != "cli" || report.Receipt.Submission.State != executor.SubmissionSubmitted {
+				t.Fatalf("attempts=%q, report=%+v, err=%v", calls, report, err)
+			}
+		})
+	}
+}
+
+func TestDispatchInvalidArgumentsNeverRunWorker(t *testing.T) {
+	for _, extra := range [][]string{
+		{"--transport", "native"}, {"--transport", "bogus"}, {"--transport", ""},
+		{"--executor", "../fixture"}, {"--executor", "native"}, {"--executor", "self"},
+		{"--model", ""}, {"--model", "default"}, {"--model", "--injected"},
+		{"--effort", "--injected"}, {"--cwd", "missing"}, {"--brief-file", "missing"},
+		{"--timeout", "0s"}, {"unexpected"}, {"--receipt-file", "victim"},
+	} {
+		t.Run(strings.Join(extra, " "), func(t *testing.T) {
+			root, args := dispatchCommandFixture(t, "success")
+			var stdout, stderr bytes.Buffer
+			err := run(append(args, extra...), &stdout, &stderr)
+			var exit *ExitError
+			if !errors.As(err, &exit) || exit.Code != 2 || !json.Valid(stdout.Bytes()) {
+				t.Fatalf("invalid request: %v %s", err, &stdout)
+			}
+			if _, err := os.Stat(filepath.Join(root, "calls")); !os.IsNotExist(err) {
+				t.Fatal("invalid request ran worker")
+			}
+		})
+	}
+}
+
+func TestDispatchMissingBinaryNeverRunsDiscoveryOrInstall(t *testing.T) {
+	root, args := dispatchCommandFixture(t, "success")
+	adapterPath := filepath.Join(os.Getenv("BATUTA_SKILLS"), "adapters", "fixture.md")
+	payload, err := os.ReadFile(adapterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = bytes.ReplaceAll(payload, []byte(os.Args[0]), []byte(filepath.Join(root, "not-installed")))
+	if err := os.WriteFile(adapterPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	var report struct {
+		ExitClass string `json:"exit_class"`
+		Artifacts struct {
+			Directory string `json:"directory"`
+		} `json:"artifacts"`
+	}
+	if err == nil || json.Unmarshal(stdout.Bytes(), &report) != nil || report.ExitClass != "unavailable" {
+		t.Fatalf("missing binary = %v %s", err, &stdout)
+	}
+	if report.Artifacts.Directory != "" {
+		t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	}
+	if _, err := os.Stat(filepath.Join(root, "calls")); !os.IsNotExist(err) {
+		t.Fatal("missing binary triggered worker")
+	}
+}
+
+func TestLoopTransportSelection(t *testing.T) {
+	for _, mode := range []string{"cli", "acp", "auto", "native", "bogus", ""} {
+		var stdout, stderr bytes.Buffer
+		err := run([]string{"loop", "--transport", mode, "--workspace", t.TempDir(), "--dry-run"}, &stdout, &stderr)
+		want := "not a git repository"
+		if mode == "native" || mode == "bogus" || mode == "" {
+			want = "transport must be cli, acp or auto"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("transport %q = %v, want %q", mode, err, want)
+		}
+	}
+}
+
 func TestRunRejectsUnknownSubcommands(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"conduct"}, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "conduct") {
