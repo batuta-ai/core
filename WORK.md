@@ -1,11 +1,13 @@
 # WORK — core
 
 ## In progress
-- [ ] Approved optional ACP dispatch plan (11 tasks), 2026-09-11. Native skills delivery precedes this plan. Baseline core 940a7b3.
+- [ ] ACP review corrections: approved `.batuta/plans/acp-review-fixes.md`, 3 remaining tasks after ordering fix. Full review evidence `.batuta/reviews/acp-dispatch-full/`; judgments `.batuta/runs/acp-review-judgment.md`.
+- [x] Optional ACP implementation loop done: 11/11 at 1b47ec4. Full review returned REWORK; corrections below precede release qualification.
 - [ ] queue after beta.21: skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
 - [x] queue after beta.20 (superseded): skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
 
 ## Done
+- [x] ACP ordered configuration/permission processing → codex/gpt-6-astra high, first fix attempt, ed64237. Conductor full suite, executor race tests, build and diff check passed; independent review no findings. Evidence `.batuta/runs/acp-ordering-fix-review.md`.
 - [x] learnings from the evening cycles recorded in .batuta/learnings.md (PR #84) → conductor (2026-09-08)
 - [x] review-proofs plan shipped: #78 (commit subject keeps case, word-boundary cut; agy gemini-3.8-flash-low first attempt) and #80 (review runs proof-backed criteria itself; codex gpt-6-astra first attempt), blocker of review round 1 fixed by codex gpt-5.6-sol (96c5950), round 2 SHIP → conductor (2026-09-08)
 - [x] feat/loop-hardening shipped: batuta review round 9 SHIP (0 findings), core PR #75 merged (3e64e13), release v1.1.0-beta.20, host PR #74 → v0.4.16 pins it; issues #70 #71 #67 #54 #57 closed; PR #72 closed as superseded → conductor (2026-09-08)
