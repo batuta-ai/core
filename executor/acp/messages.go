@@ -179,3 +179,39 @@ func validParams(params json.RawMessage) bool {
 	value := bytes.TrimSpace(params)
 	return len(value) > 0 && (value[0] == '{' || value[0] == '[') && utf8.Valid(value) && json.Valid(value)
 }
+
+// ConfigOption retains only the fields needed to select an advertised value.
+// Unknown option types can be ignored without interpreting their values.
+type ConfigOption struct {
+	ID           string          `json:"id"`
+	Category     string          `json:"category"`
+	Type         string          `json:"type"`
+	CurrentValue json.RawMessage `json:"currentValue"`
+	Options      []ConfigValue   `json:"options"`
+}
+
+type ConfigValue struct {
+	Value   string `json:"value"`
+	Options []struct {
+		Value string `json:"value"`
+	} `json:"options"`
+}
+
+type sessionState struct {
+	SessionID     string         `json:"sessionId"`
+	ConfigOptions []ConfigOption `json:"configOptions"`
+}
+
+// TokenUsage is optional peer-reported accounting. Context occupancy is not
+// token consumption. Provenance identifies the wire field, not verification.
+type TokenUsage struct {
+	InputTokens       *int64
+	CachedInputTokens *int64
+	OutputTokens      *int64
+	Provenance        string
+}
+
+type promptResponse struct {
+	StopReason string          `json:"stopReason"`
+	Usage      json.RawMessage `json:"usage"`
+}
