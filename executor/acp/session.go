@@ -19,12 +19,13 @@ var (
 // SessionConfig selects exact wire values. Explicit IDs support agents that
 // omit semantic categories; display names are never used to guess a setting.
 type SessionConfig struct {
-	Cwd            string
-	Model          string
-	Effort         string
-	ModelConfigID  string
-	EffortConfigID string
-	ClientInfo     Implementation
+	Cwd              string
+	Model            string
+	Effort           string
+	ModelConfigID    string
+	EffortConfigID   string
+	ClientInfo       Implementation
+	PermissionPolicy PermissionPolicy
 }
 
 // Session is one configured attempt. It neither authenticates nor owns the
@@ -73,7 +74,7 @@ func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*S
 	}
 	session.id = state.SessionID
 	session.options = state.ConfigOptions
-	if err := session.drain(nil, nil); err != nil {
+	if err := session.drain(ctx, nil, nil); err != nil {
 		return nil, err
 	}
 	if err := session.selectOption(ctx, "model", config.ModelConfigID, config.Model); err != nil {
@@ -189,7 +190,7 @@ func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) e
 	if len(prompt)+len(s.id) > s.conn.options.MaxFrameBytes {
 		return result, ErrFrameTooLarge
 	}
-	if err := s.drain(nil, nil); err != nil {
+	if err := s.drain(ctx, nil, nil); err != nil {
 		return result, err
 	}
 	params, _ := json.Marshal(struct {
@@ -238,7 +239,7 @@ func (s *Session) call(ctx context.Context, method string, params json.RawMessag
 	for {
 		select {
 		case got := <-replies:
-			if err := s.drain(text, result); err != nil {
+			if err := s.drain(ctx, text, result); err != nil {
 				return nil, err
 			}
 			return got.result, got.err
@@ -257,17 +258,18 @@ func (s *Session) call(ctx context.Context, method string, params json.RawMessag
 				requests = nil
 				continue
 			}
-			_ = s.conn.Respond(ctx, request.ID, json.RawMessage(`{"outcome":{"outcome":"cancelled"}}`), nil)
-			s.conn.fail(ErrPermissionDenied)
-			<-replies
-			return nil, ErrPermissionDenied
+			if err := s.permission(ctx, request, result != nil); err != nil {
+				s.conn.fail(err)
+				<-replies
+				return nil, err
+			}
 		}
 	}
 }
 
 // A reply can overtake buffered notifications in the caller's select. Drain
 // the bounded queue before returning so preceding chunks are not lost.
-func (s *Session) drain(text func(string) error, result *TurnResult) error {
+func (s *Session) drain(ctx context.Context, text func(string) error, result *TurnResult) error {
 	for range len(s.conn.Notifications()) {
 		notification, ok := <-s.conn.Notifications()
 		if !ok {
@@ -277,8 +279,14 @@ func (s *Session) drain(text func(string) error, result *TurnResult) error {
 			return err
 		}
 	}
-	if len(s.conn.Requests()) > 0 {
-		return ErrPermissionDenied
+	for range len(s.conn.Requests()) {
+		request, ok := <-s.conn.Requests()
+		if !ok {
+			break
+		}
+		if err := s.permission(ctx, request, result != nil); err != nil {
+			return err
+		}
 	}
 	return nil
 }

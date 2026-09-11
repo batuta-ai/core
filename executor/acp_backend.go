@@ -20,6 +20,9 @@ type ACPBackend struct {
 	ClientInfo     acp.Implementation
 	ModelConfigID  string
 	EffortConfigID string
+	// PermissionPolicy receives the existing execution identity and untrusted
+	// action data. Nil rejects; the callback must obey acp.PermissionPolicy's contract.
+	PermissionPolicy func(context.Context, Execution, acp.PermissionRequest) string
 }
 
 func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Result, err error) {
@@ -70,7 +73,13 @@ func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Re
 			err = errors.New("executor: ACP worker shutdown unverified")
 		}
 	}()
-	session, sessionErr := acp.NewSession(runCtx, conn, acp.SessionConfig{Cwd: execution.Request.Cwd, Model: execution.Request.Model, Effort: execution.Request.Effort, ModelConfigID: b.ModelConfigID, EffortConfigID: b.EffortConfigID, ClientInfo: b.ClientInfo})
+	var policy acp.PermissionPolicy
+	if b.PermissionPolicy != nil {
+		policy = func(ctx context.Context, request acp.PermissionRequest) string {
+			return b.PermissionPolicy(ctx, execution, request)
+		}
+	}
+	session, sessionErr := acp.NewSession(runCtx, conn, acp.SessionConfig{Cwd: execution.Request.Cwd, Model: execution.Request.Model, Effort: execution.Request.Effort, ModelConfigID: b.ModelConfigID, EffortConfigID: b.EffortConfigID, ClientInfo: b.ClientInfo, PermissionPolicy: policy})
 	turn := acp.TurnResult{}
 	sink := &progressSink{callback: execution.Progress}
 	observer := &progressObserver{sink: sink}
@@ -134,6 +143,8 @@ func acpFailure(err error) Transport {
 	transport := Transport{Outcome: TransportFailed, Failure: "protocol"}
 	var rpcErr *acp.RPCError
 	switch {
+	case errors.Is(err, acp.ErrPermissionDenied):
+		transport.Failure = "permission_denied"
 	case errors.Is(err, context.Canceled):
 		transport.Outcome = TransportCanceled
 		transport.Failure = "canceled"
@@ -144,8 +155,6 @@ func acpFailure(err error) Transport {
 		transport.Failure = "disconnected"
 	case errors.Is(err, acp.ErrConfiguration):
 		transport.Failure = "configuration"
-	case errors.Is(err, acp.ErrPermissionDenied):
-		transport.Failure = "permission_denied"
 	case errors.Is(err, acp.ErrOutput):
 		transport.Failure = "output"
 	case errors.As(err, &rpcErr):
