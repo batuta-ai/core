@@ -25,6 +25,12 @@ type ACPBackend struct {
 	PermissionPolicy func(context.Context, Execution, acp.PermissionRequest) string
 }
 
+// Only verified shutdown after a pre-prompt compatibility rejection permits a
+// caller to try CLI. Start errors do not establish worker cleanup.
+type acpCompatibilityError struct{ error }
+
+func (e *acpCompatibilityError) Unwrap() error { return e.error }
+
 func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Result, err error) {
 	started := time.Now()
 	receipt := &Receipt{Submission: Submission{State: SubmissionNotSubmitted}, Transport: Transport{Outcome: TransportNotStarted}, Worker: WorkerClaim{Outcome: WorkerClaimUnknown}}
@@ -71,6 +77,8 @@ func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Re
 			result.Finished = false
 			result.ExitCode = -1
 			err = errors.Join(err, errors.New("executor: ACP worker shutdown unverified"))
+		} else if receipt.Submission.State == SubmissionNotSubmitted && (errors.Is(err, acp.ErrConfiguration) || errors.Is(err, acp.ErrVersion)) {
+			err = &acpCompatibilityError{err}
 		}
 	}()
 	var policy acp.PermissionPolicy
