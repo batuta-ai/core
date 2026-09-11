@@ -52,6 +52,8 @@ batuta loop [<plan>]                    run the approved plan to a terminal stat
 batuta loop --resume <delivery>         continue after an interruption
 batuta loop --answer <task> "<text>"    answer a parked task and continue
 batuta loop --abandon <delivery>        close a delivery; ticks what integrated
+batuta loop --supervise <delivery> --cursor <absolute-path>
+                                        foreground local observation; no model polling
 batuta loop --dashboard [<delivery>]    one TSV snapshot of delivery state
 batuta review --base <ref> [--spec <plan>] review a delivery through adapters
 batuta watch [<delivery>]               live panel dashboard (watch by default)
@@ -65,6 +67,11 @@ work is preserved for reconciliation and never replayed through CLI
 automatically. Native subagents are selected by interactive hosts, not by this
 binary. See [dispatch](docs/dispatch.md) and the
 [measurement protocol](docs/dispatch-measurement.md).
+
+Foreground [loop supervision](docs/loop-supervision.md) watches one explicit
+delivery with a durable cursor. It requires a process kept alive by the host;
+local file and supported desktop notifications are opt-in, and no sink leaves
+events durably unread. Observation makes zero model calls.
 
 When a usage limit outlasts the wait budget, the loop falls back to the next
 executable runtime without spending a retry or escalation.

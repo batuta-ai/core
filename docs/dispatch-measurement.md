@@ -55,6 +55,18 @@ it as a separate additive counter. If either additive counter is missing, that
 source total is unknown. Missing and unsupported counters remain `unknown`,
 never `0`; an explicit reported zero remains zero.
 
+Foreground supervision is a separate measurement family. Passive journal
+observation makes zero model calls: record poll count, bytes read and written,
+notification attempts, elapsed time, and available host CPU or memory data as
+observation overhead. Keep nullable intervention model counters in their own
+fields, separate from both observation and delivery worker usage. A fixed
+policy answer does not itself create token usage; a worker resumed afterward is
+another worker attempt. Record observation, intervention, retries, and elapsed
+time independently so retry or wait overhead cannot be mistaken for model
+usage. Do not infer token savings from elapsed time, context bytes, or the
+absence of counters. See
+[loop-supervision.md](loop-supervision.md) for the runtime contract.
+
 Sum consumption across all attempts before deriving per-task values. A retry
 is a separate attempt, not free work. Keep provider-reported values distinct
 from byte-derived or tokenizer-derived estimates. Estimates can support a

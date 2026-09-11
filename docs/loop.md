@@ -113,6 +113,14 @@ exit `1` with the reason on stderr.
   progress from executor sessions with `execution`, `criterion`, and
   `state` fields; the record timestamp is the event time, and the record
   carries the same graph as every other journal entry.
+- **Supervision is opt-in and foreground.**
+  `batuta loop --supervise <delivery> --cursor <absolute-path>` observes one
+  delivery with a durable outbox and no
+  model calls while waiting. A local file or desktop sink may be configured;
+  otherwise events remain unread. The process must remain running, and no chat
+  turn, remote message, or exactly-once notification is implied. See
+  [loop-supervision.md](loop-supervision.md) for lifecycle, policy, host-limit,
+  and cost-accounting details.
 - **Decisions may be task-scoped.** In `## Decisions and context`, a paragraph
   beginning with `**Task N.**` belongs only to task N; `**Tasks N–M.**` (also
   `N-M`, comma lists, and combinations) belongs to every named task. Unlabelled

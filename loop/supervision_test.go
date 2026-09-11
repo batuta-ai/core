@@ -358,3 +358,91 @@ func TestSupervisionForegroundBoundsAndOnce(t *testing.T) {
 		t.Fatalf("missing explicit delivery state: %s", &output)
 	}
 }
+
+func TestSupervisionLifecycleScenarios(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		state     string
+		completed bool
+	}{
+		{name: "waiting_input", state: StateWaitingInput},
+		{name: "done", state: StateDone, completed: true},
+		{name: "blocked", state: StateBlocked},
+		{name: "canceled", state: StateCanceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store, opts := supervisionFixture(t)
+			supervisionAppend(t, store, opts, KindOpened, `{}`)
+			supervisionAppend(t, store, opts, KindTerminal, `{"state":"`+test.state+`"}`)
+			got := supervisionObserve(t, opts)
+			if got.TerminalState != test.state || got.Completed != test.completed || len(got.Events) != 1 {
+				t.Fatalf("observation = %+v", got)
+			}
+		})
+	}
+
+	t.Run("running", func(t *testing.T) {
+		store, opts := supervisionFixture(t)
+		supervisionAppend(t, store, opts, KindOpened, `{}`)
+		supervisionAppend(t, store, opts, KindStarted, `{"execution":1}`)
+		lockPath := filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".lock")
+		if err := os.WriteFile(lockPath, []byte(`{"pid":123}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(lockPath, opts.Now(), opts.Now()); err != nil {
+			t.Fatal(err)
+		}
+		got := supervisionObserve(t, opts)
+		if got.Presence != "running" || got.TerminalState != "" || got.Completed || len(got.Events) != 0 {
+			t.Fatalf("observation = %+v", got)
+		}
+	})
+
+	t.Run("restart", func(t *testing.T) {
+		store, opts := supervisionFixture(t)
+		supervisionAppend(t, store, opts, KindOpened, `{}`)
+		event := supervisionAppend(t, store, opts, KindQuestion, `{"execution":1,"request_id":"restart-question"}`)
+		first := supervisionObserve(t, opts)
+		restarted := SupervisionOptions{Workspace: opts.Workspace, Delivery: opts.Delivery, CursorPath: opts.CursorPath, Now: opts.Now}
+		second := supervisionObserve(t, restarted)
+		if len(first.Events) != 1 || first.Events[0].Sequence != event.Seq || len(second.Events) != 0 || len(second.Pending) != 1 || second.Pending[0].ID != first.Events[0].ID {
+			t.Fatalf("first=%+v restarted=%+v", first, second)
+		}
+	})
+}
+
+func TestSupervisionDuplicateObservers(t *testing.T) {
+	store, opts := supervisionFixture(t)
+	supervisionAppend(t, store, opts, KindOpened, `{}`)
+	supervisionAppend(t, store, opts, KindQuestion, `{"execution":1,"request_id":"shared-question"}`)
+
+	start := make(chan struct{})
+	results := make(chan SupervisionObservation, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			got, err := ObserveSupervision(opts)
+			results <- got
+			errs <- err
+		}()
+	}
+	close(start)
+	newEvents := 0
+	for range 2 {
+		got := <-results
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+		newEvents += len(got.Events)
+		if len(got.Pending) != 1 || got.Pending[0].ID != "delivery-one:2" {
+			t.Fatalf("observation = %+v", got)
+		}
+	}
+	if newEvents != 1 {
+		t.Fatalf("new event deliveries = %d, want 1", newEvents)
+	}
+	if got := supervisionObserve(t, opts); len(got.Events) != 0 || len(got.Pending) != 1 {
+		t.Fatalf("durable outbox = %+v", got)
+	}
+}
