@@ -18,20 +18,21 @@ import (
 
 // Blocker codes the loop records on a failed attempt.
 const (
-	blockerExecutorFailed  = "executor_failed"
-	blockerRateLimited     = "rate_limited"
-	blockerTimedOut        = "timed_out"
-	blockerNoChanges       = "no_changes"
-	blockerTestsFailed     = "tests_failed"
-	blockerScope           = "scope_violation"
-	blockerProof           = "proof_failed"
-	blockerVerifier        = "verifier_incomplete"
-	blockerInstall         = "install_failed"
-	blockerInterrupted     = "interrupted"
-	blockerCandidate       = "candidate_invalid"
-	blockerSelf            = routing.BlockerNeedsConductingSession
-	blockerQuestionCeiling = routing.BlockerQuestionAtCeiling
-	blockerUnsafeQuestion  = "question_unsafe"
+	blockerSubmissionUncertain = "submission_uncertain"
+	blockerExecutorFailed      = "executor_failed"
+	blockerRateLimited         = "rate_limited"
+	blockerTimedOut            = "timed_out"
+	blockerNoChanges           = "no_changes"
+	blockerTestsFailed         = "tests_failed"
+	blockerScope               = "scope_violation"
+	blockerProof               = "proof_failed"
+	blockerVerifier            = "verifier_incomplete"
+	blockerInstall             = "install_failed"
+	blockerInterrupted         = "interrupted"
+	blockerCandidate           = "candidate_invalid"
+	blockerSelf                = routing.BlockerNeedsConductingSession
+	blockerQuestionCeiling     = routing.BlockerQuestionAtCeiling
+	blockerUnsafeQuestion      = "question_unsafe"
 	// blockerAlreadySatisfied is not a failure: the criteria held before the
 	// executor touched anything, so there is no candidate to integrate. The
 	// task is ticked in the plan at the end without a commit.
@@ -48,6 +49,7 @@ type attemptContext struct {
 	adapter   executor.Adapter
 	request   executor.Request
 	runID     string
+	result    *executor.Result
 	previous  *routing.GraphTaskAttempt // the answered attempt, on a continuation
 }
 
@@ -91,7 +93,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		running := found && task.State == routing.GraphTaskRunning && len(task.Attempts) == ac.execution && task.Attempts[ac.execution-1].State == routing.GraphTaskRunning
 		r.mu.Unlock()
 		if running {
-			runErr = r.recordFailure(context.WithoutCancel(ctx), ac, nil, blockerInterrupted, []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"})
+			runErr = r.recordFailure(context.WithoutCancel(ctx), ac, ac.result, blockerInterrupted, []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"})
 		} else if found && task.State == routing.GraphTaskPreparing && len(task.Attempts) == ac.execution {
 			// Cancellation during setup has no running executor to fail. Leave the
 			// preparing attempt resumable and preserve any attached worktree.
@@ -177,10 +179,11 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: r.opts.TaskTimeout,
 			Progress: progress, Stdout: logFile, Stderr: logFile,
 		})
+		ac.result = &result
 		if progressErr != nil {
 			return progressErr
 		}
-		if ctx.Err() != nil || execErr != nil || !result.RateLimited {
+		if ctx.Err() != nil || execErr != nil || !result.RateLimited || result.Receipt != nil {
 			break
 		}
 		if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, ac.worktree); err != nil {
@@ -224,7 +227,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		return nil // the deferred interruption handler parks the attempt
 	}
 	if execErr != nil {
-		return r.recordFailure(ctx, ac, &result, blockerExecutorFailed, []string{"the executor could not start: " + execErr.Error()})
+		return r.recordFailure(ctx, ac, &result, blockerExecutorFailed, []string{"the executor did not complete: " + execErr.Error()})
 	}
 	after, err := r.gitState.WorktreeState(ctx, ac.worktree.Root)
 	if err != nil {
@@ -243,12 +246,24 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		return err
 	}
 
+	if requiresReconciliation(&result) {
+		return r.recordBlocked(ctx, ac, &result, blockerSubmissionUncertain, []string{"the ACP prompt may have changed the worktree; reconcile the preserved work before another execution"})
+	}
+
 	if result.Finished && result.Question != "" {
 		return r.recordQuestion(ctx, ac, result, treeChanged)
 	}
 
 	report := gates.Report{TaskID: taskID, Execution: ac.execution}
-	report.Finished = gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, executor.Tail(append(result.Stdout, result.Stderr...), 30))
+	finishedDetail := executor.Tail(append(result.Stdout, result.Stderr...), 30)
+	if result.Receipt != nil {
+		relativeLog, err := filepath.Rel(r.root, logPath)
+		if err != nil {
+			return fmt.Errorf("loop: relative executor log path: %w", err)
+		}
+		finishedDetail = "executor log: " + filepath.ToSlash(relativeLog)
+	}
+	report.Finished = gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, finishedDetail)
 	report.Tree = gates.Verdict{Name: "tree", Pass: true, Signal: "the worktree differs from the attempt's base"}
 	silent := !treeChanged
 	if report.Finished.Pass && !silent {
@@ -301,6 +316,17 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		return r.recordFailure(ctx, ac, &result, code, feedback)
 	}
 	return r.recordCandidate(ctx, ac, report, result)
+}
+
+// A protocol failure or usage limit is not evidence that the prompt made no
+// changes. Only CLI executions retain the legacy rate-limit replay policy.
+func requiresReconciliation(result *executor.Result) bool {
+	if result == nil || result.Receipt == nil || result.Receipt.Submission.State == executor.SubmissionNotSubmitted {
+		return false
+	}
+	return result.Receipt.Submission.State != executor.SubmissionSubmitted ||
+		result.Receipt.Transport.Outcome != executor.TransportCompleted ||
+		!result.Finished || result.TimedOut || result.RateLimited || result.ExitCode != 0
 }
 
 func (r *Runner) treeChangedFromBase(ctx context.Context, root, base string) (bool, error) {
@@ -529,12 +555,20 @@ func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates
 	result, err := r.verifier.Execute(ctx, executor.Execution{
 		Adapter: adapter, Request: request, Invocation: invocation, Timeout: r.opts.TaskTimeout,
 	})
-	if err != nil {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not start: " + err.Error()}
-	}
+	execErr := err
 	after, err := r.gitState.WorktreeState(ctx, ac.worktree.Root)
-	if err == nil && before != after {
+	if err != nil {
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier guard: " + err.Error()}
+	}
+	if before != after {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: executor.Tail(result.Stdout, 10)}
+	}
+	if execErr != nil {
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not complete: " + execErr.Error()}
+	}
+	finished := gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, "")
+	if !finished.Pass || result.Truncated || requiresReconciliation(&result) {
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete"}
 	}
 	verdict := gates.Verifier(string(result.Stdout), len(criteria), proofs)
 	verdict.Signal = name + "/" + model + ": " + verdict.Signal
@@ -645,6 +679,11 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		code, policy = blockerInterrupted, routing.ConductingFailurePolicy
 		feedback = []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"}
 	}
+	preserveSubmission := requiresReconciliation(result) || (code == blockerInterrupted && result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)
+	if preserveSubmission {
+		code, policy = blockerSubmissionUncertain, routing.FailurePolicy{}
+		feedback = append(feedback, "ACP submission may have changed the worktree; reconcile the preserved work before another execution")
+	}
 	if err := r.snapshotWorktree(context.WithoutCancel(ctx), ac.taskID, ac.execution, ac.worktree); err != nil {
 		return err
 	}
@@ -696,7 +735,7 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		fmt.Fprintf(r.out, "%s e%d ✗ %s — escalating to %s/%s\n", ac.taskID, ac.execution, code, outcome.Runtime.Provider, outcome.Runtime.Model)
 		r.writeTrailVerdict(ac.taskID, "⏫ escalated from "+string(ac.plan.Complexity)+" ("+ac.runtime.Provider+"/"+ac.runtime.Model+" → "+outcome.Runtime.Provider+"/"+outcome.Runtime.Model+")", feedback)
 	}
-	if (outcome.Blocked || outcome.Satisfied || !sameRuntime) && ac.worktree.Root != "" && !r.opts.KeepWorktrees {
+	if (outcome.Blocked || outcome.Satisfied || !sameRuntime) && ac.worktree.Root != "" && !r.opts.KeepWorktrees && !preserveSubmission {
 		_ = r.removeWorktree(context.WithoutCancel(ctx), ac.worktree.Root, ac.worktree.Branch)
 	}
 	return nil

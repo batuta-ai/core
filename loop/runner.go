@@ -69,15 +69,20 @@ var ErrStopped = errors.New("loop: stopped after the requested number of waves")
 
 // Options configure one run.
 type Options struct {
-	Workspace     string
-	Skills        string
-	Plan          string // path (.batuta/plans/<slug>.md or legacy .batuta/plan-<slug>.md) or slug
-	Resume        string // delivery to continue
-	Parallel      int    // 0 → the profile's Execution line
-	TaskTimeout   time.Duration
-	TestTimeout   time.Duration
-	MaxWaves      int
-	KeepWorktrees bool
+	// Nil uses the legacy CLI. Each configured transport creates a new session
+	// per execution; verifier qualification and permission policy are independent.
+	// ACP crash/resume reconciliation is supplied by the subsequent journal work.
+	Transport         *executor.TransportBackend
+	VerifierTransport *executor.TransportBackend
+	Workspace         string
+	Skills            string
+	Plan              string // path (.batuta/plans/<slug>.md or legacy .batuta/plan-<slug>.md) or slug
+	Resume            string // delivery to continue
+	Parallel          int    // 0 → the profile's Execution line
+	TaskTimeout       time.Duration
+	TestTimeout       time.Duration
+	MaxWaves          int
+	KeepWorktrees     bool
 	// Usage limits: how many consecutive waits one attempt may take, the
 	// wait when the output names no reset time, and the buffer after a
 	// named reset.
@@ -415,6 +420,8 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	subprocess := executor.NewSubprocess()
 	subprocess.Runner = opts.Runner
 	subprocess.Environment = opts.Environment
+	backend := loopTransport(opts.Transport, executor.CLIBackend{Subprocess: subprocess})
+	verifier := loopTransport(opts.VerifierTransport, executor.CLIBackend{Subprocess: subprocess})
 	parallel := profile.Parallelism()
 	if opts.Parallel > 0 {
 		parallel = min(opts.Parallel, routing.MaxParallelTasks)
@@ -425,13 +432,24 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		integ:    integration.GitClient{Executable: git.Git, Runner: opts.Runner},
 		store:    store, profile: profile, skills: skills, table: table,
 		branch: branch, openedHead: head, parallel: parallel, shell: shell,
-		backend: executor.CLIBackend{Subprocess: subprocess}, verifier: executor.CLIBackend{Subprocess: subprocess},
+		backend: backend, verifier: verifier,
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
 		now: opts.Now, out: &lockedWriter{writer: opts.Stdout},
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
 		candidates: map[string]integration.CandidateEvidence{}, commits: map[string]string{},
 		started: map[string]bool{}, preflights: map[string]integration.PreflightResult{},
 	}, nil
+}
+
+// The CLI fallback retains the loop's environment and command runner.
+func loopTransport(config *executor.TransportBackend, cli executor.Backend) executor.Backend {
+	if config == nil {
+		return cli
+	}
+	backend := *config
+	backend.CLI = cli
+	backend.Qualifications = append([]executor.ACPQualification(nil), config.Qualifications...)
+	return backend
 }
 
 func (r *Runner) loadPlan(reference string) error {
