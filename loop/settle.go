@@ -249,6 +249,7 @@ func (r *Runner) replay(records []journal.Record) error {
 	}
 	r.graph = &graph
 	settledOps := map[string]bool{}
+	dispatches := map[string]dispatchDetail{}
 	for _, record := range records {
 		switch record.Kind {
 		case KindWorktree:
@@ -261,11 +262,19 @@ func (r *Runner) replay(records []journal.Record) error {
 			}
 		case KindStarted:
 			var detail struct {
-				Execution int `json:"execution"`
+				Execution int            `json:"execution"`
+				Dispatch  dispatchDetail `json:"dispatch"`
 			}
 			if json.Unmarshal(record.Detail, &detail) == nil {
 				r.started[attemptKey(record.TaskID, detail.Execution)] = true
+				dispatches[attemptKey(record.TaskID, detail.Execution)] = detail.Dispatch
 			}
+		case KindDispatchIntent, KindDispatchResult:
+			var detail dispatchDetail
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				return fmt.Errorf("loop: dispatch journal: %w", err)
+			}
+			dispatches[attemptKey(record.TaskID, detail.Execution)] = detail
 		case KindFailure:
 			var detail struct {
 				Execution     int      `json:"execution"`
@@ -340,8 +349,8 @@ func (r *Runner) replay(records []journal.Record) error {
 		}
 	}
 	// Attempts that were running when the process died are stalled: the
-	// executor is gone. The graph records the failure now, so the policy
-	// decides (retry in the same worktree, then escalate).
+	// CLI attempts retain their retry policy. ACP intents and submitted results
+	// stay parked until reconciliation, even if gates ran before the crash.
 	for _, task := range r.graph.Tasks {
 		if len(task.Attempts) == 0 || task.State != routing.GraphTaskRunning {
 			continue
@@ -355,6 +364,16 @@ func (r *Runner) replay(records []journal.Record) error {
 			runID: r.delivery + "-" + strings.ReplaceAll(task.TaskID, "_", "-") + "-e" + fmt.Sprint(attempt.Execution)}
 		if attempt.ChildRunID != "" {
 			ac.runID = attempt.ChildRunID
+		}
+		ac.dispatch = dispatches[attemptKey(task.TaskID, attempt.Execution)]
+		if ac.dispatch.RunID != "" {
+			ac.runID = ac.dispatch.RunID
+		}
+		if ac.dispatch.mayHaveSubmitted() {
+			if err := r.recordBlocked(context.Background(), ac, nil, blockerSubmissionUncertain, []string{"the previous ACP dispatch has no verified candidate; reconcile its preserved workspace before another execution"}); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := r.recordFailure(context.Background(), ac, nil, blockerInterrupted, []string{"the previous run was interrupted while this executor was working; the worktree keeps whatever it wrote"}); err != nil {
 			return err

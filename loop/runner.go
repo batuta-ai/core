@@ -35,6 +35,8 @@ const (
 	KindWorktree          journal.Kind = "worktree_attached"
 	KindSnapshot          journal.Kind = "worktree_snapshotted"
 	KindStarted           journal.Kind = "executor_started"
+	KindDispatchIntent    journal.Kind = "dispatch_intent"
+	KindDispatchResult    journal.Kind = "dispatch_result"
 	KindProgress          journal.Kind = "task_progress"
 	KindFinished          journal.Kind = "executor_finished"
 	KindQuestion          journal.Kind = "question_recorded"
@@ -71,7 +73,6 @@ var ErrStopped = errors.New("loop: stopped after the requested number of waves")
 type Options struct {
 	// Nil uses the legacy CLI. Each configured transport creates a new session
 	// per execution; verifier qualification and permission policy are independent.
-	// ACP crash/resume reconciliation is supplied by the subsequent journal work.
 	Transport         *executor.TransportBackend
 	VerifierTransport *executor.TransportBackend
 	Workspace         string

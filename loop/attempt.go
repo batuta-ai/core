@@ -2,6 +2,7 @@ package loop
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/batuta-ai/core/executor"
+	"github.com/batuta-ai/core/executor/acp"
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/integration"
 	"github.com/batuta-ai/core/publication"
@@ -50,7 +52,82 @@ type attemptContext struct {
 	request   executor.Request
 	runID     string
 	result    *executor.Result
+	dispatch  dispatchDetail
 	previous  *routing.GraphTaskAttempt // the answered attempt, on a continuation
+}
+
+// An intent is synced before entering a backend that can submit a prompt. Until
+// a result proves non-submission, a crash at that boundary requires reconciliation.
+type dispatchDetail struct {
+	Execution   int                      `json:"execution"`
+	RunID       string                   `json:"run_id"`
+	Backend     string                   `json:"backend"`
+	Executor    string                   `json:"executor"`
+	Model       string                   `json:"model"`
+	Reasoning   string                   `json:"reasoning"`
+	Workspace   string                   `json:"workspace"`
+	BriefDigest string                   `json:"brief_digest"`
+	Submission  executor.SubmissionState `json:"submission"`
+	Receipt     json.RawMessage          `json:"receipt,omitempty"`
+}
+
+func (d dispatchDetail) mayHaveSubmitted() bool {
+	return d.Backend != "" && d.Backend != "cli" && d.Submission != executor.SubmissionNotSubmitted
+}
+
+type dispatchBackend struct {
+	backend executor.Backend
+	intent  func(string) error
+}
+
+func (b dispatchBackend) Execute(ctx context.Context, e executor.Execution) (executor.Result, error) {
+	if err := b.intent("cli"); err != nil {
+		return executor.Result{}, err
+	}
+	return b.backend.Execute(ctx, e)
+}
+
+func (r *Runner) dispatchAttempt(ctx context.Context, ac *attemptContext, e executor.Execution) (result executor.Result, execErr, journalErr error) {
+	intent := func(backend string) error {
+		ac.dispatch.Backend, ac.dispatch.Submission, ac.dispatch.Receipt = backend, executor.SubmissionUncertain, nil
+		journalErr = r.locked(KindDispatchIntent, ac.taskID, ac.dispatch, nil)
+		return journalErr
+	}
+	backend := r.backend
+	if transport, ok := backend.(executor.TransportBackend); ok {
+		// Record the selected transport, including auto's pre-submission CLI fallback.
+		open := transport.ACP.Open
+		if open != nil {
+			transport.ACP.Open = func(ctx context.Context, execution executor.Execution) (*acp.Connection, func() error, error) {
+				if err := intent("acp"); err != nil {
+					return nil, nil, err
+				}
+				return open(ctx, execution)
+			}
+		}
+		transport.CLI = dispatchBackend{backend: transport.CLI, intent: intent}
+		backend = transport
+	} else {
+		backend = dispatchBackend{backend: backend, intent: intent}
+	}
+	result, execErr = backend.Execute(ctx, e)
+	if journalErr != nil {
+		return
+	}
+	if result.Receipt == nil && ac.dispatch.mayHaveSubmitted() {
+		result.Receipt = &executor.Receipt{Submission: executor.Submission{State: executor.SubmissionUnknown}}
+	}
+	if result.Receipt != nil {
+		ac.dispatch.Receipt, journalErr = executor.MarshalReceipt(*result.Receipt)
+		if journalErr != nil {
+			return
+		}
+		ac.dispatch.Submission = result.Receipt.Submission.State
+	} else {
+		ac.dispatch.Submission = executor.SubmissionUnknown
+	}
+	journalErr = r.locked(KindDispatchResult, ac.taskID, ac.dispatch, nil)
+	return
 }
 
 // runAttempt drives one attempt of one task from worktree to candidate or
@@ -175,11 +252,15 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		waits   int
 	)
 	for {
-		result, execErr = r.backend.Execute(ctx, executor.Execution{
+		var journalErr error
+		result, execErr, journalErr = r.dispatchAttempt(ctx, &ac, executor.Execution{
 			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: r.opts.TaskTimeout,
 			Progress: progress, Stdout: logFile, Stderr: logFile,
 		})
 		ac.result = &result
+		if journalErr != nil {
+			return journalErr
+		}
 		if progressErr != nil {
 			return progressErr
 		}
@@ -226,6 +307,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	if ctx.Err() != nil {
 		return nil // the deferred interruption handler parks the attempt
 	}
+	if requiresReconciliation(&result) || (execErr != nil && ac.dispatch.mayHaveSubmitted()) {
+		return r.recordBlocked(ctx, ac, &result, blockerSubmissionUncertain, []string{"the ACP prompt may have changed the worktree; reconcile the preserved work before another execution"})
+	}
 	if execErr != nil {
 		return r.recordFailure(ctx, ac, &result, blockerExecutorFailed, []string{"the executor did not complete: " + execErr.Error()})
 	}
@@ -244,10 +328,6 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		"base_head_sha": ac.base, "before": before, "after": after,
 	}, nil); err != nil {
 		return err
-	}
-
-	if requiresReconciliation(&result) {
-		return r.recordBlocked(ctx, ac, &result, blockerSubmissionUncertain, []string{"the ACP prompt may have changed the worktree; reconcile the preserved work before another execution"})
 	}
 
 	if result.Finished && result.Question != "" {
@@ -399,10 +479,19 @@ func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath stri
 	if err != nil {
 		return executor.Invocation{}, fmt.Errorf("loop: relative executor log path: %w", err)
 	}
+	backend := "cli"
+	if transport, ok := r.backend.(executor.TransportBackend); ok && transport.Mode != "" {
+		backend = transport.Mode
+	}
+	ac.dispatch = dispatchDetail{
+		Execution: ac.execution, RunID: ac.runID, Backend: backend, Executor: ac.adapter.Name,
+		Model: ac.runtime.Model, Reasoning: ac.runtime.Reasoning, Workspace: ac.worktree.Root,
+		BriefDigest: digestString(brief), Submission: executor.SubmissionNotSubmitted,
+	}
 	if err := r.locked(KindStarted, ac.taskID, map[string]any{
 		"execution": ac.execution, "run_id": ac.runID, "executor": ac.adapter.Name, "model": ac.runtime.Model,
 		"reasoning": ac.runtime.Reasoning, "argv": redactArgs(invocation, brief), "worktree": ac.worktree.Root,
-		"brief_lines": strings.Count(brief, "\n") + 1, "via_file": invocation.UsedFile, "log_path": filepath.ToSlash(relativeLogPath),
+		"dispatch": ac.dispatch, "brief_lines": strings.Count(brief, "\n") + 1, "via_file": invocation.UsedFile, "log_path": filepath.ToSlash(relativeLogPath),
 	}, func() error { r.started[attemptKey(ac.taskID, ac.execution)] = true; return nil }); err != nil {
 		return executor.Invocation{}, err
 	}
@@ -679,7 +768,7 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		code, policy = blockerInterrupted, routing.ConductingFailurePolicy
 		feedback = []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"}
 	}
-	preserveSubmission := requiresReconciliation(result) || (code == blockerInterrupted && result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)
+	preserveSubmission := code == blockerSubmissionUncertain || requiresReconciliation(result) || (code == blockerInterrupted && (ac.dispatch.mayHaveSubmitted() || (result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)))
 	if preserveSubmission {
 		code, policy = blockerSubmissionUncertain, routing.FailurePolicy{}
 		feedback = append(feedback, "ACP submission may have changed the worktree; reconcile the preserved work before another execution")

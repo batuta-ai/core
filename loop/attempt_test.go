@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -379,6 +380,10 @@ func loopACPTransport(t *testing.T, serve func(executor.Execution) (string, stri
 					fmt.Fprintln(peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"tool_call_update","status":"completed","title":"BATUTA-PROGRESS 9 DONE"}}}`)
 					fmt.Fprintln(peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"private-thought-canary"}}}}`)
 					fmt.Fprintf(peer, "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"task\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":%q}}}}\n", output)
+					if stop == "quota_error" {
+						fmt.Fprintf(peer, "{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":-32000,\"message\":\"quota exhausted\"}}\n", request.ID)
+						continue
+					}
 					if stop == "disconnect" {
 						return
 					}
@@ -607,6 +612,103 @@ func TestACPVerifierRejectsIncompleteAndMutatingTurns(t *testing.T) {
 			verdict := r.verify(context.Background(), ac, gates.ParseCriteria([]string{"greeting is correct"}), nil)
 			if verdict.Pass || (strings.HasPrefix(behavior, "mutation") && !strings.Contains(verdict.Signal, "wrote to the tree")) {
 				t.Fatalf("verifier accepted %s: %+v", behavior, verdict)
+			}
+		})
+	}
+}
+
+func TestACPDispatchIntentPrecedesPrompt(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	var r *Runner
+	opts.Transport = loopACPTransport(t, func(e executor.Execution) (string, string) {
+		records := readJournal(t, f, r.delivery)
+		var intent struct {
+			Backend     string `json:"backend"`
+			Executor    string `json:"executor"`
+			Model       string `json:"model"`
+			Reasoning   string `json:"reasoning"`
+			Workspace   string `json:"workspace"`
+			BriefDigest string `json:"brief_digest"`
+			RunID       string `json:"run_id"`
+			Execution   int    `json:"execution"`
+		}
+		found := false
+		for _, record := range records {
+			if record.Kind != "dispatch_intent" {
+				continue
+			}
+			if err := json.Unmarshal(record.Detail, &intent); err != nil {
+				t.Error(err)
+			}
+			found = true
+		}
+		wantDigest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(e.Request.Brief)))
+		if !found || intent.Backend != "acp" || intent.Executor != "codex" || intent.Model != e.Request.Model || intent.Reasoning != e.Request.Effort || intent.Workspace != e.Request.Cwd || intent.BriefDigest != wantDigest || intent.RunID == "" || intent.Execution != 1 {
+			t.Errorf("prompt lacks durable dispatch identity: %+v", intent)
+		}
+		return "", "disconnect"
+	})
+	r = prepareACPAttempt(t, f, opts)
+	if _, err := r.runPreparingWaves(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, record := range readJournal(t, f, r.delivery) {
+		if record.Kind != "dispatch_result" {
+			continue
+		}
+		var detail struct {
+			Receipt *executor.Receipt `json:"receipt"`
+		}
+		if err := json.Unmarshal(record.Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if detail.Receipt == nil || detail.Receipt.Submission.State != executor.SubmissionUncertain {
+			t.Fatalf("missing uncertain receipt: %s", record.Detail)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("no durable dispatch result")
+	}
+}
+
+func TestACPUncertainWorkSurvivesFinalization(t *testing.T) {
+	for _, stop := range []string{"disconnect", "quota_error", "unknown", "end_turn"} {
+		t.Run(stop, func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options("default", &out)
+			calls := 0
+			opts.Transport = loopACPTransport(t, func(e executor.Execution) (string, string) {
+				calls++
+				if err := os.WriteFile(filepath.Join(e.Request.Cwd, "shared.txt"), []byte("unverified work"), 0644); err != nil {
+					t.Error(err)
+				}
+				return "Rate limit reached reset_at=4102444800\n", stop
+			})
+			r := prepareACPAttempt(t, f, opts)
+			state, err := r.Run(context.Background())
+			if err != nil || state != StateBlocked {
+				t.Fatalf("Run = %s, %v\n%s", state, err, out.String())
+			}
+			task, _ := r.graph.Task("task_1")
+			if calls != 1 || len(task.Attempts) != 1 || task.BlockerCode != blockerSubmissionUncertain {
+				t.Fatalf("uncertain attempt replayed: calls=%d task=%+v", calls, task)
+			}
+			if body, err := os.ReadFile(filepath.Join(task.Attempts[0].WorktreeRoot, "shared.txt")); err != nil || string(body) != "unverified work" {
+				t.Fatalf("unverified workspace lost: %q / %v", body, err)
+			}
+			records := readJournal(t, f, r.delivery)
+			counts := kinds(records)
+			if counts[KindLimitWait] != 0 || counts[KindLimitFallback] != 0 || counts[KindCandidate] != 0 || counts[KindGates] != 0 {
+				t.Fatalf("uncertain work consumed: %v", counts)
+			}
+			parked, err := r.git.Parked(context.Background(), r.plan.Slug)
+			if err != nil || len(parked) == 0 {
+				t.Fatalf("parked evidence lost: %v / %v", parked, err)
 			}
 		})
 	}

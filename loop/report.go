@@ -57,7 +57,7 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 		if !r.opts.KeepWorktrees {
 			seen := map[string]bool{}
 			for _, wt := range r.worktrees {
-				if !seen[wt.Root] {
+				if !seen[wt.Root] && !r.uncertainWorktree(wt.Root) {
 					detail.Worktrees = append(detail.Worktrees, wt)
 					seen[wt.Root] = true
 				}
@@ -177,10 +177,26 @@ func (r *Runner) deleteFinalizationRefs(ctx context.Context, detail *terminalDet
 	return nil
 }
 
+func (r *Runner) uncertainWorktree(root string) bool {
+	for _, task := range r.graph.Tasks {
+		if task.BlockerCode == blockerSubmissionUncertain {
+			for _, attempt := range task.Attempts {
+				if attempt.WorktreeRoot == root {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) error {
 	var retained []attemptWorktree
 	var cleanupErr error
 	for _, wt := range detail.Worktrees {
+		if r.uncertainWorktree(wt.Root) {
+			continue
+		}
 		if err := r.removeWorktree(ctx, wt.Root, wt.Branch); err != nil {
 			retained = append(retained, wt)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("loop: retain worktree %s: %w", wt.Root, err))
