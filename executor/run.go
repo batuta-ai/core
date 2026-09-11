@@ -38,6 +38,7 @@ type Result struct {
 	ResetAt     time.Time // when the limit lifts, if the output said; zero otherwise
 	Question    string    // a BATUTA-QUESTION line, when the executor asked one
 	Progress    []ProgressEvent
+	Receipt     *Receipt // optional structured execution metadata
 }
 
 // Subprocess runs invocations through the publication runner, resolving
