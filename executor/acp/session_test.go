@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -303,5 +304,52 @@ func TestSessionCancellationBoundsBlockedCancelWrite(t *testing.T) {
 	case <-conn.Done():
 	case <-time.After(time.Second):
 		t.Fatal("blocked cancel retained transport goroutines")
+	}
+}
+
+func TestSessionPromptUsesTaskBudget(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		t.Run(fmt.Sprint(complete), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				conn, peer := testConnection(t, Options{MaxPending: 1, RequestTimeout: 100 * time.Millisecond})
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				cwd := t.TempDir()
+				done := make(chan error, 1)
+				go func() {
+					session, err := NewSession(ctx, conn, SessionConfig{Cwd: cwd, PermissionPolicy: func(context.Context, PermissionRequest) string { return "yes" }})
+					if err == nil {
+						var result TurnResult
+						result, err = session.Prompt(ctx, "brief", nil)
+						if !result.SubmissionAttempted || result.Completed != complete {
+							err = fmt.Errorf("turn: %+v / %v", result, err)
+						}
+					}
+					done <- err
+				}()
+				reader := bufio.NewReader(peer)
+				setupPeer(t, peer, reader, cwd, "{}")
+				prompt := expectMethod(t, reader, "session/prompt")
+				<-time.NewTimer(200 * time.Millisecond).C
+				synctest.Wait()
+				if err := conn.Err(); err != nil {
+					t.Fatalf("prompt terminated at control timeout: %v", err)
+				}
+				writeMessage(t, peer, `{"jsonrpc":"2.0","id":"p","method":"session/request_permission","params":`+permissionParams+`}`)
+				response := readMessage(t, reader)
+				if string(response["result"]) != `{"outcome":{"outcome":"selected","optionId":"yes"}}` {
+					t.Fatalf("permission response: %s", response)
+				}
+				if complete {
+					sessionReply(t, peer, prompt, `{"stopReason":"end_turn"}`)
+					awaitError(t, done, nil)
+				} else {
+					<-ctx.Done()
+					expectMethod(t, reader, "session/cancel")
+					awaitError(t, done, context.DeadlineExceeded)
+					<-conn.Done()
+				}
+			})
+		})
 	}
 }

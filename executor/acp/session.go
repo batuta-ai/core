@@ -243,7 +243,8 @@ func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) e
 
 func (s *Session) call(ctx context.Context, method string, params json.RawMessage, text func(string) error, result *TurnResult, apply func(json.RawMessage) error) (json.RawMessage, error) {
 	// Keep the transport alive briefly to send cancellation before making the
-	// attempt terminal. Connection.Call still enforces its own request ceiling.
+	// attempt terminal. This loop owns the task budget; the connection bounds
+	// control replies and every write independently.
 	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	replies := make(chan reply, 1)

@@ -32,8 +32,9 @@ var (
 )
 
 // Options can reduce the fixed memory ceilings. Zero selects the default.
-// RequestTimeout bounds calls, writes and unanswered inbound permission requests,
-// even when their caller supplies a context without a deadline.
+// MaxPending independently bounds outbound calls, control writes and inbound
+// permission requests. RequestTimeout bounds control calls, all writes and
+// unanswered permissions; session/prompt replies use the caller's task context.
 type Options struct {
 	MaxFrameBytes      int
 	MaxPending         int
@@ -65,6 +66,7 @@ type Connection struct {
 	options       Options
 	writes        chan writeJob
 	slots         chan struct{}
+	controlSlots  chan struct{}
 	notifications chan Notification
 	requests      chan Request
 	events        chan message
@@ -103,6 +105,7 @@ func NewConnection(reader io.ReadCloser, writer io.WriteCloser, options Options)
 		options:       options,
 		writes:        make(chan writeJob),
 		slots:         make(chan struct{}, options.MaxPending),
+		controlSlots:  make(chan struct{}, options.MaxPending),
 		notifications: make(chan Notification, options.NotificationBuffer),
 		requests:      make(chan Request, options.MaxPending),
 		events:        make(chan message, options.NotificationBuffer+2*options.MaxPending),
@@ -206,10 +209,10 @@ func (c *Connection) Call(ctx context.Context, method string, params json.RawMes
 }
 
 func (c *Connection) call(ctx context.Context, method string, params json.RawMessage, ordered bool) (json.RawMessage, error) {
-	if err := c.acquire(ctx); err != nil {
+	if err := c.acquire(ctx, c.slots); err != nil {
 		return nil, err
 	}
-	defer c.release()
+	defer func() { <-c.slots }()
 	c.mu.Lock()
 	if c.err != nil {
 		err := c.err
@@ -227,9 +230,16 @@ func (c *Connection) call(ctx context.Context, method string, params json.RawMes
 	if err != nil {
 		return nil, err
 	}
-	callCtx, cancel := context.WithTimeout(ctx, c.options.RequestTimeout)
-	defer cancel()
-	if err := c.send(callCtx, payload); err != nil {
+	callCtx := ctx
+	if method != "session/prompt" {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, c.options.RequestTimeout)
+		defer cancel()
+	}
+	writeCtx, cancelWrite := context.WithTimeout(callCtx, c.options.RequestTimeout)
+	err = c.send(writeCtx, payload)
+	cancelWrite()
+	if err != nil {
 		// A peer can close stdout immediately after its complete response,
 		// before the writer goroutine has delivered its local acknowledgement.
 		if errors.Is(err, io.EOF) {
@@ -258,10 +268,10 @@ func (c *Connection) call(ctx context.Context, method string, params json.RawMes
 }
 
 func (c *Connection) Notify(ctx context.Context, method string, params json.RawMessage) error {
-	if err := c.acquire(ctx); err != nil {
+	if err := c.acquire(ctx, c.controlSlots); err != nil {
 		return err
 	}
-	defer c.release()
+	defer func() { <-c.controlSlots }()
 	payload, err := c.encode(message{JSONRPC: "2.0", Method: method, Params: params})
 	if err != nil {
 		return err
@@ -274,10 +284,10 @@ func (c *Connection) Notify(ctx context.Context, method string, params json.RawM
 // Respond answers an outstanding permission request. No permission is ever
 // granted by this transport. RPC error responses contain a fixed safe message.
 func (c *Connection) Respond(ctx context.Context, id json.RawMessage, result json.RawMessage, rpcErr *RPCError) error {
-	if err := c.acquire(ctx); err != nil {
+	if err := c.acquire(ctx, c.controlSlots); err != nil {
 		return err
 	}
-	defer c.release()
+	defer func() { <-c.controlSlots }()
 	if len(id) > c.options.MaxFrameBytes {
 		return ErrFrameTooLarge
 	}
@@ -311,7 +321,7 @@ func (c *Connection) Respond(ctx context.Context, id json.RawMessage, result jso
 	return c.send(writeCtx, payload)
 }
 
-func (c *Connection) acquire(ctx context.Context) error {
+func (c *Connection) acquire(ctx context.Context, slots chan struct{}) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -319,13 +329,12 @@ func (c *Connection) acquire(ctx context.Context) error {
 		return err
 	}
 	select {
-	case c.slots <- struct{}{}:
+	case slots <- struct{}{}:
 		return nil
 	default:
 		return ErrCapacity
 	}
 }
-func (c *Connection) release() { <-c.slots }
 
 func (c *Connection) encode(msg message) ([]byte, error) {
 	if len(msg.Method)+len(msg.Params)+len(msg.Result)+len(msg.ID) > c.options.MaxFrameBytes {

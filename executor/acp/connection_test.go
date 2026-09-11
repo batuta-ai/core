@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -561,4 +562,124 @@ func TestOversizedFrameWithoutNewlineOrPendingCallTerminates(t *testing.T) {
 	if !errors.Is(conn.Err(), ErrFrameTooLarge) {
 		t.Fatalf("frame error: %v", conn.Err())
 	}
+}
+
+func TestPromptLifetimeAndControlDeadlines(t *testing.T) {
+	for _, tt := range []struct {
+		name, method string
+		read, reply  bool
+	}{
+		{"prompt survives control timeout", "session/prompt", true, true},
+		{"prompt task deadline", "session/prompt", true, false},
+		{"prompt blocked write", "session/prompt", false, false},
+		{"missing control reply", "session/new", true, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				conn, peer := testConnection(t, Options{RequestTimeout: 100 * time.Millisecond})
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				defer cancel()
+				done := make(chan error, 1)
+				go func() {
+					_, err := conn.Call(ctx, tt.method, nil)
+					done <- err
+				}()
+				var request map[string]json.RawMessage
+				if tt.read {
+					request = expectMethod(t, bufio.NewReader(peer), tt.method)
+				}
+				<-time.NewTimer(200 * time.Millisecond).C
+				synctest.Wait()
+				if tt.method == "session/prompt" && tt.read {
+					if err := conn.Err(); err != nil {
+						t.Fatalf("prompt terminated at control timeout: %v", err)
+					}
+					if tt.reply {
+						sessionReply(t, peer, request, `{"stopReason":"end_turn"}`)
+						awaitError(t, done, nil)
+						return
+					}
+					<-ctx.Done()
+					synctest.Wait()
+				}
+				select {
+				case err := <-done:
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("deadline error: %v", err)
+					}
+				default:
+					t.Fatal("operation exceeded its deadline")
+				}
+				<-conn.Done()
+			})
+		})
+	}
+}
+
+func TestPendingPromptAllowsPermissionAndCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		conn, peer := testConnection(t, Options{MaxPending: 1})
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := conn.Call(ctx, "session/prompt", nil)
+			done <- err
+		}()
+		reader := bufio.NewReader(peer)
+		prompt := expectMethod(t, reader, "session/prompt")
+		synctest.Wait()
+		if _, err := conn.Call(ctx, "second", nil); !errors.Is(err, ErrCapacity) {
+			t.Fatalf("pending call limit: %v", err)
+		}
+		writeMessage(t, peer, `{"jsonrpc":"2.0","id":"p","method":"session/request_permission","params":`+permissionParams+`}`)
+		request := <-conn.Requests()
+		written := make(chan error, 1)
+		go func() {
+			written <- conn.Respond(ctx, request.ID, json.RawMessage(`{"outcome":{"outcome":"selected","optionId":"yes"}}`), nil)
+		}()
+		synctest.Wait()
+		select {
+		case err := <-written:
+			t.Fatalf("permission reply could not reach peer: %v", err)
+		default:
+		}
+		response := readMessage(t, reader)
+		if string(response["id"]) != `"p"` || string(response["result"]) != `{"outcome":{"outcome":"selected","optionId":"yes"}}` {
+			t.Fatalf("permission response: %s", response)
+		}
+		awaitError(t, written, nil)
+		go func() {
+			written <- conn.Notify(ctx, "session/cancel", json.RawMessage(`{"sessionId":"task"}`))
+		}()
+		synctest.Wait()
+		select {
+		case err := <-written:
+			t.Fatalf("cancellation could not reach peer: %v", err)
+		default:
+		}
+		notification := expectMethod(t, reader, "session/cancel")
+		if len(notification["id"]) != 0 {
+			t.Fatalf("cancel must be a notification: %s", notification)
+		}
+		awaitError(t, written, nil)
+		sessionReply(t, peer, prompt, `{"stopReason":"cancelled"}`)
+		awaitError(t, done, nil)
+	})
+}
+
+func TestControlWritesRemainBounded(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		conn, _ := testConnection(t, Options{MaxPending: 1, RequestTimeout: 100 * time.Millisecond})
+		done := make(chan error, 1)
+		go func() { done <- conn.Notify(context.Background(), "session/cancel", nil) }()
+		synctest.Wait()
+		if err := conn.Notify(context.Background(), "session/cancel", nil); !errors.Is(err, ErrCapacity) {
+			t.Fatalf("control write limit: %v", err)
+		}
+		<-time.NewTimer(100 * time.Millisecond).C
+		synctest.Wait()
+		awaitError(t, done, context.DeadlineExceeded)
+		<-conn.Done()
+	})
 }
