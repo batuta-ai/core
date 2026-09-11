@@ -47,6 +47,7 @@ Usage:
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
+  batuta loop      --supervise <delivery> --cursor <absolute-path> [--once] [--interval 500ms] [--notify desktop|<absolute-directory>] [--policy <path>]
   batuta watch     [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
   batuta review    [--base <ref>] [--worktree] [--spec <plan>] [--cohort-files N] [--parallel N] [--reviewer <executor/model>] [--full] [--out <dir>]
@@ -68,6 +69,21 @@ dispatch   One bounded external attempt, compact JSON and private artifacts in
            CLI is the default. ACP requires qualified runtime evidence;
            this release has no qualified ACP launches. Auto falls back to CLI
            before submission. Native tools belong to the interactive host.
+supervise  Opt-in foreground observation; no model calls while waiting.
+           --interval is bounded to 100ms..1m; Ctrl-C/SIGTERM stops cleanly.
+           --cursor persists unread events; --once performs one observation.
+           Each observation handles up to 32 events, with overflow in the cursor;
+           event output is bounded to 4 KiB. Continuous mode exits on completion.
+           Local sink calls have a five-second timeout.
+           --notify writes private event JSON to an existing local directory,
+           or uses installed desktop notifications on macOS/Linux. No sink or
+           failed delivery leaves events pending. Desktop delivery is at least
+           once across crashes; stable event IDs support sink deduplication.
+           --policy accepts a bounded JSON SupervisionPolicy for a fixed scoped
+           answer only. No policy means notification only. No background service
+           is installed; the process must remain running. Local output does not
+           promise an asynchronous chat notification.
+
 loop       The mechanical conductor over an approved plan
            (.batuta/plan-<slug>.md): routing from .batuta/routing.md, one
            executor session per task in its own worktree through the
@@ -567,6 +583,11 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
 	dashboard := flags.Bool("dashboard", false, "print the state of the open deliveries as TSV")
 	watch := flags.Bool("watch", false, "redraw a live dashboard until the delivery ends")
+	supervise := flags.String("supervise", "", "observe one explicit delivery in the foreground")
+	cursor := flags.String("cursor", "", "absolute durable supervision cursor path, outside the journal")
+	once := flags.Bool("once", false, "observe supervision once, then exit")
+	notify := flags.String("notify", "", "local sink: desktop or an existing absolute directory (default: leave unread)")
+	policy := flags.String("policy", "", "explicit scoped supervision policy JSON file")
 	interval := flags.Duration("interval", 500*time.Millisecond, "journal poll interval")
 	parallel := flags.Int("parallel", 0, "executors per wave, at most 4 (default: the profile's Execution line)")
 	taskTimeout := flags.Duration("task-timeout", 45*time.Minute, "time budget per executor session")
@@ -583,6 +604,54 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		return err
 	}
 	rest := flags.Args()
+	if *supervise != "" {
+		var conflict string
+		flags.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "supervise", "workspace", "cursor", "once", "notify", "policy", "interval":
+			default:
+				conflict = f.Name
+			}
+		})
+		if conflict != "" || len(rest) > 0 {
+			return errors.New("--supervise accepts only --workspace, --cursor, --once, --notify, --policy and --interval")
+		}
+		if !filepath.IsAbs(*cursor) {
+			return errors.New("--supervise requires --cursor with an absolute durable path")
+		}
+		root, err := workspaceRoot(*workspace)
+		if err != nil {
+			return err
+		}
+		opts := loop.SuperviseOptions{Observer: loop.SupervisionOptions{Workspace: root, Delivery: *supervise, CursorPath: *cursor}, Interval: *interval, Once: *once, Output: stdout}
+		if *notify == "desktop" {
+			opts.Sink = loop.NewSupervisionDesktopSink()
+		} else if *notify != "" {
+			if !filepath.IsAbs(*notify) {
+				return errors.New("--notify requires desktop or an existing absolute local directory")
+			}
+			opts.Sink = loop.SupervisionFileSink{Directory: *notify}
+		}
+		if *policy != "" {
+			opts.Policy, err = loop.LoadSupervisionPolicy(*policy)
+			if err != nil {
+				return err
+			}
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return loop.Supervise(ctx, opts)
+	}
+	var supervisionFlag string
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "supervise", "cursor", "once", "notify", "policy":
+			supervisionFlag = f.Name
+		}
+	})
+	if supervisionFlag != "" {
+		return fmt.Errorf("--%s requires --supervise <delivery>", supervisionFlag)
+	}
 	if *roadmap && (*dashboard || *watch || *abandon != "" || (len(rest) > 0 && *answer == "")) {
 		return errors.New("--roadmap runs .batuta/roadmap.md; it cannot be combined with a plan, --dashboard, --watch or --abandon")
 	}

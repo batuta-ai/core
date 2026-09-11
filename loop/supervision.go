@@ -2,6 +2,8 @@ package loop
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -348,4 +350,166 @@ func supervisionIdentifier(value string) string {
 		}
 	}
 	return value
+}
+
+// SuperviseOptions configures one foreground observer. Interval must be between
+// 100 ms and one minute. Sleep allows an embedding host to supply its clock.
+// No executor is invoked: the only intervention is the existing fixed policy.
+type SuperviseOptions struct {
+	Observer SupervisionOptions
+	Interval time.Duration
+	Once     bool
+	Sink     SupervisionSink
+	Policy   *SupervisionPolicy
+	Output   io.Writer
+	Sleep    func(context.Context, time.Duration) error
+}
+
+type supervisionReport struct {
+	Delivery  string               `json:"delivery"`
+	Cursor    int                  `json:"cursor"`
+	State     string               `json:"state"`
+	Presence  string               `json:"presence"`
+	Completed bool                 `json:"completed"`
+	Pending   int                  `json:"pending"`
+	Outbox    string               `json:"outbox"`
+	Decision  *SupervisionDecision `json:"decision,omitempty"`
+}
+
+type supervisionDeliveryResult struct {
+	SupervisionNotification
+	Notification string `json:"notification"`
+}
+
+// Supervise observes until completion, once mode or cancellation. Only changed
+// reports are written as JSON lines. No sink leaves events durably unread; a
+// failed sink is retried on the bounded interval (once mode returns an error).
+// A foreground process must remain running to observe new work. Neither stdout
+// nor a completed chat turn provides asynchronous chat notification delivery.
+func Supervise(ctx context.Context, opts SuperviseOptions) error {
+	if opts.Interval < 100*time.Millisecond || opts.Interval > time.Minute {
+		return errors.New("loop: supervision interval must be between 100ms and 1m")
+	}
+	observer, err := normalizeSupervisionOptions(opts.Observer)
+	if err != nil {
+		return err
+	}
+	opts.Observer = observer
+	if opts.Policy != nil && opts.Policy.Delivery != observer.Delivery {
+		return errors.New("loop: supervision policy belongs to another delivery")
+	}
+	if opts.Output == nil {
+		opts.Output = io.Discard
+	}
+	if opts.Sleep == nil {
+		opts.Sleep = (&Runner{}).sleep
+	}
+	previous := map[string][32]byte{}
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		observation, err := ObserveSupervision(observer)
+		if err != nil {
+			return err
+		}
+		report := supervisionReport{Delivery: observer.Delivery, Cursor: observation.Cursor,
+			State: observation.TerminalState, Presence: observation.Presence, Completed: observation.Completed, Pending: len(observation.Pending), Outbox: observer.CursorPath}
+		if report.State == "" {
+			report.State = "open"
+		}
+		failed := false
+		current := map[string][32]byte{}
+		// Bound each observation to 32 deliveries; the cursor retains overflow.
+		for _, event := range observation.Pending[:min(32, len(observation.Pending))] {
+			if ctx.Err() != nil {
+				return nil
+			}
+			result := supervisionDeliveryResult{SupervisionNotification: SupervisionNotification{Event: event, State: report.State, Presence: report.Presence}, Notification: "unconfigured"}
+			if _, err := encodeSupervisionNotification(result.SupervisionNotification); err != nil {
+				return err
+			}
+			if opts.Sink != nil {
+				notifyCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+				err := opts.Sink.Notify(notifyCtx, result.SupervisionNotification)
+				cancel()
+				result.Notification = "failed"
+				if err == nil {
+					if err := AcknowledgeSupervision(observer, event.ID); err != nil {
+						return err
+					}
+					result.Notification = "acknowledged"
+					report.Pending--
+				} else {
+					failed = true
+				}
+			}
+			if err := writeSupervisionReport(opts.Output, event.ID, result, previous, current); err != nil {
+				return err
+			}
+		}
+		var policyErr error
+		if opts.Policy != nil && ctx.Err() == nil {
+			report.Decision, policyErr = supervisePolicy(opts)
+		}
+		if err := writeSupervisionReport(opts.Output, "summary", report, previous, current); err != nil {
+			return err
+		}
+		previous = current
+		if ctx.Err() != nil {
+			return nil
+		}
+		if policyErr != nil {
+			return policyErr
+		}
+		if opts.Once {
+			if failed {
+				return errors.New("loop: local notification failed; events remain pending in the supervision cursor")
+			}
+			return nil
+		}
+		if observation.Completed && !failed && (opts.Sink == nil || report.Pending == 0) {
+			return nil
+		}
+		if err := opts.Sleep(ctx, opts.Interval); err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func writeSupervisionReport(output io.Writer, key string, value any, previous, current map[string][32]byte) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return err
+	}
+	if len(data) > SupervisionEventLimit {
+		return errors.New("loop: supervision output exceeds 4 KiB; inspect the durable cursor")
+	}
+	digest := sha256.Sum256(data)
+	current[key] = digest
+	if previous[key] == digest {
+		return nil
+	}
+	_, err = fmt.Fprintln(output, string(data))
+	return err
+}
+
+func supervisePolicy(opts SuperviseOptions) (*SupervisionDecision, error) {
+	// Notification acknowledgments do not consume intervention authorization.
+	cursor, err := readSupervisionCursor(opts.Observer)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range cursor.Outbox {
+		event := entry.Event
+		if event.Kind != KindQuestion || event.TaskID != opts.Policy.TaskID || event.Execution != opts.Policy.Execution || event.QuestionID != opts.Policy.QuestionID {
+			continue
+		}
+		decision, err := InterveneSupervision(opts.Observer, event.ID, opts.Policy)
+		return &decision, err
+	}
+	return nil, nil
 }

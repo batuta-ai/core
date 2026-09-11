@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -304,5 +306,55 @@ func TestSupervisionResumedDeliveryIsNotTerminal(t *testing.T) {
 	supervisionAppend(t, store, opts, KindAnswer, `{"execution":1}`)
 	if got := supervisionObserve(t, opts); got.TerminalState != "" || got.Completed {
 		t.Fatalf("resumed delivery reported old terminal: %+v", got)
+	}
+}
+
+func TestSupervisionForegroundWaitAndCancellation(t *testing.T) {
+	store, observer := supervisionFixture(t)
+	supervisionAppend(t, store, observer, KindOpened, `{}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var output bytes.Buffer
+	waits := 0
+	opts := SuperviseOptions{Observer: observer, Interval: time.Second, Output: &output,
+		Sleep: func(ctx context.Context, delay time.Duration) error {
+			waits++
+			if delay != time.Second {
+				t.Fatalf("delay = %s", delay)
+			}
+			if waits == 3 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+	if err := Supervise(ctx, opts); err != nil {
+		t.Fatal(err)
+	}
+	if waits != 3 || strings.Count(output.String(), "\n") != 1 {
+		t.Fatalf("waits=%d output=%s", waits, &output)
+	}
+	if records, err := store.Read(observer.Delivery); err != nil || len(records) != 1 {
+		t.Fatalf("passive wait mutated journal: %v, %v", records, err)
+	}
+}
+
+func TestSupervisionForegroundBoundsAndOnce(t *testing.T) {
+	store, observer := supervisionFixture(t)
+	supervisionAppend(t, store, observer, KindOpened, `{}`)
+	for _, interval := range []time.Duration{-time.Second, 0, time.Millisecond, time.Minute + time.Nanosecond} {
+		if err := Supervise(context.Background(), SuperviseOptions{Observer: observer, Interval: interval, Once: true}); err == nil {
+			t.Fatalf("accepted interval %s", interval)
+		}
+	}
+	var output bytes.Buffer
+	if err := Supervise(context.Background(), SuperviseOptions{Observer: observer, Interval: time.Second, Once: true, Output: &output,
+		Sleep: func(context.Context, time.Duration) error { t.Fatal("once slept"); return nil },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"delivery":"delivery-one"`) || !strings.Contains(output.String(), `"state":"open"`) {
+		t.Fatalf("missing explicit delivery state: %s", &output)
 	}
 }

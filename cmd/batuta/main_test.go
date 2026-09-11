@@ -1586,3 +1586,77 @@ func TestReviewWithMixedSpecRules(t *testing.T) {
 		previous = position
 	}
 }
+
+func TestLoopSupervisionOnce(t *testing.T) {
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	cursor := filepath.Join(root, "cursor.json")
+	var stdout, stderr bytes.Buffer
+	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", cursor, "--once"}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"completed":true`) || !strings.Contains(stdout.String(), `"notification":"unconfigured"`) {
+		t.Fatalf("stdout=%s stderr=%s", &stdout, &stderr)
+	}
+	if _, err := os.Stat(cursor); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(stdout.String(), `"id":"supervised:1"`) != 1 {
+		t.Fatalf("restart output=%s", &stdout)
+	}
+}
+
+func TestLoopSupervisionRejectsAmbiguousFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--once"}, {"--cursor", "/tmp/cursor"}, {"--notify", "desktop"}, {"--policy", "/tmp/policy"},
+		{"--supervise", "demo"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "--dashboard"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "--resume", "demo"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "--dry-run"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "--parallel", "1"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "plan.md"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := run(append([]string{"loop"}, args...), &stdout, &stderr); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}
+
+func TestLoopSupervisionLocalFileSink(t *testing.T) {
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	sink := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--notify", sink, "--once"}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"notification":"acknowledged"`) || !strings.Contains(stdout.String(), `"pending":0`) {
+		t.Fatalf("output=%s", &stdout)
+	}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	files, err := os.ReadDir(sink)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("files=%v err=%v", files, err)
+	}
+}
