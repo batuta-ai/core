@@ -1,6 +1,7 @@
 # WORK — core
 
 ## In progress
+- [ ] Approved optional ACP dispatch plan (11 tasks), 2026-09-11. Native skills delivery precedes this plan. Baseline core 940a7b3.
 - [ ] queue after beta.21: skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
 - [x] queue after beta.20 (superseded): skills `batuta-review --deep` calling `batuta review`; skills `batuta-qa-plan`/`batuta-qa-run`; bilingual docs audit; retro J1–J6 → conductor (not started)
 
