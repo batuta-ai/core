@@ -1,21 +1,21 @@
 # Plan — economical loop supervision
 
 **Goal:** Supervise a delivery without repeated model polling, resolve routine pauses within existing authorization, and surface completion or decisions through an available notification channel. User approved this direction on 2026-09-11; implementation breakdown authorized with the subsequent request to proceed with review and remaining improvements.
-**Created:** 2026-09-11 · **Status:** approved
+**Created:** 2026-09-11 · **Status:** done
 
 ## Tasks
-- [ ] 1. Observe delivery events with durable deduplication — backend/high
+- [x] 1. Observe delivery events with durable deduplication — backend/high
       Scope: loop/supervision.go, loop/supervision_test.go
       Accept: journal observations emit compact actionable events once per persisted delivery/sequence identity, survive restart and tolerate partial trailing records → go test ./loop -run Supervision; terminal state is distinguished from process exit, stale activity never proves failure, observation makes zero model calls → go test ./loop -run Supervision
-- [ ] 2. Bound intervention and bind answers to their question — backend/high
+- [x] 2. Bound intervention and bind answers to their question — backend/high
       Depends on: 1
       Scope: loop/supervision.go, loop/supervision_test.go, loop/supervision_policy.go, loop/supervision_policy_test.go
       Accept: routine interventions require explicit scoped policy and matching pending question identity, with decision evidence and bounded retries → go test ./loop -run Supervision; permission grants, scope expansion, quota changes and uncertain execution replay are never inferred from worker prose or silence → go test ./loop -run Supervision; absent policy or unresolved ownership leaves the question pending, concurrent observers cannot answer twice → go test -race ./loop -run Supervision
-- [ ] 3. Expose opt-in local supervision and actionable notifications — backend/high
+- [x] 3. Expose opt-in local supervision and actionable notifications — backend/high
       Depends on: 2
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, loop/supervision.go, loop/supervision_test.go, loop/supervision_notify.go, loop/supervision_notify_test.go
       Accept: an explicit delivery can be supervised with bounded resources, graceful cancellation and durable event output, while legacy loop invocation remains unchanged → go test ./cmd/batuta ./loop; completion and pending decisions reach a configured local sink with stable event IDs and explicit delivery state, missing or failed notification delivery remains visible and never claims a chat notification → go test ./loop -run Supervision
-- [ ] 4. Verify lifecycle and measure supervision overhead — docs/medium
+- [x] 4. Verify lifecycle and measure supervision overhead — docs/medium
       Depends on: 3
       Scope: docs/loop-supervision.md, docs/loop.md, docs/dispatch-measurement.md, README.md, README.pt-BR.md, loop/supervision_test.go
       Accept: deterministic scenarios cover running, waiting_input, done, blocked, canceled, restart and duplicate observers → go test -race ./loop -run Supervision; full regression suite passes → go test ./...; documentation separates observation cost from intervention tokens and states notification prerequisites and remaining host limits
