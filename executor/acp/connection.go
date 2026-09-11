@@ -45,6 +45,11 @@ type reply struct {
 	result json.RawMessage
 	err    error
 }
+type pendingCall struct {
+	response chan reply
+	ordered  bool
+}
+
 type writeJob struct {
 	payload []byte
 	result  chan error
@@ -62,6 +67,9 @@ type Connection struct {
 	slots         chan struct{}
 	notifications chan Notification
 	requests      chan Request
+	events        chan message
+	ordered       bool
+	queuedUpdates int
 	stopped       chan struct{}
 	done          chan struct{}
 	stopOnce      sync.Once
@@ -69,7 +77,7 @@ type Connection struct {
 	err           error
 	nextID        uint64
 	initialized   bool
-	pending       map[string]chan reply
+	pending       map[string]pendingCall
 	incoming      map[string]*time.Timer
 }
 
@@ -97,9 +105,10 @@ func NewConnection(reader io.ReadCloser, writer io.WriteCloser, options Options)
 		slots:         make(chan struct{}, options.MaxPending),
 		notifications: make(chan Notification, options.NotificationBuffer),
 		requests:      make(chan Request, options.MaxPending),
+		events:        make(chan message, options.NotificationBuffer+2*options.MaxPending),
 		stopped:       make(chan struct{}),
 		done:          make(chan struct{}),
-		pending:       make(map[string]chan reply),
+		pending:       make(map[string]pendingCall),
 		incoming:      make(map[string]*time.Timer),
 	}
 	var workers sync.WaitGroup
@@ -116,6 +125,7 @@ func NewConnection(reader io.ReadCloser, writer io.WriteCloser, options Options)
 		workers.Wait()
 		close(c.notifications)
 		close(c.requests)
+		close(c.events)
 		close(c.done)
 	}()
 	return c, nil
@@ -192,6 +202,10 @@ func (c *Connection) Initialize(ctx context.Context, info Implementation) (Initi
 // Call sends one request and correlates its response. params is bounded before
 // encoding. A failure after sending may mean the agent already performed work.
 func (c *Connection) Call(ctx context.Context, method string, params json.RawMessage) (json.RawMessage, error) {
+	return c.call(ctx, method, params, false)
+}
+
+func (c *Connection) call(ctx context.Context, method string, params json.RawMessage, ordered bool) (json.RawMessage, error) {
 	if err := c.acquire(ctx); err != nil {
 		return nil, err
 	}
@@ -206,7 +220,7 @@ func (c *Connection) Call(ctx context.Context, method string, params json.RawMes
 	id := json.RawMessage(strconv.Quote("batuta-" + strconv.FormatUint(c.nextID, 10)))
 	key, _ := idKey(id)
 	response := make(chan reply, 1)
-	c.pending[key] = response
+	c.pending[key] = pendingCall{response: response, ordered: ordered}
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.pending, key); c.mu.Unlock() }()
 	payload, err := c.encode(message{JSONRPC: "2.0", ID: id, Method: method, Params: params})
@@ -438,7 +452,15 @@ func (c *Connection) receive(msg message) error {
 			if msg.Error != nil {
 				got.err = &RPCError{Code: msg.Error.Code}
 			}
-			response <- got
+			if response.ordered {
+				select {
+				case c.events <- msg:
+				default:
+					c.mu.Unlock()
+					return ErrCapacity
+				}
+			}
+			response.response <- got
 		}
 		c.mu.Unlock()
 		if !found {
@@ -449,6 +471,9 @@ func (c *Connection) receive(msg message) error {
 	if len(msg.ID) == 0 {
 		if msg.Method != "session/update" {
 			return nil
+		}
+		if ordered, err := c.sessionEvent(msg); ordered {
+			return err
 		}
 		select {
 		case c.notifications <- Notification{Method: msg.Method, Params: msg.Params}:
@@ -483,10 +508,35 @@ func (c *Connection) receive(msg message) error {
 	}
 	c.incoming[key] = time.AfterFunc(c.options.RequestTimeout, func() { c.fail(context.DeadlineExceeded) })
 	c.mu.Unlock()
+	if ordered, err := c.sessionEvent(msg); ordered {
+		return err
+	}
 	select {
 	case c.requests <- Request{ID: msg.ID, Method: msg.Method, Params: msg.Params}:
 		return nil
 	default:
 		return ErrCapacity
+	}
+}
+
+// Sessions consume one bounded stream so updates, permissions and replies retain
+// receive order. The public transport queues remain available to standalone users.
+func (c *Connection) sessionEvent(msg message) (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.ordered {
+		return false, nil
+	}
+	if msg.Method == "session/update" && c.queuedUpdates >= c.options.NotificationBuffer {
+		return true, ErrCapacity
+	}
+	select {
+	case c.events <- msg:
+		if msg.Method == "session/update" {
+			c.queuedUpdates++
+		}
+		return true, nil
+	default:
+		return true, ErrCapacity
 	}
 }

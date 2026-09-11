@@ -57,6 +57,13 @@ func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*S
 	if config.ClientInfo.Name == "" {
 		config.ClientInfo = Implementation{Name: "batuta", Version: "1"}
 	}
+	conn.mu.Lock()
+	if conn.initialized {
+		conn.mu.Unlock()
+		return nil, ErrAlreadyInitialized
+	}
+	conn.ordered = true
+	conn.mu.Unlock()
 	if _, err := conn.Initialize(ctx, config.ClientInfo); err != nil {
 		return nil, err
 	}
@@ -66,16 +73,15 @@ func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*S
 		Cwd        string     `json:"cwd"`
 		MCPServers []struct{} `json:"mcpServers"`
 	}{config.Cwd, []struct{}{}})
-	raw, err := conn.Call(ctx, "session/new", params)
+	_, err := session.call(ctx, "session/new", params, nil, nil, func(raw json.RawMessage) error {
+		if json.Unmarshal(raw, &state) != nil || strings.TrimSpace(state.SessionID) == "" {
+			return ErrProtocol
+		}
+		session.id = state.SessionID
+		session.options = state.ConfigOptions
+		return nil
+	})
 	if err != nil {
-		return nil, err
-	}
-	if json.Unmarshal(raw, &state) != nil || strings.TrimSpace(state.SessionID) == "" {
-		return nil, ErrProtocol
-	}
-	session.id = state.SessionID
-	session.options = state.ConfigOptions
-	if err := session.drain(ctx, nil, nil); err != nil {
 		return nil, err
 	}
 	if err := session.selectOption(ctx, "model", config.ModelConfigID, config.Model); err != nil {
@@ -140,15 +146,17 @@ func (s *Session) selectOption(ctx context.Context, category, id, value string) 
 		ConfigID  string `json:"configId"`
 		Value     string `json:"value"`
 	}{s.id, option.ID, value})
-	raw, err := s.call(ctx, "session/set_config_option", params, nil, nil)
+	_, err = s.call(ctx, "session/set_config_option", params, nil, nil, func(raw json.RawMessage) error {
+		var state sessionState
+		if json.Unmarshal(raw, &state) != nil {
+			return ErrProtocol
+		}
+		s.options = state.ConfigOptions
+		return s.checkOption(category, id, value)
+	})
 	if err != nil {
 		return err
 	}
-	var state sessionState
-	if json.Unmarshal(raw, &state) != nil {
-		return ErrProtocol
-	}
-	s.options = state.ConfigOptions
 	return s.checkOption(category, id, value)
 }
 
@@ -212,7 +220,7 @@ func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) e
 		return result, err
 	}
 	result.SubmissionAttempted = true
-	raw, err := s.call(ctx, "session/prompt", params, text, &result)
+	raw, err := s.call(ctx, "session/prompt", params, text, &result, nil)
 	if err != nil {
 		return result, err
 	}
@@ -233,14 +241,27 @@ func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) e
 	return result, nil
 }
 
-func (s *Session) call(ctx context.Context, method string, params json.RawMessage, text func(string) error, result *TurnResult) (json.RawMessage, error) {
+func (s *Session) call(ctx context.Context, method string, params json.RawMessage, text func(string) error, result *TurnResult, apply func(json.RawMessage) error) (json.RawMessage, error) {
 	// Keep the transport alive briefly to send cancellation before making the
 	// attempt terminal. Connection.Call still enforces its own request ceiling.
 	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	replies := make(chan reply, 1)
-	go func() { raw, err := s.conn.Call(callCtx, method, params); replies <- reply{raw, err} }()
-	notifications, requests := s.conn.Notifications(), s.conn.Requests()
+	go func() { raw, err := s.conn.call(callCtx, method, params, true); replies <- reply{raw, err} }()
+	events := s.conn.events
+	var responseErr error
+	handle := func(event message) error {
+		if responseErr != nil {
+			return responseErr
+		}
+		if event.Method == "" {
+			if event.Error == nil && apply != nil {
+				responseErr = apply(event.Result)
+			}
+			return nil
+		}
+		return s.event(ctx, event, text, result)
+	}
 	stop := func() (json.RawMessage, error) {
 		if method == "session/prompt" {
 			cancelCtx, finish := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Millisecond)
@@ -269,56 +290,59 @@ func (s *Session) call(ctx context.Context, method string, params json.RawMessag
 			if ctx.Err() != nil {
 				return stop()
 			}
-			if err := s.drain(ctx, text, result); err != nil {
+			if err := s.drainEvents(handle); err != nil {
 				return nil, err
+			}
+			if responseErr != nil {
+				return nil, responseErr
 			}
 			return got.result, got.err
-		case notification, ok := <-notifications:
+		case event, ok := <-events:
 			if !ok {
-				notifications = nil
+				events = nil
 				continue
 			}
-			if err := s.update(notification, text, result); err != nil {
+			if err := handle(event); err != nil {
 				s.conn.fail(err)
 				<-replies
 				return nil, err
 			}
-		case request, ok := <-requests:
-			if !ok {
-				requests = nil
-				continue
-			}
-			if err := s.permission(ctx, request, result != nil); err != nil {
-				s.conn.fail(err)
-				<-replies
-				return nil, err
+			if responseErr != nil {
+				events = nil
 			}
 		}
 	}
 }
 
-// A reply can overtake buffered notifications in the caller's select. Drain
-// the bounded queue before returning so preceding chunks are not lost.
-func (s *Session) drain(ctx context.Context, text func(string) error, result *TurnResult) error {
-	for range len(s.conn.Notifications()) {
-		notification, ok := <-s.conn.Notifications()
+// A completed Call can overtake its buffered events in the caller's select.
+func (s *Session) drainEvents(handle func(message) error) error {
+	for range len(s.conn.events) {
+		event, ok := <-s.conn.events
 		if !ok {
 			break
 		}
-		if err := s.update(notification, text, result); err != nil {
-			return err
-		}
-	}
-	for range len(s.conn.Requests()) {
-		request, ok := <-s.conn.Requests()
-		if !ok {
-			break
-		}
-		if err := s.permission(ctx, request, result != nil); err != nil {
+		if err := handle(event); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s *Session) drain(ctx context.Context, text func(string) error, result *TurnResult) error {
+	return s.drainEvents(func(event message) error { return s.event(ctx, event, text, result) })
+}
+
+func (s *Session) event(ctx context.Context, event message, text func(string) error, result *TurnResult) error {
+	if event.Method == "session/update" {
+		s.conn.mu.Lock()
+		s.conn.queuedUpdates--
+		s.conn.mu.Unlock()
+		return s.update(Notification{Method: event.Method, Params: event.Params}, text, result)
+	}
+	if event.Method == "session/request_permission" {
+		return s.permission(ctx, Request{ID: event.ID, Method: event.Method, Params: event.Params}, result != nil)
+	}
+	return ErrProtocol
 }
 
 func (s *Session) update(notification Notification, text func(string) error, result *TurnResult) error {

@@ -78,6 +78,9 @@ func TestPermissionPolicySelection(t *testing.T) {
 
 func TestBufferedPermissionIsAnsweredAndCannotComplete(t *testing.T) {
 	conn, peer := testConnection(t, Options{})
+	conn.mu.Lock()
+	conn.ordered = true
+	conn.mu.Unlock()
 	// receive enqueues the request synchronously, reproducing a reply overtaking
 	// a queued permission without relying on select scheduling.
 	if err := conn.receive(message{ID: json.RawMessage(`"p"`), Method: "session/request_permission", Params: json.RawMessage(permissionParams)}); err != nil {
