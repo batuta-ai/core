@@ -246,7 +246,11 @@ func readSupervisionCursor(opts SupervisionOptions) (supervisionCursor, error) {
 }
 
 func writeSupervisionCursor(path string, cursor supervisionCursor) error {
-	data, err := json.Marshal(cursor)
+	return writeSupervisionJSON(path, cursor)
+}
+
+func writeSupervisionJSON(path string, value any) error {
+	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
