@@ -1,16 +1,20 @@
 package executor
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/batuta-ai/core/publication"
 )
 
 type dispatchBackendFunc func(context.Context, Execution) (Result, error)
@@ -74,6 +78,45 @@ func TestDispatchCancellationRetainsIntentAndNeverReplays(t *testing.T) {
 	payload, err := os.ReadFile(filepath.Join(report.Artifacts.Directory, report.Artifacts.Receipt))
 	if err != nil || json.Unmarshal(payload, &saved) != nil || saved.ExitClass != "uncertain" {
 		t.Fatalf("lost receipt: %s, %v", payload, err)
+	}
+}
+
+func TestDispatchTaskTimeoutExits124AcrossTransports(t *testing.T) {
+	for _, mode := range []string{"cli", "auto", "acp"} {
+		t.Run(mode, func(t *testing.T) {
+			transport, execution, calls := transportFixture(t)
+			transport.Mode = mode
+			transport.CLI = CLIBackend{Subprocess: Subprocess{
+				Lookup: func(name string) (string, error) { return filepath.Join(execution.Request.Cwd, name), nil },
+				Runner: backendCommandRunner(func(ctx context.Context, _ publication.Command) (publication.CommandResult, error) {
+					*calls++
+					<-ctx.Done()
+					return publication.CommandResult{ExitCode: -1}, ctx.Err()
+				}),
+			}}
+			if mode != "cli" {
+				peerBackend := backendPeer(t, execution, func(reader *bufio.Reader, peer net.Conn) {
+					backendReply(peer, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+					config := `{"sessionId":"task"}`
+					if mode == "acp" {
+						config = `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"medium"}]}]}`
+					}
+					backendReply(peer, backendRead(t, reader, "session/new"), config)
+					io.Copy(io.Discard, reader)
+				})
+				transport.ACP.Open = peerBackend.Open
+			}
+			opts := DispatchOptions{Adapter: execution.Adapter, Request: execution.Request, Transport: transport, Timeout: 100 * time.Millisecond}
+			report, _ := Dispatch(context.Background(), opts)
+			t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+			wantCalls := 0
+			if mode != "acp" {
+				wantCalls = 1
+			}
+			if report.ExitClass != "uncertain" || report.ExitCode != 124 || report.Receipt.Transport.Outcome == TransportCanceled || *calls != wantCalls {
+				t.Fatalf("timeout dispatch: report=%+v calls=%d", report, *calls)
+			}
+		})
 	}
 }
 

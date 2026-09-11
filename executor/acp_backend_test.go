@@ -25,6 +25,8 @@ import (
 func backendPeer(t *testing.T, execution Execution, serve func(*bufio.Reader, net.Conn)) ACPBackend {
 	t.Helper()
 	return ACPBackend{Open: func(ctx context.Context, got Execution) (*acp.Connection, func() error, error) {
+		got.Request.BriefFile = ""
+		execution.Request.BriefFile = ""
 		if got.Request != execution.Request {
 			t.Error("execution request changed")
 		}

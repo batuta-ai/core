@@ -15,6 +15,8 @@ import (
 
 var ErrACPUnavailable = errors.New("executor: ACP prerequisites or qualification unavailable")
 
+var errTaskTimeout = errors.New("executor: task timeout")
+
 // ACPLaunch is optional adapter metadata, never qualification evidence. Version
 // is the exact trimmed --version output of the separately installed executable.
 // Codex and Claude require their dedicated wrappers; nothing installs them.
@@ -93,7 +95,7 @@ type TransportBackend struct {
 	VersionRunner  publication.CommandRunner
 }
 
-func (b TransportBackend) Execute(ctx context.Context, e Execution) (Result, error) {
+func (b TransportBackend) Execute(ctx context.Context, e Execution) (result Result, err error) {
 	cli := b.CLI
 	if cli == nil {
 		cli = CLIBackend{Subprocess: NewSubprocess()}
@@ -108,8 +110,13 @@ func (b TransportBackend) Execute(ctx context.Context, e Execution) (Result, err
 	runCtx := ctx
 	if e.Timeout > 0 {
 		var cancel context.CancelFunc
-		runCtx, cancel = context.WithTimeout(ctx, e.Timeout)
+		runCtx, cancel = context.WithTimeoutCause(ctx, e.Timeout, errTaskTimeout)
 		defer cancel()
+		defer func() {
+			if errors.Is(context.Cause(runCtx), errTaskTimeout) {
+				result, err = taskTimedOut(result, err)
+			}
+		}()
 	}
 	if err := runCtx.Err(); err != nil {
 		return unavailableTransport(err)
@@ -132,10 +139,29 @@ func (b TransportBackend) Execute(ctx context.Context, e Execution) (Result, err
 		execution.Invocation = launch
 		return open(ctx, execution)
 	}
-	result, err := backend.Execute(runCtx, e)
+	result, err = backend.Execute(runCtx, e)
 	var incompatible *acpCompatibilityError
 	if b.Mode == "auto" && runCtx.Err() == nil && errors.As(err, &incompatible) {
 		return cli.Execute(runCtx, e)
+	}
+	return result, err
+}
+
+func taskTimedOut(result Result, err error) (Result, error) {
+	result.ExitCode = -1
+	result.Finished = false
+	result.TimedOut = true
+	if result.Receipt != nil {
+		if result.Receipt.Submission.State != SubmissionNotSubmitted {
+			result.Receipt.Submission.State = SubmissionUncertain
+		}
+		if result.Receipt.Transport.Failure != "shutdown" {
+			result.Receipt.Transport = Transport{Outcome: TransportFailed, Failure: "timeout"}
+		}
+		result.Receipt.Worker.Outcome = WorkerClaimUnknown
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		err = errors.Join(context.DeadlineExceeded, err)
 	}
 	return result, err
 }

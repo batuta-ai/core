@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/batuta-ai/core/executor/acp"
 	"github.com/batuta-ai/core/publication"
@@ -198,6 +199,59 @@ func TestTransportRejectsInvalidModesAndCanceledAttempts(t *testing.T) {
 				t.Fatalf("result=%+v err=%v calls=%d", result, err, *calls)
 			}
 		})
+	}
+}
+
+func TestTransportPreservesTaskTimeoutClassification(t *testing.T) {
+	for _, scenario := range []string{"cli", "auto fallback", "auto submitted", "acp"} {
+		t.Run(scenario, func(t *testing.T) {
+			backend, execution, calls := transportFixture(t)
+			backend.Mode = strings.Fields(scenario)[0]
+			execution.Timeout = 100 * time.Millisecond
+			backend.CLI = CLIBackend{Subprocess: Subprocess{
+				Lookup: func(name string) (string, error) { return filepath.Join(execution.Request.Cwd, name), nil },
+				Runner: backendCommandRunner(func(ctx context.Context, _ publication.Command) (publication.CommandResult, error) {
+					*calls++
+					<-ctx.Done()
+					return publication.CommandResult{ExitCode: -1}, ctx.Err()
+				}),
+			}}
+			if scenario != "cli" {
+				peerBackend := backendPeer(t, execution, func(reader *bufio.Reader, peer net.Conn) {
+					backendReply(peer, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+					config := `{"sessionId":"task"}`
+					if scenario != "auto fallback" {
+						config = `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"medium"}]}]}`
+					}
+					backendReply(peer, backendRead(t, reader, "session/new"), config)
+					io.Copy(io.Discard, reader)
+				})
+				backend.ACP.Open = peerBackend.Open
+			}
+
+			result, err := backend.Execute(context.Background(), execution)
+			wantCalls := 0
+			if scenario == "cli" || scenario == "auto fallback" {
+				wantCalls = 1
+			}
+			if !result.TimedOut || result.Finished || (!errors.Is(err, context.DeadlineExceeded) && scenario != "cli") || *calls != wantCalls {
+				t.Fatalf("timeout classification: result=%+v err=%v calls=%d", result, err, *calls)
+			}
+			if result.Receipt != nil && result.Receipt.Transport.Outcome == TransportCanceled {
+				t.Fatalf("task timeout reported as caller cancellation: %+v", result.Receipt)
+			}
+			if scenario == "auto submitted" && result.Receipt.Submission.State != SubmissionUncertain {
+				t.Fatalf("timed-out submission became replayable: %+v", result.Receipt)
+			}
+		})
+	}
+}
+
+func TestTaskTimeoutPreservesUnverifiedShutdown(t *testing.T) {
+	receipt := &Receipt{Submission: Submission{State: SubmissionSubmitted}, Transport: Transport{Outcome: TransportFailed, Failure: "shutdown"}, Worker: WorkerClaim{Outcome: WorkerClaimedSuccess}}
+	result, err := taskTimedOut(Result{ExitCode: 0, Finished: true, Receipt: receipt}, errors.New("shutdown failed"))
+	if !errors.Is(err, context.DeadlineExceeded) || !result.TimedOut || result.Finished || result.Receipt.Submission.State != SubmissionUncertain || result.Receipt.Transport.Failure != "shutdown" || result.Receipt.Worker.Outcome != WorkerClaimUnknown {
+		t.Fatalf("timeout erased reconciliation evidence: result=%+v receipt=%+v err=%v", result, result.Receipt, err)
 	}
 }
 
