@@ -10,6 +10,8 @@ Os hosts usam o binário deste módulo em vez de reimplementar essas regras.
 
 ```text
 batuta loop --dry-run [<plano>]        mostra ondas e executores sem executar
+batuta dispatch --brief-file <arquivo> --executor <id> --model <id> --cwd <worktree>
+                                       executa uma tentativa externa limitada
 batuta loop [<plano>]                  executa um plano aprovado
 batuta loop --resume <entrega>         continua uma entrega interrompida
 batuta loop --answer <tarefa> "<texto>" responde uma tarefa aguardando entrada
@@ -18,6 +20,15 @@ batuta review --base <ref> [--spec <plano>] revisa uma entrega pelos adaptadores
 batuta watch [<entrega>]               abre o painel interativo ao vivo
 batuta trail [<entrega>]               mostra os registros do diário
 ```
+
+`dispatch` e `loop` aceitam `--transport cli|acp|auto`; sem a opção, o caminho
+CLI legado continua sendo o padrão. ACP exige qualificação exata por executor,
+versão, plataforma, modelo e esforço; o binário padrão ainda não inclui
+lançamentos ACP aprovados. Uma tentativa ACP incerta é preservada para
+reconciliação e nunca é repetida automaticamente via CLI. Subagentes nativos
+pertencem ao host interativo, não ao binário. Consulte
+[dispatch](docs/dispatch.md) e o
+[protocolo de medição](docs/dispatch-measurement.md).
 
 Quando um limite de uso dura além do orçamento de espera, o loop recorre ao
 próximo runtime executável sem gastar uma nova tentativa nem uma escalação.

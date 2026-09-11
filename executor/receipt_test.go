@@ -47,6 +47,57 @@ func TestMarshalReceiptMakesMissingOutcomesExplicit(t *testing.T) {
 	}
 }
 
+func TestDispatchReceiptPreservesModelAndPartialUsageProvenance(t *testing.T) {
+	t.Parallel()
+	zero := int64(0)
+	output := int64(21)
+	report := DispatchReport{
+		Executor:           "codex",
+		Model:              "gpt-5.6-sol",
+		Effort:             "medium",
+		RequestedTransport: "acp",
+		Backend:            "acp",
+		ExitClass:          "completed",
+		Receipt: Receipt{
+			Submission: Submission{State: SubmissionSubmitted},
+			Transport:  Transport{Outcome: TransportCompleted},
+			Worker:     WorkerClaim{Outcome: WorkerClaimedSuccess},
+			Usage: &Usage{
+				CachedInputTokens: &zero,
+				OutputTokens:      &output,
+				Provenance:        "acp/session-prompt/usage (draft)",
+			},
+		},
+	}
+
+	payload, err := marshalDispatchReport(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	if string(fixture["model"]) != `"gpt-5.6-sol"` || string(fixture["effort"]) != `"medium"` {
+		t.Fatalf("model provenance changed: %s", payload)
+	}
+	var receipt struct {
+		Usage map[string]json.RawMessage `json:"usage"`
+	}
+	if err := json.Unmarshal(fixture["receipt"], &receipt); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := receipt.Usage["input_tokens"]; present {
+		t.Fatalf("unknown input tokens were invented: %s", payload)
+	}
+	if string(receipt.Usage["cached_input_tokens"]) != "0" || string(receipt.Usage["output_tokens"]) != "21" {
+		t.Fatalf("reported counters changed: %s", payload)
+	}
+	if string(receipt.Usage["provenance"]) != `"acp/session-prompt/usage (draft)"` {
+		t.Fatalf("usage provenance changed: %s", payload)
+	}
+}
+
 func TestMarshalReceiptBoundsOverflowAndKeepsEvidence(t *testing.T) {
 	t.Parallel()
 	reference := ArtifactReference{Path: "receipts/task-2/full.json", SHA256: strings.Repeat("a", 64)}

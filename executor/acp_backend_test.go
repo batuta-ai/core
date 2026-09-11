@@ -97,7 +97,7 @@ func TestACPBackendMapsStopReasonsAndStreams(t *testing.T) {
 			if receipt == nil || receipt.Submission.State != SubmissionSubmitted || receipt.Transport.Outcome != TransportCompleted || (receipt.Worker.Outcome == WorkerClaimedSuccess) != (reason == "end_turn") {
 				t.Fatalf("receipt: %+v", receipt)
 			}
-			if total, ok := receipt.Usage.TotalTokens(); !ok || total != 120 || *receipt.Usage.CachedInputTokens != 40 {
+			if total, ok := receipt.Usage.TotalTokens(); !ok || total != 120 || *receipt.Usage.CachedInputTokens != 40 || receipt.Usage.Provenance != "acp/session-prompt/usage (draft)" {
 				t.Fatalf("usage: %+v", receipt.Usage)
 			}
 			encoded, err := MarshalReceipt(*receipt)
@@ -196,8 +196,16 @@ func TestACPBackendOutputIsBounded(t *testing.T) {
 }
 
 func TestACPBackendUsageRemainsOptional(t *testing.T) {
-	for _, scenario := range []string{"absent", "occupancy", "invalid counters", "zero counters"} {
-		t.Run(scenario, func(t *testing.T) {
+	for _, test := range []struct {
+		scenario   string
+		provenance string
+	}{
+		{scenario: "absent"},
+		{scenario: "occupancy", provenance: "acp/session-update"},
+		{scenario: "invalid counters", provenance: "acp/session-prompt/usage (draft)"},
+		{scenario: "zero counters", provenance: "acp/session-prompt/usage (draft)"},
+	} {
+		t.Run(test.scenario, func(t *testing.T) {
 			execution := Execution{Request: Request{Cwd: t.TempDir(), Prompt: "read-only brief"}}
 			backend := backendPeer(t, execution, func(reader *bufio.Reader, peer net.Conn) {
 				request := backendSetup(t, reader, peer)
@@ -205,7 +213,7 @@ func TestACPBackendUsageRemainsOptional(t *testing.T) {
 					t.Errorf("prompt fallback: %s", request["params"])
 				}
 				response := `{"stopReason":"end_turn"}`
-				switch scenario {
+				switch test.scenario {
 				case "occupancy":
 					fmt.Fprintln(peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"usage_update","used":300,"size":1000}}}`)
 				case "invalid counters":
@@ -221,16 +229,16 @@ func TestACPBackendUsageRemainsOptional(t *testing.T) {
 				t.Fatalf("result: %+v / %v", result, err)
 			}
 			usage := result.Receipt.Usage
-			if scenario == "absent" {
+			if test.scenario == "absent" {
 				if usage != nil {
 					t.Fatalf("absent usage: %+v", usage)
 				}
 				return
 			}
-			if usage == nil || usage.Provenance == "" {
+			if usage == nil || usage.Provenance != test.provenance {
 				t.Fatalf("usage provenance: %+v", usage)
 			}
-			if scenario == "zero counters" {
+			if test.scenario == "zero counters" {
 				if total, known := usage.TotalTokens(); !known || total != 0 || usage.CachedInputTokens == nil || *usage.CachedInputTokens != 0 {
 					t.Fatalf("explicit zero usage: %+v", usage)
 				}

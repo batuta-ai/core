@@ -5,8 +5,10 @@ model in the conductor's seat. It is the Ralph loop of the
 beer-and-code-harness driven by the core delivery graph instead of a phase
 list, with the same invariants:
 
-1. Every task and every fix cycle runs in a **new executor session** with a
-   self-contained brief. Nothing is reused across sessions.
+1. Every task and every fix cycle runs in a **new external executor session**
+   with a self-contained brief. The transport is the legacy CLI or a qualified
+   ACP session; native host children are not available to the headless loop.
+   Nothing is reused across sessions.
 2. **Zero questions** by default. An executor that must stop prints one
    `BATUTA-QUESTION: <text>` line; the task parks and the run ends with
    `waiting_input` until `--answer` brings the text back.
@@ -49,7 +51,7 @@ loop        AdmitReadyWave → BeginWaveAttempts → attempts in parallel (at
             most 4, `Execution:` line or --parallel) → settle every wave
             that holds candidates → repeat until done, blocked or waiting
 attempt     worktree at the attempt's base → optional Install: → brief →
-            executor via adapter → gates → squash to one conventional
+            executor via selected external transport → gates → squash to one conventional
             commit → integration.GitClient.Candidate → RecordCandidate
             (or RecordFailureWithPolicy: retry same runtime in the same
             worktree with the failure as feedback, then one escalation in
@@ -95,6 +97,14 @@ exit `1` with the reason on stderr.
 
 ## Decisions
 
+- **External transport is opt-in.** `--transport cli|acp|auto` selects the
+  task transport and defaults to `cli`. `acp` fails before submission when no
+  exact qualification exists. `auto` can fall back to CLI before submission,
+  but never after an ACP prompt may have run. Native host dispatch belongs to
+  an interactive host and is not a loop transport. The independent verifier
+  remains a separate CLI session regardless of task transport. See
+  [dispatch.md](dispatch.md).
+
 - **Journal authority.** On file hosts the delivery journal is the single
   source of truth for a delivery; `--resume` loads the last record's graph
   and verifies the chain. The routing ownership store
@@ -112,8 +122,9 @@ exit `1` with the reason on stderr.
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
-- **Usage-limit fallback.** `--max-limit-waits` (default 20) bounds the waits
-  in one attempt. At that cap, or when a named reset is more than
+- **Usage-limit fallback.** The legacy CLI policy is unchanged:
+  `--max-limit-waits` (default 20) bounds the waits in one attempt. At that
+  cap, or when a named reset is more than
   `--limit-horizon` (default `2h`) away, the loop walks to the cell's next
   executable fallback, using the same cell walk as escalation. It reruns the
   brief in the same worktree with the same execution number and run ID;
@@ -127,6 +138,9 @@ exit `1` with the reason on stderr.
   runtime without incrementing retries or escalations. `--dry-run` lists the
   next limit fallback per task, or `none`. Proposal #54's separate **Limit
   fallback** routing-table column is deferred; no new column is required.
+  An ACP quota response after possible prompt submission is uncertain work,
+  not proof of non-execution, so the loop parks it for reconciliation without
+  a fallback, retry or escalation.
 - **Conflicts keep the same runtime.** A conflicting candidate re-executes on
   the new base with the same executor, model, and reasoning; escalation is
   reserved for verification failures.
@@ -231,9 +245,11 @@ exit `1` with the reason on stderr.
   files the user wrote and approved. **Executor lines never see a shell**:
   the adapter's `run` is tokenized once, placeholders are substituted per
   token, and shell syntax in an adapter line is a parse error.
-- **Interrupted attempts** (a killed loop) are recorded as `stalled` with
-  blocker `interrupted` on `--resume`; the conducting policy then retries in
-  the same worktree.
+- **Interrupted attempts** (a killed loop) are recorded as `stalled` on
+  `--resume`. A legacy CLI attempt follows its existing retry policy in the
+  preserved worktree. An ACP intent that may have submitted blocks as
+  `submission_uncertain`; it is not replayed until the preserved work is
+  reconciled.
 - **Verifier.** The `low` row's executor of the task's domain when it
   differs from the one that wrote the diff, else the task's own adapter;
   invoked through the adapter's `readonly` line with the headless contract
@@ -347,7 +363,10 @@ from plan discovery.
 
 ## Not in this release
 
-- Token accounting: CLI executors do not report tokens, so the graph's
-  budget is unused; the wall budget is `--task-timeout` per session.
+- Delivery token budgeting or aggregation: ACP receipts can retain optional
+  provider-reported usage, but missing counters remain unknown and the graph
+  does not consume them. CLI executors do not report tokens. The wall budget
+  remains `--task-timeout` per session; paired measurement is described in
+  [dispatch-measurement.md](dispatch-measurement.md).
 - Cross-review with lenses (the skill's `/batuta-review`); the loop runs the
   independent verifier only.
