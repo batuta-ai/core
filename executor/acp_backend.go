@@ -70,7 +70,7 @@ func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Re
 			receipt.Transport = Transport{Outcome: TransportFailed, Failure: "shutdown"}
 			result.Finished = false
 			result.ExitCode = -1
-			err = errors.New("executor: ACP worker shutdown unverified")
+			err = errors.Join(err, errors.New("executor: ACP worker shutdown unverified"))
 		}
 	}()
 	var policy acp.PermissionPolicy

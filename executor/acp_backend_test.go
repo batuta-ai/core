@@ -9,7 +9,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -336,6 +342,97 @@ func TestACPBackendPermissionPolicyAndUnsupportedMethods(t *testing.T) {
 			receipt, err := MarshalReceipt(*result.Receipt)
 			if err != nil || bytes.Contains(receipt, []byte("canary")) || strings.Contains(result.Question, "canary") {
 				t.Fatalf("unsafe receipt/question: %s / %v", receipt, err)
+			}
+		})
+	}
+}
+
+func TestACPBackendProcessFixture(t *testing.T) {
+	mode := os.Getenv("BATUTA_BACKEND_FIXTURE")
+	if mode == "" {
+		return
+	}
+	signal.Ignore(syscall.SIGPIPE)
+	go func() { time.Sleep(15 * time.Second); os.Exit(9) }()
+	reader := bufio.NewScanner(os.Stdin)
+	var prompt map[string]json.RawMessage
+	for reader.Scan() {
+		var request map[string]json.RawMessage
+		if json.Unmarshal(reader.Bytes(), &request) != nil {
+			os.Exit(2)
+		}
+		switch string(request["method"]) {
+		case `"initialize"`:
+			backendReply(os.Stdout, request, `{"protocolVersion":1,"agentCapabilities":{}}`)
+		case `"session/new"`:
+			backendReply(os.Stdout, request, `{"sessionId":"task"}`)
+		case `"session/prompt"`:
+			prompt = request
+		case `"session/cancel"`:
+			if err := os.WriteFile(os.Getenv("BATUTA_CANCEL_MARKER"), []byte("cancel received"), 0600); err != nil {
+				os.Exit(3)
+			}
+			if mode != "ignore" {
+				reason := "cancelled"
+				if mode == "late" {
+					reason = "end_turn"
+				}
+				backendReply(os.Stdout, prompt, fmt.Sprintf(`{"stopReason":%q}`, reason))
+			}
+		}
+	}
+	// This worker ignores EOF even after acknowledging cancellation or success.
+	if err := os.WriteFile(os.Getenv("BATUTA_CANCEL_MARKER")+".eof", []byte("EOF ignored"), 0600); err != nil {
+		os.Exit(4)
+	}
+	time.Sleep(15 * time.Second)
+	os.Exit(0)
+}
+
+func TestACPBackendHardTimeoutReapsUncooperativeWorker(t *testing.T) {
+	for _, mode := range []string{"ignore", "cancelled", "late"} {
+		t.Run(mode, func(t *testing.T) {
+			marker := filepath.Join(t.TempDir(), "cancel")
+			var cmd *exec.Cmd
+			backend := ACPBackend{Open: func(ctx context.Context, execution Execution) (*acp.Connection, func() error, error) {
+				cmd = exec.Command(os.Args[0], "-test.run=^TestACPBackendProcessFixture$")
+				cmd.Env = append(os.Environ(), "BATUTA_BACKEND_FIXTURE="+mode, "BATUTA_CANCEL_MARKER="+marker)
+				process, err := acp.StartProcess(ctx, cmd, acp.Options{})
+				if err != nil {
+					return nil, nil, err
+				}
+				return process.Connection, process.Shutdown, nil
+			}}
+			execution := Execution{Request: Request{Cwd: t.TempDir(), Brief: "brief"}, Timeout: time.Second}
+			type outcome struct {
+				result Result
+				err    error
+			}
+			done := make(chan outcome, 1)
+			go func() { result, err := backend.Execute(context.Background(), execution); done <- outcome{result, err} }()
+			select {
+			case got := <-done:
+				if runtime.GOOS == "windows" {
+					if got.err == nil || cmd.Process != nil || got.result.Receipt.Submission.State != SubmissionNotSubmitted {
+						t.Fatalf("unqualified Windows ACP: %+v", got)
+					}
+					return
+				}
+				result := got.result
+				if !errors.Is(got.err, context.DeadlineExceeded) || !result.TimedOut || result.Finished || result.ExitCode == 0 || result.Receipt.Submission.State != SubmissionUncertain || result.Receipt.Transport.Failure != "shutdown" {
+					t.Fatalf("timeout or cleanup erased: %+v / %+v / %v", result, result.Receipt, got.err)
+				}
+				if cmd.ProcessState == nil {
+					t.Fatal("worker was not reaped")
+				}
+				if data, err := os.ReadFile(marker); err != nil || string(data) != "cancel received" {
+					t.Fatalf("peer did not receive cancel: %q / %v", data, err)
+				}
+				if data, err := os.ReadFile(marker + ".eof"); err != nil || string(data) != "EOF ignored" {
+					t.Fatalf("peer did not ignore EOF: %q / %v", data, err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("hard timeout failed to bound execution")
 			}
 		})
 	}

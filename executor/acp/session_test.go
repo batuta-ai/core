@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func configState(model, effort string) string {
@@ -240,5 +241,67 @@ func TestSessionStreamsOnlyAgentTextAndCannotReplay(t *testing.T) {
 	got := <-done
 	if got.err != nil || got.text != "hello world" || !got.result.Completed || !got.result.SubmissionAttempted || got.result.Usage == nil || *got.result.Usage.InputTokens != 100 || *got.result.Usage.CachedInputTokens != 40 {
 		t.Fatalf("turn: %+v", got)
+	}
+}
+
+func TestSessionCancellationNotifiesAndRejectsLateResult(t *testing.T) {
+	for _, lateResult := range []bool{false, true} {
+		t.Run(fmt.Sprint(lateResult), func(t *testing.T) {
+			conn, peer := testConnection(t, Options{})
+			cwd := t.TempDir()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				session, err := NewSession(ctx, conn, SessionConfig{Cwd: cwd})
+				if err == nil {
+					var result TurnResult
+					result, err = session.Prompt(ctx, "brief", nil)
+					if result.Completed || !result.SubmissionAttempted {
+						err = fmt.Errorf("cancelled turn: %+v / %v", result, err)
+					}
+				}
+				done <- err
+			}()
+			reader := bufio.NewReader(peer)
+			setupPeer(t, peer, reader, cwd, `{}`)
+			prompt := expectMethod(t, reader, "session/prompt")
+			cancel()
+			request := expectMethod(t, reader, "session/cancel")
+			if len(request["id"]) != 0 || string(request["params"]) != `{"sessionId":"task"}` {
+				t.Fatalf("cancel notification: %v", request)
+			}
+			if lateResult {
+				// Closing can race this response: neither outcome may revive the turn.
+				fmt.Fprintf(peer, `{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`+"\n", prompt["id"])
+			}
+			awaitError(t, done, context.Canceled)
+		})
+	}
+}
+
+func TestSessionCancellationBoundsBlockedCancelWrite(t *testing.T) {
+	conn, peer := testConnection(t, Options{})
+	cwd := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		session, err := NewSession(ctx, conn, SessionConfig{Cwd: cwd})
+		if err == nil {
+			_, err = session.Prompt(ctx, "brief", nil)
+		}
+		done <- err
+	}()
+	reader := bufio.NewReader(peer)
+	setupPeer(t, peer, reader, cwd, `{}`)
+	expectMethod(t, reader, "session/prompt")
+	cancel()
+	// net.Pipe blocks the cancel write because the peer never reads again.
+	awaitError(t, done, context.Canceled)
+	select {
+	case <-conn.Done():
+	case <-time.After(time.Second):
+		t.Fatal("blocked cancel retained transport goroutines")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 var (
@@ -233,12 +234,41 @@ func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) e
 }
 
 func (s *Session) call(ctx context.Context, method string, params json.RawMessage, text func(string) error, result *TurnResult) (json.RawMessage, error) {
+	// Keep the transport alive briefly to send cancellation before making the
+	// attempt terminal. Connection.Call still enforces its own request ceiling.
+	callCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancel()
 	replies := make(chan reply, 1)
-	go func() { raw, err := s.conn.Call(ctx, method, params); replies <- reply{raw, err} }()
+	go func() { raw, err := s.conn.Call(callCtx, method, params); replies <- reply{raw, err} }()
 	notifications, requests := s.conn.Notifications(), s.conn.Requests()
+	stop := func() (json.RawMessage, error) {
+		if method == "session/prompt" {
+			cancelCtx, finish := context.WithTimeout(context.WithoutCancel(ctx), 100*time.Millisecond)
+			payload, _ := json.Marshal(struct {
+				SessionID string `json:"sessionId"`
+			}{s.id})
+			_ = s.conn.Notify(cancelCtx, "session/cancel", payload)
+			finish()
+		}
+		cancel()
+		s.conn.fail(ctx.Err())
+		return nil, ctx.Err()
+	}
 	for {
+		if ctx.Err() != nil {
+			_, err := stop()
+			<-replies
+			return nil, err
+		}
 		select {
+		case <-ctx.Done():
+			_, err := stop()
+			<-replies
+			return nil, err
 		case got := <-replies:
+			if ctx.Err() != nil {
+				return stop()
+			}
 			if err := s.drain(ctx, text, result); err != nil {
 				return nil, err
 			}
