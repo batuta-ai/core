@@ -1,6 +1,7 @@
 # WORK — core
 
 ## In progress
+- [ ] Approved automatic deep review layer: `.batuta/plans/supervision-review.md`, isolated base252ff12; supervisor fixes/review remain on their own branches.
 - [ ] Urgent loop supervision: approved 4-task plan `.batuta/plans/loop-supervision.md`; isolated base231cd3f while ACP review corrections finish independently. No automatic monitoring claimed until verified supervisor runs.
 - [ ] ACP review corrections: approved `.batuta/plans/acp-review-fixes.md`, 3 remaining tasks after ordering fix. Full review evidence `.batuta/reviews/acp-dispatch-full/`; judgments `.batuta/runs/acp-review-judgment.md`.
 - [x] Optional ACP implementation loop done: 11/11 at 1b47ec4. Full review returned REWORK; corrections below precede release qualification.
