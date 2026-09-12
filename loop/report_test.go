@@ -532,3 +532,83 @@ func TestResumeRetriesParkedDeletionAlreadyCompleted(t *testing.T) {
 		t.Fatal("completed deletion retry repeated bookkeeping")
 	}
 }
+
+func TestSupervisionFinalCommitIdentity(t *testing.T) {
+	f, r, _ := finishedTasksForBookkeeping(t)
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("finish = %s, %v", state, err)
+	}
+	records := readJournal(t, f, r.Delivery())
+	var detail terminalDetail
+	if err := json.Unmarshal(records[len(records)-1].Detail, &detail); err != nil {
+		t.Fatal(err)
+	}
+	final := f.run(t, "rev-parse", "HEAD")
+	if detail.FinalCommit != final {
+		t.Fatalf("final commit = %q, want %q", detail.FinalCommit, final)
+	}
+	f.run(t, "commit", "--allow-empty", "-qm", "test: later delivery")
+	records = readJournal(t, f, r.Delivery())
+	if err := json.Unmarshal(records[len(records)-1].Detail, &detail); err != nil || detail.FinalCommit != final {
+		t.Fatalf("identity moved: %+v, %v", detail, err)
+	}
+}
+
+func TestSupervisionBookkeepingRecoveryIdentity(t *testing.T) {
+	for _, crash := range []bool{false, true} {
+		t.Run(map[bool]string{false: "normal", true: "after commit"}[crash], func(t *testing.T) {
+			f := setup(t)
+			r, err := New(context.Background(), f.options("default", new(bytes.Buffer)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Finalization consumes a settled graph; executor and integration behavior
+			// are covered by TestSupervisionFinalCommitIdentity and the runner tests.
+			for i := range r.graph.Tasks {
+				r.graph.Tasks[i].State = routing.GraphTaskIntegrated
+				r.graph.Tasks[i].IntegratedCommitSHA = f.base
+			}
+			if err := r.open(); err != nil {
+				t.Fatal(err)
+			}
+			interrupted := errors.New("crash after commit")
+			if crash {
+				r.git.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+					result, err := (publication.ExecRunner{}).Run(ctx, c)
+					if err == nil && c.Directory == f.root && len(c.Args) > 0 && c.Args[0] == "commit" {
+						panic(interrupted)
+					}
+					return result, err
+				})
+			}
+			func() {
+				defer func() {
+					if p := recover(); p != nil && p != interrupted {
+						panic(p)
+					}
+				}()
+				if state, err := r.finish(context.Background(), StateDone); err != nil || state != StateDone {
+					t.Fatalf("finish: %s, %v", state, err)
+				}
+			}()
+			final := f.run(t, "rev-parse", "HEAD")
+			f.run(t, "commit", "--allow-empty", "-qm", "test: later delivery")
+			if crash {
+				r.git.Runner = publication.ExecRunner{}
+				records := readJournal(t, f, r.Delivery())
+				detail := pendingFinalization(records)
+				if detail == nil {
+					t.Fatal("no crash checkpoint")
+				}
+				if state, err := r.completeFinalization(context.Background(), *detail); err != nil || state != StateDone {
+					t.Fatalf("recovery: %s, %v", state, err)
+				}
+			}
+			records := readJournal(t, f, r.Delivery())
+			var terminal terminalDetail
+			if err := json.Unmarshal(records[len(records)-1].Detail, &terminal); err != nil || terminal.FinalCommit != final {
+				t.Fatalf("identity: %+v, want %s, %v", terminal, final, err)
+			}
+		})
+	}
+}

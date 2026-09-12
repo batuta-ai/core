@@ -1660,3 +1660,23 @@ func TestLoopSupervisionLocalFileSink(t *testing.T) {
 		t.Fatalf("files=%v err=%v", files, err)
 	}
 }
+
+func TestLoopSupervisionReviewEngineFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"review", "-h"}, &stdout, &stderr); err == nil {
+		t.Fatal("expected help sentinel")
+	}
+	for _, flag := range []string{"-base string", "-spec string", "-full", "-out string"} {
+		if !strings.Contains(stderr.String(), flag) {
+			t.Fatalf("review engine lacks %s: %s", flag, &stderr)
+		}
+	}
+	stdout.Reset()
+	if err := runCapabilities(&stdout); err != nil {
+		t.Fatal(err)
+	}
+	var caps capabilities
+	if err := json.Unmarshal(stdout.Bytes(), &caps); err != nil || !slices.Contains(caps.Commands, "review") {
+		t.Fatalf("capabilities: %s, %v", &stdout, err)
+	}
+}

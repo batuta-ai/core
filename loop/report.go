@@ -27,6 +27,7 @@ const kindFinalizing journal.Kind = "delivery_finalizing"
 const kindCleanup journal.Kind = "delivery_cleanup"
 
 type terminalDetail struct {
+	FinalCommit        string               `json:"final_commit,omitempty"`
 	Deletions          []worktree.ParkedRef `json:"pending_ref_deletions,omitempty"`
 	BookkeepingPending bool                 `json:"bookkeeping_pending,omitempty"`
 	BookkeepingError   string               `json:"bookkeeping_error,omitempty"`
@@ -103,6 +104,9 @@ func (r *Runner) completeFinalization(ctx context.Context, detail terminalDetail
 	}
 	if detail.BookkeepingPending {
 		bookkeepingErr = r.bookkeeping(ctx, detail.State, detail.Summary)
+		if bookkeepingErr == nil && detail.State == StateDone {
+			detail.FinalCommit, bookkeepingErr = r.bookkeepingIdentity(ctx, detail.State, detail.Summary)
+		}
 		detail.BookkeepingPending = bookkeepingErr != nil
 		detail.BookkeepingError = errorString(bookkeepingErr)
 	}
@@ -509,6 +513,33 @@ func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary)
 		return fmt.Errorf("loop: bookkeeping commit: %w", err)
 	}
 	return nil
+}
+
+// A retry after commit but before checkpoint may see a newer branch HEAD.
+// Recover only the unique delivery bookkeeping commit, never that moving HEAD.
+func (r *Runner) bookkeepingIdentity(ctx context.Context, state string, summary Summary) (string, error) {
+	message := fmt.Sprintf("chore(batuta): %s — loop %s\n\n%d integrated, %d blocked. Delivery %s.", r.plan.Slug, state, len(summary.Integrated), len(summary.Blocked), r.delivery)
+	result, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable: r.git.Git, Directory: r.root,
+		Args: []string{"log", "--format=%H%x00%B%x00", "--fixed-strings", "--grep=Delivery " + r.delivery + ".", r.branch, "--"},
+	})
+	if err != nil || result.ExitCode != 0 || result.StdoutTruncated || result.StderrTruncated {
+		return "", errors.Join(errors.New("loop: cannot resolve final bookkeeping commit"), err)
+	}
+	fields := strings.Split(string(result.Stdout), "\x00")
+	var commit string
+	for i := 0; i+1 < len(fields); i += 2 {
+		if strings.TrimSpace(fields[i+1]) == message {
+			if commit != "" {
+				return "", errors.New("loop: ambiguous final bookkeeping commit")
+			}
+			commit = strings.TrimSpace(fields[i])
+		}
+	}
+	if commit == "" {
+		return "", errors.New("loop: final bookkeeping commit is unknown")
+	}
+	return commit, nil
 }
 
 var (

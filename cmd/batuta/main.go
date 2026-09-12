@@ -69,7 +69,8 @@ dispatch   One bounded external attempt, compact JSON and private artifacts in
            CLI is the default. ACP requires qualified runtime evidence;
            this release has no qualified ACP launches. Auto falls back to CLI
            before submission. Native tools belong to the interactive host.
-supervise  Opt-in foreground observation; no model calls while waiting.
+supervise  Foreground observation, then full review of a completed delivery.
+           No model calls while waiting; review evidence needs conductor judgment.
            --interval is bounded to 100ms..1m; Ctrl-C/SIGTERM stops cleanly.
            --cursor persists unread events; --once performs one observation.
            Each observation handles up to 32 events, with overflow in the cursor;
@@ -623,7 +624,12 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if err != nil {
 			return err
 		}
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
 		opts := loop.SuperviseOptions{Observer: loop.SupervisionOptions{Workspace: root, Delivery: *supervise, CursorPath: *cursor}, Interval: *interval, Once: *once, Output: stdout}
+		opts.Review = &loop.SupervisionReviewOptions{Executable: executable}
 		if *notify == "desktop" {
 			opts.Sink = loop.NewSupervisionDesktopSink()
 		} else if *notify != "" {

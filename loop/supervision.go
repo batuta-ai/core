@@ -54,13 +54,14 @@ type SupervisionEvent struct {
 }
 
 type SupervisionObservation struct {
-	Cursor        int                `json:"cursor"`
-	Presence      string             `json:"presence"`
-	LastActivity  time.Time          `json:"last_activity"`
-	TerminalState string             `json:"terminal_state,omitempty"`
-	Completed     bool               `json:"completed"`
-	Events        []SupervisionEvent `json:"events"`
-	Pending       []SupervisionEvent `json:"pending"`
+	Review        *SupervisionReviewJob `json:"review,omitempty"`
+	Cursor        int                   `json:"cursor"`
+	Presence      string                `json:"presence"`
+	LastActivity  time.Time             `json:"last_activity"`
+	TerminalState string                `json:"terminal_state,omitempty"`
+	Completed     bool                  `json:"completed"`
+	Events        []SupervisionEvent    `json:"events"`
+	Pending       []SupervisionEvent    `json:"pending"`
 }
 
 type supervisionEntry struct {
@@ -69,12 +70,13 @@ type supervisionEntry struct {
 }
 
 type supervisionCursor struct {
-	Version   int                `json:"version"`
-	Workspace string             `json:"workspace"`
-	Delivery  string             `json:"delivery"`
-	Sequence  int                `json:"sequence"`
-	Digest    string             `json:"digest"`
-	Outbox    []supervisionEntry `json:"outbox"`
+	Review    *SupervisionReviewJob `json:"review,omitempty"`
+	Version   int                   `json:"version"`
+	Workspace string                `json:"workspace"`
+	Delivery  string                `json:"delivery"`
+	Sequence  int                   `json:"sequence"`
+	Digest    string                `json:"digest"`
+	Outbox    []supervisionEntry    `json:"outbox"`
 }
 
 // ObserveSupervision performs one local observation without model calls or
@@ -102,7 +104,9 @@ func ObserveSupervision(opts SupervisionOptions) (SupervisionObservation, error)
 	if cursor.Sequence > len(records) || (cursor.Sequence > 0 && records[cursor.Sequence-1].Digest != cursor.Digest) {
 		return SupervisionObservation{}, errors.New("loop: supervision journal no longer matches durable cursor")
 	}
-	result := SupervisionObservation{Cursor: len(records)}
+	result := SupervisionObservation{Cursor: len(records), Review: supervisionReviewCandidate(opts.Delivery, records)}
+	reviewAdded := cursor.Review == nil && result.Review != nil
+	cursor.Review = result.Review
 	for _, record := range records[cursor.Sequence:] {
 		event, err := supervisionEvent(opts.Delivery, record)
 		if err != nil {
@@ -123,7 +127,7 @@ func ObserveSupervision(opts SupervisionOptions) (SupervisionObservation, error)
 			}
 			result.TerminalState, result.Completed = event.TerminalState, event.Completed
 		}
-		if cursor.Sequence != last.Seq {
+		if cursor.Sequence != last.Seq || reviewAdded {
 			cursor.Sequence, cursor.Digest = last.Seq, last.Digest
 			if err := writeSupervisionCursor(opts.CursorPath, cursor); err != nil {
 				return SupervisionObservation{}, err
@@ -354,8 +358,9 @@ func supervisionIdentifier(value string) string {
 
 // SuperviseOptions configures one foreground observer. Interval must be between
 // 100 ms and one minute. Sleep allows an embedding host to supply its clock.
-// No executor is invoked: the only intervention is the existing fixed policy.
+// Review optionally invokes the engine only after a completed delivery.
 type SuperviseOptions struct {
+	Review   *SupervisionReviewOptions
 	Observer SupervisionOptions
 	Interval time.Duration
 	Once     bool
@@ -366,14 +371,15 @@ type SuperviseOptions struct {
 }
 
 type supervisionReport struct {
-	Delivery  string               `json:"delivery"`
-	Cursor    int                  `json:"cursor"`
-	State     string               `json:"state"`
-	Presence  string               `json:"presence"`
-	Completed bool                 `json:"completed"`
-	Pending   int                  `json:"pending"`
-	Outbox    string               `json:"outbox"`
-	Decision  *SupervisionDecision `json:"decision,omitempty"`
+	Review    *SupervisionReviewJob `json:"review,omitempty"`
+	Delivery  string                `json:"delivery"`
+	Cursor    int                   `json:"cursor"`
+	State     string                `json:"state"`
+	Presence  string                `json:"presence"`
+	Completed bool                  `json:"completed"`
+	Pending   int                   `json:"pending"`
+	Outbox    string                `json:"outbox"`
+	Decision  *SupervisionDecision  `json:"decision,omitempty"`
 }
 
 type supervisionDeliveryResult struct {
@@ -417,6 +423,13 @@ func Supervise(ctx context.Context, opts SuperviseOptions) error {
 			State: observation.TerminalState, Presence: observation.Presence, Completed: observation.Completed, Pending: len(observation.Pending), Outbox: observer.CursorPath}
 		if report.State == "" {
 			report.State = "open"
+		}
+		report.Review = observation.Review
+		if opts.Review != nil && observation.Completed {
+			report.Review, err = RunSupervisionReview(ctx, observer, *opts.Review)
+			if err != nil {
+				return err
+			}
 		}
 		failed := false
 		current := map[string][32]byte{}
@@ -468,7 +481,8 @@ func Supervise(ctx context.Context, opts SuperviseOptions) error {
 			}
 			return nil
 		}
-		if observation.Completed && !failed && (opts.Sink == nil || report.Pending == 0) {
+		reviewWaiting := opts.Review != nil && report.Review != nil && report.Review.ID != "" && report.Review.State == "pending"
+		if observation.Completed && !reviewWaiting && !failed && (opts.Sink == nil || report.Pending == 0) {
 			return nil
 		}
 		if err := opts.Sleep(ctx, opts.Interval); err != nil {
