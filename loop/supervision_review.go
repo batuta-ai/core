@@ -171,7 +171,9 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 		return persist()
 	}
 
-	if opts.Runner == nil {
+	runner := opts.Runner
+	if runner == nil {
+		runner = publication.ReviewRunner{}
 		opts.Runner = publication.ExecRunner{}
 	}
 	if err := probeSupervisionReview(reviewCtx, opts, observer.Workspace); err != nil {
@@ -199,8 +201,16 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	if _, err := persist(); err != nil {
 		return nil, err
 	}
-	result, runErr := opts.Runner.Run(reviewCtx, publication.Command{Executable: opts.Executable, Directory: job.Snapshot, Args: []string{"review", "--base", job.Base, "--spec", job.Spec, "--full", "--out", job.Artifacts}})
+	result, runErr := runner.Run(reviewCtx, publication.Command{Executable: opts.Executable, Directory: job.Snapshot, Args: []string{"review", "--base", job.Base, "--spec", job.Spec, "--full", "--out", job.Artifacts}})
 	job.ExitCode = result.ExitCode
+	if reviewCtx.Err() != nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, publication.ErrReviewCleanupUnresolved) {
+		// The durable attempt remains the owner after releasing the in-process
+		// guard. Neither replay nor artifact validation can resolve descendants.
+		job.State, job.Outcome, job.Acceptance = "uncertain", "cleanup_unresolved", "pending"
+		job.Reason = errors.Join(errors.New("loop: review descendant cleanup unresolved; reconcile reviewer execution before any further attempt"), runErr, reviewCtx.Err()).Error()
+		job.FinishedAt = observer.Now()
+		return persist()
+	}
 	var exitErr *exec.ExitError
 	verdictExit := (result.ExitCode == 2 || result.ExitCode == 3) && errors.As(runErr, &exitErr)
 	if (runErr != nil && !verdictExit) || reviewCtx.Err() != nil || result.StdoutTruncated || result.StderrTruncated {

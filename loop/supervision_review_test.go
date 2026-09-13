@@ -326,6 +326,9 @@ func TestSupervisionReviewSnapshotAndEngineFailures(t *testing.T) {
 					return original.Run(ctx, c)
 				})
 				want = "failed"
+				if scenario == "canceled" {
+					want = "uncertain"
+				}
 			}
 			job, e := RunSupervisionReview(context.Background(), opts, engine)
 			if e != nil || job.State != want {
@@ -555,5 +558,53 @@ func TestSupervisionReviewRetainsHistoricalOutcomeEvidence(t *testing.T) {
 	var saved SupervisionReviewJob
 	if err := json.Unmarshal(historical, &saved); err != nil || saved.Outcome != "SHIP" {
 		t.Fatalf("overwritten outcome: %+v %v", saved, err)
+	}
+}
+
+func TestSupervisionReviewCanceledExecutionRetainsUncertainOwnership(t *testing.T) {
+	for _, scenario := range []string{"canceled error", "deadline error", "canceled context", "unresolved cleanup"} {
+		t.Run(scenario, func(t *testing.T) {
+			opts, _, spec := supervisionReviewFixture(t)
+			launches := 0
+			engine := fakeSupervisionReview(t, opts, spec, &launches)
+			original := engine.Runner
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				result, err := original.Run(ctx, c)
+				if len(c.Args) <= 2 {
+					return result, err
+				}
+				switch scenario {
+				case "canceled error":
+					return result, context.Canceled
+				case "deadline error":
+					return result, context.DeadlineExceeded
+				case "unresolved cleanup":
+					return result, publication.ErrReviewCleanupUnresolved
+				default:
+					cancel()
+					return result, nil
+				}
+			})
+			job, err := RunSupervisionReview(ctx, opts, engine)
+			if err != nil || job == nil || job.State != "uncertain" || job.Outcome != "cleanup_unresolved" || job.Acceptance != "pending" {
+				t.Fatalf("canceled review: %+v, %v", job, err)
+			}
+			if !strings.Contains(job.Reason, "descendant cleanup") || job.Attempts != 1 {
+				t.Fatalf("lost cleanup ownership: %+v", job)
+			}
+			for i := 0; i < 2; i++ {
+				opts.CursorPath = filepath.Join(opts.Workspace, fmt.Sprintf("restart-%d.json", i))
+				observed := supervisionObserve(t, opts).Review
+				if observed.State != "uncertain" || observed.Outcome != "cleanup_unresolved" || observed.Acceptance != "pending" {
+					t.Fatalf("uncertainty hidden from observer: %+v", observed)
+				}
+				replay, err := RunSupervisionReview(context.Background(), opts, engine)
+				if err != nil || replay.State != "uncertain" || launches != 1 {
+					t.Fatalf("replayed unresolved execution: %+v, %v, launches=%d", replay, err, launches)
+				}
+			}
+		})
 	}
 }
