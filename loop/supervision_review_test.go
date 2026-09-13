@@ -87,21 +87,20 @@ func fakeSupervisionReview(t *testing.T, opts SupervisionOptions, spec string, l
 		}
 		(*launches)++
 		if c.Directory == opts.Workspace || len(c.Args) != 8 || c.Args[0] != "review" || c.Args[2] != base || c.Args[5] != "--full" {
-			t.Fatalf("review command: %+v", c)
+			return publication.CommandResult{}, fmt.Errorf("review command: %+v", c)
 		}
 		data, e := os.ReadFile(c.Args[4])
 		if e != nil || string(data) != spec {
-			t.Fatalf("spec: %q, %v", data, e)
+			return publication.CommandResult{}, fmt.Errorf("spec: %q, %v", data, e)
 		}
 		data, e = os.ReadFile(filepath.Join(c.Directory, "source.txt"))
 		if e != nil || string(data) != "delivered\n" {
-			t.Fatalf("snapshot: %q, %v", data, e)
+			return publication.CommandResult{}, fmt.Errorf("snapshot: %q, %v", data, e)
 		}
 		if e := os.MkdirAll(c.Args[7], 0700); e != nil {
-			t.Fatal(e)
+			return publication.CommandResult{}, e
 		}
-		writeSupervisionReviewEvidence(t, c, "SHIP", true)
-		return publication.CommandResult{}, nil
+		return publication.CommandResult{}, writeSupervisionReviewEvidenceError(c, "SHIP", true)
 	})}
 }
 
@@ -257,6 +256,12 @@ func TestSupervisionReviewSnapshotAndEngineFailures(t *testing.T) {
 			launches := 0
 			engine := fakeSupervisionReview(t, opts, spec, &launches)
 			original := engine.Runner
+			reviewCtx := context.Background()
+			cancelReview := context.CancelFunc(func() {})
+			if scenario == "canceled" {
+				reviewCtx, cancelReview = context.WithCancel(context.Background())
+			}
+			defer cancelReview()
 			want := "reported"
 			switch scenario {
 			case "later source":
@@ -301,7 +306,7 @@ func TestSupervisionReviewSnapshotAndEngineFailures(t *testing.T) {
 						return publication.CommandResult{Stdout: []byte(`{"commands":[]}`)}, nil
 					}
 					if scenario == "missing flag" && len(c.Args) == 2 {
-						return publication.CommandResult{Stderr: []byte("-base -spec -out")}, nil
+						return publication.CommandResult{Stderr: []byte("  -base string\n  -spec string\n  -out string\n")}, nil
 					}
 					if len(c.Args) > 2 {
 						if scenario == "missing artifacts" {
@@ -319,7 +324,7 @@ func TestSupervisionReviewSnapshotAndEngineFailures(t *testing.T) {
 							}
 						}
 						if scenario == "canceled" {
-							return result, context.Canceled
+							cancelReview()
 						}
 						return result, e
 					}
@@ -330,9 +335,12 @@ func TestSupervisionReviewSnapshotAndEngineFailures(t *testing.T) {
 					want = "uncertain"
 				}
 			}
-			job, e := RunSupervisionReview(context.Background(), opts, engine)
+			job, e := RunSupervisionReview(reviewCtx, opts, engine)
 			if e != nil || job.State != want {
 				t.Fatalf("job: %+v, want %s, %v", job, want, e)
+			}
+			if scenario == "missing flag" && !strings.Contains(job.Reason, "lacks --full") {
+				t.Fatalf("missing full flag reason: %+v", job)
 			}
 		})
 	}
@@ -470,6 +478,9 @@ func TestSupervisionReviewOutcomesAndOutbox(t *testing.T) {
 				if len(c.Args) > 2 {
 					writeSupervisionReviewEvidence(t, c, tc.verdict, tc.covered)
 					r.ExitCode = tc.exit
+					if tc.exit == 2 || tc.exit == 3 {
+						err = supervisionReviewExitError(t, ctx, tc.exit)
+					}
 				}
 				return r, err
 			})
@@ -503,11 +514,38 @@ func TestSupervisionReviewOutcomesAndOutbox(t *testing.T) {
 	}
 }
 
+func TestSupervisionReviewExitHelper(t *testing.T) {
+	switch os.Getenv("BATUTA_REVIEW_EXIT") {
+	case "2":
+		os.Exit(2)
+	case "3":
+		os.Exit(3)
+	}
+}
+
+func supervisionReviewExitError(t *testing.T, ctx context.Context, code int) error {
+	t.Helper()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSupervisionReviewExitHelper$")
+	command.Env = append(os.Environ(), fmt.Sprintf("BATUTA_REVIEW_EXIT=%d", code))
+	err := command.Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != code {
+		t.Fatalf("review exit %d: %T %v", code, err, err)
+	}
+	return err
+}
+
 func writeSupervisionReviewEvidence(t *testing.T, c publication.Command, verdict string, covered bool) {
 	t.Helper()
+	if err := writeSupervisionReviewEvidenceError(c, verdict, covered); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeSupervisionReviewEvidenceError(c publication.Command, verdict string, covered bool) error {
 	head, err := supervisionReviewGit(context.Background(), c.Directory, "rev-parse", "HEAD")
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	checkpoint := strings.TrimSpace(string(head))
 	coverage, specCoverage := "1/1", ""
@@ -526,9 +564,10 @@ func writeSupervisionReviewEvidence(t *testing.T, c publication.Command, verdict
 	}
 	for name, data := range artifacts {
 		if err := os.WriteFile(filepath.Join(c.Args[7], name), []byte(data), 0600); err != nil {
-			t.Fatal(err)
+			return err
 		}
 	}
+	return nil
 }
 
 func TestSupervisionReviewRetainsHistoricalOutcomeEvidence(t *testing.T) {

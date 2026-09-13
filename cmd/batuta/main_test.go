@@ -22,6 +22,21 @@ import (
 	"github.com/batuta-ai/core/routing"
 )
 
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && (os.Args[1] == "capabilities" || os.Args[1] == "review") {
+		if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+			var exit *ExitError
+			if errors.As(err, &exit) {
+				os.Exit(exit.Code)
+			}
+			fmt.Fprintln(os.Stderr, "batuta:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func TestRunRequiresASubcommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run(nil, &stdout, &stderr); err == nil {
@@ -1589,20 +1604,80 @@ func TestReviewWithMixedSpecRules(t *testing.T) {
 
 func TestLoopSupervisionOnce(t *testing.T) {
 	root := t.TempDir()
+	for name, payload := range map[string]string{
+		".gitignore":            ".batuta/journal/\n.batuta/reviews/\n",
+		".batuta/profile.md":    "Stack: Go\nMethodology: TDD\nTest: true\nBuild: true\nExecution: sequential\nWorktree: off\nTemplate: templates/generic.md\n",
+		".batuta/routing.md":    "| Lane | Domain | Executor | Model |\n|---|---|---|---|\n| high | * | codex | review-model |\n",
+		".batuta/plans/demo.md": "# Plan — Supervised\n\n**Goal:** Test review wiring.\n**Status:** approved\n\n## Tasks\n- [ ] 1. Add source — backend/low\n      Scope: source.txt\n      Accept: source exists → test -f source.txt\n",
+	} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "add", ".")
+	reviewGit(t, root, "commit", "-qm", "plan")
+	base := reviewGit(t, root, "rev-parse", "HEAD")
+	plan, err := routing.ParsePlan("demo", []byte("# Plan — Supervised\n\n**Goal:** Test review wiring.\n**Status:** approved\n\n## Tasks\n- [ ] 1. Add source — backend/low\n      Scope: source.txt\n      Accept: source exists → test -f source.txt\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "source.txt"), []byte("delivered\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewGit(t, root, "add", "source.txt")
+	reviewGit(t, root, "commit", "-qm", "delivery")
+	final := reviewGit(t, root, "rev-parse", "HEAD")
 	store, err := journal.Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`)}); err != nil {
+	opened, err := json.Marshal(map[string]any{"slug": "demo", "plan_path": ".batuta/plans/demo.md", "plan_digest": plan.Set.Digest, "head": base})
+	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindOpened, Detail: opened}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := json.Marshal(map[string]any{"state": loop.StateDone, "final_commit": final})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: terminal}); err != nil {
+		t.Fatal(err)
+	}
+	skills := t.TempDir()
+	for name, payload := range map[string]string{
+		"adapters/codex.md":    "---\nname: codex\nrun: fake-reviewer {brief}\nreadonly: fake-reviewer {prompt}\nmodel_flags: --model {model}\navailable: fake-reviewer --version\nmodels: fake-reviewer models\nfinished: exit_code\n---\n",
+		"templates/generic.md": "## Conventions for briefs\nKeep changes scoped.\n",
+		"fake-reviewer":        "#!/bin/sh\nprintf '%s\\n' '<<<FINDINGS' 'FINDINGS>>>'\n",
+	} {
+		path := filepath.Join(skills, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		mode := os.FileMode(0o600)
+		if name == "fake-reviewer" {
+			mode = 0o700
+		}
+		if err := os.WriteFile(path, []byte(payload), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("BATUTA_SKILLS", skills)
+	t.Setenv("PATH", skills+string(os.PathListSeparator)+os.Getenv("PATH"))
 	cursor := filepath.Join(root, "cursor.json")
 	var stdout, stderr bytes.Buffer
 	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", cursor, "--once"}
 	if err := run(args, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), `"completed":true`) || !strings.Contains(stdout.String(), `"notification":"unconfigured"`) {
+	if !strings.Contains(stdout.String(), `"completed":true`) || !strings.Contains(stdout.String(), `"notification":"unconfigured"`) ||
+		!strings.Contains(stdout.String(), `"review":{"outcome":"SHIP"`) || !strings.Contains(stdout.String(), `"state":"reported"`) {
 		t.Fatalf("stdout=%s stderr=%s", &stdout, &stderr)
 	}
 	if _, err := os.Stat(cursor); err != nil {
@@ -1612,7 +1687,7 @@ func TestLoopSupervisionOnce(t *testing.T) {
 	if err := run(args, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(stdout.String(), `"id":"supervised:1"`) != 1 {
+	if strings.Count(stdout.String(), `"id":"supervised:2"`) != 1 || !strings.Contains(stdout.String(), `"attempts":1`) {
 		t.Fatalf("restart output=%s", &stdout)
 	}
 }
