@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 // SupervisionReviewJob is evidence for a separate acceptance stage. Reported
 // means the engine returned artifacts, not that a conductor approved delivery.
 type SupervisionReviewJob struct {
+	Outcome           string            `json:"outcome,omitempty"`
+	Acceptance        string            `json:"acceptance"`
 	ID                string            `json:"id,omitempty"`
 	Delivery          string            `json:"delivery"`
 	FinalCommit       string            `json:"final_commit,omitempty"`
@@ -61,7 +64,7 @@ func supervisionReviewCandidate(delivery string, records []journal.Record) *Supe
 		return nil
 	}
 	var opened openedDetail
-	job := &SupervisionReviewJob{Delivery: delivery, State: "pending"}
+	job := &SupervisionReviewJob{Delivery: delivery, State: "pending", Acceptance: "pending"}
 	if json.Unmarshal(records[0].Detail, &opened) != nil {
 		job.Reason = "delivery opening identity is unavailable"
 		return job
@@ -118,12 +121,14 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 			return nil, errors.New("loop: review job identity mismatch")
 		}
 		job = &saved
+		job.Acceptance = "pending"
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	persist := func() (*SupervisionReviewJob, error) { return job, writeSupervisionJSON(statePath, job) }
 	fail := func(err error) (*SupervisionReviewJob, error) {
 		job.State = "failed"
+		job.Outcome, job.Acceptance = "execution_failed", "pending"
 		job.Reason = err.Error()
 		job.FinishedAt = observer.Now()
 		return persist()
@@ -140,7 +145,10 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 		if err := supervisionReviewArtifacts(job, false); err != nil {
 			return fail(err)
 		}
-		return job, nil
+		if err := classifySupervisionReview(job); err != nil {
+			return fail(err)
+		}
+		return persist()
 	case "failed", "uncertain":
 		return job, nil
 	case "pending":
@@ -216,6 +224,9 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 		return fail(errors.Join(errors.New("loop: runner ownership changed during review"), err))
 	}
 	if err := supervisionReviewArtifacts(job, true); err != nil {
+		return fail(err)
+	}
+	if err := classifySupervisionReview(job); err != nil {
 		return fail(err)
 	}
 	job.State, job.Reason = "reported", "review evidence awaits conductor judgment"
@@ -357,7 +368,7 @@ func supervisionReviewArtifacts(job *SupervisionReviewJob, record bool) error {
 	if record {
 		job.ArtifactDigests = make(map[string]string)
 	}
-	for _, name := range []string{"manifest.json", "findings.json", "review.md"} {
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
 		data, err := readSupervisionFile(filepath.Join(job.Artifacts, name), 32<<20)
 		if err != nil || len(data) == 0 {
 			return errors.Join(fmt.Errorf("loop: review artifact %s unavailable", name), err)
@@ -370,4 +381,121 @@ func supervisionReviewArtifacts(job *SupervisionReviewJob, record bool) error {
 		}
 	}
 	return nil
+}
+
+// The engine publishes a checkpoint and a canonical walkthrough, not a JSON
+// Report. Require both coverage signals; exit 3 alone also means incomplete work.
+func classifySupervisionReview(job *SupervisionReviewJob) error {
+	read := func(name string, value any) error {
+		data, err := readSupervisionFile(filepath.Join(job.Artifacts, name), 32<<20)
+		if err != nil {
+			return err
+		}
+		return json.Unmarshal(data, value)
+	}
+	var manifest struct {
+		Base    string
+		Cohorts []json.RawMessage
+		Files   []struct{ Selected, Ignored bool }
+	}
+	var state struct {
+		Head    string
+		Pending []json.RawMessage
+	}
+	var findings []json.RawMessage
+	if err := errors.Join(read("manifest.json", &manifest), read("state.json", &state), read("findings.json", &findings)); err != nil {
+		return fmt.Errorf("loop: malformed review evidence: %w", err)
+	}
+	if manifest.Base != job.Base || (state.Head != job.Base && state.Head != job.FinalCommit) {
+		return errors.New("loop: review evidence identity mismatch")
+	}
+	data, err := readSupervisionFile(filepath.Join(job.Artifacts, "review.md"), 32<<20)
+	if err != nil {
+		return err
+	}
+	report := string(data)
+	verdict := regexp.MustCompile(`(?m)^Verdict: (SHIP|FIX_BEFORE_SHIP|REWORK)\n?\z`).FindStringSubmatch(report)
+	coverage := regexp.MustCompile(`(?m)^Coverage: ([0-9]+)/([0-9]+) cohorts$`).FindAllStringSubmatch(report, -1)
+	if len(verdict) != 2 || len(coverage) != 1 || !strings.HasPrefix(report, "Review walkthrough\n\nBase: "+job.Base+"\n") || !strings.Contains(report, "\nCriteria:\n| Criterion | Status | Evidence |\n") {
+		return errors.New("loop: review verdict or coverage evidence is unavailable")
+	}
+	expectedExit := map[string]int{"SHIP": 0, "FIX_BEFORE_SHIP": 2, "REWORK": 3}[verdict[1]]
+	if job.ExitCode != expectedExit {
+		return errors.New("loop: review verdict and exit status disagree")
+	}
+	covered, err := strconv.Atoi(coverage[0][1])
+	if err != nil {
+		return err
+	}
+	total, err := strconv.Atoi(coverage[0][2])
+	if err != nil {
+		return err
+	}
+	if total != len(manifest.Cohorts) || covered > total {
+		return errors.New("loop: inconsistent review coverage")
+	}
+	complete := covered == total && state.Head == job.FinalCommit && len(state.Pending) == 0 && !strings.Contains(report, "\nSpec coverage: uncovered")
+	for _, file := range manifest.Files {
+		complete = complete && (file.Selected || file.Ignored)
+	}
+	job.Outcome, job.Acceptance = verdict[1], "pending"
+	if !complete {
+		job.Outcome = "incomplete_coverage"
+	}
+	return nil
+}
+
+func loadSupervisionReview(opts SupervisionOptions, candidate *SupervisionReviewJob) (*SupervisionReviewJob, error) {
+	if candidate == nil || candidate.ID == "" {
+		return candidate, nil
+	}
+	data, err := readSupervisionFile(filepath.Join(supervisionReviewDirectory(opts, *candidate), "job.json"), 1<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		return candidate, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var saved SupervisionReviewJob
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return nil, err
+	}
+	if saved.ID != candidate.ID || saved.Delivery != candidate.Delivery || saved.Base != candidate.Base || saved.FinalCommit != candidate.FinalCommit || saved.SpecDigest != candidate.SpecDigest || saved.SpecPath != candidate.SpecPath || saved.Slug != candidate.Slug {
+		return nil, errors.New("loop: review job identity mismatch")
+	}
+	saved.Acceptance = "pending"
+	return &saved, nil
+}
+
+func supervisionReviewEvent(opts SupervisionOptions, job *SupervisionReviewJob, sequence int) (*SupervisionEvent, error) {
+	if job == nil || job.ID == "" || (job.State != "reported" && job.State != "failed" && job.State != "uncertain") {
+		return nil, nil
+	}
+	data, err := json.Marshal(job)
+	if err != nil {
+		return nil, err
+	}
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256(data))
+	// Keep the notified outcome available even if later validation invalidates
+	// the mutable job. Different cursors publish identical content at this key.
+	receipt := filepath.Join(supervisionReviewDirectory(opts, *job), "outcomes", digest[7:], "job.json")
+	existing, err := readSupervisionFile(receipt, 1<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		if err := os.MkdirAll(filepath.Dir(receipt), 0700); err != nil {
+			return nil, err
+		}
+		if err := writeSupervisionJSON(receipt, job); err != nil {
+			return nil, err
+		}
+	} else if err != nil {
+		return nil, err
+	} else if string(existing) != string(data) {
+		return nil, errors.New("loop: review outcome receipt changed")
+	}
+	path, err := filepath.Rel(opts.Workspace, receipt)
+	if err != nil {
+		return nil, err
+	}
+	event := &SupervisionEvent{ID: opts.Delivery + ":review:" + job.ID + ":" + digest[7:], Delivery: opts.Delivery, Sequence: sequence, Kind: "review", At: job.FinishedAt, ReviewID: job.ID, ReviewOutcome: job.Outcome, ReviewState: job.State, Evidence: SupervisionEvidence{Path: filepath.ToSlash(path), Digest: digest}, Action: "Review evidence awaits conductor judgment; completion and SHIP grant no merge, publication or correction authority."}
+	return event, nil
 }

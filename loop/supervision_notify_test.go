@@ -236,3 +236,45 @@ func TestSupervisionCancellationPreventsIntervention(t *testing.T) {
 		t.Fatalf("intervened after cancellation: records=%d before=%d err=%v", len(after), len(before), err)
 	}
 }
+
+func TestSupervisionReviewNotificationRetryAndPolicyLoad(t *testing.T) {
+	observer, event, policy := supervisionCorrectionFixture(t)
+	filename := filepath.Join(observer.Workspace, "policy.json")
+	if err := writeSupervisionJSON(filename, policy); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadSupervisionPolicy(filename)
+	if err != nil || loaded.Correction.ReviewID != event.ReviewID {
+		t.Fatalf("policy: %+v %v", loaded, err)
+	}
+	calls := 0
+	opts := SuperviseOptions{Observer: observer, Interval: 100 * time.Millisecond, Once: true, Sink: supervisionSinkFunc(func(_ context.Context, n SupervisionNotification) error {
+		if n.Event.Kind == "review" {
+			calls++
+			if n.Event.ReviewOutcome != "FIX_BEFORE_SHIP" || n.Event.Evidence.Path == "" {
+				t.Fatalf("notification: %+v", n)
+			}
+			if calls == 1 {
+				return errors.New("sink failed")
+			}
+		}
+		return nil
+	})}
+	if err := Supervise(context.Background(), opts); err == nil {
+		t.Fatal("missing sink failure")
+	}
+	if err := Supervise(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || len(supervisionObserve(t, observer).Pending) != 0 {
+		t.Fatalf("notification retry calls=%d", calls)
+	}
+	var message string
+	desktop := supervisionDesktopSink{platform: "linux", run: func(_ context.Context, _ string, args ...string) error { message = strings.Join(args, " "); return nil }}
+	if err := desktop.Notify(context.Background(), SupervisionNotification{Event: event, State: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(message, "FIX_BEFORE_SHIP") || !strings.Contains(message, event.Evidence.Path) {
+		t.Fatalf("desktop omitted outcome: %s", message)
+	}
+}

@@ -71,7 +71,12 @@ When the delivery reaches `done`, run
 `batuta review --spec .batuta/plans/done/<slug>.md`. Resolve any review verdict
 that is not `SHIP`, then open the pull request and attach or link the review
 artefacts. The review is the delivery-level gate between the completed loop and
-the PR; see [review.md](review.md) for its contract.
+the PR; see [review.md](review.md) for its contract. The foreground
+supervisor runs this full review automatically against the recorded final commit
+and original base/spec. Its durable outcome still awaits conductor judgment;
+SHIP does not authorize publication. Explicitly authorized correction proposals
+inherit a bounded chain budget and require the conductor to create a new delivery.
+See [loop-supervision.md](loop-supervision.md) for policy and notification details.
 
 ## Standalone gates
 

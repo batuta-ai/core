@@ -71,7 +71,10 @@ binary. See [dispatch](docs/dispatch.md) and the
 Foreground [loop supervision](docs/loop-supervision.md) watches one explicit
 delivery with a durable cursor. It requires a process kept alive by the host;
 local file and supported desktop notifications are opt-in, and no sink leaves
-events durably unread. Observation makes zero model calls.
+events durably unread. Observation makes zero model calls. After completion,
+the supervisor runs a full review of the immutable delivery. Review outcome
+and conductor acceptance remain separate; explicitly authorized correction
+proposals have durable chain budgets and do not resume the runner.
 
 When a usage limit outlasts the wait budget, the loop falls back to the next
 executable runtime without spending a retry or escalation.

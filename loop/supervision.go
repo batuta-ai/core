@@ -38,6 +38,9 @@ type SupervisionEvidence struct {
 // record. Raw questions, errors, graphs, logs and artifact paths stay in the
 // journal; consumers must separately redact any evidence they choose to load.
 type SupervisionEvent struct {
+	ReviewID        string              `json:"review_id,omitempty"`
+	ReviewOutcome   string              `json:"review_outcome,omitempty"`
+	ReviewState     string              `json:"review_state,omitempty"`
 	ID              string              `json:"id"`
 	Delivery        string              `json:"delivery"`
 	Sequence        int                 `json:"sequence"`
@@ -105,6 +108,10 @@ func ObserveSupervision(opts SupervisionOptions) (SupervisionObservation, error)
 		return SupervisionObservation{}, errors.New("loop: supervision journal no longer matches durable cursor")
 	}
 	result := SupervisionObservation{Cursor: len(records), Review: supervisionReviewCandidate(opts.Delivery, records)}
+	result.Review, err = loadSupervisionReview(opts, result.Review)
+	if err != nil {
+		return SupervisionObservation{}, err
+	}
 	reviewAdded := cursor.Review == nil && result.Review != nil
 	cursor.Review = result.Review
 	for _, record := range records[cursor.Sequence:] {
@@ -117,6 +124,22 @@ func ObserveSupervision(opts SupervisionOptions) (SupervisionObservation, error)
 			result.Events = append(result.Events, *event)
 		}
 	}
+	reviewEvent, err := supervisionReviewEvent(opts, result.Review, len(records))
+	if err != nil {
+		return SupervisionObservation{}, err
+	}
+	if reviewEvent != nil {
+		exists := false
+		for _, entry := range cursor.Outbox {
+			exists = exists || entry.Event.ID == reviewEvent.ID
+		}
+		if !exists {
+			cursor.Outbox = append(cursor.Outbox, supervisionEntry{Event: *reviewEvent})
+			result.Events = append(result.Events, *reviewEvent)
+			reviewAdded = true
+		}
+	}
+
 	if len(records) > 0 {
 		last := records[len(records)-1]
 		result.LastActivity = last.At
@@ -243,6 +266,12 @@ func readSupervisionCursor(opts SupervisionOptions) (supervisionCursor, error) {
 	previous := 0
 	for _, entry := range cursor.Outbox {
 		event := entry.Event
+		if event.Kind == "review" {
+			if event.Delivery != opts.Delivery || event.Sequence < 1 || event.Sequence > cursor.Sequence || len(event.ReviewID) != 64 || len(event.Evidence.Digest) != 71 || event.ID != opts.Delivery+":review:"+event.ReviewID+":"+event.Evidence.Digest[7:] {
+				return cursor, errors.New("loop: invalid supervision review outbox identity")
+			}
+			continue
+		}
 		if event.Sequence <= previous || event.Sequence > cursor.Sequence || event.Delivery != opts.Delivery || event.ID != supervisionEventID(opts.Delivery, event.Sequence) {
 			return cursor, errors.New("loop: invalid supervision outbox identity")
 		}
@@ -430,6 +459,11 @@ func Supervise(ctx context.Context, opts SuperviseOptions) error {
 			if err != nil {
 				return err
 			}
+			observation, err = ObserveSupervision(observer)
+			if err != nil {
+				return err
+			}
+			report.Pending = len(observation.Pending)
 		}
 		failed := false
 		current := map[string][32]byte{}
@@ -519,6 +553,10 @@ func supervisePolicy(opts SuperviseOptions) (*SupervisionDecision, error) {
 	}
 	for _, entry := range cursor.Outbox {
 		event := entry.Event
+		if event.Kind == "review" && opts.Policy.Correction != nil && event.ReviewID == opts.Policy.Correction.ReviewID && event.Evidence.Digest == opts.Policy.Correction.ReportDigest {
+			decision, err := InterveneSupervision(opts.Observer, event.ID, opts.Policy)
+			return &decision, err
+		}
 		if event.Kind != KindQuestion || event.TaskID != opts.Policy.TaskID || event.Execution != opts.Policy.Execution || event.QuestionID != opts.Policy.QuestionID {
 			continue
 		}

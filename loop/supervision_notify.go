@@ -74,6 +74,9 @@ func (sink supervisionDesktopSink) Notify(ctx context.Context, event Supervision
 	message := fmt.Sprintf("%s | state: %s | event: %s\ncompleted: %t; recovery pending: %t\n%s\nEvidence: %s (sequence %d)",
 		event.Event.ID, event.State, event.Event.Kind, event.Event.Completed, event.Event.RecoveryPending,
 		event.Event.Action, event.Event.Evidence.Path, event.Event.Evidence.Sequence)
+	if event.Event.Kind == "review" {
+		message = fmt.Sprintf("Review %s | outcome: %s | state: %s\n%s\nEvidence: %s", event.Event.ReviewID, event.Event.ReviewOutcome, event.Event.ReviewState, event.Event.Action, event.Event.Evidence.Path)
+	}
 	switch sink.platform {
 	case "darwin":
 		return sink.run(ctx, "osascript", "-e", "on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run", "--", title, message)
@@ -110,6 +113,9 @@ func LoadSupervisionPolicy(path string) (*SupervisionPolicy, error) {
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, errors.New("loop: supervision policy must contain one JSON object")
+	}
+	if policy.Action == SupervisionProposeCorrection && policy.Delivery != "" && policy.Correction != nil {
+		return &policy, nil
 	}
 	if policy.Delivery == "" || policy.TaskID == "" || policy.QuestionID == "" {
 		return nil, errors.New("loop: supervision policy requires delivery, task and question identity")

@@ -35,7 +35,10 @@ pertencem ao host interativo, não ao binário. Consulte
 A [supervisão do loop](docs/loop-supervision.md) acompanha uma entrega explícita
 com cursor durável. O host precisa manter o processo em execução; notificações
 por arquivo local ou desktop compatível são opt-in, e sem um destino os eventos
-permanecem não lidos. A observação não faz chamadas a modelos.
+permanecem não lidos. A observação não faz chamadas a modelos. Após a conclusão,
+o supervisor executa uma revisão completa da entrega imutável. O resultado da
+revisão permanece separado da aceitação pelo condutor; propostas de correção
+exigem autorização explícita, têm limites duráveis e não retomam o executor.
 
 Quando um limite de uso dura além do orçamento de espera, o loop recorre ao
 próximo runtime executável sem gastar uma nova tentativa nem uma escalação.

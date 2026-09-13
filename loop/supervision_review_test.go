@@ -2,8 +2,10 @@ package loop
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,11 +99,7 @@ func fakeSupervisionReview(t *testing.T, opts SupervisionOptions, spec string, l
 		if e := os.MkdirAll(c.Args[7], 0700); e != nil {
 			t.Fatal(e)
 		}
-		for _, name := range []string{"manifest.json", "findings.json", "review.md"} {
-			if e := os.WriteFile(filepath.Join(c.Args[7], name), []byte("evidence"), 0600); e != nil {
-				t.Fatal(e)
-			}
-		}
+		writeSupervisionReviewEvidence(t, c, "SHIP", true)
 		return publication.CommandResult{}, nil
 	})}
 }
@@ -349,5 +347,117 @@ func TestSupervisionReviewRejectsChangedReportedSnapshot(t *testing.T) {
 				t.Fatalf("stale evidence: %+v, launches=%d, %v", job, launches, err)
 			}
 		})
+	}
+}
+
+func TestSupervisionReviewOutcomesAndOutbox(t *testing.T) {
+	for _, tc := range []struct {
+		verdict string
+		covered bool
+		exit    int
+		outcome string
+	}{
+		{"SHIP", true, 0, "SHIP"}, {"FIX_BEFORE_SHIP", true, 2, "FIX_BEFORE_SHIP"},
+		{"REWORK", true, 3, "REWORK"}, {"REWORK", false, 3, "incomplete_coverage"},
+		{"SHIP", true, 3, "execution_failed"},
+	} {
+		t.Run(tc.outcome+tc.verdict, func(t *testing.T) {
+			opts, _, spec := supervisionReviewFixture(t)
+			launches := 0
+			engine := fakeSupervisionReview(t, opts, spec, &launches)
+			original := engine.Runner
+			engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				r, err := original.Run(ctx, c)
+				if len(c.Args) > 2 {
+					writeSupervisionReviewEvidence(t, c, tc.verdict, tc.covered)
+					r.ExitCode = tc.exit
+				}
+				return r, err
+			})
+			job, err := RunSupervisionReview(context.Background(), opts, engine)
+			if err != nil || job.Outcome != tc.outcome || job.Acceptance != "pending" {
+				t.Fatalf("outcome: %+v, %v", job, err)
+			}
+			observation := supervisionObserve(t, opts)
+			if observation.Review.Outcome != tc.outcome {
+				t.Fatalf("lost durable outcome: %+v", observation.Review)
+			}
+			var event *SupervisionEvent
+			for _, e := range observation.Pending {
+				if e.Kind == "review" {
+					copy := e
+					event = &copy
+				}
+			}
+			if event == nil || event.ReviewOutcome != tc.outcome || !strings.HasSuffix(event.Evidence.Path, "job.json") {
+				t.Fatalf("missing review notification: %+v", observation)
+			}
+			if err := AcknowledgeSupervision(opts, event.ID); err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range supervisionObserve(t, opts).Pending {
+				if e.ID == event.ID {
+					t.Fatal("acknowledged review replayed")
+				}
+			}
+		})
+	}
+}
+
+func writeSupervisionReviewEvidence(t *testing.T, c publication.Command, verdict string, covered bool) {
+	t.Helper()
+	head, err := supervisionReviewGit(context.Background(), c.Directory, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := strings.TrimSpace(string(head))
+	coverage, specCoverage := "1/1", ""
+	pending := "[]"
+	if !covered {
+		checkpoint = c.Args[2]
+		coverage = "0/1"
+		specCoverage = "\nSpec coverage: uncovered — failed\n"
+		pending = `[{"files":[{"path":"source.txt"}]}]`
+	}
+	artifacts := map[string]string{
+		"manifest.json": fmt.Sprintf(`{"base":%q,"files":[{"path":"source.txt","selected":true}],"cohorts":[{"files":["source.txt"]}]}`, c.Args[2]),
+		"findings.json": "[]",
+		"state.json":    fmt.Sprintf(`{"head":%q,"pending":%s}`, checkpoint, pending),
+		"review.md":     fmt.Sprintf("Review walkthrough\n\nBase: %s\nFiles: 1 selected of 1 changed (+1 -0)\nCohorts: 1\nCoverage: %s cohorts\n- Cohort 1: source.txt — covered\n\nFindings:\nNone.\n\nCriteria:\n| Criterion | Status | Evidence |\n|---|---|---|\n%s\nSuppressed overlaps: 0\nVerdict: %s\n", c.Args[2], coverage, specCoverage, verdict),
+	}
+	for name, data := range artifacts {
+		if err := os.WriteFile(filepath.Join(c.Args[7], name), []byte(data), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSupervisionReviewRetainsHistoricalOutcomeEvidence(t *testing.T) {
+	opts, _, spec := supervisionReviewFixture(t)
+	launches := 0
+	engine := fakeSupervisionReview(t, opts, spec, &launches)
+	job, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event SupervisionEvent
+	for _, e := range supervisionObserve(t, opts).Pending {
+		if e.Kind == "review" {
+			event = e
+		}
+	}
+	if err := os.WriteFile(filepath.Join(job.Artifacts, "review.md"), []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RunSupervisionReview(context.Background(), opts, engine); err != nil {
+		t.Fatal(err)
+	}
+	historical, err := os.ReadFile(filepath.Join(opts.Workspace, event.Evidence.Path))
+	if err != nil || fmt.Sprintf("sha256:%x", sha256.Sum256(historical)) != event.Evidence.Digest {
+		t.Fatalf("lost historical report: %s %v", historical, err)
+	}
+	var saved SupervisionReviewJob
+	if err := json.Unmarshal(historical, &saved); err != nil || saved.Outcome != "SHIP" {
+		t.Fatalf("overwritten outcome: %+v %v", saved, err)
 	}
 }

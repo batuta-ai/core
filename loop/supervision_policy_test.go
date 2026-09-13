@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
 
@@ -307,4 +310,249 @@ func TestSupervisionPolicyWorkerProseCannotAuthorize(t *testing.T) {
 			}
 		})
 	}
+}
+
+func supervisionCorrectionFixture(t *testing.T) (SupervisionOptions, SupervisionEvent, SupervisionPolicy) {
+	t.Helper()
+	opts, _, spec := supervisionReviewFixture(t)
+	launches := 0
+	engine := fakeSupervisionReview(t, opts, spec, &launches)
+	original := engine.Runner
+	engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+		r, err := original.Run(ctx, c)
+		if len(c.Args) > 2 {
+			writeSupervisionReviewEvidence(t, c, "FIX_BEFORE_SHIP", true)
+			r.ExitCode = 2
+		}
+		return r, err
+	})
+	job, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := supervisionObserve(t, opts)
+	var event SupervisionEvent
+	for _, e := range observation.Pending {
+		if e.Kind == "review" {
+			event = e
+		}
+	}
+	policy := SupervisionPolicy{Delivery: opts.Delivery, Action: SupervisionProposeCorrection, Ownership: "approved_correction", MaxAttempts: 2,
+		PlanEvidence: SupervisionEvidence{Path: "correction-plan.md", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(spec)))},
+		Correction:   &SupervisionCorrectionPolicy{ReviewID: job.ID, ReportDigest: event.Evidence.Digest, SpecDigest: job.SpecDigest, Delivery: "correction-one", MaxCorrections: 1},
+	}
+	if err := os.WriteFile(filepath.Join(opts.Workspace, "correction-plan.md"), []byte(spec), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return opts, event, policy
+}
+
+func TestSupervisionCorrectionExplicitPolicyAndBudget(t *testing.T) {
+	for _, scenario := range []string{"approved", "missing", "scope", "digest", "replay", "changed plan", "owner"} {
+		t.Run(scenario, func(t *testing.T) {
+			opts, event, policy := supervisionCorrectionFixture(t)
+			p := &policy
+			switch scenario {
+			case "missing":
+				p = nil
+			case "scope":
+				policy.Correction.SpecDigest = "expanded"
+			case "digest":
+				policy.Correction.ReportDigest = "wrong"
+			case "replay":
+				policy.Action = "replay"
+			case "changed plan":
+				if err := os.WriteFile(filepath.Join(opts.Workspace, "correction-plan.md"), []byte("expanded"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "owner":
+				if _, err := (presenceLock{RefreshedAt: opts.Now()}).writeAtomic(filepath.Join(opts.Workspace, journal.Dir, "other.lock")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := readSupervisionRecords(opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision, err := InterveneSupervision(opts, event.ID, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "pending"
+			if scenario == "approved" {
+				want = "proposed"
+			}
+			if decision.Outcome != want {
+				t.Fatalf("decision=%+v", decision)
+			}
+			after, err := readSupervisionRecords(opts)
+			if err != nil || len(after) != len(before) {
+				t.Fatalf("policy mutated delivery: %v", err)
+			}
+			if scenario == "approved" {
+				if decision.Correction == nil || decision.Correction.Delivery != "correction-one" || decision.Correction.ReviewID != event.ReviewID {
+					t.Fatalf("proposal=%+v", decision)
+				}
+				policy.MaxAttempts = 3
+				policy.Correction.MaxCorrections = 3
+				policy.Correction.Delivery = "another-child"
+				again, err := InterveneSupervision(opts, event.ID, &policy)
+				if err != nil || again.Attempts != 1 || again.Correction.Delivery != "correction-one" {
+					t.Fatalf("replayed proposal: %+v, %v", again, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSupervisionCorrectionFailedAttemptsDoNotReset(t *testing.T) {
+	opts, event, policy := supervisionCorrectionFixture(t)
+	if err := os.WriteFile(filepath.Join(opts.Workspace, "correction-plan.md"), []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 2; i++ {
+		decision, err := InterveneSupervision(opts, event.ID, &policy)
+		if err != nil || decision.Attempts != i || decision.Reason != "plan_evidence_mismatch" {
+			t.Fatalf("attempt: %+v %v", decision, err)
+		}
+	}
+	policy.MaxAttempts = 3
+	decision, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || decision.Attempts != 2 || decision.Outcome != "exhausted" {
+		t.Fatalf("reset: %+v %v", decision, err)
+	}
+}
+
+func TestSupervisionCorrectionChainCannotResetBudget(t *testing.T) {
+	opts, event, policy := supervisionCorrectionFixture(t)
+	first, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || first.Outcome != "proposed" {
+		t.Fatalf("first: %+v %v", first, err)
+	}
+	parent := supervisionObserve(t, opts).Review
+	store, err := journal.Open(opts.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Delivery = "correction-one"
+	opts.CursorPath = filepath.Join(opts.Workspace, "child-cursor.json")
+	opened, _ := json.Marshal(openedDetail{Slug: parent.Slug, PlanPath: ".batuta/plans/done/delivery.md", PlanDigest: parent.SpecDigest, Head: parent.FinalCommit})
+	supervisionAppend(t, store, opts, KindOpened, string(opened))
+	if _, err := supervisionReviewGit(context.Background(), opts.Workspace, "commit", "--allow-empty", "-qm", "correction"); err != nil {
+		t.Fatal(err)
+	}
+	head, err := supervisionReviewGit(context.Background(), opts.Workspace, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, _ := json.Marshal(terminalDetail{State: StateDone, FinalCommit: strings.TrimSpace(string(head))})
+	supervisionAppend(t, store, opts, KindTerminal, string(terminal))
+	spec, err := os.ReadFile(filepath.Join(opts.Workspace, "correction-plan.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	engine := fakeSupervisionReview(t, opts, string(spec), &launches)
+	original := engine.Runner
+	engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+		r, err := original.Run(ctx, c)
+		if len(c.Args) > 2 {
+			writeSupervisionReviewEvidence(t, c, "REWORK", true)
+			r.ExitCode = 3
+		}
+		return r, err
+	})
+	job, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil || job.State != "reported" || launches != 1 || job.ID == parent.ID {
+		t.Fatalf("child review: %+v %v", job, err)
+	}
+	observation := supervisionObserve(t, opts)
+	for _, e := range observation.Pending {
+		if e.Kind == "review" {
+			event = e
+		}
+	}
+	policy.Delivery = opts.Delivery
+	policy.MaxAttempts = 3
+	policy.Correction = &SupervisionCorrectionPolicy{ReviewID: job.ID, ReportDigest: event.Evidence.Digest, SpecDigest: job.SpecDigest, Delivery: "correction-two", MaxCorrections: 3}
+	decision, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || decision.Outcome != "exhausted" || decision.Attempts != 1 || decision.Correction.Depth != 2 || decision.Correction.MaxCorrections != 1 || decision.MaxAttempts != 2 {
+		t.Fatalf("chain reset: %+v %v", decision, err)
+	}
+}
+
+func TestSupervisionCorrectionObserverDispatchAfterAcknowledgment(t *testing.T) {
+	opts, event, policy := supervisionCorrectionFixture(t)
+	if err := AcknowledgeSupervision(opts, event.ID); err != nil {
+		t.Fatal(err)
+	}
+	var output strings.Builder
+	if err := Supervise(context.Background(), SuperviseOptions{Observer: opts, Interval: 100 * time.Millisecond, Once: true, Policy: &policy, Output: &output}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), `"outcome":"proposed"`) || !strings.Contains(output.String(), `"acceptance":"pending"`) {
+		t.Fatalf("missing decision: %s", &output)
+	}
+}
+
+func TestSupervisionCorrectionShrinkingBudgetRemainsReadable(t *testing.T) {
+	opts, event, policy := supervisionCorrectionFixture(t)
+	if err := os.WriteFile(filepath.Join(opts.Workspace, "correction-plan.md"), []byte("changed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if _, err := InterveneSupervision(opts, event.ID, &policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy.MaxAttempts = 1
+	for i := 0; i < 2; i++ {
+		decision, err := InterveneSupervision(opts, event.ID, &policy)
+		if err != nil || decision.Outcome != "exhausted" || decision.Attempts != 2 {
+			t.Fatalf("shrunk budget: %+v %v", decision, err)
+		}
+	}
+}
+
+func TestSupervisionCorrectionEvidenceCannotAuthorizeItself(t *testing.T) {
+	for _, outcome := range []string{"SHIP", "incomplete_coverage", "execution_failed", "uncertain"} {
+		t.Run(outcome, func(t *testing.T) {
+			opts, event, policy := supervisionCorrectionFixture(t)
+			job := supervisionObserve(t, opts).Review
+			job.Outcome = outcome
+			if outcome == "execution_failed" {
+				job.State = "failed"
+			}
+			if outcome == "uncertain" {
+				job.State = "uncertain"
+			}
+			if err := writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "job.json"), job); err != nil {
+				t.Fatal(err)
+			}
+			for _, e := range supervisionObserve(t, opts).Pending {
+				if e.Kind == "review" && e.ReviewOutcome == outcome {
+					event = e
+				}
+			}
+			policy.Correction.ReportDigest = event.Evidence.Digest
+			decision, err := InterveneSupervision(opts, event.ID, &policy)
+			if err != nil || decision.Outcome != "pending" || decision.Attempts != 0 || decision.Reason != "review_requires_judgment" {
+				t.Fatalf("self-authorization: %+v %v", decision, err)
+			}
+		})
+	}
+}
+
+func TestSupervisionCorrectionConcurrentObservers(t *testing.T) {
+	opts, event, policy := supervisionCorrectionFixture(t)
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Go(func() {
+			decision, err := InterveneSupervision(opts, event.ID, &policy)
+			if err != nil || decision.Outcome != "proposed" || decision.Attempts != 1 {
+				t.Errorf("concurrent proposal: %+v %v", decision, err)
+			}
+		})
+	}
+	wg.Wait()
 }

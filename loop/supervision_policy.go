@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/batuta-ai/core/executor"
@@ -14,36 +15,40 @@ import (
 	"github.com/batuta-ai/core/routing"
 )
 
+const SupervisionProposeCorrection = "propose_correction"
+
 const SupervisionContinueApprovedTask = "continue_approved_task"
 
 const SupervisionRoutineAnswer = "The existing approved plan assigns this task to you. Continue only that task within its approved scope and boundaries, preserving its tests and verification requirements. This answer grants no additional permissions, scope, quota, or authorization to replay uncertain execution; stop for reconciliation or any decision outside the existing approval."
 
 // SupervisionPolicy is supplied by the operator, never derived from worker
-// prose. Ownership explicitly attests that the approved plan assigns this task
-// to its worker. Only this fixed routine clarification is supported.
+// prose. Ownership attests either the existing task assignment or an approved
+// correction of the exact reviewed contract; neither action resumes a runner.
 type SupervisionPolicy struct {
-	Delivery       string              `json:"delivery"`
-	TaskID         string              `json:"task_id"`
-	Execution      int                 `json:"execution"`
-	QuestionID     string              `json:"question_id"`
-	QuestionDigest string              `json:"question_digest"`
-	Action         string              `json:"action"`
-	Ownership      string              `json:"ownership"`
-	PlanEvidence   SupervisionEvidence `json:"plan_evidence"`
-	MaxAttempts    int                 `json:"max_attempts"`
+	Correction     *SupervisionCorrectionPolicy `json:"correction,omitempty"`
+	Delivery       string                       `json:"delivery"`
+	TaskID         string                       `json:"task_id"`
+	Execution      int                          `json:"execution"`
+	QuestionID     string                       `json:"question_id"`
+	QuestionDigest string                       `json:"question_digest"`
+	Action         string                       `json:"action"`
+	Ownership      string                       `json:"ownership"`
+	PlanEvidence   SupervisionEvidence          `json:"plan_evidence"`
+	MaxAttempts    int                          `json:"max_attempts"`
 }
 
 type SupervisionDecision struct {
-	EventID      string              `json:"event_id"`
-	QuestionID   string              `json:"question_id"`
-	Evidence     SupervisionEvidence `json:"evidence"`
-	PlanEvidence SupervisionEvidence `json:"plan_evidence"`
-	PolicyDigest string              `json:"policy_digest,omitempty"`
-	Outcome      string              `json:"outcome"`
-	Reason       string              `json:"reason"`
-	Attempts     int                 `json:"attempts"`
-	MaxAttempts  int                 `json:"max_attempts"`
-	At           time.Time           `json:"at"`
+	Correction   *SupervisionCorrectionProposal `json:"correction,omitempty"`
+	EventID      string                         `json:"event_id"`
+	QuestionID   string                         `json:"question_id"`
+	Evidence     SupervisionEvidence            `json:"evidence"`
+	PlanEvidence SupervisionEvidence            `json:"plan_evidence"`
+	PolicyDigest string                         `json:"policy_digest,omitempty"`
+	Outcome      string                         `json:"outcome"`
+	Reason       string                         `json:"reason"`
+	Attempts     int                            `json:"attempts"`
+	MaxAttempts  int                            `json:"max_attempts"`
+	At           time.Time                      `json:"at"`
 }
 
 type supervisionDecisions struct {
@@ -52,8 +57,8 @@ type supervisionDecisions struct {
 	Entries  map[string]SupervisionDecision `json:"entries"`
 }
 
-// InterveneSupervision attempts at most one bound answer per call. Observation
-// stays passive and a nil policy leaves the question pending. The delivery-wide
+// InterveneSupervision attempts at most one bound answer or correction proposal
+// per call. Observation stays passive and a nil policy leaves judgment pending. The delivery-wide
 // ledger shares budgets across cursor paths; persisting before submission makes
 // a crash consume an attempt. Neither a crash nor a changed policy resets it.
 // Notification acknowledgment is independent of intervention.
@@ -83,6 +88,17 @@ func InterveneSupervision(opts SupervisionOptions, eventID string, policy *Super
 		return SupervisionDecision{}, err
 	}
 	if event == nil {
+		job, loadErr := loadSupervisionReview(opts, supervisionReviewCandidate(opts.Delivery, records))
+		if loadErr != nil {
+			return SupervisionDecision{}, loadErr
+		}
+		reviewEvent, eventErr := supervisionReviewEvent(opts, job, len(records))
+		if eventErr != nil {
+			return SupervisionDecision{}, eventErr
+		}
+		if reviewEvent != nil && reviewEvent.ID == eventID {
+			return proposeSupervisionCorrection(opts, *reviewEvent, job, policy)
+		}
 		return SupervisionDecision{}, errors.New("loop: unknown supervision event")
 	}
 	decision := SupervisionDecision{EventID: event.ID, QuestionID: event.QuestionID, Evidence: event.Evidence, Outcome: "pending", Reason: "explicit_policy_required", At: opts.Now().UTC()}
@@ -233,4 +249,159 @@ func supervisionPendingQuestion(records []journal.Record, event SupervisionEvent
 		return "question_not_pending"
 	}
 	return ""
+}
+
+// Correction authorization is operator evidence, never extracted from findings.
+// The proposal reserves a child identity; it does not create or resume a runner.
+type SupervisionCorrectionPolicy struct {
+	ReviewID       string `json:"review_id"`
+	ReportDigest   string `json:"report_digest"`
+	SpecDigest     string `json:"spec_digest"`
+	Delivery       string `json:"delivery"`
+	MaxCorrections int    `json:"max_corrections"`
+}
+
+type SupervisionCorrectionProposal struct {
+	RootReviewID   string `json:"root_review_id"`
+	ReviewID       string `json:"review_id"`
+	SourceDelivery string `json:"source_delivery"`
+	Delivery       string `json:"delivery,omitempty"`
+	FinalCommit    string `json:"final_commit"`
+	SpecDigest     string `json:"spec_digest"`
+	Depth          int    `json:"depth"`
+	MaxCorrections int    `json:"max_corrections"`
+}
+
+type supervisionCorrections struct {
+	Version int                            `json:"version"`
+	Entries map[string]SupervisionDecision `json:"entries"`
+}
+
+func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEvent, job *SupervisionReviewJob, policy *SupervisionPolicy) (SupervisionDecision, error) {
+	decision := SupervisionDecision{EventID: event.ID, Evidence: event.Evidence, Outcome: "pending", Reason: "explicit_policy_required", At: opts.Now().UTC()}
+	if policy == nil {
+		return decision, nil
+	}
+	p := policy.Correction
+	if p == nil || policy.Delivery != opts.Delivery || policy.Action != SupervisionProposeCorrection || policy.Ownership != "approved_correction" ||
+		p.ReviewID != job.ID || p.ReportDigest != event.Evidence.Digest || p.SpecDigest != job.SpecDigest || !journal.ValidDeliveryID(p.Delivery) || p.Delivery == opts.Delivery ||
+		p.MaxCorrections < 1 || p.MaxCorrections > 3 || policy.MaxAttempts < 1 || policy.MaxAttempts > 3 || !filepath.IsLocal(policy.PlanEvidence.Path) || len(policy.PlanEvidence.Path) > 1024 || len(policy.PlanEvidence.Digest) != 71 {
+		decision.Reason = "policy_mismatch"
+		return decision, nil
+	}
+	path := filepath.Join(opts.Workspace, journal.Dir, "supervision-corrections.json")
+	release, err := guardPresence(path)
+	if err != nil {
+		return decision, err
+	}
+	defer release()
+	ledger := supervisionCorrections{Version: 1, Entries: map[string]SupervisionDecision{}}
+	data, err := readSupervisionFile(path, 256<<20)
+	if err == nil {
+		if err = json.Unmarshal(data, &ledger); err != nil {
+			return decision, err
+		}
+		if ledger.Version != 1 || ledger.Entries == nil {
+			return decision, errors.New("loop: invalid correction ledger")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return decision, err
+	}
+	proposal := SupervisionCorrectionProposal{RootReviewID: job.ID, ReviewID: job.ID, SourceDelivery: opts.Delivery, FinalCommit: job.FinalCommit, SpecDigest: job.SpecDigest, Depth: 1, MaxCorrections: p.MaxCorrections}
+	decision.MaxAttempts = policy.MaxAttempts
+	for id, entry := range ledger.Entries {
+		c := entry.Correction
+		if c == nil || c.ReviewID != id || c.RootReviewID == "" || c.Depth < 1 || c.MaxCorrections < 1 || c.MaxCorrections > 3 || entry.MaxAttempts < 1 || entry.MaxAttempts > 3 || entry.Attempts < 0 || entry.Attempts > entry.MaxAttempts {
+			return decision, errors.New("loop: invalid correction budget")
+		}
+		if entry.Outcome == "proposed" && c.Delivery == opts.Delivery {
+			proposal.RootReviewID = c.RootReviewID
+			proposal.Depth = c.Depth + 1
+			proposal.MaxCorrections = min(proposal.MaxCorrections, c.MaxCorrections)
+			decision.MaxAttempts = min(decision.MaxAttempts, entry.MaxAttempts)
+			if job.FinalCommit == c.FinalCommit || job.Base != c.FinalCommit || job.SpecDigest != c.SpecDigest {
+				decision.Reason = "correction_identity_mismatch"
+				return decision, nil
+			}
+		}
+	}
+	if previous, ok := ledger.Entries[job.ID]; ok {
+		if previous.Outcome == "proposed" {
+			return previous, nil
+		}
+		proposal = *previous.Correction
+		proposal.MaxCorrections = min(proposal.MaxCorrections, p.MaxCorrections)
+		decision.MaxAttempts = min(decision.MaxAttempts, previous.MaxAttempts)
+	}
+	// Attempts are a chain-wide usage budget for this local fixed policy. There
+	// is no conductor model or token estimate, and no paid fallback is invoked.
+	for _, entry := range ledger.Entries {
+		if entry.Correction.RootReviewID == proposal.RootReviewID {
+			decision.Attempts = max(decision.Attempts, entry.Attempts)
+			decision.MaxAttempts = min(decision.MaxAttempts, entry.MaxAttempts)
+			proposal.MaxCorrections = min(proposal.MaxCorrections, entry.Correction.MaxCorrections)
+		}
+	}
+	decision.MaxAttempts = max(decision.Attempts, decision.MaxAttempts)
+	encoded, _ := json.Marshal(policy)
+	decision.PolicyDigest = fmt.Sprintf("%x", sha256.Sum256(encoded))
+	decision.PlanEvidence = policy.PlanEvidence
+	decision.Correction = &proposal
+	persist := func() (SupervisionDecision, error) {
+		ledger.Entries[job.ID] = decision
+		return decision, writeSupervisionJSON(path, ledger)
+	}
+	if decision.Attempts >= decision.MaxAttempts || proposal.Depth > proposal.MaxCorrections {
+		decision.Outcome = "exhausted"
+		decision.Reason = "correction_chain_budget"
+		return persist()
+	}
+	if job.State != "reported" || (job.Outcome != "FIX_BEFORE_SHIP" && job.Outcome != "REWORK") {
+		decision.Reason = "review_requires_judgment"
+		return persist()
+	}
+	if err := supervisionReviewArtifacts(job, false); err != nil {
+		decision.Reason = "review_evidence_mismatch"
+		return persist()
+	}
+	// Readonly local validation is safe to repeat after a crash. Persisting the
+	// reservation first charges failed attempts and never replays external work.
+	decision.Attempts++
+	decision.Reason = "proposal_attempt_recorded"
+	if _, err := persist(); err != nil {
+		return decision, err
+	}
+	plan, err := readSupervisionFile(filepath.Join(opts.Workspace, policy.PlanEvidence.Path), 1<<20)
+	if err != nil || fmt.Sprintf("sha256:%x", sha256.Sum256(plan)) != policy.PlanEvidence.Digest {
+		decision.Reason = "plan_evidence_mismatch"
+		return persist()
+	}
+	parsed, err := routing.ParsePlan(job.Slug, plan)
+	if err != nil || parsed.Set.Digest != job.SpecDigest {
+		decision.Reason = "scope_expansion_requires_decision"
+		return persist()
+	}
+	entries, err := os.ReadDir(filepath.Join(opts.Workspace, journal.Dir))
+	if err != nil {
+		return decision, err
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), ".lock") {
+			decision.Reason = "ownership_unresolved"
+			return persist()
+		}
+	}
+	if _, err := os.Lstat(filepath.Join(opts.Workspace, journal.Dir, p.Delivery+".jsonl")); !errors.Is(err, os.ErrNotExist) {
+		decision.Reason = "correction_delivery_exists"
+		return persist()
+	}
+	for _, entry := range ledger.Entries {
+		if entry.Correction.SourceDelivery == p.Delivery || (entry.Outcome == "proposed" && entry.Correction.Delivery == p.Delivery) {
+			decision.Reason = "correction_delivery_reserved"
+			return persist()
+		}
+	}
+	proposal.Delivery = p.Delivery
+	decision.Outcome, decision.Reason = "proposed", "explicit_scoped_policy; conductor must create the correction delivery and review its new commit"
+	return persist()
 }
