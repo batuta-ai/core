@@ -1,29 +1,29 @@
 # Plan — resolve adjudicated automatic review defects
 
 **Goal:** Correct confirmed automatic review delivery defects while preserving immutable evidence, bounded authorization and process ownership.
-**Created:** 2026-09-13 · **Status:** approved
+**Created:** 2026-09-13 · **Status:** done
 
 ## Tasks
-- [ ] 1. Recover final bookkeeping identity despite commit trailers — backend/high
+- [x] 1. Recover final bookkeeping identity despite commit trailers — backend/high
       Scope: loop/report.go, loop/report_test.go, loop/loop_test.go
       Accept: a message-altering commit hook does not strand done finalization and recovery resolves the original unique final commit after newer commits → go test ./loop -run 'Supervision.*Identity'; unknown and ambiguous identities remain explicit and no moving HEAD fallback is introduced → go test ./loop -run 'Supervision.*Identity'; module builds → go build ./...
-- [ ] 2. Bind correction proposals to full approved contract and durable review evidence — backend/high
+- [x] 2. Bind correction proposals to full approved contract and durable review evidence — backend/high
       Depends on: 1
       Scope: loop/supervision_policy.go, loop/supervision_policy_test.go, loop/supervision.go, loop/supervision_test.go, loop/supervision_review.go, loop/supervision_review_test.go
       Accept: valid plan bytes with altered goal or effective context cannot pass the unchanged task digest guard and extra task changes are detected with specific reasons → go test ./loop -run SupervisionCorrection; a policy pinned to a real older review receipt stays pending on evidence drift instead of crashing supervision, while fabricated events and stale evidence never authorize corrections → go test -race ./loop -run Supervision
-- [ ] 3. Make review ownership acquisition cancelable — backend/high
+- [x] 3. Make review ownership acquisition cancelable — backend/high
       Depends on: 2
       Scope: loop/supervision_review.go, loop/supervision_review_test.go, loop/presence.go, loop/flock_unix.go, loop/flock_windows.go, loop/flock_other.go, loop/supervision_lock*.go
       Accept: a canceled second supervisor cannot remain indefinitely blocked behind an active review and no concurrent duplicate engine starts → go test -race ./loop -run SupervisionReview; existing presence and recovery invariants remain intact → go test ./loop -run 'Presence|Supervision'; module builds for supported targets without introducing bare cross-platform syscalls → go build ./...
-- [ ] 4. Bound cancellation and reconcile nested review process cleanup — backend/high
+- [x] 4. Bound cancellation and reconcile nested review process cleanup — backend/high
       Depends on: 3
       Scope: loop/supervision_review.go, loop/supervision_review_test.go, loop/supervision_process*.go, publication/command*.go, cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: canceling review terminates owned nested reviewer groups in a controlled real-process fixture with bounded escalation, or records unresolved cleanup explicitly without permitting replay or acceptance → go test ./loop ./publication -run 'Supervision|Cancel|Process'; cancellation is bounded and ownership is retained while descendant cleanup remains unresolved → go test -race ./loop ./publication -run 'Supervision|Cancel|Process'; module builds → go build ./...
-- [ ] 5. Prove CLI review wiring and production failure outcomes — backend/medium
+- [x] 5. Prove CLI review wiring and production failure outcomes — backend/medium
       Depends on: 4
       Scope: cmd/batuta/main_test.go, loop/supervision_review_test.go, loop/supervision_policy_test.go, loop/report_test.go
       Accept: a behavior test actually traverses loop supervise review wiring and fails if automatic review is omitted → go test ./cmd/batuta -run Supervision; review exit statuses 2 and 3 exercise real wrapped ExitError semantics and missing full flag tests discriminate that flag → go test ./loop -run SupervisionReview; controlled cancellation exercises context propagation and goroutine helpers avoid FailNow outside the test goroutine → go test -race ./loop -run SupervisionReview
-- [ ] 6. Align operator documentation with verified review behavior — backend/medium
+- [x] 6. Align operator documentation with verified review behavior — backend/medium
       Depends on: 5
       Scope: cmd/batuta/main.go, docs/loop-supervision.md, docs/loop.md, README.md, README.pt-BR.md
       Accept: help documents both policy actions and review without policy, examples use original immutable plan evidence and correct artifact paths, fixed timeout and unresolved cleanup limitations are explicit → go test ./cmd/batuta -run Supervision; full regression suite passes → go test ./...; module builds → go build ./...
