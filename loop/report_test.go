@@ -547,7 +547,11 @@ func TestSupervisionFinalCommitIdentity(t *testing.T) {
 	if detail.FinalCommit != final {
 		t.Fatalf("final commit = %q, want %q", detail.FinalCommit, final)
 	}
+	f.run(t, "checkout", r.branch)
 	f.run(t, "commit", "--allow-empty", "-qm", "test: later delivery")
+	if got, err := r.bookkeepingIdentity(context.Background(), detail.State, detail.Summary); err != nil || got != final {
+		t.Fatalf("recovered identity = %q, want %q, %v", got, final, err)
+	}
 	records = readJournal(t, f, r.Delivery())
 	if err := json.Unmarshal(records[len(records)-1].Detail, &detail); err != nil || detail.FinalCommit != final {
 		t.Fatalf("identity moved: %+v, %v", detail, err)
@@ -555,9 +559,25 @@ func TestSupervisionFinalCommitIdentity(t *testing.T) {
 }
 
 func TestSupervisionBookkeepingRecoveryIdentity(t *testing.T) {
-	for _, crash := range []bool{false, true} {
-		t.Run(map[bool]string{false: "normal", true: "after commit"}[crash], func(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		crash   bool
+		trailer bool
+	}{
+		{name: "normal"},
+		{name: "after commit", crash: true},
+		{name: "hook trailer", trailer: true},
+		{name: "hook trailer after commit", crash: true, trailer: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			f := setup(t)
+			if tc.trailer {
+				hooks := t.TempDir()
+				if err := os.WriteFile(filepath.Join(hooks, "commit-msg"), []byte("#!/bin/sh\nprintf '\\nReviewed-by: Test <test@example.com>\\n' >> \"$1\"\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				f.run(t, "config", "core.hooksPath", hooks)
+			}
 			r, err := New(context.Background(), f.options("default", new(bytes.Buffer)))
 			if err != nil {
 				t.Fatal(err)
@@ -572,7 +592,7 @@ func TestSupervisionBookkeepingRecoveryIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			interrupted := errors.New("crash after commit")
-			if crash {
+			if tc.crash {
 				r.git.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
 					result, err := (publication.ExecRunner{}).Run(ctx, c)
 					if err == nil && c.Directory == f.root && len(c.Args) > 0 && c.Args[0] == "commit" {
@@ -592,8 +612,15 @@ func TestSupervisionBookkeepingRecoveryIdentity(t *testing.T) {
 				}
 			}()
 			final := f.run(t, "rev-parse", "HEAD")
+			if tc.trailer && !strings.Contains(f.run(t, "log", "-1", "--format=%B"), "Reviewed-by:") {
+				t.Fatal("commit hook did not append trailer")
+			}
 			f.run(t, "commit", "--allow-empty", "-qm", "test: later delivery")
-			if crash {
+			later := f.run(t, "rev-parse", r.branch)
+			if later == final {
+				t.Fatal("delivery branch did not advance")
+			}
+			if tc.crash {
 				r.git.Runner = publication.ExecRunner{}
 				records := readJournal(t, f, r.Delivery())
 				detail := pendingFinalization(records)
@@ -608,6 +635,67 @@ func TestSupervisionBookkeepingRecoveryIdentity(t *testing.T) {
 			var terminal terminalDetail
 			if err := json.Unmarshal(records[len(records)-1].Detail, &terminal); err != nil || terminal.FinalCommit != final {
 				t.Fatalf("identity: %+v, want %s, %v", terminal, final, err)
+			}
+			if terminal.BookkeepingPending || records[len(records)-1].Kind != KindTerminal {
+				t.Fatalf("finalization stranded: %+v", terminal)
+			}
+			if f.run(t, "rev-parse", r.branch) != later {
+				t.Fatal("recovery moved the delivery branch")
+			}
+		})
+	}
+}
+
+func TestSupervisionBookkeepingIdentityMatches(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		messages func(string) []string
+		wantErr  string
+	}{
+		{name: "legacy", messages: func(m string) []string { return []string{m} }},
+		{name: "trailers", messages: func(m string) []string {
+			return []string{m + "\n\nReviewed-by: Test <test@example.com>\nSigned-off-by: Author <author@example.com>"}
+		}},
+		{name: "folded trailer", messages: func(m string) []string { return []string{m + "\n\nReview-note: first\n second"} }},
+		{name: "missing", wantErr: "unknown"},
+		{name: "subject only", messages: func(m string) []string { return []string{strings.Split(m, "\n")[0]} }, wantErr: "unknown"},
+		{name: "wrong subject", messages: func(m string) []string { return []string{strings.Replace(m, "chore(batuta)", "test", 1)} }, wantErr: "unknown"},
+		{name: "wrong summary", messages: func(m string) []string { return []string{strings.Replace(m, "0 integrated", "1 integrated", 1)} }, wantErr: "unknown"},
+		{name: "wrong delivery", messages: func(m string) []string { return []string{m + "other"} }, wantErr: "unknown"},
+		{name: "quoted message", messages: func(m string) []string { return []string{"test: quoted bookkeeping\n\n" + m} }, wantErr: "unknown"},
+		{name: "extra prose", messages: func(m string) []string { return []string{m + "\n\nUnrelated message"} }, wantErr: "unknown"},
+		{name: "prose before trailer", messages: func(m string) []string {
+			return []string{m + "\n\nUnrelated message\nReviewed-by: Test\nSigned-off-by: Author"}
+		}, wantErr: "unknown"},
+		{name: "duplicate", messages: func(m string) []string { return []string{m, m} }, wantErr: "ambiguous"},
+		{name: "duplicate with trailer", messages: func(m string) []string { return []string{m, m + "\n\nReviewed-by: Test"} }, wantErr: "ambiguous"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			r, err := New(context.Background(), f.options("default", new(bytes.Buffer)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := "chore(batuta): greetings — loop done\n\n0 integrated, 0 blocked. Delivery " + r.delivery + "."
+			var want string
+			if tc.messages != nil {
+				for _, message := range tc.messages(message) {
+					f.run(t, "commit", "--allow-empty", "-qm", message)
+					want = f.run(t, "rev-parse", "HEAD")
+				}
+			}
+			f.run(t, "commit", "--allow-empty", "-qm", "test: later unrelated commit")
+			head := f.run(t, "rev-parse", "HEAD")
+			got, err := r.bookkeepingIdentity(context.Background(), StateDone, Summary{})
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) || got != "" {
+					t.Fatalf("identity = %q, %v; want %s", got, err, tc.wantErr)
+				}
+			} else if err != nil || got != want {
+				t.Fatalf("identity = %q, %v; want %q", got, err, want)
+			}
+			if f.run(t, "rev-parse", "HEAD") != head {
+				t.Fatal("identity lookup moved HEAD")
 			}
 		})
 	}
