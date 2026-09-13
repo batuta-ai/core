@@ -1,6 +1,6 @@
 # `batuta loop` — the mechanical conductor on file hosts
 
-`batuta loop` runs an approved plan (`.batuta/plan-<slug>.md`) without a
+`batuta loop` runs an approved plan (`.batuta/plans/<slug>.md`) without a
 model in the conductor's seat. It is the Ralph loop of the
 beer-and-code-harness driven by the core delivery graph instead of a phase
 list, with the same invariants:
@@ -71,11 +71,14 @@ When the delivery reaches `done`, run
 `batuta review --spec .batuta/plans/done/<slug>.md`. Resolve any review verdict
 that is not `SHIP`, then open the pull request and attach or link the review
 artefacts. The review is the delivery-level gate between the completed loop and
-the PR; see [review.md](review.md) for its contract. The foreground
-supervisor runs this full review automatically against the recorded final commit
-and original base/spec. Its durable outcome still awaits conductor judgment;
-SHIP does not authorize publication. Explicitly authorized correction proposals
-inherit a bounded chain budget and require the conductor to create a new delivery.
+the PR; see [review.md](review.md) for its contract. An explicitly running
+foreground supervisor performs this full review automatically against the
+recorded final commit and original base/spec; ordinary `batuta loop` completion
+alone does not. Review runs without a policy. Its durable outcome still awaits
+conductor judgment: implementation may be complete, but acceptance remains
+pending, and SHIP does not authorize publication. Explicitly authorized
+correction proposals inherit a bounded chain budget and require the conductor
+to create a new delivery.
 See [loop-supervision.md](loop-supervision.md) for policy and notification details.
 
 ## Standalone gates
@@ -253,6 +256,12 @@ exit `1` with the reason on stderr.
   the runner's clock and cancellable sleep, so tests can drive refreshes
   without waiting for wall time. Acquisition and takeover use the guard
   lock directly and have no timed retry loop.
+- **WORK.md is generated bookkeeping, not approval evidence.** At finalization,
+  the loop derives entries from the delivery summary and journal, writes them
+  with the plan ticks, and commits both once. A `done` entry records
+  implementation completion; review acceptance is a later, separate conductor
+  decision. Existing dirty managed files still fail loop preflight and must be
+  committed before a new delivery.
 - **User-authored command lines** (`Test:`, `Install:`, proofs) run through
   `sh -c` with stdin closed, a timeout and bounded output; they come from
   files the user wrote and approved. **Executor lines never see a shell**:
@@ -366,7 +375,7 @@ and from the scope check, committed by the loop with the plan bookkeeping.
 | `.batuta/worktrees/<slug>-task-N-e<k>/` | no | per attempt; removed after integration or abort (`--keep-worktrees` keeps them) |
 | `.batuta/runs/<date>-<slug>-task-N.md` (+ `-e<k>.brief.md`, `-e<k>.out.log`) | no | per attempt |
 | `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` |
-| `WORK.md`, `.batuta/plans/<slug>.md` | yes | once, at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
+| `WORK.md`, `.batuta/plans/<slug>.md` | yes | generated from the terminal delivery summary and journal, once at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
 | `.batuta/plans/done/<slug>.md` | yes | when all tasks are done; the bookkeeping commit carries the plan move |
 
 Legacy `.batuta/plan-<slug>.md` plans remain readable for one release. The

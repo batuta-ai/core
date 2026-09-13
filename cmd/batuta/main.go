@@ -70,7 +70,9 @@ dispatch   One bounded external attempt, compact JSON and private artifacts in
            this release has no qualified ACP launches. Auto falls back to CLI
            before submission. Native tools belong to the interactive host.
 supervise  Foreground observation, then full review of a completed delivery.
-           No model calls while waiting; review evidence needs conductor judgment.
+           Automatic review requires --supervise and runs after finalized done,
+           with or without --policy. Waiting makes no model calls; review evidence
+           needs conductor judgment and implementation completion is not acceptance.
            --interval is bounded to 100ms..1m; Ctrl-C/SIGTERM stops cleanly.
            --cursor persists unread events; --once performs one observation.
            Each observation handles up to 32 events, with overflow in the cursor;
@@ -80,13 +82,18 @@ supervise  Foreground observation, then full review of a completed delivery.
            or uses installed desktop notifications on macOS/Linux. No sink or
            failed delivery leaves events pending. Desktop delivery is at least
            once across crashes; stable event IDs support sink deduplication.
-           --policy accepts a bounded JSON SupervisionPolicy for a fixed scoped
-           answer only. No policy means notification only. No background service
+           --policy accepts bounded JSON actions: continue_approved_task for a
+           scoped worker answer, or propose_correction after operator judgment of
+           FIX_BEFORE_SHIP/REWORK. Without policy, review still runs but no answer
+           or correction is authorized. Review uses a fixed one-hour timeout;
+           timeout, cancellation, or unresolved descendant cleanup becomes
+           uncertain and is never replayed automatically. Review files are under
+           .batuta/reviews/supervision/<job-id>/artifacts/. No background service
            is installed; the process must remain running. Local output does not
            promise an asynchronous chat notification.
 
 loop       The mechanical conductor over an approved plan
-           (.batuta/plan-<slug>.md): routing from .batuta/routing.md, one
+           (.batuta/plans/<slug>.md): routing from .batuta/routing.md, one
            executor session per task in its own worktree through the
            adapter, the four gates, retry then escalation, one commit per
            task integrated onto the checked-out branch, everything

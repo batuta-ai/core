@@ -3,7 +3,8 @@
 `batuta loop --supervise` watches one explicit delivery from its append-only
 journal. It is a local foreground process: it does not install a service, start
 a daemon, or take ownership of the delivery. Observation itself makes no model
-calls; after completion the foreground supervisor runs the full review engine.
+calls. Automatic review is opt-in: it runs only in this `--supervise` process,
+after the delivery is fully finalized, and does not require `--policy`.
 
 ```bash
 batuta loop --workspace /absolute/repository \
@@ -60,13 +61,17 @@ ending a chat turn as supervision.
 
 ## Intervention policy
 
-Without `--policy`, review evidence remains pending for conductor judgment. For
-worker questions, the policy surface supports one fixed routine clarification: continue the task already
-assigned by an approved plan, without adding scope or permission. The JSON must
-bind the delivery, task, execution, question ID and question journal digest; it
-must also bind a repository-local plan path and SHA-256 digest, declare
-`"action":"continue_approved_task"`, attest
-`"ownership":"approved_task"`, and set `max_attempts` from 1 through 3.
+Without `--policy`, observation and automatic review still run, but worker
+questions and review findings remain pending for conductor judgment. A policy
+supports two actions only: `continue_approved_task` provides one fixed routine
+clarification for a worker question, while `propose_correction` reserves a
+correction delivery after an operator has judged a completed review.
+
+For `continue_approved_task`, the JSON must bind the delivery, task, execution,
+question ID and question journal digest. It must also bind a repository-local
+plan path and SHA-256 digest, attest `"ownership":"approved_task"`, and set
+`max_attempts` from 1 through 3. This action only says to continue the task
+already assigned by the approved plan; it adds no scope or permission.
 
 The delivery-wide decision ledger survives supervisor restarts and policy-file
 changes. An attempt is recorded before the existing bound-answer API is called.
@@ -101,8 +106,10 @@ coverage. Legacy journals with unknown final identity remain visibly pending.
 Missing capabilities, unresolved snapshots and execution failures never become
 successful reviews; nothing is installed as a fallback.
 
-The job and digest-bound `manifest.json`, `findings.json`, `review.md`, and
-`state.json` artifacts live under `.batuta/reviews/supervision/<job-id>/`.
+The job record is `.batuta/reviews/supervision/<job-id>/job.json`. The immutable
+spec copy is `.batuta/reviews/supervision/<job-id>/<slug>.md`; digest-bound
+`manifest.json`, `findings.json`, `review.md`, and `state.json` live in the
+`artifacts/` subdirectory beneath that job directory.
 Execution state (`pending`, `launching`, `reported`, `failed`, `uncertain`) is
 separate from outcome (`SHIP`, `FIX_BEFORE_SHIP`, `REWORK`,
 `incomplete_coverage`, `execution_failed`). The engine's exit status, canonical
@@ -110,6 +117,13 @@ walkthrough, and coverage checkpoint must agree. An interrupted launch remains
 uncertain until execution is reconciled; observing it does not authorize replay.
 There is one logical job per immutable delivery identity, with durable launch
 intent, not a claim of exactly-once external execution across crashes.
+
+The review's default and CLI-fixed timeout is one hour; there is no supervision
+timeout CLI flag. A timeout, cancellation, or unresolved
+review-descendant cleanup leaves the job `uncertain` with outcome
+`cleanup_unresolved`. The supervisor will not replay that attempt or declare
+cleanup complete: the operator must reconcile the reviewer process and retained
+evidence before any further attempt.
 
 `completed` describes implementation and finalization only. `acceptance` remains
 `pending`, including after SHIP: the report is evidence for conductor judgment,
@@ -128,8 +142,8 @@ proposal for a completed FIX_BEFORE_SHIP or REWORK review:
   "action": "propose_correction",
   "ownership": "approved_correction",
   "plan_evidence": {
-    "path": ".batuta/plans/done/delivery.md",
-    "digest": "sha256:<SHA-256 of the approved plan bytes>"
+    "path": ".batuta/reviews/supervision/<review-job-id>/delivery.md",
+    "digest": "sha256:<SHA-256 of those exact original approved plan bytes>"
   },
   "max_attempts": 3,
   "correction": {
@@ -143,18 +157,25 @@ proposal for a completed FIX_BEFORE_SHIP or REWORK review:
 ```
 
 The operator must first judge the findings and explicitly authorize in-scope
-corrections. The plan bytes and parsed contract must match the approved evidence
-and delivered spec. Review prose cannot supply policy, extend scope, resolve
-ownership, or authorize uncertain execution. Incomplete coverage and execution
-failures require a decision rather than a correction proposal.
+corrections. `plan_evidence` names the immutable original approved plan copy,
+not `.batuta/plans/done/<slug>.md`: final bookkeeping ticks and archives that
+copy, so its byte digest differs even though historical parsed task digests stay
+compatible. The exact plan bytes, title, goal, task context, and parsed contract
+must match the reviewed evidence. Review prose cannot supply policy, extend
+scope, resolve ownership, or authorize uncertain execution. Incomplete coverage
+and execution failures require a decision rather than a correction proposal.
 
 The workspace-wide `.batuta/journal/supervision-corrections.json` ledger reserves
 child delivery identities and retains chain budgets across cursors, restarts,
-and policy changes. Both bounds are 1–3: `max_attempts` caps cumulative local
-policy attempts, including failed plan/ownership checks, and `max_corrections`
-caps correction depth. A budget can shrink but cannot be increased by replacing
-a policy. Exhaustion is explicit. Repeating an accepted proposal returns its
-original child identity without creating another correction.
+and policy changes. Both bounds are 1–3. For correction proposals,
+`max_attempts` is chain-wide and counts each recorded local proposal attempt,
+including one that later fails plan or ownership validation;
+`max_corrections` caps correction depth. A budget can shrink but cannot be
+increased by replacing a policy. Exhaustion is explicit. Repeating an accepted
+proposal returns its original child identity without creating another
+correction. The worker-answer ledger is delivery-wide; its `max_attempts`
+counts recorded bound-answer submissions, including a rejected submission, but
+pre-submission evidence and ownership checks do not spend it.
 
 A proposal does not create a plan, invoke a conductor model, answer a worker
 question, resume a runner, or change the completed journal. The conductor must

@@ -36,9 +36,16 @@ A [supervisão do loop](docs/loop-supervision.md) acompanha uma entrega explíci
 com cursor durável. O host precisa manter o processo em execução; notificações
 por arquivo local ou desktop compatível são opt-in, e sem um destino os eventos
 permanecem não lidos. A observação não faz chamadas a modelos. Após a conclusão,
-o supervisor executa uma revisão completa da entrega imutável. O resultado da
-revisão permanece separado da aceitação pelo condutor; propostas de correção
-exigem autorização explícita, têm limites duráveis e não retomam o executor.
+o supervisor executa uma revisão completa da entrega imutável mesmo sem
+`--policy`; concluir apenas o loop comum não inicia essa revisão. Uma política
+pode fornecer a resposta fixa e limitada ao escopo da tarefa ou reservar uma
+proposta de correção explicitamente autorizada. Conclusão da implementação,
+resultado da revisão e aceitação pelo condutor são estados distintos. A evidência
+fica em `.batuta/reviews/supervision/<job-id>/`, e a saída do motor em
+`artifacts/`. O timeout padrão é de uma hora e não há uma opção de CLI para
+alterá-lo; timeout ou limpeza
+pendente de processos descendentes deixa a execução incerta, sem repetição
+automática.
 
 Quando um limite de uso dura além do orçamento de espera, o loop recorre ao
 próximo runtime executável sem gastar uma nova tentativa nem uma escalação.
