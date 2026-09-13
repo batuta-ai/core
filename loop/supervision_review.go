@@ -101,11 +101,19 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	if job == nil || job.ID == "" {
 		return job, nil
 	}
+	if opts.Timeout == 0 {
+		opts.Timeout = time.Hour
+	}
+	if opts.Timeout < 0 {
+		return nil, errors.New("loop: review timeout must be positive")
+	}
+	reviewCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
+	defer cancel()
 	directory := supervisionReviewDirectory(observer, *job)
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return nil, err
 	}
-	release, err := guardPresence(filepath.Join(directory, "ownership"))
+	release, err := acquireSupervisionReviewOwnership(reviewCtx, filepath.Join(directory, "ownership"))
 	if err != nil {
 		return nil, err
 	}
@@ -166,14 +174,6 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	if opts.Runner == nil {
 		opts.Runner = publication.ExecRunner{}
 	}
-	if opts.Timeout == 0 {
-		opts.Timeout = time.Hour
-	}
-	if opts.Timeout < 0 {
-		return nil, errors.New("loop: review timeout must be positive")
-	}
-	reviewCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-	defer cancel()
 	if err := probeSupervisionReview(reviewCtx, opts, observer.Workspace); err != nil {
 		return fail(err)
 	}

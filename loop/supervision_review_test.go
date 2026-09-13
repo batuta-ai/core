@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,6 +129,101 @@ func TestSupervisionReviewDeduplicatesAcrossCursors(t *testing.T) {
 	job, e := RunSupervisionReview(context.Background(), opts, engine)
 	if e != nil || job.ID != observation.Review.ID || launches != 1 {
 		t.Fatalf("restart: %+v, launches=%d, %v", job, launches, e)
+	}
+}
+
+func TestSupervisionReviewOwnershipAcquisitionCancellation(t *testing.T) {
+	for _, scenario := range []string{"canceled", "timeout"} {
+		t.Run(scenario, func(t *testing.T) {
+			opts, _, spec := supervisionReviewFixture(t)
+			launches := 0
+			engine := fakeSupervisionReview(t, opts, spec, &launches)
+			original := engine.Runner
+			started := make(chan struct{})
+			finish := make(chan struct{})
+			var finishOnce sync.Once
+			releaseEngine := func() { finishOnce.Do(func() { close(finish) }) }
+			defer releaseEngine()
+			engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				if len(c.Args) > 2 {
+					close(started)
+					<-finish
+				}
+				return original.Run(ctx, c)
+			})
+			type result struct {
+				job *SupervisionReviewJob
+				err error
+			}
+			ownerDone := make(chan result, 1)
+			go func() {
+				job, err := RunSupervisionReview(context.Background(), opts, engine)
+				ownerDone <- result{job, err}
+			}()
+			<-started
+			candidate := supervisionObserve(t, opts).Review
+			directory := supervisionReviewDirectory(opts, *candidate)
+			statePath := filepath.Join(directory, "job.json")
+			before, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			guardPath := filepath.Join(directory, "ownership.guard")
+			guardBefore, err := os.Stat(guardPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var waiterCalls atomic.Int32
+			waiter := SupervisionReviewOptions{Executable: "fake-batuta", Runner: commandRunnerFunc(func(context.Context, publication.Command) (publication.CommandResult, error) {
+				waiterCalls.Add(1)
+				return publication.CommandResult{}, errors.New("waiting supervisor must not invoke the engine")
+			})}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			want := context.Canceled
+			if scenario == "canceled" {
+				cancel()
+			} else {
+				waiter.Timeout = time.Millisecond
+				want = context.DeadlineExceeded
+			}
+			waiterDone := make(chan result, 1)
+			go func() {
+				job, err := RunSupervisionReview(ctx, opts, waiter)
+				waiterDone <- result{job, err}
+			}()
+			select {
+			case got := <-waiterDone:
+				if !errors.Is(got.err, want) || got.job != nil {
+					t.Errorf("waiting supervisor: job=%+v, err=%v; want %v", got.job, got.err, want)
+				}
+			case <-time.After(5 * time.Second):
+				// Watchdog only: ordering comes from the engine's channels.
+				t.Error("waiting supervisor remained blocked behind active review")
+				releaseEngine()
+				<-waiterDone
+			}
+			after, err := os.ReadFile(statePath)
+			if err != nil || string(after) != string(before) {
+				t.Errorf("waiting supervisor changed launch intent: %s, %v", after, err)
+			}
+			guardAfter, err := os.Stat(guardPath)
+			if err != nil || !os.SameFile(guardBefore, guardAfter) {
+				t.Errorf("shared ownership guard was replaced: %v", err)
+			}
+			if waiterCalls.Load() != 0 {
+				t.Errorf("waiting supervisor invoked engine %d times", waiterCalls.Load())
+			}
+			releaseEngine()
+			got := <-ownerDone
+			if got.err != nil || got.job == nil || got.job.State != "reported" || launches != 1 {
+				t.Fatalf("owner: job=%+v, err=%v, launches=%d", got.job, got.err, launches)
+			}
+			job, err := RunSupervisionReview(context.Background(), opts, waiter)
+			if err != nil || job == nil || job.State != "reported" || waiterCalls.Load() != 0 {
+				t.Fatalf("replay: job=%+v, err=%v, engine calls=%d", job, err, waiterCalls.Load())
+			}
+		})
 	}
 }
 
