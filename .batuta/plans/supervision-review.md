@@ -4,7 +4,7 @@
 **Created:** 2026-09-11 · **Status:** approved
 
 ## Tasks
-- [ ] 1. Bind post-delivery review to immutable delivery identity — backend/high
+- [x] 1. Bind post-delivery review to immutable delivery identity — backend/high
       Scope: loop/supervision_review.go, loop/supervision_review_test.go, loop/supervision.go, loop/supervision_test.go, loop/report.go, loop/report_test.go, loop/loop_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: a done delivery schedules one logical review keyed by delivery ID, final commit, original base and spec digest, duplicate observations and supervisor restarts cannot launch concurrent duplicate reviews → go test ./loop -run Supervision; review uses supported core engine arguments with the exact delivered snapshot and spec, source changes or another active runner prevent stale review acceptance → go test ./cmd/batuta ./loop -run Supervision; failed/canceled/abandoned deliveries never become completed review candidates → go test ./loop -run Supervision
 - [ ] 2. Report review outcomes and bound follow-up corrections — backend/high

@@ -161,6 +161,7 @@
 - [x] Bound intervention and bind answers to their question → codex (gpt-6-astra), commit e773408b56f0 (trail: .batuta/runs/2026-09-11-loop-supervision-task-2.md, delivery loop-supervision-20260911-214107, plan loop-supervision, 2026-09-11)
 - [x] Expose opt-in local supervision and actionable notifications → codex (gpt-6-astra), commit fc2aa1b97159 (trail: .batuta/runs/2026-09-11-loop-supervision-task-3.md, delivery loop-supervision-20260911-214107, plan loop-supervision, 2026-09-11)
 - [x] Verify lifecycle and measure supervision overhead → codex (gpt-5.6-sol), commit 6f2fb861191f (trail: .batuta/runs/2026-09-11-loop-supervision-task-4.md, delivery loop-supervision-20260911-214107, plan loop-supervision, 2026-09-11)
+- [x] Bind post-delivery review to immutable delivery identity → codex (gpt-6-astra), commit 59120cb8c94a (trail: .batuta/runs/2026-09-12-supervision-review-task-1.md, delivery supervision-review-20260912-221601, plan supervision-review, 2026-09-13)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
