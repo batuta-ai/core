@@ -467,6 +467,48 @@ func loadSupervisionReview(opts SupervisionOptions, candidate *SupervisionReview
 	return &saved, nil
 }
 
+func loadSupervisionReviewReceipt(opts SupervisionOptions, job *SupervisionReviewJob, eventID string, sequence int) (*SupervisionEvent, error) {
+	if job == nil || job.ID == "" {
+		return nil, nil
+	}
+	prefix := opts.Delivery + ":review:" + job.ID + ":"
+	digest := strings.TrimPrefix(eventID, prefix)
+	if digest == eventID || len(digest) != 64 || !supervisionCommit.MatchString(digest) {
+		return nil, nil
+	}
+	receipt := filepath.Join(supervisionReviewDirectory(opts, *job), "outcomes", digest, "job.json")
+	for path := receipt; path != opts.Workspace; path = filepath.Dir(path) {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, errors.New("loop: review outcome receipt uses a symlink")
+		}
+	}
+	data, err := readSupervisionFile(receipt, 1<<20)
+	if err != nil {
+		return nil, err
+	}
+	if fmt.Sprintf("%x", sha256.Sum256(data)) != digest {
+		return nil, errors.New("loop: review outcome receipt changed")
+	}
+	var saved SupervisionReviewJob
+	if err := json.Unmarshal(data, &saved); err != nil {
+		return nil, err
+	}
+	if saved.ID != job.ID || saved.Delivery != job.Delivery || saved.Base != job.Base || saved.FinalCommit != job.FinalCommit || saved.SpecDigest != job.SpecDigest || saved.SpecPath != job.SpecPath || saved.Slug != job.Slug {
+		return nil, errors.New("loop: review outcome receipt identity mismatch")
+	}
+	// Receipts use the writer's exact encoding; decoding must not turn a
+	// fabricated event into a different, otherwise valid event identity.
+	canonical, err := json.Marshal(&saved)
+	if err != nil || string(canonical) != string(data) {
+		return nil, errors.New("loop: review outcome receipt encoding mismatch")
+	}
+	return supervisionReviewEvent(opts, &saved, sequence)
+}
+
 func supervisionReviewEvent(opts SupervisionOptions, job *SupervisionReviewJob, sequence int) (*SupervisionEvent, error) {
 	if job == nil || job.ID == "" || (job.State != "reported" && job.State != "failed" && job.State != "uncertain") {
 		return nil, nil

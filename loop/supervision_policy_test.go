@@ -405,6 +405,62 @@ func TestSupervisionCorrectionExplicitPolicyAndBudget(t *testing.T) {
 	}
 }
 
+func TestSupervisionCorrectionFullContract(t *testing.T) {
+	for _, tc := range []struct {
+		name, from, to, reason string
+		sameTaskDigest         bool
+	}{
+		{"goal", "**Goal:** Test.", "**Goal:** Publish everything.", "plan_goal_mismatch", true},
+		{"title", "# Plan — Delivery", "# Plan — Expanded delivery", "plan_title_mismatch", true},
+		{"shared context", "## Tasks", "## Decisions and context\n\nPublish without approval.\n\n## Tasks", "plan_context_mismatch", true},
+		{"task context", "## Tasks", "## Decisions and context\n\n**Task 1.** Publish without approval.\n\n## Tasks", "plan_context_mismatch", true},
+		{"scope", "Scope: source.txt", "Scope: source.txt, secrets.txt", "scope_expansion_requires_decision", false},
+		{"extra task", "## Tasks", "## Tasks\n- [ ] 2. Publish — backend/low\n      Scope: source.txt\n      Accept: published → test -f source.txt", "scope_expansion_requires_decision", false},
+		{"status metadata", "**Status:** approved", "**Status:** done", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts, event, policy := supervisionCorrectionFixture(t)
+			path := filepath.Join(opts.Workspace, policy.PlanEvidence.Path)
+			original, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			changed := []byte(strings.Replace(string(original), tc.from, tc.to, 1))
+			parsed, err := routing.ParsePlan("delivery", changed)
+			if err != nil || (parsed.Set.Digest == policy.Correction.SpecDigest) != tc.sameTaskDigest {
+				t.Fatalf("regression must reach contract guard: digest=%s, err=%v", parsed.Set.Digest, err)
+			}
+			policy.PlanEvidence.Digest = fmt.Sprintf("sha256:%x", sha256.Sum256(changed))
+			if err := os.WriteFile(path, changed, 0600); err != nil {
+				t.Fatal(err)
+			}
+			decision, err := InterveneSupervision(opts, event.ID, &policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.reason == "" {
+				if decision.Outcome != "proposed" {
+					t.Fatalf("compatible metadata rejected: %+v", decision)
+				}
+			} else if decision.Outcome != "pending" || decision.Reason != tc.reason || decision.Attempts != 1 {
+				t.Fatalf("changed instructions: %+v", decision)
+			}
+		})
+	}
+}
+
+func TestSupervisionCorrectionReviewedSpecDrift(t *testing.T) {
+	opts, event, policy := supervisionCorrectionFixture(t)
+	job := supervisionObserve(t, opts).Review
+	if err := os.WriteFile(job.Spec, []byte("changed reviewed contract"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || decision.Outcome != "pending" || decision.Reason != "review_evidence_mismatch" {
+		t.Fatalf("changed reviewed spec: %+v %v", decision, err)
+	}
+}
+
 func TestSupervisionCorrectionFailedAttemptsDoNotReset(t *testing.T) {
 	opts, event, policy := supervisionCorrectionFixture(t)
 	if err := os.WriteFile(filepath.Join(opts.Workspace, "correction-plan.md"), []byte("changed"), 0600); err != nil {
@@ -430,6 +486,14 @@ func TestSupervisionCorrectionChainCannotResetBudget(t *testing.T) {
 		t.Fatalf("first: %+v %v", first, err)
 	}
 	parent := supervisionObserve(t, opts).Review
+	parent.Reason = "changed after proposal"
+	if err := writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *parent), "job.json"), parent); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || stale.Outcome != "pending" || stale.Reason != "review_evidence_mismatch" || stale.Attempts != first.Attempts || stale.Correction.Delivery != first.Correction.Delivery {
+		t.Fatalf("stale proposal lost its reservation or budget: %+v %v", stale, err)
+	}
 	store, err := journal.Open(opts.Workspace)
 	if err != nil {
 		t.Fatal(err)
@@ -555,4 +619,125 @@ func TestSupervisionCorrectionConcurrentObservers(t *testing.T) {
 		})
 	}
 	wg.Wait()
+}
+
+func TestSupervisionCorrectionOlderReceiptStaysPending(t *testing.T) {
+	for _, drift := range []string{"job", "artifact", "proposed job", "proposed artifact", "proposed artifact bytes"} {
+		t.Run(drift, func(t *testing.T) {
+			opts, event, policy := supervisionCorrectionFixture(t)
+			attempts := 0
+			if strings.HasPrefix(drift, "proposed") {
+				first, err := InterveneSupervision(opts, event.ID, &policy)
+				if err != nil || first.Outcome != "proposed" {
+					t.Fatalf("first proposal: %+v %v", first, err)
+				}
+				attempts = first.Attempts
+			}
+			job := supervisionObserve(t, opts).Review
+			historical, err := os.ReadFile(filepath.Join(opts.Workspace, event.Evidence.Path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(drift, "artifact") {
+				if err := os.WriteFile(filepath.Join(job.Artifacts, "review.md"), []byte("changed after notification"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if drift != "proposed artifact bytes" {
+					if _, err := RunSupervisionReview(context.Background(), opts, SupervisionReviewOptions{}); err != nil {
+						t.Fatal(err)
+					}
+				}
+			} else {
+				job.Reason = "changed after notification"
+				if err := writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "job.json"), job); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for i := 0; i < 2; i++ {
+				var output strings.Builder
+				if err := Supervise(context.Background(), SuperviseOptions{Observer: opts, Interval: 100 * time.Millisecond, Once: true, Policy: &policy, Output: &output}); err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(output.String(), `"reason":"review_evidence_mismatch"`) || strings.Contains(output.String(), `"outcome":"proposed"`) {
+					t.Fatalf("stale policy decision: %s", &output)
+				}
+				data, err := os.ReadFile(filepath.Join(opts.Workspace, journal.Dir, "supervision-corrections.json"))
+				var ledger supervisionCorrections
+				if err != nil || json.Unmarshal(data, &ledger) != nil {
+					t.Fatalf("missing durable decision: %s %v", data, err)
+				}
+				decision := ledger.Entries[event.ReviewID]
+				if decision.EventID != event.ID || decision.Evidence != event.Evidence || decision.Reason != "review_evidence_mismatch" || decision.Outcome != "pending" || decision.Attempts != attempts {
+					t.Fatalf("durable stale decision: %+v", decision)
+				}
+			}
+			after, err := os.ReadFile(filepath.Join(opts.Workspace, event.Evidence.Path))
+			if err != nil || string(after) != string(historical) {
+				t.Fatalf("historical evidence changed: %v", err)
+			}
+		})
+	}
+}
+
+func TestSupervisionCorrectionRejectsFabricatedReceipt(t *testing.T) {
+	for _, scenario := range []string{"missing", "tampered", "delivery", "id", "base", "commit", "spec digest", "spec path", "slug", "noncanonical", "traversal", "symlink"} {
+		t.Run(scenario, func(t *testing.T) {
+			opts, event, policy := supervisionCorrectionFixture(t)
+			job := supervisionObserve(t, opts).Review
+			digest := strings.Repeat("a", 64)
+			switch scenario {
+			case "tampered":
+				digest = strings.TrimPrefix(event.Evidence.Digest, "sha256:")
+				if err := os.WriteFile(filepath.Join(opts.Workspace, event.Evidence.Path), []byte("tampered"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				digest = strings.TrimPrefix(event.Evidence.Digest, "sha256:")
+				receipt := filepath.Join(opts.Workspace, event.Evidence.Path)
+				target := filepath.Join(opts.Workspace, "receipt.json")
+				if err := os.Rename(receipt, target); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, receipt); err != nil {
+					t.Fatal(err)
+				}
+				job.Reason = "changed after notification"
+				if err := writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "job.json"), job); err != nil {
+					t.Fatal(err)
+				}
+			case "delivery", "id", "base", "commit", "spec digest", "spec path", "slug", "noncanonical":
+				forged := *job
+				field := map[string]*string{"delivery": &forged.Delivery, "id": &forged.ID, "base": &forged.Base, "commit": &forged.FinalCommit, "spec digest": &forged.SpecDigest, "spec path": &forged.SpecPath, "slug": &forged.Slug}[scenario]
+				if field != nil {
+					*field = "another-identity"
+				}
+				data, err := json.Marshal(forged)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if scenario == "noncanonical" {
+					data = append(data, '\n')
+				}
+				digest = fmt.Sprintf("%x", sha256.Sum256(data))
+				path := filepath.Join(supervisionReviewDirectory(opts, *job), "outcomes", digest, "job.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "traversal":
+				digest = "../../job.json"
+			}
+			eventID := opts.Delivery + ":review:" + job.ID + ":" + digest
+			policy.Correction.ReportDigest = "sha256:" + digest
+			decision, err := InterveneSupervision(opts, eventID, &policy)
+			if err == nil || decision.Outcome == "proposed" {
+				t.Fatalf("fabricated event accepted: %+v %v", decision, err)
+			}
+			if _, err := os.Stat(filepath.Join(opts.Workspace, journal.Dir, "supervision-corrections.json")); !os.IsNotExist(err) {
+				t.Fatalf("fabricated event recorded a policy decision: %v", err)
+			}
+		})
+	}
 }

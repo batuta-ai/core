@@ -99,6 +99,13 @@ func InterveneSupervision(opts SupervisionOptions, eventID string, policy *Super
 		if reviewEvent != nil && reviewEvent.ID == eventID {
 			return proposeSupervisionCorrection(opts, *reviewEvent, job, policy)
 		}
+		reviewEvent, eventErr = loadSupervisionReviewReceipt(opts, job, eventID, len(records))
+		if eventErr != nil {
+			return SupervisionDecision{}, eventErr
+		}
+		if reviewEvent != nil {
+			return proposeSupervisionCorrection(opts, *reviewEvent, job, policy)
+		}
 		return SupervisionDecision{}, errors.New("loop: unknown supervision event")
 	}
 	decision := SupervisionDecision{EventID: event.ID, QuestionID: event.QuestionID, Evidence: event.Evidence, Outcome: "pending", Reason: "explicit_policy_required", At: opts.Now().UTC()}
@@ -289,6 +296,11 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 		decision.Reason = "policy_mismatch"
 		return decision, nil
 	}
+	current, err := json.Marshal(job)
+	if err != nil {
+		return decision, err
+	}
+	evidenceMatches := fmt.Sprintf("sha256:%x", sha256.Sum256(current)) == event.Evidence.Digest
 	path := filepath.Join(opts.Workspace, journal.Dir, "supervision-corrections.json")
 	release, err := guardPresence(path)
 	if err != nil {
@@ -314,7 +326,7 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 		if c == nil || c.ReviewID != id || c.RootReviewID == "" || c.Depth < 1 || c.MaxCorrections < 1 || c.MaxCorrections > 3 || entry.MaxAttempts < 1 || entry.MaxAttempts > 3 || entry.Attempts < 0 || entry.Attempts > entry.MaxAttempts {
 			return decision, errors.New("loop: invalid correction budget")
 		}
-		if entry.Outcome == "proposed" && c.Delivery == opts.Delivery {
+		if c.Delivery == opts.Delivery {
 			proposal.RootReviewID = c.RootReviewID
 			proposal.Depth = c.Depth + 1
 			proposal.MaxCorrections = min(proposal.MaxCorrections, c.MaxCorrections)
@@ -326,9 +338,6 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 		}
 	}
 	if previous, ok := ledger.Entries[job.ID]; ok {
-		if previous.Outcome == "proposed" {
-			return previous, nil
-		}
 		proposal = *previous.Correction
 		proposal.MaxCorrections = min(proposal.MaxCorrections, p.MaxCorrections)
 		decision.MaxAttempts = min(decision.MaxAttempts, previous.MaxAttempts)
@@ -351,7 +360,12 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 		ledger.Entries[job.ID] = decision
 		return decision, writeSupervisionJSON(path, ledger)
 	}
-	if decision.Attempts >= decision.MaxAttempts || proposal.Depth > proposal.MaxCorrections {
+	if !evidenceMatches {
+		decision.Reason = "review_evidence_mismatch"
+		return persist()
+	}
+	previous := ledger.Entries[job.ID]
+	if previous.Outcome != "proposed" && (decision.Attempts >= decision.MaxAttempts || proposal.Depth > proposal.MaxCorrections) {
 		decision.Outcome = "exhausted"
 		decision.Reason = "correction_chain_budget"
 		return persist()
@@ -363,6 +377,19 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 	if err := supervisionReviewArtifacts(job, false); err != nil {
 		decision.Reason = "review_evidence_mismatch"
 		return persist()
+	}
+	spec, err := readSupervisionFile(job.Spec, 32<<20)
+	if err != nil || fmt.Sprintf("%x", sha256.Sum256(spec)) != job.SpecContentDigest {
+		decision.Reason = "review_evidence_mismatch"
+		return persist()
+	}
+	reviewed, err := routing.ParsePlan(job.Slug, spec)
+	if err != nil || reviewed.Set.Digest != job.SpecDigest {
+		decision.Reason = "review_evidence_mismatch"
+		return persist()
+	}
+	if previous.Outcome == "proposed" {
+		return previous, nil
 	}
 	// Readonly local validation is safe to repeat after a crash. Persisting the
 	// reservation first charges failed attempts and never replays external work.
@@ -381,6 +408,22 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 		decision.Reason = "scope_expansion_requires_decision"
 		return persist()
 	}
+	// Historical task digests omit plan prose that Brief executes. Bind that
+	// prose to the immutable reviewed spec without changing journal identities.
+	if parsed.Title != reviewed.Title {
+		decision.Reason = "plan_title_mismatch"
+		return persist()
+	}
+	if parsed.Goal != reviewed.Goal {
+		decision.Reason = "plan_goal_mismatch"
+		return persist()
+	}
+	for _, task := range reviewed.Tasks {
+		if parsed.ContextFor(task.Number) != reviewed.ContextFor(task.Number) {
+			decision.Reason = "plan_context_mismatch"
+			return persist()
+		}
+	}
 	entries, err := os.ReadDir(filepath.Join(opts.Workspace, journal.Dir))
 	if err != nil {
 		return decision, err
@@ -396,7 +439,7 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 		return persist()
 	}
 	for _, entry := range ledger.Entries {
-		if entry.Correction.SourceDelivery == p.Delivery || (entry.Outcome == "proposed" && entry.Correction.Delivery == p.Delivery) {
+		if entry.Correction.SourceDelivery == p.Delivery || entry.Correction.Delivery == p.Delivery {
 			decision.Reason = "correction_delivery_reserved"
 			return persist()
 		}
