@@ -1,13 +1,13 @@
 # Plan — automatic deep review after delivery
 
 **Goal:** Have the loop supervisor run Batuta's deep review engine automatically after a completed delivery and retain the review outcome as a distinct acceptance stage.
-**Created:** 2026-09-11 · **Status:** approved
+**Created:** 2026-09-11 · **Status:** done
 
 ## Tasks
 - [x] 1. Bind post-delivery review to immutable delivery identity — backend/high
       Scope: loop/supervision_review.go, loop/supervision_review_test.go, loop/supervision.go, loop/supervision_test.go, loop/report.go, loop/report_test.go, loop/loop_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: a done delivery schedules one logical review keyed by delivery ID, final commit, original base and spec digest, duplicate observations and supervisor restarts cannot launch concurrent duplicate reviews → go test ./loop -run Supervision; review uses supported core engine arguments with the exact delivered snapshot and spec, source changes or another active runner prevent stale review acceptance → go test ./cmd/batuta ./loop -run Supervision; failed/canceled/abandoned deliveries never become completed review candidates → go test ./loop -run Supervision
-- [ ] 2. Report review outcomes and bound follow-up corrections — backend/high
+- [x] 2. Report review outcomes and bound follow-up corrections — backend/high
       Depends on: 1
       Scope: loop/supervision_review.go, loop/supervision_review_test.go, loop/supervision.go, loop/supervision_test.go, loop/supervision_policy.go, loop/supervision_policy_test.go, loop/supervision_notify.go, loop/supervision_notify_test.go, docs/loop-supervision.md, docs/loop.md, README.md, README.pt-BR.md
       Accept: SHIP, FIX_BEFORE_SHIP, REWORK, execution failure and incomplete coverage remain distinct with durable report references, and implementation done never alone means reviewed/accepted → go test ./loop -run Supervision; correction proposals invoke the existing bounded conductor policy, review output never directly approves itself, expands scope or causes merge/publication, and failed attempts respect configured retry and usage budgets → go test -race ./loop -run Supervision; full regression suite passes → go test ./...; module builds → go build ./...
