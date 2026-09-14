@@ -128,7 +128,12 @@ exit `1` with the reason on stderr.
   otherwise events remain unread. The process must remain running, and no chat
   turn, remote message, or exactly-once notification is implied. See
   [loop-supervision.md](loop-supervision.md) for lifecycle, policy, host-limit,
-  and cost-accounting details.
+  evidence, cancellation, and cost-accounting details. The CLI review timeout
+  is fixed at one hour: ownership-wait interruption returns before a job
+  transition, pre-launch probe/snapshot interruption records
+  `failed`/`execution_failed`, and launched-engine interruption records
+  `uncertain`/`cleanup_unresolved` without automatic replay or a claim of
+  verified descendant cleanup on unsupported hosts.
 - **Decisions may be task-scoped.** In `## Decisions and context`, a paragraph
   beginning with `**Task N.**` belongs only to task N; `**Tasks N–M.**` (also
   `N-M`, comma lists, and combinations) belongs to every named task. Unlabelled

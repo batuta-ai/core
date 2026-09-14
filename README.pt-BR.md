@@ -42,10 +42,11 @@ pode fornecer a resposta fixa e limitada ao escopo da tarefa ou reservar uma
 proposta de correção explicitamente autorizada. Conclusão da implementação,
 resultado da revisão e aceitação pelo condutor são estados distintos. A evidência
 fica em `.batuta/reviews/supervision/<job-id>/`, e a saída do motor em
-`artifacts/`. O timeout padrão é de uma hora e não há uma opção de CLI para
-alterá-lo; timeout ou limpeza
-pendente de processos descendentes deixa a execução incerta, sem repetição
-automática.
+`artifacts/`. A CLI de supervisão não oferece uma opção de timeout da revisão,
+portanto usa o padrão fixo de uma hora. Cancelamento ou timeout enquanto aguarda
+a aquisição da posse retorna um erro sem transição do job. Uma interrupção da
+sondagem ou do snapshot resulta em `failed`/`execution_failed`; após o lançamento
+do motor, resulta em `uncertain`/`cleanup_unresolved`, sem repetição automática.
 
 Quando um limite de uso dura além do orçamento de espera, o loop recorre ao
 próximo runtime executável sem gastar uma nova tentativa nem uma escalação.
