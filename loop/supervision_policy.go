@@ -300,7 +300,8 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 	if err != nil {
 		return decision, err
 	}
-	evidenceMatches := fmt.Sprintf("sha256:%x", sha256.Sum256(current)) == event.Evidence.Digest
+	currentDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(current))
+	evidenceMatches := currentDigest == event.Evidence.Digest
 	path := filepath.Join(opts.Workspace, journal.Dir, "supervision-corrections.json")
 	release, err := guardPresence(path)
 	if err != nil {
@@ -360,11 +361,15 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 		ledger.Entries[job.ID] = decision
 		return decision, writeSupervisionJSON(path, ledger)
 	}
+	previous := ledger.Entries[job.ID]
 	if !evidenceMatches {
 		decision.Reason = "review_evidence_mismatch"
-		return persist()
+		if previous.Outcome != "proposed" || previous.Evidence.Digest != currentDigest || job.State != "reported" || (job.Outcome != "FIX_BEFORE_SHIP" && job.Outcome != "REWORK") {
+			return persist()
+		}
+		// A stale receipt cannot replace a current proposal, but the job digest
+		// alone does not verify the artifact and spec bytes checked below.
 	}
-	previous := ledger.Entries[job.ID]
 	if previous.Outcome != "proposed" && (decision.Attempts >= decision.MaxAttempts || proposal.Depth > proposal.MaxCorrections) {
 		decision.Outcome = "exhausted"
 		decision.Reason = "correction_chain_budget"
@@ -389,6 +394,9 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 		return persist()
 	}
 	if previous.Outcome == "proposed" {
+		if !evidenceMatches {
+			return decision, nil
+		}
 		return previous, nil
 	}
 	// Readonly local validation is safe to repeat after a crash. Persisting the

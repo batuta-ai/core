@@ -455,6 +455,103 @@ func TestSupervisionCorrectionRecoversOwnReservation(t *testing.T) {
 	}
 }
 
+func TestSupervisionCorrectionOlderReceiptPreservesCurrentProposal(t *testing.T) {
+	for _, drift := range []string{"none", "job", "state", "outcome", "artifact bytes", "spec bytes", "pending proposal", "no proposal"} {
+		t.Run(drift, func(t *testing.T) {
+			opts, event, policy, first := supervisionCorrectionReconciliationFixture(t, 2)
+			current, err := InterveneSupervision(opts, event.ID, &policy)
+			if err != nil || current.Outcome != "proposed" || current.Attempts != 2 || current.MaxAttempts != 2 || current.Correction == nil || *current.Correction != *first.Correction {
+				t.Fatalf("current proposal: %+v %v", current, err)
+			}
+			job := supervisionObserve(t, opts).Review
+			ledgerPath := filepath.Join(opts.Workspace, journal.Dir, "supervision-corrections.json")
+			switch drift {
+			case "job", "state", "outcome":
+				switch drift {
+				case "job":
+					job.Reason = "changed after reconciliation"
+				case "state":
+					job.State = "pending"
+				case "outcome":
+					job.Outcome = "PASS"
+				}
+				if err := writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "job.json"), job); err != nil {
+					t.Fatal(err)
+				}
+			case "artifact bytes":
+				if err := os.WriteFile(filepath.Join(job.Artifacts, "review.md"), []byte("tampered artifact"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "spec bytes":
+				if err := os.WriteFile(job.Spec, []byte("tampered spec"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "pending proposal":
+				pending := current
+				pending.Outcome = "pending"
+				if err := writeSupervisionJSON(ledgerPath, supervisionCorrections{Version: 1, Entries: map[string]SupervisionDecision{job.ID: pending}}); err != nil {
+					t.Fatal(err)
+				}
+			case "no proposal":
+				if err := os.Remove(ledgerPath); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before := map[string]string{}
+			for _, path := range []string{ledgerPath, filepath.Join(opts.Workspace, first.Evidence.Path), filepath.Join(opts.Workspace, event.Evidence.Path)} {
+				if path == ledgerPath && drift == "no proposal" {
+					continue
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				before[path] = string(data)
+			}
+			for i := 0; i < 2; i++ {
+				policy.Correction.ReportDigest = first.Evidence.Digest
+				stale, err := InterveneSupervision(opts, first.EventID, &policy)
+				wantAttempts := current.Attempts
+				if drift == "no proposal" {
+					wantAttempts = 0
+				}
+				if err != nil || stale.EventID != first.EventID || stale.Evidence != first.Evidence || stale.Outcome != "pending" || stale.Reason != "review_evidence_mismatch" || stale.Attempts != wantAttempts || stale.MaxAttempts != 2 {
+					t.Fatalf("stale receipt: %+v %v", stale, err)
+				}
+				if drift != "no proposal" && (stale.Correction == nil || *stale.Correction != *first.Correction) {
+					t.Fatalf("stale receipt changed reservation: %+v", stale)
+				}
+				if drift == "none" {
+					policy.Correction.ReportDigest = event.Evidence.Digest
+					again, err := InterveneSupervision(opts, event.ID, &policy)
+					if err != nil || again.Correction == nil || *again.Correction != *current.Correction || again.Outcome != "proposed" || again.Attempts != 2 || again.MaxAttempts != 2 || again.Evidence != current.Evidence || again.PolicyDigest != current.PolicyDigest || again.At != current.At {
+						t.Fatalf("current replay: %+v %v", again, err)
+					}
+				} else {
+					data, err := os.ReadFile(ledgerPath)
+					var ledger supervisionCorrections
+					if err != nil || json.Unmarshal(data, &ledger) != nil {
+						t.Fatalf("durable decision: %s %v", data, err)
+					}
+					stored := ledger.Entries[job.ID]
+					if stored.Outcome != "pending" || stored.Reason != "review_evidence_mismatch" || stored.EventID != first.EventID || stored.Attempts != wantAttempts || stored.MaxAttempts != 2 {
+						t.Fatalf("invalid proposal preserved: %+v", stored)
+					}
+				}
+				for path, original := range before {
+					if path == ledgerPath && drift != "none" {
+						continue
+					}
+					data, err := os.ReadFile(path)
+					if err != nil || string(data) != original {
+						t.Fatalf("changed ledger or immutable receipt %s: %v", path, err)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestSupervisionCorrectionReconciliationRejectsChildPolicyChange(t *testing.T) {
 	opts, event, policy, first := supervisionCorrectionReconciliationFixture(t, 3)
 	policy.Correction.Delivery = "replacement-child"
