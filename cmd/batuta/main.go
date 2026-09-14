@@ -87,11 +87,14 @@ supervise  Foreground observation, then full review of a completed delivery.
            FIX_BEFORE_SHIP/REWORK. Without policy, review still runs but no answer
            or correction is authorized. Review uses a fixed one-hour timeout;
            ownership-wait interruption returns before a job transition, while
-           probe or snapshot interruption is failed/execution_failed. After engine
-           launch, interruption is uncertain/cleanup_unresolved and is never
-           replayed automatically; descendant cleanup is not claimed when the host
-           cannot verify it. Review files are under
-           .batuta/reviews/supervision/<job-id>/artifacts/. No background service
+           probe or snapshot interruption is failed/execution_failed. Cancellation
+           or timeout while the engine runs is uncertain/cleanup_unresolved;
+           post-exit verification may be failed/execution_failed. Recovery from
+           durable launching is uncertain with no outcome necessarily set. Neither
+           uncertain case is replayed automatically; descendant cleanup is not
+           claimed when the host cannot verify it. job.json, the spec and source
+           are under .batuta/reviews/supervision/<job-id>/; engine output is in its
+           artifacts/ subdirectory. No background service
            is installed; the process must remain running. Local output does not
            promise an asynchronous chat notification.
 

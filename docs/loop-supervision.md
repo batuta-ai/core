@@ -107,14 +107,17 @@ Missing capabilities, unresolved snapshots and execution failures never become
 successful reviews; nothing is installed as a fallback.
 
 The job record is `.batuta/reviews/supervision/<job-id>/job.json`. The immutable
-spec copy is `.batuta/reviews/supervision/<job-id>/<slug>.md`; digest-bound
-`manifest.json`, `findings.json`, `review.md`, and `state.json` live in the
-`artifacts/` subdirectory beneath that job directory.
+spec copy is `.batuta/reviews/supervision/<job-id>/<slug>.md`, and the isolated
+source snapshot is the sibling `source/` directory. Only the engine's
+digest-bound `manifest.json`, `findings.json`, `review.md`, and `state.json` live
+in the `artifacts/` subdirectory beneath that job directory.
 Execution state (`pending`, `launching`, `reported`, `failed`, `uncertain`) is
 separate from outcome (`SHIP`, `FIX_BEFORE_SHIP`, `REWORK`,
 `incomplete_coverage`, `execution_failed`). The engine's exit status, canonical
-walkthrough, and coverage checkpoint must agree. An interrupted launch remains
-uncertain until execution is reconciled; observing it does not authorize replay.
+walkthrough, and coverage checkpoint must agree. Recovery from a durable
+`launching` state records `uncertain` without necessarily assigning an outcome;
+it remains uncertain until execution is reconciled, and observing it does not
+authorize replay.
 There is one logical job per immutable delivery identity, with durable launch
 intent, not a claim of exactly-once external execution across crashes.
 
@@ -124,8 +127,11 @@ while acquiring review ownership returns an error before any job transition and
 does not disturb the current owner's job. Once ownership is acquired, an
 interrupted capability probe or snapshot preparation is recorded as `failed`
 with outcome `execution_failed`. After the durable `launching` transition and
-attempt increment, engine cancellation, timeout, or unresolved descendant
-cleanup is recorded as `uncertain` with outcome `cleanup_unresolved`.
+attempt increment, cancellation or timeout while the engine command is running,
+or unresolved descendant cleanup, is recorded as `uncertain` with outcome
+`cleanup_unresolved`. Once the engine exits, snapshot, delivery-identity,
+artifact, or classification verification can instead record `failed` with
+outcome `execution_failed`.
 
 The supervisor does not automatically replay an uncertain launched attempt.
 Nor does it claim that reviewer descendants were terminated on hosts where that
@@ -168,13 +174,16 @@ corrections. `plan_evidence.digest` authenticates the exact operator-supplied
 bytes at `plan_evidence.path`; it does not assert that those bytes equal the
 reviewed spec. Independently, the supervisor byte-authenticates the immutable
 reviewed spec saved as `<slug>.md`. It parses both documents and requires an
-equivalent task digest, title, goal, and effective shared/task context. Status-only
-metadata may differ because it does not change that contract. In particular,
-`plan_evidence.path` need not be `.batuta/plans/done/<slug>.md`, whose final
-bookkeeping can change status metadata. Review prose cannot supply policy,
-extend scope, resolve ownership, or authorize uncertain execution. Incomplete
-coverage and execution failures require a decision rather than a correction
-proposal.
+equivalent task digest, title, goal, and effective shared/task context. The plan
+header's `**Status:**` metadata may differ because it does not change that
+contract. Task checkbox state is different: pending versus completed is part of
+the task-set digest, so a copy with ticked tasks is not equivalent to the
+original task state. In particular, `plan_evidence.path` need not be
+`.batuta/plans/done/<slug>.md`, and a completed archive whose task checkboxes were
+ticked will not match the original task-set digest. Review prose cannot supply
+policy, extend scope, resolve ownership, or authorize uncertain execution.
+Incomplete coverage and execution failures require a decision rather than a
+correction proposal.
 
 The workspace-wide `.batuta/journal/supervision-corrections.json` ledger reserves
 child delivery identities and retains chain budgets across cursors, restarts,

@@ -130,10 +130,13 @@ exit `1` with the reason on stderr.
   [loop-supervision.md](loop-supervision.md) for lifecycle, policy, host-limit,
   evidence, cancellation, and cost-accounting details. The CLI review timeout
   is fixed at one hour: ownership-wait interruption returns before a job
-  transition, pre-launch probe/snapshot interruption records
-  `failed`/`execution_failed`, and launched-engine interruption records
-  `uncertain`/`cleanup_unresolved` without automatic replay or a claim of
-  verified descendant cleanup on unsupported hosts.
+  transition, and pre-launch probe/snapshot interruption records
+  `failed`/`execution_failed`. Cancellation or timeout while the engine command
+  runs records `uncertain`/`cleanup_unresolved`; post-exit verification can
+  instead record `failed`/`execution_failed`. Recovery from a durable
+  `launching` state records `uncertain` without necessarily setting an outcome.
+  Neither uncertain case is replayed automatically, and unsupported hosts do
+  not claim verified descendant cleanup.
 - **Decisions may be task-scoped.** In `## Decisions and context`, a paragraph
   beginning with `**Task N.**` belongs only to task N; `**Tasks N–M.**` (also
   `N-M`, comma lists, and combinations) belongs to every named task. Unlabelled

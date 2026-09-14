@@ -76,13 +76,17 @@ the supervisor runs a full review of the immutable delivery even without
 `--policy`; ordinary loop completion alone does not run it. A policy can provide
 the fixed scoped worker answer or reserve an explicitly authorized correction
 proposal. Implementation completion and review outcome remain separate from
-conductor acceptance. Review evidence is under
-`.batuta/reviews/supervision/<job-id>/`, with engine output in `artifacts/`.
+conductor acceptance. `job.json`, the immutable spec copy, and the source
+snapshot are under `.batuta/reviews/supervision/<job-id>/`; only engine output
+is in its `artifacts/` subdirectory.
 The supervision CLI has no review-timeout flag, so its review timeout is fixed
 at the one-hour default. Cancellation or timeout while waiting for review
 ownership returns an error without a job transition. An interrupted probe or
-snapshot is `failed`/`execution_failed`; interruption after engine launch is
-`uncertain`/`cleanup_unresolved` and is not replayed automatically.
+snapshot is `failed`/`execution_failed`. Cancellation or timeout while the
+engine runs is `uncertain`/`cleanup_unresolved` and is not replayed
+automatically. Post-exit verification can instead be `failed`/`execution_failed`.
+Recovery from a durable `launching` state is `uncertain`; its outcome may remain
+unset, and it is not replayed automatically.
 
 When a usage limit outlasts the wait budget, the loop falls back to the next
 executable runtime without spending a retry or escalation.
