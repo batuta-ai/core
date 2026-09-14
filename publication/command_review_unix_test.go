@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -34,22 +35,29 @@ func TestReviewProcessHelper(t *testing.T) {
 	mode, control := os.Args[index+1], os.Args[index+2]
 	if mode == "child" {
 		signal.Ignore(syscall.SIGTERM)
-		if err := syscall.Mkfifo(control, 0600); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		pipe, err := os.OpenFile(control, os.O_RDWR, 0)
+		pipe, err := os.OpenFile(control, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			os.Exit(1)
 		}
 		defer pipe.Close()
+		if err := syscall.SetNonblock(int(pipe.Fd()), false); err != nil {
+			t.Fatal(err)
+		}
 		group, err := syscall.Getpgid(0)
 		if err != nil {
 			os.Exit(1)
 		}
 		fmt.Printf("ready %d %d\n", os.Getpid(), group)
 		var stop [1]byte
-		if _, err := pipe.Read(stop[:]); err != nil {
+		if _, err := pipe.Read(stop[:]); err != nil && !errors.Is(err, io.EOF) {
+			os.Exit(1)
+		}
+		exited, err := os.OpenFile(control+".exited", os.O_WRONLY|syscall.O_NONBLOCK, 0)
+		if err != nil {
+			os.Exit(1)
+		}
+		defer exited.Close()
+		if _, err := exited.Write([]byte{1}); err != nil {
 			os.Exit(1)
 		}
 		return
@@ -90,20 +98,34 @@ func (w *reviewReadyWriter) Write(p []byte) (int, error) {
 func TestReviewProcessCancelNestedGroups(t *testing.T) {
 	for _, mode := range []string{"cooperative", "uncooperative"} {
 		t.Run(mode, func(t *testing.T) {
-			// A FIFO lets the fixture release orphaned children without signaling a PID.
-			dir, err := os.MkdirTemp("", "review-")
+			// Retain a writer before launch so cleanup can release even a late child.
+			dir := t.TempDir()
+			control := filepath.Join(dir, "control")
+			if err := syscall.Mkfifo(control, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Mkfifo(control+".exited", 0600); err != nil {
+				t.Fatal(err)
+			}
+			exited, err := os.OpenFile(control+".exited", os.O_RDWR, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer os.RemoveAll(dir)
-			control := filepath.Join(dir, "control")
+			defer exited.Close()
+			anchor, err := os.OpenFile(control, os.O_RDWR|syscall.O_NONBLOCK, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
 			defer func() {
-				pipe, err := os.OpenFile(control, os.O_WRONLY|syscall.O_NONBLOCK, 0)
-				if err == nil {
-					pipe.Write([]byte{1})
-					pipe.Close()
+				if anchor != nil {
+					anchor.Close()
 				}
 			}()
+			pipe, err := os.OpenFile(control, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer pipe.Close()
 			binary, err := os.Executable()
 			if err != nil {
 				t.Fatal(err)
@@ -122,9 +144,51 @@ func TestReviewProcessCancelNestedGroups(t *testing.T) {
 				})
 				done <- outcome{result, err}
 			}()
+			finished := false
+			defer func() {
+				cancel()
+				_, releaseErr := pipe.Write([]byte{1})
+				if releaseErr != nil && !errors.Is(releaseErr, syscall.EPIPE) {
+					t.Errorf("release child fixture: %v", releaseErr)
+				}
+				if releaseErr == nil && anchor == nil && mode == "uncooperative" {
+					acknowledged := make(chan error, 1)
+					go func() {
+						var ack [1]byte
+						_, err := io.ReadFull(exited, ack[:])
+						if err == nil && ack[0] != 1 {
+							err = fmt.Errorf("unexpected release acknowledgment %v", ack)
+						}
+						acknowledged <- err
+					}()
+					select {
+					case err := <-acknowledged:
+						if err != nil {
+							t.Errorf("child release: %v", err)
+						}
+					case <-time.After(10 * time.Second):
+						t.Error("child did not acknowledge fixture release")
+						if _, err := exited.Write([]byte{0}); err != nil {
+							t.Errorf("release acknowledgment reader: %v", err)
+						}
+					}
+				}
+				if !finished {
+					select {
+					case <-done:
+					case <-time.After(10 * time.Second):
+						t.Error("review fixture did not finish during cleanup")
+					}
+				}
+			}()
 			select {
 			case <-observer.ready:
+				if err := anchor.Close(); err != nil {
+					t.Fatal(err)
+				}
+				anchor = nil
 			case got := <-done:
+				finished = true
 				t.Fatalf("engine exited before nested readiness: %+v, %v", got.result, got.err)
 			case <-time.After(10 * time.Second):
 				t.Fatal("nested process did not become ready")
@@ -133,6 +197,7 @@ func TestReviewProcessCancelNestedGroups(t *testing.T) {
 			var got outcome
 			select {
 			case got = <-done:
+				finished = true
 			case <-time.After(10 * time.Second):
 				t.Fatal("review cancellation exceeded bounded escalation")
 			}
@@ -161,8 +226,9 @@ func TestReviewProcessCancelNestedGroups(t *testing.T) {
 				if err != nil {
 					t.Fatalf("fixture did not retain an unresolved descendant: %v", err)
 				}
-				pipe.Write([]byte{1})
-				pipe.Close()
+				if err := pipe.Close(); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}

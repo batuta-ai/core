@@ -218,7 +218,9 @@ func TestSupervisionReviewOwnershipAcquisitionCancellation(t *testing.T) {
 			if got.err != nil || got.job == nil || got.job.State != "reported" || launches != 1 {
 				t.Fatalf("owner: job=%+v, err=%v, launches=%d", got.job, got.err, launches)
 			}
-			job, err := RunSupervisionReview(context.Background(), opts, waiter)
+			replay := waiter
+			replay.Timeout = time.Minute
+			job, err := RunSupervisionReview(context.Background(), opts, replay)
 			if err != nil || job == nil || job.State != "reported" || waiterCalls.Load() != 0 {
 				t.Fatalf("replay: job=%+v, err=%v, engine calls=%d", job, err, waiterCalls.Load())
 			}

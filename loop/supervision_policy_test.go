@@ -865,7 +865,13 @@ func TestSupervisionCorrectionRejectsFabricatedReceipt(t *testing.T) {
 			switch scenario {
 			case "tampered":
 				digest = strings.TrimPrefix(event.Evidence.Digest, "sha256:")
-				if err := os.WriteFile(filepath.Join(opts.Workspace, event.Evidence.Path), []byte("tampered"), 0600); err != nil {
+				job.Reason = "changed after notification"
+				if err := writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "job.json"), job); err != nil {
+					t.Fatal(err)
+				}
+				forged := *job
+				forged.Reason = "tampered historical receipt"
+				if err := writeSupervisionJSON(filepath.Join(opts.Workspace, event.Evidence.Path), &forged); err != nil {
 					t.Fatal(err)
 				}
 			case "symlink":
@@ -907,10 +913,19 @@ func TestSupervisionCorrectionRejectsFabricatedReceipt(t *testing.T) {
 				digest = "../../job.json"
 			}
 			eventID := opts.Delivery + ":review:" + job.ID + ":" + digest
+			if scenario == "tampered" {
+				current, err := supervisionReviewEvent(opts, job, 0)
+				if err != nil || current == nil || current.ID == eventID {
+					t.Fatalf("historical loader is unreachable: current=%+v, err=%v", current, err)
+				}
+			}
 			policy.Correction.ReportDigest = "sha256:" + digest
 			decision, err := InterveneSupervision(opts, eventID, &policy)
 			if err == nil || decision.Outcome == "proposed" {
 				t.Fatalf("fabricated event accepted: %+v %v", decision, err)
+			}
+			if scenario == "tampered" && err.Error() != "loop: review outcome receipt changed" {
+				t.Fatalf("historical digest guard: %v", err)
 			}
 			if _, err := os.Stat(filepath.Join(opts.Workspace, journal.Dir, "supervision-corrections.json")); !os.IsNotExist(err) {
 				t.Fatalf("fabricated event recorded a policy decision: %v", err)
