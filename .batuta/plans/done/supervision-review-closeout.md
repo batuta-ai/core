@@ -1,17 +1,17 @@
 # Plan — close remaining supervision review findings
 
 **Goal:** Resolve confirmed remaining reservation and regression-proof defects, then align operator documentation without expanding supervision policy.
-**Created:** 2026-09-13 · **Status:** approved
+**Created:** 2026-09-13 · **Status:** done
 
 ## Tasks
-- [ ] 1. Recover an existing correction reservation after evidence reconciliation — backend/high
+- [x] 1. Recover an existing correction reservation after evidence reconciliation — backend/high
       Scope: loop/supervision_policy.go, loop/supervision_policy_test.go
       Accept: a real proposed correction followed by stale evidence and valid reconciliation can recover its own reserved child identity without self-conflict → go test ./loop -run SupervisionCorrection; other reviews cannot claim that child and a changed policy cannot replace an existing child identity or reset budgets → go test -race ./loop -run SupervisionCorrection; full contract and receipt regressions remain passing → go test ./loop -run Supervision
-- [ ] 2. Make cancellation and historical receipt regressions discriminating — backend/high
+- [x] 2. Make cancellation and historical receipt regressions discriminating — backend/high
       Depends on: 1
       Scope: loop/supervision_process_unix_test.go, loop/supervision_review_test.go, loop/supervision_policy_test.go, publication/command_review_unix_test.go
       Accept: cleanup ownership proof actually observes lock contention instead of merely expiring before acquisition and FIFO release remains reliable after engine termination → go test ./loop ./publication -run 'Supervision|ReviewProcess' -count=3; replay does not inherit the one millisecond cancellation deadline and historical tampering reaches the historical receipt digest guard → go test -race ./loop -run Supervision; test helpers clean up all owned processes without weakening uncertain-state assertions → go test ./publication -run ReviewProcess -count=3
-- [ ] 3. Describe actual evidence and cancellation semantics — backend/medium
+- [x] 3. Describe actual evidence and cancellation semantics — backend/medium
       Depends on: 2
       Scope: README.md, README.pt-BR.md, docs/loop-supervision.md, docs/loop.md, cmd/batuta/main.go
       Accept: docs distinguish pre-launch execution failure, ownership-acquisition error, and post-launch unresolved cleanup, and accurately state the CLI-fixed review timeout → go test ./cmd/batuta -run Supervision; docs explain operator byte digest plus equivalent parsed task/title/goal/context contract rather than claiming exact byte equality with reviewed spec, and use a slug placeholder in the evidence path → go test ./loop -run SupervisionCorrection; full suite passes → go test ./...; module builds → go build ./...

@@ -170,6 +170,9 @@
 - [x] Bound cancellation and reconcile nested review process cleanup → codex (gpt-6-astra), commit 9768c0b321ab (trail: .batuta/runs/2026-09-13-supervision-review-fixes-task-4.md, delivery supervision-review-fixes-20260913-152414, plan supervision-review-fixes, 2026-09-13)
 - [x] Prove CLI review wiring and production failure outcomes → codex (gpt-5.6-sol), commit 013620fdfd27 (trail: .batuta/runs/2026-09-13-supervision-review-fixes-task-5.md, delivery supervision-review-fixes-20260913-152414, plan supervision-review-fixes, 2026-09-13)
 - [x] Align operator documentation with verified review behavior → codex (gpt-5.6-sol), commit bfd8bde38260 (trail: .batuta/runs/2026-09-13-supervision-review-fixes-task-6.md, delivery supervision-review-fixes-20260913-152414, plan supervision-review-fixes, 2026-09-13)
+- [x] Recover an existing correction reservation after evidence reconciliation → codex (gpt-6-astra), commit 1623e6aaf121 (trail: .batuta/runs/2026-09-14-supervision-review-closeout-task-1.md, delivery supervision-review-closeout-20260914-010812, plan supervision-review-closeout, 2026-09-14)
+- [x] Make cancellation and historical receipt regressions discriminating → codex (gpt-6-astra), commit 61ce7baf525a (trail: .batuta/runs/2026-09-14-supervision-review-closeout-task-2.md, delivery supervision-review-closeout-20260914-010812, plan supervision-review-closeout, 2026-09-14)
+- [x] Describe actual evidence and cancellation semantics → codex (gpt-5.6-sol), commit 1198346b4b15 (trail: .batuta/runs/2026-09-14-supervision-review-closeout-task-3.md, delivery supervision-review-closeout-20260914-010812, plan supervision-review-closeout, 2026-09-14)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
