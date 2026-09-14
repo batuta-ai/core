@@ -1,13 +1,13 @@
 # Plan — preserve valid proposals against stale notifications
 
 **Goal:** Prevent an old review notification from invalidating an independently valid current correction proposal, and correct remaining misleading operator documentation.
-**Created:** 2026-09-14 · **Status:** approved
+**Created:** 2026-09-14 · **Status:** done
 
 ## Tasks
-- [ ] 1. Preserve a valid current proposal when processing an older receipt — backend/high
+- [x] 1. Preserve a valid current proposal when processing an older receipt — backend/high
       Scope: loop/supervision_policy.go, loop/supervision_policy_test.go
       Accept: after evidence reconciliation at budget 2 of 2 an older receipt returns pending without changing a valid proposal ledger or immutable receipts, and replay of the current event remains proposed with the same child and budget → go test ./loop -run SupervisionCorrection; changed current job, altered artifact bytes, altered spec bytes and absence of a valid proposal still produce pending rather than preserving invalid authority → go test -race ./loop -run SupervisionCorrection; surrounding supervision regressions pass → go test ./loop -run Supervision
-- [ ] 2. Correct remaining operator claims and record direct documentation evidence — backend/medium
+- [x] 2. Correct remaining operator claims and record direct documentation evidence — backend/medium
       Depends on: 1
       Scope: README.md, README.pt-BR.md, docs/loop-supervision.md, docs/loop.md, cmd/batuta/main.go
       Accept: operator text distinguishes engine-run cancellation from interruption of post-exit verification and interrupted launch recovery, states the actual evidence directory versus engine artifacts, and never suggests a ticked completed plan is equivalent to original task status — direct read-only document inspection required; full suite passes with packages serialized → go test -p 1 ./... -timeout=15m; module builds → go build ./...

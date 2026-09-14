@@ -173,6 +173,8 @@
 - [x] Recover an existing correction reservation after evidence reconciliation → codex (gpt-6-astra), commit 1623e6aaf121 (trail: .batuta/runs/2026-09-14-supervision-review-closeout-task-1.md, delivery supervision-review-closeout-20260914-010812, plan supervision-review-closeout, 2026-09-14)
 - [x] Make cancellation and historical receipt regressions discriminating → codex (gpt-6-astra), commit 61ce7baf525a (trail: .batuta/runs/2026-09-14-supervision-review-closeout-task-2.md, delivery supervision-review-closeout-20260914-010812, plan supervision-review-closeout, 2026-09-14)
 - [x] Describe actual evidence and cancellation semantics → codex (gpt-5.6-sol), commit 1198346b4b15 (trail: .batuta/runs/2026-09-14-supervision-review-closeout-task-3.md, delivery supervision-review-closeout-20260914-010812, plan supervision-review-closeout, 2026-09-14)
+- [x] Preserve a valid current proposal when processing an older receipt → codex (gpt-6-astra), commit 57b11d4e9e0c (trail: .batuta/runs/2026-09-14-supervision-stale-notification-task-1.md, delivery supervision-stale-notification-20260914-181255, plan supervision-stale-notification, 2026-09-14)
+- [x] Correct remaining operator claims and record direct documentation evidence → codex (gpt-5.6-sol), commit 8e453bd8ebb6 (trail: .batuta/runs/2026-09-14-supervision-stale-notification-task-2.md, delivery supervision-stale-notification-20260914-181255, plan supervision-stale-notification, 2026-09-14)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
