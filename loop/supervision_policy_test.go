@@ -405,6 +405,183 @@ func TestSupervisionCorrectionExplicitPolicyAndBudget(t *testing.T) {
 	}
 }
 
+func supervisionCorrectionReconciliationFixture(t *testing.T, maxAttempts int) (SupervisionOptions, SupervisionEvent, SupervisionPolicy, SupervisionDecision) {
+	t.Helper()
+	opts, event, policy := supervisionCorrectionFixture(t)
+	policy.MaxAttempts = maxAttempts
+	first, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || first.Outcome != "proposed" || first.Attempts != 1 {
+		t.Fatalf("first proposal: %+v %v", first, err)
+	}
+	historical, err := os.ReadFile(filepath.Join(opts.Workspace, event.Evidence.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := supervisionObserve(t, opts).Review
+	job.Reason = "reconciled review metadata"
+	if err := writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "job.json"), job); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || stale.Outcome != "pending" || stale.Reason != "review_evidence_mismatch" || stale.Attempts != first.Attempts || stale.Correction == nil || *stale.Correction != *first.Correction {
+		t.Fatalf("stale reservation: %+v %v", stale, err)
+	}
+	for _, fresh := range supervisionObserve(t, opts).Pending {
+		if fresh.Kind == "review" && fresh.ReviewID == event.ReviewID && fresh.ID != event.ID {
+			after, err := os.ReadFile(filepath.Join(opts.Workspace, event.Evidence.Path))
+			if err != nil || string(after) != string(historical) {
+				t.Fatalf("historical receipt changed: %v", err)
+			}
+			policy.Correction.ReportDigest = fresh.Evidence.Digest
+			return opts, fresh, policy, first
+		}
+	}
+	t.Fatal("reconciliation did not produce fresh evidence")
+	return opts, event, policy, first
+}
+
+func TestSupervisionCorrectionRecoversOwnReservation(t *testing.T) {
+	opts, event, policy, first := supervisionCorrectionReconciliationFixture(t, 2)
+	recovered, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || recovered.Outcome != "proposed" || recovered.Attempts != 2 || recovered.MaxAttempts != 2 || recovered.Evidence != event.Evidence || recovered.Correction == nil || *recovered.Correction != *first.Correction {
+		t.Fatalf("reconciled reservation: %+v %v", recovered, err)
+	}
+	policy.MaxAttempts = 3
+	policy.Correction.MaxCorrections = 3
+	policy.Correction.Delivery = "replacement-child"
+	again, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || again.Correction == nil || *again.Correction != *recovered.Correction || again.Attempts != recovered.Attempts || again.MaxAttempts != recovered.MaxAttempts || again.Outcome != recovered.Outcome || again.PolicyDigest != recovered.PolicyDigest || again.At != recovered.At {
+		t.Fatalf("recovered proposal was not idempotent: %+v %v", again, err)
+	}
+}
+
+func TestSupervisionCorrectionReconciliationRejectsChildPolicyChange(t *testing.T) {
+	opts, event, policy, first := supervisionCorrectionReconciliationFixture(t, 3)
+	policy.Correction.Delivery = "replacement-child"
+	policy.Correction.MaxCorrections = 3
+	changed, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || changed.Outcome != "pending" || changed.Reason != "correction_identity_mismatch" || changed.Attempts != 2 || changed.Correction == nil || *changed.Correction != *first.Correction {
+		t.Fatalf("replacement changed reservation: %+v %v", changed, err)
+	}
+	policy.Correction.Delivery = first.Correction.Delivery
+	recovered, err := InterveneSupervision(opts, event.ID, &policy)
+	if err != nil || recovered.Outcome != "proposed" || recovered.Attempts != 3 || recovered.Correction == nil || *recovered.Correction != *first.Correction {
+		t.Fatalf("original child reservation lost: %+v %v", recovered, err)
+	}
+}
+
+func TestSupervisionCorrectionReconciliationPreservesGuards(t *testing.T) {
+	for _, scenario := range []string{"executed child", "artifact", "spec", "exhausted"} {
+		t.Run(scenario, func(t *testing.T) {
+			opts, event, policy, first := supervisionCorrectionReconciliationFixture(t, 2)
+			wantReason, wantOutcome, wantAttempts := "review_evidence_mismatch", "pending", 1
+			job := supervisionObserve(t, opts).Review
+			switch scenario {
+			case "executed child":
+				store, err := journal.Open(opts.Workspace)
+				if err != nil {
+					t.Fatal(err)
+				}
+				childOpts := opts
+				childOpts.Delivery = first.Correction.Delivery
+				supervisionAppend(t, store, childOpts, KindOpened, `{}`)
+				wantReason, wantAttempts = "correction_delivery_exists", 2
+			case "artifact":
+				if err := os.WriteFile(filepath.Join(job.Artifacts, "review.md"), []byte("changed evidence"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "spec":
+				if err := os.WriteFile(job.Spec, []byte("changed contract"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "exhausted":
+				planPath := filepath.Join(opts.Workspace, policy.PlanEvidence.Path)
+				plan, err := os.ReadFile(planPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(planPath, []byte("changed plan"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				failed, err := InterveneSupervision(opts, event.ID, &policy)
+				if err != nil || failed.Reason != "plan_evidence_mismatch" || failed.Attempts != 2 {
+					t.Fatalf("failed validation: %+v %v", failed, err)
+				}
+				if err := os.WriteFile(planPath, plan, 0600); err != nil {
+					t.Fatal(err)
+				}
+				policy.MaxAttempts = 3
+				policy.Correction.MaxCorrections = 3
+				wantReason, wantOutcome, wantAttempts = "correction_chain_budget", "exhausted", 2
+			}
+			decision, err := InterveneSupervision(opts, event.ID, &policy)
+			if err != nil || decision.Outcome != wantOutcome || decision.Reason != wantReason || decision.Attempts != wantAttempts || decision.MaxAttempts != 2 || decision.Correction == nil || *decision.Correction != *first.Correction {
+				t.Fatalf("reconciliation bypassed guard: %+v %v", decision, err)
+			}
+		})
+	}
+}
+
+func TestSupervisionCorrectionReconciliationKeepsCrossReviewReservation(t *testing.T) {
+	opts, event, policy, first := supervisionCorrectionReconciliationFixture(t, 3)
+	policy.Correction.Delivery = "replacement-child"
+	if _, err := InterveneSupervision(opts, event.ID, &policy); err != nil {
+		t.Fatal(err)
+	}
+	otherOpts := opts
+	otherOpts.Delivery = "another-review-source"
+	otherOpts.CursorPath = filepath.Join(opts.Workspace, "another-observer.json")
+	store, err := journal.Open(opts.Workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := readSupervisionRecords(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range records {
+		supervisionAppend(t, store, otherOpts, record.Kind, string(record.Detail))
+	}
+	spec, err := os.ReadFile(filepath.Join(opts.Workspace, policy.PlanEvidence.Path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	engine := fakeSupervisionReview(t, otherOpts, string(spec), &launches)
+	original := engine.Runner
+	engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+		r, err := original.Run(ctx, c)
+		if len(c.Args) > 2 {
+			writeSupervisionReviewEvidence(t, c, "FIX_BEFORE_SHIP", true)
+			r.ExitCode = 2
+		}
+		return r, err
+	})
+	job, err := RunSupervisionReview(context.Background(), otherOpts, engine)
+	if err != nil || job == nil || job.ID == event.ReviewID || job.State != "reported" {
+		t.Fatalf("independent review: %+v %v", job, err)
+	}
+	for _, otherEvent := range supervisionObserve(t, otherOpts).Pending {
+		if otherEvent.Kind != "review" {
+			continue
+		}
+		otherPolicy := policy
+		otherPolicy.Delivery = otherOpts.Delivery
+		otherPolicy.Correction = &SupervisionCorrectionPolicy{ReviewID: job.ID, ReportDigest: otherEvent.Evidence.Digest, SpecDigest: job.SpecDigest, Delivery: first.Correction.Delivery, MaxCorrections: 3}
+		conflict, err := InterveneSupervision(otherOpts, otherEvent.ID, &otherPolicy)
+		if err != nil || conflict.Outcome != "pending" || conflict.Reason != "correction_delivery_reserved" || conflict.Attempts != 1 || conflict.Correction == nil || conflict.Correction.Delivery != "" {
+			t.Fatalf("another review claimed reserved child: %+v %v", conflict, err)
+		}
+		policy.Correction.Delivery = first.Correction.Delivery
+		recovered, err := InterveneSupervision(opts, event.ID, &policy)
+		if err != nil || recovered.Outcome != "proposed" || recovered.Attempts != 3 || recovered.Correction == nil || *recovered.Correction != *first.Correction {
+			t.Fatalf("cross-review conflict released reservation: %+v %v", recovered, err)
+		}
+		return
+	}
+	t.Fatal("independent review did not produce an event")
+}
+
 func TestSupervisionCorrectionFullContract(t *testing.T) {
 	for _, tc := range []struct {
 		name, from, to, reason string

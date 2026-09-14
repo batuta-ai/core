@@ -434,12 +434,16 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 			return persist()
 		}
 	}
+	if proposal.Delivery != "" && proposal.Delivery != p.Delivery {
+		decision.Reason = "correction_identity_mismatch"
+		return persist()
+	}
 	if _, err := os.Lstat(filepath.Join(opts.Workspace, journal.Dir, p.Delivery+".jsonl")); !errors.Is(err, os.ErrNotExist) {
 		decision.Reason = "correction_delivery_exists"
 		return persist()
 	}
-	for _, entry := range ledger.Entries {
-		if entry.Correction.SourceDelivery == p.Delivery || entry.Correction.Delivery == p.Delivery {
+	for id, entry := range ledger.Entries {
+		if entry.Correction.SourceDelivery == p.Delivery || (id != job.ID && entry.Correction.Delivery == p.Delivery) {
 			decision.Reason = "correction_delivery_reserved"
 			return persist()
 		}
