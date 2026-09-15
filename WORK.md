@@ -175,6 +175,8 @@
 - [x] Describe actual evidence and cancellation semantics → codex (gpt-5.6-sol), commit 1198346b4b15 (trail: .batuta/runs/2026-09-14-supervision-review-closeout-task-3.md, delivery supervision-review-closeout-20260914-010812, plan supervision-review-closeout, 2026-09-14)
 - [x] Preserve a valid current proposal when processing an older receipt → codex (gpt-6-astra), commit 57b11d4e9e0c (trail: .batuta/runs/2026-09-14-supervision-stale-notification-task-1.md, delivery supervision-stale-notification-20260914-181255, plan supervision-stale-notification, 2026-09-14)
 - [x] Correct remaining operator claims and record direct documentation evidence → codex (gpt-5.6-sol), commit 8e453bd8ebb6 (trail: .batuta/runs/2026-09-14-supervision-stale-notification-task-2.md, delivery supervision-stale-notification-20260914-181255, plan supervision-stale-notification, 2026-09-14)
+- [x] Integrate supervisor persistence and authorized resume with automatic review → codex (gpt-6-astra), 1 retry, commit 87c806ff0b6f (trail: .batuta/runs/2026-09-14-release-integration-task-1.md, delivery release-integration-20260914-235746, plan release-integration, 2026-09-15)
+- [x] Integrate independent verifier submission uncertainty → codex (gpt-6-astra), commit 5fa6c2b0b33a (trail: .batuta/runs/2026-09-14-release-integration-task-2.md, delivery release-integration-20260914-235746, plan release-integration, 2026-09-15)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

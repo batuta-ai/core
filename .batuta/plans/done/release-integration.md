@@ -1,13 +1,13 @@
 # Plan — integrate validated supervision and verifier deliveries
 
 **Goal:** Reconcile independently developed supervisor lifecycle/persistence fixes and verifier submission uncertainty with the reviewed automatic-review branch, preserving all contracts in one release candidate.
-**Created:** 2026-09-14 · **Status:** approved
+**Created:** 2026-09-14 · **Status:** done
 
 ## Tasks
-- [ ] 1. Integrate supervisor persistence and authorized resume with automatic review — backend/high
+- [x] 1. Integrate supervisor persistence and authorized resume with automatic review — backend/high
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, docs/loop-supervision.md, docs/loop.md, README.md, README.pt-BR.md, executor/dispatch_test.go, loop/supervision.go, loop/supervision_io.go, loop/supervision_io_unix.go, loop/supervision_io_unix_test.go, loop/supervision_io_windows.go, loop/supervision_io_windows_test.go, loop/supervision_notify_test.go, loop/supervision_policy.go, loop/supervision_policy_test.go, loop/supervision_test.go, loop/supervision_review.go, loop/supervision_review_test.go
       Accept: integrated observer reconciles exact deleted legacy refs, bounded platform-correct persistence rejects nonregular inputs, and authorized question answers resume once while uncertain ownership stays blocked → go test -race ./loop -run Supervision; an authorized resumed delivery can complete and enter automatic review while correction proposals never implicitly resume and stale evidence cannot invalidate a current valid proposal → go test ./cmd/batuta ./loop -run Supervision; timeout regressions require no installed Codex executable → go test ./executor -run TestDispatchTaskTimeoutExits124AcrossTransports -count=1; full suite passes → go test -p 1 ./... -timeout=15m; module builds → go build ./...
-- [ ] 2. Integrate independent verifier submission uncertainty — backend/high
+- [x] 2. Integrate independent verifier submission uncertainty — backend/high
       Depends on: 1
       Scope: loop/attempt.go, loop/attempt_test.go, loop/runner.go, loop/settle.go, loop/settle_test.go
       Accept: verifier submission uncertainty remains distinct and persists across resume without replaying possibly submitted external work, preserving integration recovery behavior → go test ./loop -run 'Verifier|Uncertain|Settlement|Settle'; integration does not bypass pending verifier evidence or supervisor cleanup gates → go test -race ./loop -run 'Verifier|Uncertain|Supervision'; full suite passes → go test -p 1 ./... -timeout=15m; module builds → go build ./...
