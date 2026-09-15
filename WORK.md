@@ -179,6 +179,7 @@
 - [x] Integrate independent verifier submission uncertainty → codex (gpt-6-astra), commit 5fa6c2b0b33a (trail: .batuta/runs/2026-09-14-release-integration-task-2.md, delivery release-integration-20260914-235746, plan release-integration, 2026-09-15)
 - [x] Honor recorded task dispatch reconciliation requirements → codex (gpt-6-astra), commit 58f45d5026ac (trail: .batuta/runs/2026-09-15-integration-review-fixes-task-1.md, delivery integration-review-fixes-20260915-153700, plan integration-review-fixes, 2026-09-15)
 - [x] Recover durable answers after ownership stop errors and prove CLI continuation → codex (gpt-6-astra), commit b6f80239496c (trail: .batuta/runs/2026-09-15-integration-review-fixes-task-2.md, delivery integration-review-fixes-20260915-153700, plan integration-review-fixes, 2026-09-15)
+- [x] Preserve completed answers and strengthen recovery fixtures → codex (gpt-6-astra), commit bb84f155ed76 (trail: .batuta/runs/2026-09-15-answered-replay-fix-task-1.md, delivery answered-replay-fix-20260915-223741, plan answered-replay-fix, 2026-09-15)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

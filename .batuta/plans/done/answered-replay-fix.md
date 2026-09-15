@@ -1,10 +1,10 @@
 # Plan — preserve completed bound-answer replay
 
 **Goal:** Restore idempotent replay of an already completed bound answer without weakening incomplete-answer recovery.
-**Created:** 2026-09-15 · **Status:** approved
+**Created:** 2026-09-15 · **Status:** done
 
 ## Tasks
-- [ ] 1. Preserve completed answers and strengthen recovery fixtures — backend/high
+- [x] 1. Preserve completed answers and strengthen recovery fixtures — backend/high
       Scope: loop/supervision_policy.go, loop/supervision_policy_test.go, cmd/batuta/main_test.go
       Accept: a previously answered decision remains unchanged when replayed with different MaxAttempts, without rewriting its ledger, while incomplete matching durable answers still recover → go test -race ./loop -run SupervisionPolicy; mismatch fixtures include an unchanged positive control and assert distinct rejection reasons without resetting budgets → go test ./loop -run SupervisionPolicy; CLI continuation fixture remains independent of git being installed only in system directories → go test ./cmd/batuta -run Supervision; full suite passes → go test -p 1 ./... -timeout=15m; module builds → go build ./...
 
