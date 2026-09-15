@@ -48,7 +48,10 @@ func TestVerifierUsesIndependentBackend(t *testing.T) {
 		worktree: attemptWorktree{Root: f.root}, base: f.base,
 		plan: routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Add greeting one"}},
 	}
-	verdict := r.verify(context.Background(), ac, gates.ParseCriteria([]string{"greeting is correct"}), nil)
+	verdict, err := r.verify(context.Background(), &ac, gates.ParseCriteria([]string{"greeting is correct"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !verdict.Pass || !strings.HasPrefix(verdict.Signal, "codex/fake-low: ") {
 		t.Fatalf("verify() = %#v", verdict)
 	}
@@ -609,7 +612,10 @@ func TestACPVerifierRejectsIncompleteAndMutatingTurns(t *testing.T) {
 				worktree: attemptWorktree{Root: f.root}, base: f.base,
 				plan: r.plan.Tasks[0],
 			}
-			verdict := r.verify(context.Background(), ac, gates.ParseCriteria([]string{"greeting is correct"}), nil)
+			verdict, err := r.verify(context.Background(), &ac, gates.ParseCriteria([]string{"greeting is correct"}), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if verdict.Pass || (strings.HasPrefix(behavior, "mutation") && !strings.Contains(verdict.Signal, "wrote to the tree")) {
 				t.Fatalf("verifier accepted %s: %+v", behavior, verdict)
 			}
@@ -709,6 +715,80 @@ func TestACPUncertainWorkSurvivesFinalization(t *testing.T) {
 			parked, err := r.git.Parked(context.Background(), r.plan.Slug)
 			if err != nil || len(parked) == 0 {
 				t.Fatalf("parked evidence lost: %v / %v", parked, err)
+			}
+		})
+	}
+}
+
+func TestCLITaskPreservesUncertainACPVerifier(t *testing.T) {
+	for _, behavior := range []string{"disconnect", "shutdown"} {
+		t.Run(behavior, func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options("default", &out)
+			calls := 0
+			var r *Runner
+			opts.VerifierTransport = loopACPTransport(t, func(e executor.Execution) (string, string) {
+				calls++
+				var task, verifier dispatchDetail
+				for _, record := range readJournal(t, f, r.delivery) {
+					switch record.Kind {
+					case KindDispatchResult:
+						if err := json.Unmarshal(record.Detail, &task); err != nil {
+							t.Error(err)
+						}
+					case "verifier_dispatch_intent":
+						if err := json.Unmarshal(record.Detail, &verifier); err != nil {
+							t.Error(err)
+						}
+					}
+				}
+				if task.Backend != "cli" || verifier.Backend != "acp" || verifier.RunID == "" || verifier.RunID == task.RunID || verifier.Model != e.Request.Model || verifier.Executor != e.Adapter.Name || verifier.Reasoning != e.Request.Effort || verifier.Workspace != e.Request.Cwd || verifier.BriefDigest != digestString(e.Request.Prompt) || verifier.Execution != 1 {
+					t.Errorf("independent intent missing: task=%+v verifier=%+v", task, verifier)
+				}
+				if behavior == "disconnect" {
+					return "TASK 1: DONE\n", "disconnect"
+				}
+				return "TASK 1: DONE\n", "end_turn"
+			})
+			if behavior == "shutdown" {
+				open := opts.VerifierTransport.ACP.Open
+				opts.VerifierTransport.ACP.Open = func(ctx context.Context, e executor.Execution) (*acp.Connection, func() error, error) {
+					conn, shutdown, err := open(ctx, e)
+					return conn, func() error { return errors.Join(shutdown(), errors.New("shutdown unresolved")) }, err
+				}
+			}
+			r = prepareACPAttempt(t, f, opts)
+			state, err := r.Run(context.Background())
+			if err != nil || state != StateBlocked {
+				t.Fatalf("Run = %s, %v\n%s", state, err, out.String())
+			}
+			task, _ := r.graph.Task("task_1")
+			if calls != 1 || len(task.Attempts) != 1 || task.BlockerCode != blockerSubmissionUncertain {
+				t.Fatalf("uncertain verifier replayed: calls=%d task=%+v", calls, task)
+			}
+			if body, err := os.ReadFile(filepath.Join(task.Attempts[0].WorktreeRoot, "out", "1.txt")); err != nil || string(body) != "ok\n" {
+				t.Fatalf("task work lost: %q / %v", body, err)
+			}
+			var receipt *executor.Receipt
+			records := readJournal(t, f, r.delivery)
+			for _, record := range records {
+				if record.Kind == "verifier_dispatch_result" {
+					var detail struct {
+						Receipt *executor.Receipt `json:"receipt"`
+					}
+					if err := json.Unmarshal(record.Detail, &detail); err != nil {
+						t.Fatal(err)
+					}
+					receipt = detail.Receipt
+				}
+			}
+			if receipt == nil || receipt.Submission.State == executor.SubmissionNotSubmitted || receipt.Transport.Outcome == executor.TransportCompleted {
+				t.Fatalf("uncertain receipt lost: %+v", receipt)
+			}
+			counts := kinds(records)
+			if counts[KindStarted] != 1 || counts[KindCandidate] != 0 || counts[KindLimitWait] != 0 || counts[KindLimitFallback] != 0 {
+				t.Fatalf("uncertain work consumed: %v", counts)
 			}
 		})
 	}

@@ -14,6 +14,7 @@ import (
 	"github.com/batuta-ai/core/executor/acp"
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/integration"
+	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
@@ -42,33 +43,35 @@ const (
 )
 
 type attemptContext struct {
-	taskID    string
-	execution int
-	runtime   routing.RuntimeValue
-	base      string
-	plan      routing.PlanTask
-	worktree  attemptWorktree
-	adapter   executor.Adapter
-	request   executor.Request
-	runID     string
-	result    *executor.Result
-	dispatch  dispatchDetail
-	previous  *routing.GraphTaskAttempt // the answered attempt, on a continuation
+	taskID           string
+	execution        int
+	runtime          routing.RuntimeValue
+	base             string
+	plan             routing.PlanTask
+	worktree         attemptWorktree
+	adapter          executor.Adapter
+	request          executor.Request
+	runID            string
+	result           *executor.Result
+	dispatch         dispatchDetail
+	verifierDispatch dispatchDetail
+	previous         *routing.GraphTaskAttempt // the answered attempt, on a continuation
 }
 
 // An intent is synced before entering a backend that can submit a prompt. Until
 // a result proves non-submission, a crash at that boundary requires reconciliation.
 type dispatchDetail struct {
-	Execution   int                      `json:"execution"`
-	RunID       string                   `json:"run_id"`
-	Backend     string                   `json:"backend"`
-	Executor    string                   `json:"executor"`
-	Model       string                   `json:"model"`
-	Reasoning   string                   `json:"reasoning"`
-	Workspace   string                   `json:"workspace"`
-	BriefDigest string                   `json:"brief_digest"`
-	Submission  executor.SubmissionState `json:"submission"`
-	Receipt     json.RawMessage          `json:"receipt,omitempty"`
+	Execution              int                      `json:"execution"`
+	RunID                  string                   `json:"run_id"`
+	Backend                string                   `json:"backend"`
+	Executor               string                   `json:"executor"`
+	Model                  string                   `json:"model"`
+	Reasoning              string                   `json:"reasoning"`
+	Workspace              string                   `json:"workspace"`
+	BriefDigest            string                   `json:"brief_digest"`
+	Submission             executor.SubmissionState `json:"submission"`
+	Receipt                json.RawMessage          `json:"receipt,omitempty"`
+	ReconciliationRequired bool                     `json:"reconciliation_required,omitempty"`
 }
 
 func (d dispatchDetail) mayHaveSubmitted() bool {
@@ -87,13 +90,17 @@ func (b dispatchBackend) Execute(ctx context.Context, e executor.Execution) (exe
 	return b.backend.Execute(ctx, e)
 }
 
-func (r *Runner) dispatchAttempt(ctx context.Context, ac *attemptContext, e executor.Execution) (result executor.Result, execErr, journalErr error) {
+func (r *Runner) dispatchAttempt(ctx context.Context, ac *attemptContext, e executor.Execution) (executor.Result, error, error) {
+	return r.dispatchExecution(ctx, ac.taskID, &ac.dispatch, r.backend, KindDispatchIntent, KindDispatchResult, e)
+}
+
+func (r *Runner) dispatchExecution(ctx context.Context, taskID string, detail *dispatchDetail, backend executor.Backend, intentKind, resultKind journal.Kind, e executor.Execution) (result executor.Result, execErr, journalErr error) {
 	intent := func(backend string) error {
-		ac.dispatch.Backend, ac.dispatch.Submission, ac.dispatch.Receipt = backend, executor.SubmissionUncertain, nil
-		journalErr = r.locked(KindDispatchIntent, ac.taskID, ac.dispatch, nil)
+		detail.Backend, detail.Submission, detail.Receipt = backend, executor.SubmissionUncertain, nil
+		detail.ReconciliationRequired = backend != "cli"
+		journalErr = r.locked(intentKind, taskID, detail, nil)
 		return journalErr
 	}
-	backend := r.backend
 	if transport, ok := backend.(executor.TransportBackend); ok {
 		// Record the selected transport, including auto's pre-submission CLI fallback.
 		open := transport.ACP.Open
@@ -114,19 +121,21 @@ func (r *Runner) dispatchAttempt(ctx context.Context, ac *attemptContext, e exec
 	if journalErr != nil {
 		return
 	}
-	if result.Receipt == nil && ac.dispatch.mayHaveSubmitted() {
+	if result.Receipt == nil && detail.mayHaveSubmitted() {
 		result.Receipt = &executor.Receipt{Submission: executor.Submission{State: executor.SubmissionUnknown}}
 	}
 	if result.Receipt != nil {
-		ac.dispatch.Receipt, journalErr = executor.MarshalReceipt(*result.Receipt)
+		detail.Receipt, journalErr = executor.MarshalReceipt(*result.Receipt)
 		if journalErr != nil {
 			return
 		}
-		ac.dispatch.Submission = result.Receipt.Submission.State
+		detail.Submission = result.Receipt.Submission.State
 	} else {
-		ac.dispatch.Submission = executor.SubmissionUnknown
+		detail.Submission = executor.SubmissionUnknown
 	}
-	journalErr = r.locked(KindDispatchResult, ac.taskID, ac.dispatch, nil)
+	detail.ReconciliationRequired = requiresReconciliation(&result) || (execErr != nil && detail.mayHaveSubmitted()) ||
+		(result.Receipt != nil && result.Receipt.Transport.Failure == "shutdown")
+	journalErr = r.locked(resultKind, taskID, detail, nil)
 	return
 }
 
@@ -355,7 +364,10 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		report.Scope = gates.Scope(changed, ac.plan.Scope)
 		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
 		if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution) && len(criteria) > 0 {
-			verdict := r.verify(ctx, ac, criteria, report.Proofs)
+			verdict, err := r.verify(ctx, &ac, criteria, report.Proofs)
+			if err != nil {
+				return err
+			}
 			report.Verifier = &verdict
 		}
 	} else if silent && report.Finished.Pass {
@@ -365,7 +377,10 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "nothing changed"}
 		if len(criteria) > 0 {
-			verdict := r.verify(ctx, ac, criteria, report.Proofs)
+			verdict, err := r.verify(ctx, &ac, criteria, report.Proofs)
+			if err != nil {
+				return err
+			}
 			report.Verifier = &verdict
 			if verdict.Pass && report.Tests.Pass {
 				report.Passed = true
@@ -620,7 +635,7 @@ func (r *Runner) attach(ac *attemptContext, wt attemptWorktree) error {
 // verify dispatches the independent read-only verifier: the `low` row's
 // executor when it differs from the one that wrote the diff, else the
 // task's own adapter on the task's model.
-func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates.Criterion, proofs []gates.Verdict) gates.Verdict {
+func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gates.Criterion, proofs []gates.Verdict) (gates.Verdict, error) {
 	name, model := ac.adapter.Name, ac.runtime.Model
 	if row, found := r.table.Row(routing.ComplexityLow, ac.plan.Domain); found && row.Executor != routing.ExecutorSelf && string(row.Executor) != ac.adapter.Name {
 		if _, err := r.adapterLocked(string(row.Executor)); err == nil {
@@ -629,39 +644,46 @@ func (r *Runner) verify(ctx context.Context, ac attemptContext, criteria []gates
 	}
 	adapter, err := r.adapterLocked(name)
 	if err != nil {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "no verifier adapter: " + err.Error()}
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "no verifier adapter: " + err.Error()}, nil
 	}
 	prompt := gates.VerifierPrompt(ac.plan.Title, criteria, proofs, ac.base)
 	request := executor.Request{Prompt: prompt, Cwd: ac.worktree.Root, Model: model}
 	invocation, err := adapter.ReadonlyCommand(request)
 	if err != nil {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier invocation: " + err.Error()}
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier invocation: " + err.Error()}, nil
 	}
 	before, err := r.gitState.WorktreeState(ctx, ac.worktree.Root)
 	if err != nil {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier guard: " + err.Error()}
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier guard: " + err.Error()}, nil
 	}
-	result, err := r.verifier.Execute(ctx, executor.Execution{
+	ac.verifierDispatch = dispatchDetail{
+		Execution: ac.execution, RunID: ac.runID + "-verifier", Executor: name,
+		Model: model, Reasoning: request.Effort, Workspace: ac.worktree.Root,
+		BriefDigest: digestString(prompt), Submission: executor.SubmissionNotSubmitted,
+	}
+	result, execErr, journalErr := r.dispatchExecution(ctx, ac.taskID, &ac.verifierDispatch, r.verifier, KindVerifierIntent, KindVerifierResult, executor.Execution{
 		Adapter: adapter, Request: request, Invocation: invocation, Timeout: r.opts.TaskTimeout,
 	})
-	execErr := err
+	if journalErr != nil {
+		return gates.Verdict{}, journalErr
+	}
 	after, err := r.gitState.WorktreeState(ctx, ac.worktree.Root)
 	if err != nil {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier guard: " + err.Error()}
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier guard: " + err.Error()}, nil
 	}
 	if before != after {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: executor.Tail(result.Stdout, 10)}
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: executor.Tail(result.Stdout, 10)}, nil
 	}
 	if execErr != nil {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not complete: " + execErr.Error()}
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not complete: " + execErr.Error()}, nil
 	}
 	finished := gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, "")
-	if !finished.Pass || result.Truncated || requiresReconciliation(&result) {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete"}
+	if !finished.Pass || result.Truncated || ac.verifierDispatch.ReconciliationRequired {
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete"}, nil
 	}
 	verdict := gates.Verifier(string(result.Stdout), len(criteria), proofs)
 	verdict.Signal = name + "/" + model + ": " + verdict.Signal
-	return verdict
+	return verdict, nil
 }
 
 func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result executor.Result, treeChanged bool) error {
@@ -768,7 +790,7 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		code, policy = blockerInterrupted, routing.ConductingFailurePolicy
 		feedback = []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"}
 	}
-	preserveSubmission := code == blockerSubmissionUncertain || requiresReconciliation(result) || (code == blockerInterrupted && (ac.dispatch.mayHaveSubmitted() || (result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)))
+	preserveSubmission := code == blockerSubmissionUncertain || ac.verifierDispatch.ReconciliationRequired || requiresReconciliation(result) || (code == blockerInterrupted && (ac.dispatch.mayHaveSubmitted() || (result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)))
 	if preserveSubmission {
 		code, policy = blockerSubmissionUncertain, routing.FailurePolicy{}
 		feedback = append(feedback, "ACP submission may have changed the worktree; reconcile the preserved work before another execution")

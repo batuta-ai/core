@@ -37,6 +37,8 @@ const (
 	KindStarted           journal.Kind = "executor_started"
 	KindDispatchIntent    journal.Kind = "dispatch_intent"
 	KindDispatchResult    journal.Kind = "dispatch_result"
+	KindVerifierIntent    journal.Kind = "verifier_dispatch_intent"
+	KindVerifierResult    journal.Kind = "verifier_dispatch_result"
 	KindProgress          journal.Kind = "task_progress"
 	KindFinished          journal.Kind = "executor_finished"
 	KindQuestion          journal.Kind = "question_recorded"

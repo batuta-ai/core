@@ -250,6 +250,7 @@ func (r *Runner) replay(records []journal.Record) error {
 	r.graph = &graph
 	settledOps := map[string]bool{}
 	dispatches := map[string]dispatchDetail{}
+	verifiers := map[string]dispatchDetail{}
 	for _, record := range records {
 		switch record.Kind {
 		case KindWorktree:
@@ -275,6 +276,12 @@ func (r *Runner) replay(records []journal.Record) error {
 				return fmt.Errorf("loop: dispatch journal: %w", err)
 			}
 			dispatches[attemptKey(record.TaskID, detail.Execution)] = detail
+		case KindVerifierIntent, KindVerifierResult:
+			var detail dispatchDetail
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				return fmt.Errorf("loop: verifier dispatch journal: %w", err)
+			}
+			verifiers[attemptKey(record.TaskID, detail.Execution)] = detail
 		case KindFailure:
 			var detail struct {
 				Execution     int      `json:"execution"`
@@ -369,7 +376,8 @@ func (r *Runner) replay(records []journal.Record) error {
 		if ac.dispatch.RunID != "" {
 			ac.runID = ac.dispatch.RunID
 		}
-		if ac.dispatch.mayHaveSubmitted() {
+		ac.verifierDispatch = verifiers[attemptKey(task.TaskID, attempt.Execution)]
+		if ac.dispatch.mayHaveSubmitted() || ac.verifierDispatch.mayHaveSubmitted() || ac.verifierDispatch.ReconciliationRequired {
 			if err := r.recordBlocked(context.Background(), ac, nil, blockerSubmissionUncertain, []string{"the previous ACP dispatch has no verified candidate; reconcile its preserved workspace before another execution"}); err != nil {
 				return err
 			}
