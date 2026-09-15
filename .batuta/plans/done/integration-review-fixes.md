@@ -1,13 +1,13 @@
 # Plan — fix integration review recovery defects
 
 **Goal:** Correct the remaining task-dispatch and bound-answer recovery defects in draft PR #86 and add discriminating integration regressions.
-**Created:** 2026-09-15 · **Status:** approved
+**Created:** 2026-09-15 · **Status:** done
 
 ## Tasks
-- [ ] 1. Honor recorded task dispatch reconciliation requirements — backend/high
+- [x] 1. Honor recorded task dispatch reconciliation requirements — backend/high
       Scope: loop/attempt.go, loop/attempt_test.go, loop/settle.go, loop/settle_test.go
       Accept: task ACP shutdown uncertainty blocks execution even when no prompt was submitted and remains blocked after resume → go test ./loop -run 'Dispatch|Uncertain|Reconciliation|Verifier'; no task or verifier possibly submitted work is retried implicitly → go test -race ./loop -run 'Dispatch|Uncertain|Verifier'; full suite passes → go test -p 1 ./... -timeout=15m
-- [ ] 2. Recover durable answers after ownership stop errors and prove CLI continuation — backend/high
+- [x] 2. Recover durable answers after ownership stop errors and prove CLI continuation — backend/high
       Depends on: 1
       Scope: loop/supervision_policy.go, loop/supervision_policy_test.go, loop/supervision_test.go, cmd/batuta/main_test.go
       Accept: a matching durable bound answer is recovered even when the prior ledger reason is bound_answer_rejected after append, without duplicate answers or budget resets → go test -race ./loop -run 'SupervisionPolicy|SupervisionContinuation'; waiting_input with pending ref deletion remains pending with zero attempts and unchanged journal → go test ./loop -run SupervisionPolicy; CLI test traverses a real waiting question into answer and runner continuation with explicit execution settings and stdout/stderr separation → go test ./cmd/batuta -run Supervision; full suite passes → go test -p 1 ./... -timeout=15m; module builds → go build ./...
