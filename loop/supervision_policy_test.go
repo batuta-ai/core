@@ -190,6 +190,51 @@ func TestSupervisionPolicyBoundAnswer(t *testing.T) {
 	}
 }
 
+func TestSupervisionPolicyCompletedAnswerReplay(t *testing.T) {
+	for _, maxAttempts := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("max_attempts_%d", maxAttempts), func(t *testing.T) {
+			store, opts, event, policy := supervisionPolicyFixture(t)
+			decision, err := InterveneSupervision(opts, event.ID, &policy)
+			if err != nil || decision.Outcome != "answered" {
+				t.Fatalf("answer = %+v, %v", decision, err)
+			}
+			path := filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".supervision.json")
+			ledgerBefore, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			infoBefore, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journalBefore, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil {
+				t.Fatal(err)
+			}
+			policy.MaxAttempts = maxAttempts
+			opts.CursorPath = filepath.Join(opts.Workspace, "restarted-observer.json")
+			for range 2 {
+				again, err := InterveneSupervision(opts, event.ID, &policy)
+				if err != nil || again != decision {
+					t.Errorf("replay = %+v, %v; want %+v", again, err, decision)
+				}
+				ledgerAfter, err := os.ReadFile(path)
+				if err != nil || !bytes.Equal(ledgerBefore, ledgerAfter) {
+					t.Fatalf("replay changed ledger contents: %v", err)
+				}
+				infoAfter, err := os.Stat(path)
+				if err != nil || !os.SameFile(infoBefore, infoAfter) {
+					t.Fatalf("replay rewrote ledger: %v", err)
+				}
+				journalAfter, err := os.ReadFile(store.Path(opts.Delivery))
+				if err != nil || !bytes.Equal(journalBefore, journalAfter) {
+					t.Fatalf("replay changed journal: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestSupervisionPolicyRequiresExplicitScope(t *testing.T) {
 	for _, field := range []string{"absent", "delivery", "task", "execution", "question", "digest", "ownership", "plan", "budget", "permission", "scope", "quota", "replay"} {
 		t.Run(field, func(t *testing.T) {
@@ -316,8 +361,21 @@ func TestSupervisionPolicyCrashAfterAnswer(t *testing.T) {
 }
 
 func TestSupervisionPolicyRecoveryRejectsMismatches(t *testing.T) {
-	for _, scenario := range []string{"policy", "task", "execution", "question", "answer question", "answer owner", "answer value", "detail answer", "detail execution"} {
-		t.Run(scenario, func(t *testing.T) {
+	for _, scenario := range []struct {
+		name, outcome, reason string
+	}{
+		{"unchanged", "answered", "explicit_scoped_policy"},
+		{"policy", "pending", "policy_mismatch"},
+		{"task", "pending", "attempt_limit"},
+		{"execution", "pending", "attempt_limit"},
+		{"question", "pending", "attempt_limit"},
+		{"answer question", "pending", "attempt_limit"},
+		{"answer owner", "pending", "attempt_limit"},
+		{"answer value", "pending", "attempt_limit"},
+		{"detail answer", "pending", "attempt_limit"},
+		{"detail execution", "pending", "attempt_limit"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
 			store, opts, event, policy := supervisionPolicyFixture(t)
 			policy.MaxAttempts = 1
 			encoded, err := json.Marshal(policy)
@@ -344,7 +402,7 @@ func TestSupervisionPolicyRecoveryRejectsMismatches(t *testing.T) {
 				t.Fatal(err)
 			}
 			question := graph.Tasks[0].Attempts[0].Question
-			switch scenario {
+			switch scenario.name {
 			case "policy":
 				policy.MaxAttempts = 3
 			case "task":
@@ -380,8 +438,8 @@ func TestSupervisionPolicyRecoveryRejectsMismatches(t *testing.T) {
 			}
 			for range 2 {
 				got, err := InterveneSupervision(opts, event.ID, &policy)
-				if err != nil || got.Outcome != "pending" || got.Attempts != 1 || got.MaxAttempts != 1 {
-					t.Fatalf("mismatch recovered or reset budget: %+v %v", got, err)
+				if err != nil || got.Outcome != scenario.outcome || got.Reason != scenario.reason || got.Attempts != 1 || got.MaxAttempts != 1 || got.Evidence != decision.Evidence || got.PlanEvidence != decision.PlanEvidence {
+					t.Fatalf("recovery = %+v, %v; want %s/%s with original evidence and budget", got, err, scenario.outcome, scenario.reason)
 				}
 			}
 			after, err := os.ReadFile(store.Path(opts.Delivery))

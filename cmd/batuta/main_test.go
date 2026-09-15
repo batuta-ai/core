@@ -1810,6 +1810,17 @@ esac
 	if err := os.Chmod(fake, 0700); err != nil {
 		t.Fatal(err)
 	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git, err = filepath.Abs(git)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(git, filepath.Join(state, "git")); err != nil {
+		t.Fatal(err)
+	}
 	// Inventory and execution both resolve only this owned executor.
 	t.Setenv("PATH", state+string(os.PathListSeparator)+"/usr/bin:/bin")
 	t.Setenv("BATUTA_SUPERVISION_CALLS", state)

@@ -130,6 +130,9 @@ func InterveneSupervision(opts SupervisionOptions, eventID string, policy *Super
 	}
 	key := fmt.Sprintf("%s:%d:%s", event.TaskID, event.Execution, event.QuestionID)
 	if previous, ok := ledger.Entries[key]; ok {
+		if previous.Outcome == "answered" {
+			return previous, nil
+		}
 		decision.Attempts = previous.Attempts
 		decision.MaxAttempts = max(decision.Attempts, min(previous.MaxAttempts, policy.MaxAttempts))
 		if supervisionBoundAnswer(records, *event) != nil {
@@ -140,9 +143,6 @@ func InterveneSupervision(opts SupervisionOptions, eventID string, policy *Super
 			previous.Outcome, previous.Reason = "answered", "explicit_scoped_policy"
 			ledger.Entries[key] = previous
 			return previous, writeSupervisionJSON(path, ledger)
-		}
-		if previous.Outcome == "answered" {
-			return previous, nil
 		}
 	}
 	persist := func() (SupervisionDecision, error) {
