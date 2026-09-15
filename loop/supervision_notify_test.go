@@ -107,6 +107,101 @@ func TestSupervisionFileSinkRestartAndCompletion(t *testing.T) {
 	}
 }
 
+func TestSupervisionReconcilesTerminalOutboxOnRestart(t *testing.T) {
+	for _, acknowledged := range []bool{false, true} {
+		t.Run(map[bool]string{false: "pending", true: "acknowledged"}[acknowledged], func(t *testing.T) {
+			store, observer := supervisionFixture(t)
+			f := supervisionRepository(t, observer)
+			ref := "refs/batuta/parked/old/task-1"
+			f.run(t, "update-ref", ref, f.base)
+			supervisionAppend(t, store, observer, KindTerminal, `{"state":"done","pending_ref_deletions":[{"ref":"`+ref+`","sha":"`+f.base+`"}]}`)
+			old := supervisionObserve(t, observer).Pending[0]
+			if old.Completed || !old.RecoveryPending {
+				t.Fatalf("initial event = %+v", old)
+			}
+			if acknowledged {
+				if err := AcknowledgeSupervision(observer, old.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			f.run(t, "update-ref", "-d", ref, f.base)
+			got := supervisionObserve(t, observer)
+			if !got.Completed || len(got.Events) != 0 {
+				t.Fatalf("restart = %+v", got)
+			}
+			cursor, err := readSupervisionCursor(observer)
+			if err != nil || len(cursor.Outbox) != 1 {
+				t.Fatalf("cursor = %+v, %v", cursor, err)
+			}
+			entry := cursor.Outbox[0]
+			if entry.Event.ID != old.ID || entry.Event.Evidence != old.Evidence || !entry.Event.Completed || entry.Event.RecoveryPending || entry.Acknowledged != acknowledged {
+				t.Fatalf("reconciled entry = %+v", entry)
+			}
+			calls := 0
+			sink := SupervisionFileSink{Directory: t.TempDir()}
+			opts := SuperviseOptions{Observer: observer, Interval: time.Second,
+				Sink: supervisionSinkFunc(func(ctx context.Context, notification SupervisionNotification) error {
+					calls++
+					if !notification.Event.Completed || notification.Event.RecoveryPending || notification.Event.ID != old.ID {
+						t.Fatalf("conflicting notification = %+v", notification)
+					}
+					return sink.Notify(ctx, notification)
+				}),
+				Sleep: func(context.Context, time.Duration) error { t.Fatal("completed delivery slept"); return nil },
+			}
+			for range 2 {
+				if err := Supervise(context.Background(), opts); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := 1
+			if acknowledged {
+				want = 0
+			}
+			if calls != want {
+				t.Fatalf("notification calls = %d, want %d", calls, want)
+			}
+		})
+	}
+}
+
+func TestSupervisionRechecksReconciledCompletion(t *testing.T) {
+	for _, scenario := range []string{"replaced", "lookup failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			store, observer := supervisionFixture(t)
+			f := supervisionRepository(t, observer)
+			ref := "refs/batuta/parked/old/task-1"
+			supervisionAppend(t, store, observer, KindTerminal, `{"state":"done","pending_ref_deletions":[{"ref":"`+ref+`","sha":"`+strings.Repeat("a", 40)+`"}]}`)
+			first := supervisionObserve(t, observer)
+			if !first.Completed {
+				t.Fatalf("absent ref = %+v", first)
+			}
+			if scenario == "replaced" {
+				f.run(t, "update-ref", ref, f.base)
+			} else if err := os.Rename(filepath.Join(observer.Workspace, ".git"), filepath.Join(observer.Workspace, "saved-git")); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(store.Path(observer.Delivery))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				got := supervisionObserve(t, observer)
+				if got.Completed || len(got.Events) != 0 || len(got.Pending) != 1 || got.Pending[0].Completed || !got.Pending[0].RecoveryPending || got.Pending[0].ID != first.Pending[0].ID {
+					t.Fatalf("uncertainty lost = %+v", got)
+				}
+			}
+			after, err := os.ReadFile(store.Path(observer.Delivery))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("reconciliation changed journal: %v", err)
+			}
+			if scenario == "replaced" && f.run(t, "rev-parse", "--verify", ref) != f.base {
+				t.Fatal("reconciliation changed replacement ref")
+			}
+		})
+	}
+}
+
 func TestSupervisionDesktopUsesArguments(t *testing.T) {
 	event := SupervisionNotification{Event: SupervisionEvent{ID: "demo:1", Delivery: "demo", Action: `$(touch /tmp/unwanted); "quoted"`}, State: "open"}
 	for _, platform := range []string{"darwin", "linux", "unsupported"} {

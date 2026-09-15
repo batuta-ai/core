@@ -1,6 +1,8 @@
 package loop
 
 import (
+	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -23,7 +25,8 @@ const SupervisionRoutineAnswer = "The existing approved plan assigns this task t
 
 // SupervisionPolicy is supplied by the operator, never derived from worker
 // prose. Ownership attests either the existing task assignment or an approved
-// correction of the exact reviewed contract; neither action resumes a runner.
+// correction of the exact reviewed contract. Supervise can resume only the
+// approved task answer, with explicit execution settings.
 type SupervisionPolicy struct {
 	Correction     *SupervisionCorrectionPolicy `json:"correction,omitempty"`
 	Delivery       string                       `json:"delivery"`
@@ -49,6 +52,8 @@ type SupervisionDecision struct {
 	Attempts     int                            `json:"attempts"`
 	MaxAttempts  int                            `json:"max_attempts"`
 	At           time.Time                      `json:"at"`
+	Continuation string                         `json:"continuation,omitempty"`
+	RunState     string                         `json:"run_state,omitempty"`
 }
 
 type supervisionDecisions struct {
@@ -88,7 +93,7 @@ func InterveneSupervision(opts SupervisionOptions, eventID string, policy *Super
 		return SupervisionDecision{}, err
 	}
 	if event == nil {
-		job, loadErr := loadSupervisionReview(opts, supervisionReviewCandidate(opts.Delivery, records))
+		job, loadErr := loadSupervisionReview(opts, supervisionReviewCandidateInWorkspace(opts.Workspace, opts.Delivery, records))
 		if loadErr != nil {
 			return SupervisionDecision{}, loadErr
 		}
@@ -127,6 +132,11 @@ func InterveneSupervision(opts SupervisionOptions, eventID string, policy *Super
 	if previous, ok := ledger.Entries[key]; ok {
 		if previous.Outcome == "answered" {
 			return previous, nil
+		}
+		if previous.PolicyDigest == decision.PolicyDigest && previous.Reason == "answer_attempt_recorded" && supervisionBoundAnswer(records, *event) != nil {
+			previous.Outcome, previous.Reason = "answered", "explicit_scoped_policy"
+			ledger.Entries[key] = previous
+			return previous, writeSupervisionJSON(path, ledger)
 		}
 		decision.Attempts = previous.Attempts
 		decision.MaxAttempts = max(decision.Attempts, min(previous.MaxAttempts, policy.MaxAttempts))
@@ -231,6 +241,9 @@ func supervisionPendingQuestion(records []journal.Record, event SupervisionEvent
 		var terminal terminalDetail
 		if json.Unmarshal(last.Detail, &terminal) != nil || terminal.State != StateWaitingInput {
 			return "delivery_not_waiting"
+		}
+		if terminal.CleanupPending || terminal.BookkeepingPending || len(terminal.Deletions) != 0 {
+			return "reconciliation_required"
 		}
 	}
 	var graph routing.DeliveryGraph
@@ -459,4 +472,231 @@ func proposeSupervisionCorrection(opts SupervisionOptions, event SupervisionEven
 	proposal.Delivery = p.Delivery
 	decision.Outcome, decision.Reason = "proposed", "explicit_scoped_policy; conductor must create the correction delivery and review its new commit"
 	return persist()
+}
+
+// The intent is separate from the answer budget: answering is not execution.
+// Its guard spans Resume and Run; normal delivery ownership also excludes CLI runners.
+type supervisionContinuation struct {
+	Version      int                 `json:"version"`
+	Delivery     string              `json:"delivery"`
+	EventID      string              `json:"event_id"`
+	PolicyDigest string              `json:"policy_digest"`
+	Settings     json.RawMessage     `json:"settings"`
+	Stage        string              `json:"stage"`
+	Answer       SupervisionEvidence `json:"answer"`
+	Activity     SupervisionEvidence `json:"activity"`
+	RunState     string              `json:"run_state,omitempty"`
+}
+
+func supervisionSettings(opts Options) ([]byte, error) {
+	if opts.Transport == nil || opts.Transport.Mode == "" || executor.ValidateTransport(opts.Transport.Mode) != nil || opts.Skills == "" || opts.Inventory == nil || opts.Plan != "" {
+		return nil, errors.New("loop: supervision continuation requires explicit transport, skills and inventory, without a plan override")
+	}
+	verifier := "cli"
+	if opts.VerifierTransport != nil {
+		verifier = opts.VerifierTransport.Mode
+	}
+	environment, _ := json.Marshal(opts.Environment)
+	return json.Marshal(struct {
+		Skills, Transport, Verifier, EnvironmentDigest                        string
+		Parallel, MaxWaves, MaxLimitWaits                                     int
+		TaskTimeout, TestTimeout, LimitWaitDefault, LimitBuffer, LimitHorizon time.Duration
+		KeepWorktrees                                                         bool
+	}{opts.Skills, opts.Transport.Mode, verifier, fmt.Sprintf("%x", sha256.Sum256(environment)),
+		opts.Parallel, opts.MaxWaves, opts.MaxLimitWaits, opts.TaskTimeout, opts.TestTimeout, opts.LimitWaitDefault, opts.LimitBuffer, opts.LimitHorizon, opts.KeepWorktrees})
+}
+
+func supervisionBoundAnswer(records []journal.Record, event SupervisionEvent) *journal.Record {
+	for i := range records {
+		record := &records[i]
+		if record.Seq <= event.Sequence || record.Kind != KindAnswer || record.TaskID != event.TaskID {
+			continue
+		}
+		var detail struct {
+			Execution int
+			Answer    string
+		}
+		var graph routing.DeliveryGraph
+		if json.Unmarshal(record.Detail, &detail) != nil || detail.Execution != event.Execution || detail.Answer != SupervisionRoutineAnswer || json.Unmarshal(record.Graph, &graph) != nil {
+			continue
+		}
+		task := graphTask(&graph, event.TaskID)
+		if task == nil || len(task.Attempts) != event.Execution+1 {
+			continue
+		}
+		attempt := task.Attempts[event.Execution-1]
+		if attempt.Question != nil && attempt.Question.RequestID == event.QuestionID && attempt.Question.Answer != nil &&
+			attempt.Question.Answer.QuestionOperationID == event.QuestionID && attempt.Question.Answer.LoopRunID == attempt.ChildRunID && attempt.Question.Answer.Value == SupervisionRoutineAnswer {
+			return record
+		}
+	}
+	return nil
+}
+
+func continueSupervision(ctx context.Context, opts SuperviseOptions, event SupervisionEvent) (decision SupervisionDecision, resultErr error) {
+	execution := *opts.Execution
+	if (execution.Workspace != "" && filepath.Clean(execution.Workspace) != opts.Observer.Workspace) || (execution.Resume != "" && execution.Resume != opts.Observer.Delivery) {
+		return decision, errors.New("loop: supervision execution belongs to another delivery")
+	}
+	settings, err := supervisionSettings(execution)
+	if err != nil {
+		return decision, err
+	}
+	if !opts.Policy.matches(event) {
+		return InterveneSupervision(opts.Observer, event.ID, opts.Policy)
+	}
+	encoded, _ := json.Marshal(opts.Policy)
+	intent := supervisionContinuation{Version: 1, Delivery: event.Delivery, EventID: event.ID, PolicyDigest: fmt.Sprintf("%x", sha256.Sum256(encoded)), Settings: settings, Stage: "pending"}
+	path := filepath.Join(opts.Observer.Workspace, journal.Dir, fmt.Sprintf("%s.continuation-%d.json", event.Delivery, event.Sequence))
+	release, err := guardPresence(path)
+	if err != nil {
+		return decision, err
+	}
+	defer release()
+	intent, err = readSupervisionContinuation(path, intent)
+	if err != nil {
+		return decision, err
+	}
+
+	if ctx.Err() != nil {
+		return decision, ctx.Err()
+	}
+	decision, err = InterveneSupervision(opts.Observer, event.ID, opts.Policy)
+	if err != nil || decision.Outcome != "answered" {
+		return decision, err
+	}
+	if decision.PolicyDigest != intent.PolicyDigest {
+		return decision, errors.New("loop: supervision answer policy changed; reconciliation required")
+	}
+	decision.Continuation, decision.RunState = intent.Stage, intent.RunState
+	persist := func(stage string) error {
+		intent.Stage, decision.Continuation = stage, stage
+		return writeSupervisionJSON(path, intent)
+	}
+	records, err := readSupervisionRecords(opts.Observer)
+	if err != nil {
+		return decision, err
+	}
+	answer := supervisionBoundAnswer(records, event)
+	if answer == nil {
+		decision.Continuation = "answer_unresolved"
+		return decision, nil
+	}
+	evidence := SupervisionEvidence{Path: event.Evidence.Path, Sequence: answer.Seq, Digest: answer.Digest}
+	if intent.Answer.Sequence != 0 && intent.Answer != evidence {
+		return decision, errors.New("loop: supervision continuation answer changed")
+	}
+	intent.Answer = evidence
+	activity := supervisionContinuationActivity(records, event, answer.Seq)
+	if (intent.Stage == "resumed" && activity.Sequence == 0) || (intent.Activity.Sequence != 0 && intent.Activity != activity) {
+		return decision, errors.New("loop: supervision continuation activity changed; reconciliation required")
+	}
+	if intent.Stage == "resumed" {
+		return decision, nil
+	}
+	// Any new journal activity consumes this continuation. Recovery of an
+	// interrupted execution belongs to the normal explicit reconciliation path.
+	if records[len(records)-1].Seq != answer.Seq {
+		if activity.Sequence != 0 {
+			intent.Activity = activity
+			saveErr := persist("resumed")
+			return decision, saveErr
+		}
+		decision.Continuation = "reconciliation_required"
+		return decision, nil
+	}
+	if answer.Seq < 2 || supervisionPendingQuestion(records[:answer.Seq-1], event) != "" {
+		decision.Continuation = "reconciliation_required"
+		return decision, nil
+	}
+	_, _, ownerErr := inspectPresence(filepath.Join(opts.Observer.Workspace, journal.Dir, event.Delivery+".lock"))
+	if !errors.Is(ownerErr, os.ErrNotExist) {
+		decision.Continuation = "ownership_unresolved"
+		return decision, nil
+	}
+	plan, err := readSupervisionFile(filepath.Join(opts.Observer.Workspace, opts.Policy.PlanEvidence.Path), 1<<20)
+	if err != nil || fmt.Sprintf("sha256:%x", sha256.Sum256(plan)) != opts.Policy.PlanEvidence.Digest {
+		decision.Continuation = "plan_evidence_mismatch"
+		return decision, nil
+	}
+	if ctx.Err() != nil {
+		return decision, ctx.Err()
+	}
+	if err := persist("acquiring"); err != nil {
+		return decision, err
+	}
+	execution.Workspace, execution.Resume = opts.Observer.Workspace, event.Delivery
+	runner, err := Resume(ctx, execution)
+	if err != nil {
+		decision.Continuation = "resume_failed"
+		return decision, err
+	}
+	defer func() { resultErr = errors.Join(resultErr, runner.Release()) }()
+	// Resume owns the delivery now. Recheck the exact journal boundary to close
+	// the race with a manual answer/resume or a replaced/stale owner.
+	current, err := readSupervisionRecords(opts.Observer)
+	if err != nil {
+		return decision, err
+	}
+	if runner.ownership.takenOver != nil || len(current) != len(records) || current[len(current)-1].Digest != answer.Digest {
+		decision.Continuation = "reconciliation_required"
+		return decision, nil
+	}
+	if err := persist("acquired"); err != nil {
+		return decision, err
+	}
+	if ctx.Err() != nil {
+		return decision, ctx.Err()
+	}
+	if err := persist("running"); err != nil {
+		return decision, err
+	}
+	state, runErr := runner.Run(ctx)
+	intent.RunState, decision.RunState = state, state
+	current, readErr := readSupervisionRecords(opts.Observer)
+	if readErr == nil {
+		if activity := supervisionContinuationActivity(current, event, answer.Seq); activity.Sequence != 0 {
+			intent.Activity = activity
+			saveErr := persist("resumed")
+			return decision, errors.Join(runErr, saveErr)
+		}
+	}
+	decision.Continuation = "reconciliation_required"
+	return decision, errors.Join(runErr, readErr)
+}
+
+func supervisionContinuationActivity(records []journal.Record, event SupervisionEvent, answerSequence int) SupervisionEvidence {
+	for _, record := range records {
+		if record.Seq <= answerSequence || record.TaskID != event.TaskID || (record.Kind != KindStarted && record.Kind != KindDispatchIntent) {
+			continue
+		}
+		var detail struct{ Execution int }
+		if json.Unmarshal(record.Detail, &detail) == nil && detail.Execution == event.Execution+1 {
+			return SupervisionEvidence{Path: event.Evidence.Path, Sequence: record.Seq, Digest: record.Digest}
+		}
+	}
+	return SupervisionEvidence{}
+}
+
+func readSupervisionContinuation(path string, expected supervisionContinuation) (supervisionContinuation, error) {
+	data, err := readSupervisionFile(path, 1<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		return expected, writeSupervisionJSON(path, expected)
+	}
+	if err != nil {
+		return expected, err
+	}
+	var previous supervisionContinuation
+	if json.Unmarshal(data, &previous) != nil || previous.Version != 1 || previous.Delivery != expected.Delivery || previous.EventID != expected.EventID {
+		return expected, errors.New("loop: invalid supervision continuation")
+	}
+	if previous.PolicyDigest != expected.PolicyDigest || !bytes.Equal(previous.Settings, expected.Settings) {
+		return expected, errors.New("loop: supervision continuation policy or execution settings changed; reconciliation required")
+	}
+	switch previous.Stage {
+	case "pending", "acquiring", "acquired", "running", "resumed":
+	default:
+		return expected, errors.New("loop: invalid supervision continuation stage")
+	}
+	return previous, nil
 }

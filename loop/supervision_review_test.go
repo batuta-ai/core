@@ -18,6 +18,7 @@ import (
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
+	"github.com/batuta-ai/core/worktree"
 )
 
 func supervisionReviewFixture(t *testing.T) (SupervisionOptions, *journal.Store, string) {
@@ -77,7 +78,7 @@ func fakeSupervisionReview(t *testing.T, opts SupervisionOptions, spec string, l
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := supervisionReviewCandidate(opts.Delivery, records).Base
+	base := supervisionReviewCandidateInWorkspace(opts.Workspace, opts.Delivery, records).Base
 	return SupervisionReviewOptions{Executable: "fake-batuta", Runner: commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
 		if len(c.Args) == 1 && c.Args[0] == "capabilities" {
 			return publication.CommandResult{Stdout: []byte(`{"commands":["review"]}`)}, nil
@@ -545,6 +546,10 @@ func writeSupervisionReviewEvidence(t *testing.T, c publication.Command, verdict
 }
 
 func writeSupervisionReviewEvidenceError(c publication.Command, verdict string, covered bool) error {
+	return writeSupervisionReviewFileEvidence(c, verdict, covered, "source.txt")
+}
+
+func writeSupervisionReviewFileEvidence(c publication.Command, verdict string, covered bool, reviewedPath string) error {
 	head, err := supervisionReviewGit(context.Background(), c.Directory, "rev-parse", "HEAD")
 	if err != nil {
 		return err
@@ -565,6 +570,7 @@ func writeSupervisionReviewEvidenceError(c publication.Command, verdict string, 
 		"review.md":     fmt.Sprintf("Review walkthrough\n\nBase: %s\nFiles: 1 selected of 1 changed (+1 -0)\nCohorts: 1\nCoverage: %s cohorts\n- Cohort 1: source.txt — covered\n\nFindings:\nNone.\n\nCriteria:\n| Criterion | Status | Evidence |\n|---|---|---|\n%s\nSuppressed overlaps: 0\nVerdict: %s\n", c.Args[2], coverage, specCoverage, verdict),
 	}
 	for name, data := range artifacts {
+		data = strings.ReplaceAll(data, "source.txt", reviewedPath)
 		if err := os.WriteFile(filepath.Join(c.Args[7], name), []byte(data), 0600); err != nil {
 			return err
 		}
@@ -647,5 +653,117 @@ func TestSupervisionReviewCanceledExecutionRetainsUncertainOwnership(t *testing.
 				}
 			}
 		})
+	}
+}
+
+func TestSupervisionAuthorizedResumeCompletesAndReviews(t *testing.T) {
+	for _, once := range []bool{false, true} {
+		t.Run(fmt.Sprintf("once=%t", once), func(t *testing.T) {
+			f, opts, _ := supervisionRunnerFixture(t)
+			opts.Execution.Environment[0] = "FAKE_SCENARIO=ask"
+			opts.Once = once
+			launches := 0
+			opts.Review = &SupervisionReviewOptions{Executable: "fake-batuta", Runner: commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				if len(c.Args) == 1 && c.Args[0] == "capabilities" {
+					return publication.CommandResult{Stdout: []byte(`{"commands":["review"]}`)}, nil
+				}
+				if len(c.Args) == 2 && c.Args[1] == "-h" {
+					return publication.CommandResult{Stderr: []byte("  -base string\n  -spec string\n  -full\n  -out string\n")}, nil
+				}
+				launches++
+				if len(c.Args) != 8 || c.Args[0] != "review" || c.Args[5] != "--full" || c.Directory == f.root {
+					return publication.CommandResult{}, fmt.Errorf("review command: %+v", c)
+				}
+				data, err := os.ReadFile(filepath.Join(c.Directory, "out", "1.txt"))
+				if err != nil || !strings.Contains(string(data), SupervisionRoutineAnswer) {
+					return publication.CommandResult{}, fmt.Errorf("resumed snapshot: %q, %v", data, err)
+				}
+				if err := os.MkdirAll(c.Args[7], 0700); err != nil {
+					return publication.CommandResult{}, err
+				}
+				return publication.CommandResult{}, writeSupervisionReviewFileEvidence(c, "SHIP", true, "out/1.txt")
+			})}
+			opts.Sleep = func(context.Context, time.Duration) error {
+				return errors.New("completed resume should review in the same observation")
+			}
+			if err := probeSupervisionReview(context.Background(), *opts.Review, f.root); err != nil {
+				t.Fatalf("review engine capabilities: %v", err)
+			}
+			if err := Supervise(context.Background(), opts); err != nil {
+				t.Fatal(err)
+			}
+			observation := supervisionObserve(t, opts.Observer)
+			if !observation.Completed || observation.Review == nil || observation.Review.State != "reported" || launches != 1 {
+				t.Fatalf("resume/review: %+v job=%+v launches=%d", observation, observation.Review, launches)
+			}
+			records := readJournal(t, f, opts.Observer.Delivery)
+			if counts := kinds(records); counts[KindAnswer] != 1 || counts[KindStarted] != 2 {
+				t.Fatalf("runner launches: %v", counts)
+			}
+			opts.Observer.CursorPath = filepath.Join(t.TempDir(), "restarted.json")
+			if err := Supervise(context.Background(), opts); err != nil {
+				t.Fatal(err)
+			}
+			if launches != 1 || len(readJournal(t, f, opts.Observer.Delivery)) != len(records) {
+				t.Fatal("restarted supervisor repeated runner or review")
+			}
+		})
+	}
+}
+
+func TestSupervisionReconciledDeletionEntersReview(t *testing.T) {
+	opts, store, spec := supervisionReviewFixture(t)
+	records, err := store.Read(opts.Delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal terminalDetail
+	if err := json.Unmarshal(records[len(records)-1].Detail, &terminal); err != nil {
+		t.Fatal(err)
+	}
+	terminal.Deletions = []worktree.ParkedRef{{Ref: "refs/batuta/legacy-recovery"}}
+	detail, err := json.Marshal(terminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	supervisionAppend(t, store, opts, KindTerminal, string(detail))
+	git := exec.Command("git", "-C", opts.Workspace, "update-ref", terminal.Deletions[0].Ref, terminal.FinalCommit)
+	if data, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("create recovery ref: %s, %v", data, err)
+	}
+	observation := supervisionObserve(t, opts)
+	if observation.Completed || observation.Review != nil {
+		t.Fatalf("existing recovery ref allowed review: %+v", observation)
+	}
+	git = exec.Command("git", "-C", opts.Workspace, "update-ref", "-d", terminal.Deletions[0].Ref)
+	if data, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("delete recovery ref: %s, %v", data, err)
+	}
+	observation = supervisionObserve(t, opts)
+	if !observation.Completed || observation.Review == nil || observation.Review.ID == "" {
+		t.Fatalf("exact absent ref did not enable review: %+v", observation)
+	}
+	launches := 0
+	engine := fakeSupervisionReview(t, opts, spec, &launches)
+	if err := Supervise(context.Background(), SuperviseOptions{Observer: opts, Review: &engine, Interval: time.Second, Once: true}); err != nil {
+		t.Fatal(err)
+	}
+	observation = supervisionObserve(t, opts)
+	if launches != 1 || observation.Review.State != "reported" {
+		t.Fatalf("reconciled review: %+v launches=%d", observation, launches)
+	}
+	terminalEvents, reviewEvents := 0, 0
+	for _, event := range observation.Pending {
+		if event.Sequence == len(records)+1 {
+			switch event.Kind {
+			case KindTerminal:
+				terminalEvents++
+			case "review":
+				reviewEvents++
+			}
+		}
+	}
+	if terminalEvents != 1 || reviewEvents != 1 {
+		t.Fatalf("terminal/review identities collided: %+v", observation.Pending)
 	}
 }

@@ -38,8 +38,10 @@ por arquivo local ou desktop compatível são opt-in, e sem um destino os evento
 permanecem não lidos. A observação não faz chamadas a modelos. Após a conclusão,
 o supervisor executa uma revisão completa da entrega imutável mesmo sem
 `--policy`; concluir apenas o loop comum não inicia essa revisão. Uma política
-pode fornecer a resposta fixa e limitada ao escopo da tarefa ou reservar uma
-proposta de correção explicitamente autorizada. Conclusão da implementação,
+pode fornecer a resposta fixa e limitada ao escopo da tarefa e retomá-la com as
+configurações normais de execução, ou reservar uma proposta de correção
+explicitamente autorizada. A conclusão após a retomada inicia a mesma revisão
+automática; propostas de correção nunca iniciam um executor. Conclusão da implementação,
 resultado da revisão e aceitação pelo condutor são estados distintos. `job.json`,
 a cópia imutável da especificação e o snapshot do código ficam em
 `.batuta/reviews/supervision/<job-id>/`; somente a saída do motor fica no

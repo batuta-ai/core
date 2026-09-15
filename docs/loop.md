@@ -124,7 +124,10 @@ exit `1` with the reason on stderr.
 - **Supervision is opt-in and foreground.**
   `batuta loop --supervise <delivery> --cursor <absolute-path>` observes one
   delivery with a durable outbox and no
-  model calls while waiting. A local file or desktop sink may be configured;
+  model calls while waiting. An explicit `continue_approved_task` policy can
+  answer and resume its assigned task with normal runner settings; resumed
+  completion enters automatic review. Correction policies reserve a proposal
+  without starting a runner. A local file or desktop sink may be configured;
   otherwise events remain unread. The process must remain running, and no chat
   turn, remote message, or exactly-once notification is implied. See
   [loop-supervision.md](loop-supervision.md) for lifecycle, policy, host-limit,

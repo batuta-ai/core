@@ -56,11 +56,18 @@ type SupervisionReviewOptions struct {
 var supervisionCommit = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
 
 func supervisionReviewCandidate(delivery string, records []journal.Record) *SupervisionReviewJob {
+	return supervisionReviewCandidateInWorkspace("", delivery, records)
+}
+
+func supervisionReviewCandidateInWorkspace(workspace, delivery string, records []journal.Record) *SupervisionReviewJob {
 	if len(records) < 2 || records[0].Kind != KindOpened || records[len(records)-1].Kind != KindTerminal {
 		return nil
 	}
 	var terminal terminalDetail
-	if json.Unmarshal(records[len(records)-1].Detail, &terminal) != nil || terminal.State != StateDone || terminal.CleanupPending || terminal.BookkeepingPending || len(terminal.Deletions) > 0 {
+	if json.Unmarshal(records[len(records)-1].Detail, &terminal) != nil || terminal.State != StateDone || terminal.CleanupPending || terminal.BookkeepingPending {
+		return nil
+	}
+	if len(terminal.Deletions) > 0 && (workspace == "" || !supervisionDeletionsAbsent(workspace, terminal.Deletions)) {
 		return nil
 	}
 	var opened openedDetail
@@ -226,7 +233,7 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	if err != nil {
 		return fail(err)
 	}
-	candidate := supervisionReviewCandidate(observer.Delivery, records)
+	candidate := supervisionReviewCandidateInWorkspace(observer.Workspace, observer.Delivery, records)
 	if candidate == nil || candidate.ID != job.ID {
 		return fail(errors.New("loop: delivered identity changed during review"))
 	}

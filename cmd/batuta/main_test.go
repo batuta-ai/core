@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1753,5 +1754,44 @@ func TestLoopSupervisionReviewEngineFlags(t *testing.T) {
 	var caps capabilities
 	if err := json.Unmarshal(stdout.Bytes(), &caps); err != nil || !slices.Contains(caps.Commands, "review") {
 		t.Fatalf("capabilities: %s, %v", &stdout, err)
+	}
+}
+
+func TestLoopSupervisionRoutedExecutionSettings(t *testing.T) {
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	skills := filepath.Join(root, "skills")
+	if err := os.MkdirAll(filepath.Join(skills, "adapters"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	policy := loop.SupervisionPolicy{Delivery: "supervised", TaskID: "task_1", Execution: 1, QuestionID: "question-one", QuestionDigest: "sha256:" + strings.Repeat("a", 64),
+		Action: loop.SupervisionContinueApprovedTask, Ownership: "approved_task", MaxAttempts: 1,
+		PlanEvidence: loop.SupervisionEvidence{Path: "plan.md", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("approved")))}}
+	data, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(root, "policy.json")
+	if err := os.WriteFile(policyPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--once", "--policy", policyPath,
+		"--skills", skills, "--transport", "cli", "--parallel", "1", "--task-timeout", "2m", "--test-timeout", "1m", "--max-waves", "1", "--keep-worktrees", "--max-limit-waits", "2", "--limit-horizon", "1h", "--limit-wait", "1m"}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"completed":true`) {
+		t.Fatalf("stdout=%s stderr=%s", &stdout, &stderr)
+	}
+	records, err := store.Read("supervised")
+	if err != nil || len(records) != 1 {
+		t.Fatalf("unmatched policy started work: %v %v", records, err)
 	}
 }

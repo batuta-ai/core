@@ -2,7 +2,7 @@
 
 `batuta loop --supervise` watches one explicit delivery from its append-only
 journal. It is a local foreground process: it does not install a service, start
-a daemon, or take ownership of the delivery. Observation itself makes no model
+a daemon, or take ownership merely to observe. Observation itself makes no model
 calls. Automatic review is opt-in: it runs only in this `--supervise` process,
 after the delivery is fully finalized, and does not require `--policy`.
 
@@ -27,7 +27,12 @@ report `running`; a stale or missing lock reports only process presence and
 never turns an executor exit into completion. `waiting_input`, `blocked`, and
 `canceled` remain terminal observations that need operator attention. Only a
 `done` terminal record with no pending cleanup, bookkeeping, or recovery-ref
-deletion is complete. An answer followed by resumed journal activity supersedes
+deletion is complete. For legacy deletion intent, the observer checks the exact
+recorded Git refs: only confirmed absence clears that intent. Lookup errors,
+dangling symbolic refs and malformed intent remain pending; cleanup and
+bookkeeping flags are never inferred away. The terminal event keeps its ID and
+acknowledgment, independently of review events at the same journal sequence.
+An answer followed by resumed journal activity supersedes
 the earlier `waiting_input` state.
 
 Actionable journal records become redacted events of at most 4 KiB. Each event
@@ -41,6 +46,14 @@ Notification delivery is at least once across crashes. An event is acknowledged
 only after the sink returns success. A crash after the sink accepts an event but
 before cursor acknowledgment can repeat it, so consumers must deduplicate by
 event ID. With no `--notify`, events remain unread in the cursor.
+
+Supervisor persistence validates the opened file before reading, with bounded
+reads. Unix uses nonblocking opens to reject FIFOs, including symlink targets
+and path replacements, without waiting for a writer. Writes flush a private
+temporary file before atomic replacement; Unix also flushes the directory,
+while Windows requests write-through replacement. Native Windows runtime
+qualification remains unavailable on this macOS host; cross-compilation alone
+does not prove Windows runtime behavior.
 
 ## Notification prerequisites and host limits
 
@@ -78,7 +91,33 @@ changes. An attempt is recorded before the existing bound-answer API is called.
 Mismatched evidence, unresolved ownership, a question that is no longer
 pending, or uncertain ACP execution remains pending for reconciliation. Worker
 prose and error classification never grant authority. The supervisor does not
-execute model output or shell commands and does not invoke a conductor model.
+treat model output as executable policy and does not invoke a conductor model.
+
+### Authorized runner continuation
+
+With `continue_approved_task`, the CLI resumes the normal runner after the bound
+answer. It accepts `--skills`, `--transport`, `--parallel`, `--task-timeout`,
+`--test-timeout`, `--max-waves`, `--keep-worktrees`, `--max-limit-waits`,
+`--limit-wait`, and `--limit-horizon` alongside the observer flags. These runner
+settings require `--policy`; routing, gates, retry budgets and usage limits
+remain the normal runner's responsibility. Worker output goes to stderr so
+supervisor stdout remains JSON. Embedders explicitly supply `Execution` to
+`Supervise`; `InterveneSupervision` alone still only submits the answer.
+
+A delivery-wide continuation intent binds the event, policy, execution settings,
+bound answer and subsequent dispatch evidence. A guard spans resume and run.
+Concurrent observers or restarts cannot launch another runner for the same
+consumed continuation. Durable intent alone supplies no authorization: missing
+policy, changed settings or plan evidence, live/stale/unreadable ownership,
+uncertain submission and conflicting journal activity require reconciliation.
+An interrupted answer attempt can be acknowledged from its exact durable bound
+answer without resetting its attempt budget or submitting another answer.
+
+If the resumed delivery completes, the same supervisor runs automatic review,
+including in `--once` mode. Review launch intent and immutable receipts still
+prevent automatic replay. A `propose_correction` policy only reserves the child
+identity; it never enables this continuation or requires worker execution
+settings. Stale review evidence cannot invalidate a current valid proposal.
 
 ## Cost accounting
 

@@ -74,8 +74,10 @@ local file and supported desktop notifications are opt-in, and no sink leaves
 events durably unread. Observation makes zero model calls. After completion,
 the supervisor runs a full review of the immutable delivery even without
 `--policy`; ordinary loop completion alone does not run it. A policy can provide
-the fixed scoped worker answer or reserve an explicitly authorized correction
-proposal. Implementation completion and review outcome remain separate from
+the fixed scoped worker answer and resume its assigned task with normal routed
+execution settings, or reserve an explicitly authorized correction proposal.
+A resumed completion enters the same automatic review; correction proposals
+never start a runner. Implementation completion and review outcome remain separate from
 conductor acceptance. `job.json`, the immutable spec copy, and the source
 snapshot are under `.batuta/reviews/supervision/<job-id>/`; only engine output
 is in its `artifacts/` subdirectory.

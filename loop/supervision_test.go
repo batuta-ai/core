@@ -3,15 +3,22 @@ package loop
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/batuta-ai/core/executor"
+	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/worktree"
 )
 
 func supervisionFixture(t *testing.T) (*journal.Store, SupervisionOptions) {
@@ -256,6 +263,99 @@ func TestSupervisionTerminalRequiresJournalEvidence(t *testing.T) {
 	}
 }
 
+func supervisionRepository(t *testing.T, opts SupervisionOptions) fixture {
+	t.Helper()
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := fixture{root: opts.Workspace, git: git}
+	f.run(t, "init", "-q")
+	f.run(t, "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "initial")
+	f.base = f.run(t, "rev-parse", "HEAD")
+	return f
+}
+
+func TestSupervisionTerminalDeletionIntent(t *testing.T) {
+	for _, scenario := range []string{"absent", "present", "replaced", "packed", "dangling", "corrupt ref", "lookup failure", "invalid ref", "short ref", "over budget", "cleanup", "bookkeeping", "blocked"} {
+		t.Run(scenario, func(t *testing.T) {
+			store, opts := supervisionFixture(t)
+			f := supervisionRepository(t, opts)
+			refs := []worktree.ParkedRef{
+				{Ref: "refs/batuta/parked/old/task-1", SHA: f.base},
+				{Ref: "refs/batuta/parked/old/task-2", SHA: f.base},
+				{Ref: "refs/batuta/parked/old/task-3", SHA: f.base},
+			}
+			// Prefix matches and refs from other deliveries cannot stand in for an exact ref.
+			f.run(t, "update-ref", refs[0].Ref+"-other", f.base)
+			f.run(t, "update-ref", "refs/batuta/parked/other/task-3", f.base)
+			detail := terminalDetail{State: StateDone, Deletions: refs}
+			switch scenario {
+			case "present", "packed":
+				f.run(t, "update-ref", refs[1].Ref, f.base)
+				if scenario == "packed" {
+					f.run(t, "pack-refs", "--all")
+				}
+			case "replaced":
+				f.run(t, "-c", "user.name=Test", "-c", "user.email=test@example.com", "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "replacement")
+				f.run(t, "update-ref", refs[2].Ref, f.run(t, "rev-parse", "HEAD"))
+			case "dangling":
+				f.run(t, "symbolic-ref", refs[1].Ref, "refs/heads/missing")
+			case "corrupt ref":
+				if err := os.WriteFile(filepath.Join(opts.Workspace, ".git", refs[1].Ref), []byte("invalid\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			case "lookup failure":
+				if err := os.Rename(filepath.Join(opts.Workspace, ".git"), filepath.Join(opts.Workspace, "saved-git")); err != nil {
+					t.Fatal(err)
+				}
+			case "invalid ref":
+				detail.Deletions[1].Ref = "refs/batuta/../invalid"
+			case "short ref":
+				detail.Deletions[1].Ref = "parked"
+			case "over budget":
+				for len(detail.Deletions) <= 128 {
+					detail.Deletions = append(detail.Deletions, refs[0])
+				}
+			case "cleanup":
+				detail.CleanupPending = true
+			case "bookkeeping":
+				detail.BookkeepingPending = true
+			case "blocked":
+				detail.State = StateBlocked
+			}
+			data, err := json.Marshal(detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			supervisionAppend(t, store, opts, KindTerminal, string(data))
+			before, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var refsBefore string
+			if scenario != "lookup failure" {
+				refsBefore = f.run(t, "for-each-ref")
+			}
+			got := supervisionObserve(t, opts)
+			complete := scenario == "absent"
+			if got.Completed != complete || len(got.Events) != 1 || got.Events[0].Completed != complete || len(got.Pending) != 1 || got.Pending[0].Completed != complete {
+				t.Fatalf("observation = %+v", got)
+			}
+			if got.Pending[0].RecoveryPending != (scenario != "absent" && scenario != "blocked") {
+				t.Fatalf("recovery = %+v", got.Pending[0])
+			}
+			after, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("observation changed journal: %v", err)
+			}
+			if scenario != "lookup failure" && f.run(t, "for-each-ref") != refsBefore {
+				t.Fatal("observation changed refs")
+			}
+		})
+	}
+}
+
 func TestSupervisionWaitingIsPassive(t *testing.T) {
 	store, opts := supervisionFixture(t)
 	now := opts.Now()
@@ -444,5 +544,313 @@ func TestSupervisionDuplicateObservers(t *testing.T) {
 	}
 	if got := supervisionObserve(t, opts); len(got.Events) != 0 || len(got.Pending) != 1 {
 		t.Fatalf("durable outbox = %+v", got)
+	}
+}
+
+func supervisionRunnerFixture(t *testing.T) (fixture, SuperviseOptions, SupervisionEvent) {
+	t.Helper()
+	f := setup(t)
+	// Keep the first run at a question, before any integration preflight.
+	planPath := filepath.Join(f.root, ".batuta", "plans", "greetings.md")
+	plan := testPlan
+	plan = plan[:strings.Index(plan, "- [ ] 2.")] + "\n## Decisions and context\nOne approved task.\n"
+	if err := os.WriteFile(planPath, []byte(plan), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", planPath)
+	f.run(t, "commit", "-qm", "test: one waiting task")
+	var output bytes.Buffer
+	execution := f.options("ask", &output)
+	runner, err := New(context.Background(), execution)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := runner.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("waiting run: %s %v\n%s", state, err, &output)
+	}
+	observer := SupervisionOptions{Workspace: f.root, Delivery: runner.Delivery(), CursorPath: filepath.Join(t.TempDir(), "cursor.json"), Now: execution.Now}
+	observation := supervisionObserve(t, observer)
+	var event SupervisionEvent
+	for _, candidate := range observation.Events {
+		if candidate.Kind == KindQuestion {
+			event = candidate
+		}
+	}
+	policy := &SupervisionPolicy{Delivery: event.Delivery, TaskID: event.TaskID, Execution: event.Execution, QuestionID: event.QuestionID,
+		QuestionDigest: event.Evidence.Digest, Action: SupervisionContinueApprovedTask, Ownership: "approved_task", MaxAttempts: 2,
+		PlanEvidence: SupervisionEvidence{Path: ".batuta/plans/greetings.md", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(plan)))}}
+	execution.Environment[0] = "FAKE_SCENARIO=question-at-ceiling"
+	execution.Plan = ""
+	execution.Transport = &executor.TransportBackend{Mode: "cli"}
+	return f, SuperviseOptions{Observer: observer, Policy: policy, Execution: &execution, Once: true, Interval: time.Second}, event
+}
+
+func TestSupervisionPolicyResumesRunner(t *testing.T) {
+	f, opts, _ := supervisionRunnerFixture(t)
+	before := kinds(readJournal(t, f, opts.Observer.Delivery))
+	passive := opts
+	passive.Policy = nil
+	if err := Supervise(context.Background(), passive); err != nil {
+		t.Fatal(err)
+	}
+	if got := kinds(readJournal(t, f, opts.Observer.Delivery)); got[KindAnswer] != 0 || got[KindStarted] != before[KindStarted] {
+		t.Fatalf("passive observer dispatched: %v", got)
+	}
+	if err := Supervise(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	records := readJournal(t, f, opts.Observer.Delivery)
+	counts := kinds(records)
+	if counts[KindAnswer] != 1 || counts[KindStarted] != before[KindStarted]+1 {
+		t.Fatalf("answer did not resume: %v", counts)
+	}
+	if counts[KindQuestion] != 2 || !strings.Contains(string(records[len(records)-2].Graph), "choose the final behavior") {
+		t.Fatalf("resumed worker did not receive bound answer: %v", counts)
+	}
+
+	if err := Supervise(context.Background(), opts); err != nil {
+		t.Fatal(err)
+	}
+	if len(readJournal(t, f, opts.Observer.Delivery)) != len(records) {
+		t.Fatal("repeated continuation")
+	}
+}
+
+func TestSupervisionContinuationCrashBoundaries(t *testing.T) {
+	for _, stage := range []string{"pending", "acquiring", "acquired", "running"} {
+		t.Run(stage, func(t *testing.T) {
+			f, opts, event := supervisionRunnerFixture(t)
+			decision, err := InterveneSupervision(opts.Observer, event.ID, opts.Policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Leave the budget at its pre-answer crash state, with the answer durable.
+			ledgerPath := filepath.Join(f.root, journal.Dir, event.Delivery+".supervision.json")
+			ledger, err := readSupervisionDecisions(ledgerPath, event.Delivery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision.Outcome, decision.Reason = "pending", "answer_attempt_recorded"
+			for key := range ledger.Entries {
+				ledger.Entries[key] = decision
+			}
+			if err := writeSupervisionJSON(ledgerPath, ledger); err != nil {
+				t.Fatal(err)
+			}
+			settings, err := supervisionSettings(*opts.Execution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, _ := json.Marshal(opts.Policy)
+			intent := supervisionContinuation{Version: 1, Delivery: event.Delivery, EventID: event.ID, PolicyDigest: fmt.Sprintf("%x", sha256.Sum256(encoded)), Settings: settings, Stage: stage}
+			path := filepath.Join(f.root, journal.Dir, fmt.Sprintf("%s.continuation-%d.json", event.Delivery, event.Sequence))
+			if err := writeSupervisionJSON(path, intent); err != nil {
+				t.Fatal(err)
+			}
+			before := kinds(readJournal(t, f, event.Delivery))
+			if stage == "acquired" || stage == "running" {
+				runnerOptions := *opts.Execution
+				runnerOptions.Resume = event.Delivery
+				runner, err := Resume(context.Background(), runnerOptions)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer runner.Release()
+				// A crashed or still-live owner is not authorization for takeover.
+				decision, err := continueSupervision(context.Background(), opts, event)
+				if err != nil || decision.Continuation != "ownership_unresolved" {
+					t.Fatalf("owned restart: %+v %v", decision, err)
+				}
+				if kinds(readJournal(t, f, event.Delivery))[KindStarted] != before[KindStarted] {
+					t.Fatal("duplicate runner")
+				}
+				if err := runner.Release(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			decision, err = continueSupervision(context.Background(), opts, event)
+			if err != nil || decision.Outcome != "answered" || decision.Continuation != "resumed" || decision.RunState != StateWaitingInput {
+				t.Fatalf("restart: %+v %v", decision, err)
+			}
+			records := readJournal(t, f, event.Delivery)
+			if got := kinds(records); got[KindAnswer] != 1 || got[KindStarted] != before[KindStarted]+1 {
+				t.Fatalf("replayed: %v", got)
+			}
+			// Crash after Run before the continuation acknowledgment.
+			data, err := os.ReadFile(path)
+			if err != nil || json.Unmarshal(data, &intent) != nil {
+				t.Fatal("read continuation", err)
+			}
+			intent.Stage, intent.Activity, intent.RunState = "running", SupervisionEvidence{}, ""
+			if err := writeSupervisionJSON(path, intent); err != nil {
+				t.Fatal(err)
+			}
+			decision, err = continueSupervision(context.Background(), opts, event)
+			if err != nil || decision.Continuation != "resumed" || len(readJournal(t, f, event.Delivery)) != len(records) {
+				t.Fatalf("replayed after activity: %+v %v", decision, err)
+			}
+		})
+	}
+}
+
+func TestSupervisionContinuationConcurrentObservers(t *testing.T) {
+	f, opts, event := supervisionRunnerFixture(t)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			if _, err := continueSupervision(context.Background(), opts, event); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if counts := kinds(readJournal(t, f, event.Delivery)); counts[KindAnswer] != 1 || counts[KindStarted] != 2 {
+		t.Fatalf("concurrent execution: %v", counts)
+	}
+}
+
+func TestSupervisionContinuationRequiresExecutionSettings(t *testing.T) {
+	store, observer, event, policy := supervisionPolicyFixture(t)
+	opts := SuperviseOptions{Observer: observer, Policy: &policy, Execution: &Options{}}
+	before := len(answerRecords(t, store, event.Delivery))
+	if _, err := continueSupervision(context.Background(), opts, event); err == nil {
+		t.Fatal("accepted implicit execution settings")
+	}
+	if len(answerRecords(t, store, event.Delivery)) != before {
+		t.Fatal("answered before validating execution settings")
+	}
+}
+
+func TestSupervisionContinuationBlocksUnresolvedWork(t *testing.T) {
+	for _, scenario := range []string{"stale owner", "broken owner", "uncertain dispatch", "running sibling", "changed settings", "changed plan", "replaced journal", "corrupt intent", "lost activity", "policy removed"} {
+		t.Run(scenario, func(t *testing.T) {
+			store, observer, event, policy := supervisionPolicyFixture(t)
+			execution := Options{Workspace: observer.Workspace, Skills: observer.Workspace, Transport: &executor.TransportBackend{Mode: "cli"},
+				Inventory: func(context.Context) (inventory.InventorySnapshot, error) {
+					t.Fatal("unsafe continuation reached inventory")
+					return inventory.InventorySnapshot{}, nil
+				}}
+			opts := SuperviseOptions{Observer: observer, Policy: &policy, Execution: &execution}
+			if _, err := InterveneSupervision(observer, event.ID, &policy); err != nil {
+				t.Fatal(err)
+			}
+			records := answerRecords(t, store, event.Delivery)
+			path := filepath.Join(observer.Workspace, journal.Dir, fmt.Sprintf("%s.continuation-%d.json", event.Delivery, event.Sequence))
+			settings, err := supervisionSettings(execution)
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, _ := json.Marshal(policy)
+			intent := supervisionContinuation{Version: 1, Delivery: event.Delivery, EventID: event.ID, PolicyDigest: fmt.Sprintf("%x", sha256.Sum256(encoded)), Settings: settings, Stage: "acquiring"}
+			if err := writeSupervisionJSON(path, intent); err != nil {
+				t.Fatal(err)
+			}
+			wantError := false
+			switch scenario {
+			case "stale owner", "broken owner":
+				owner := presenceLock{PID: 1, Host: "another-host", StartedAt: observer.Now().Add(-time.Hour), RefreshedAt: observer.Now().Add(-time.Hour)}
+				data, _ := json.Marshal(owner)
+				if scenario == "broken owner" {
+					data = []byte("{")
+				}
+				if err := os.WriteFile(filepath.Join(observer.Workspace, journal.Dir, event.Delivery+".lock"), data, 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "uncertain dispatch", "running sibling":
+				record := records[len(records)-1]
+				kind, detail := KindDispatchIntent, json.RawMessage(`{"execution":2,"backend":"acp","submission":"uncertain"}`)
+				if scenario == "running sibling" {
+					kind, detail = KindProgress, json.RawMessage(`{}`)
+				}
+				if _, err := store.Append(event.Delivery, journal.Record{Kind: kind, TaskID: "other", Detail: detail, Graph: record.Graph}); err != nil {
+					t.Fatal(err)
+				}
+			case "changed settings":
+				execution.Parallel++
+				wantError = true
+			case "changed plan":
+				if err := os.WriteFile(filepath.Join(observer.Workspace, policy.PlanEvidence.Path), []byte("changed"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			case "replaced journal":
+				intent.Answer = SupervisionEvidence{Path: event.Evidence.Path, Sequence: len(records), Digest: "different"}
+				if err := writeSupervisionJSON(path, intent); err != nil {
+					t.Fatal(err)
+				}
+				wantError = true
+			case "lost activity":
+				intent.Stage = "resumed"
+				if err := writeSupervisionJSON(path, intent); err != nil {
+					t.Fatal(err)
+				}
+				wantError = true
+			case "corrupt intent":
+				if err := os.WriteFile(path, []byte("{}"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				wantError = true
+			case "policy removed":
+				// A durable intent alone never supplies policy authority.
+				opts.Policy = nil
+				opts.Interval, opts.Once = time.Second, true
+				before := len(answerRecords(t, store, event.Delivery))
+				if err := Supervise(context.Background(), opts); err != nil {
+					t.Fatal(err)
+				}
+				if len(answerRecords(t, store, event.Delivery)) != before {
+					t.Fatal("intent authorized execution")
+				}
+				return
+			}
+			before := len(answerRecords(t, store, event.Delivery))
+			decision, err := continueSupervision(context.Background(), opts, event)
+			if (err != nil) != wantError {
+				t.Fatalf("decision=%+v err=%v", decision, err)
+			}
+			if scenario == "lost activity" && (err == nil || !strings.Contains(err.Error(), "activity")) {
+				t.Fatalf("lost activity was not reconciled: %v", err)
+			}
+			if len(answerRecords(t, store, event.Delivery)) != before {
+				t.Fatal("unresolved continuation dispatched")
+			}
+		})
+	}
+}
+
+func TestSupervisionReadFileBounds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte("1234"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	data, err := readSupervisionFile(path, 4)
+	if err != nil || string(data) != "1234" {
+		t.Fatalf("regular file: %q, %v", data, err)
+	}
+	if _, err := readSupervisionFile(path, 3); err == nil {
+		t.Fatal("accepted oversized file")
+	}
+	if _, err := readSupervisionFile(filepath.Dir(path), 4); err == nil {
+		t.Fatal("accepted directory")
+	}
+	if _, err := readSupervisionFile(path+".missing", 4); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing file: %v", err)
+	}
+}
+
+func TestSupervisionJSONReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "state.json")
+	for _, value := range []string{"first", "replacement"} {
+		if err := writeSupervisionJSON(path, value); err != nil {
+			t.Fatal(err)
+		}
+		data, err := readSupervisionFile(path, 32)
+		if err != nil || string(data) != `"`+value+`"` {
+			t.Fatalf("persisted value: %s, %v", data, err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || entries[0].Name() != "state.json" {
+		t.Fatalf("temporary files left behind: %v, %v", entries, err)
 	}
 }

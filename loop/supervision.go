@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/publication"
+	"github.com/batuta-ai/core/worktree"
 )
 
 const SupervisionEventLimit = 4 << 10
@@ -107,7 +109,7 @@ func ObserveSupervision(opts SupervisionOptions) (SupervisionObservation, error)
 	if cursor.Sequence > len(records) || (cursor.Sequence > 0 && records[cursor.Sequence-1].Digest != cursor.Digest) {
 		return SupervisionObservation{}, errors.New("loop: supervision journal no longer matches durable cursor")
 	}
-	result := SupervisionObservation{Cursor: len(records), Review: supervisionReviewCandidate(opts.Delivery, records)}
+	result := SupervisionObservation{Cursor: len(records), Review: supervisionReviewCandidateInWorkspace(opts.Workspace, opts.Delivery, records)}
 	result.Review, err = loadSupervisionReview(opts, result.Review)
 	if err != nil {
 		return SupervisionObservation{}, err
@@ -142,15 +144,40 @@ func ObserveSupervision(opts SupervisionOptions) (SupervisionObservation, error)
 
 	if len(records) > 0 {
 		last := records[len(records)-1]
+		changed := cursor.Sequence != last.Seq
 		result.LastActivity = last.At
 		if last.Kind == KindTerminal {
 			event, err := supervisionEvent(opts.Delivery, last)
 			if err != nil {
 				return SupervisionObservation{}, err
 			}
+			var terminal terminalDetail
+			if err := json.Unmarshal(last.Detail, &terminal); err != nil {
+				return SupervisionObservation{}, err
+			}
+			if !terminal.CleanupPending && !terminal.BookkeepingPending && len(terminal.Deletions) > 0 && supervisionDeletionsAbsent(opts.Workspace, terminal.Deletions) {
+				event.RecoveryPending = false
+				event.Completed = terminal.State == StateDone
+			}
+			// Refresh the current terminal event under its original identity. An
+			// acknowledgment remains consumed even when deletion evidence changes.
+			for i := range cursor.Outbox {
+				entry := &cursor.Outbox[i]
+				if entry.Event.ID == event.ID && (entry.Event.Completed != event.Completed || entry.Event.RecoveryPending != event.RecoveryPending) {
+					entry.Event = *event
+					changed = true
+				}
+			}
+			if last.Seq > cursor.Sequence {
+				for i := range result.Events {
+					if result.Events[i].ID == event.ID {
+						result.Events[i] = *event
+					}
+				}
+			}
 			result.TerminalState, result.Completed = event.TerminalState, event.Completed
 		}
-		if cursor.Sequence != last.Seq || reviewAdded {
+		if changed || reviewAdded {
 			cursor.Sequence, cursor.Digest = last.Seq, last.Digest
 			if err := writeSupervisionCursor(opts.CursorPath, cursor); err != nil {
 				return SupervisionObservation{}, err
@@ -164,6 +191,40 @@ func ObserveSupervision(opts SupervisionOptions) (SupervisionObservation, error)
 	}
 	result.Presence, _ = Presence(opts.Workspace, opts.Delivery, opts.Now())
 	return result, nil
+}
+
+func supervisionDeletionsAbsent(workspace string, refs []worktree.ParkedRef) bool {
+	// Bound the entire lookup, including malformed or oversized historical intent.
+	if len(refs) > 128 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	git, err := (publication.ExecutableResolver{}).Resolve("git")
+	if err != nil {
+		return false
+	}
+	run := func(args ...string) (publication.CommandResult, error) {
+		return (publication.ExecRunner{}).Run(ctx, publication.Command{
+			Executable: git, Args: args, Directory: workspace,
+			StdoutLimit: SupervisionEventLimit, StderrLimit: SupervisionEventLimit,
+		})
+	}
+	for _, ref := range refs {
+		if !strings.HasPrefix(ref.Ref, "refs/") || len(ref.Ref) > SupervisionEventLimit {
+			return false
+		}
+		if _, err := run("check-ref-format", ref.Ref); err != nil {
+			return false
+		}
+		// --exists checks exact names, including dangling symbolic refs. Only
+		// exit 2 means absent; unsupported git versions and lookup errors do not.
+		result, err := run("show-ref", "--exists", "--", ref.Ref)
+		if err == nil || result.ExitCode != 2 || ctx.Err() != nil || result.StdoutTruncated || result.StderrTruncated {
+			return false
+		}
+	}
+	return true
 }
 
 // AcknowledgeSupervision records successful consumption of an existing event.
@@ -227,26 +288,6 @@ func readSupervisionRecords(opts SupervisionOptions) ([]journal.Record, error) {
 	return journal.Decode(bytes.NewReader(data[:end]))
 }
 
-func readSupervisionFile(path string, limit int64) ([]byte, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > limit {
-		return nil, errors.New("loop: supervision file is not regular or is over budget")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, limit+1))
-	if err == nil && int64(len(data)) > limit {
-		err = errors.New("loop: supervision file is over budget")
-	}
-	return data, err
-}
-
 func readSupervisionCursor(opts SupervisionOptions) (supervisionCursor, error) {
 	cursor := supervisionCursor{Version: 1, Workspace: opts.Workspace, Delivery: opts.Delivery}
 	data, err := readSupervisionFile(opts.CursorPath, 256<<20)
@@ -302,14 +343,7 @@ func writeSupervisionJSON(path string, value any) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Rename(file.Name(), path); err != nil {
-		return err
-	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		return err
-	}
-	return errors.Join(dir.Sync(), dir.Close())
+	return replaceSupervisionFile(file.Name(), path)
 }
 
 func supervisionEventID(delivery string, sequence int) string {
@@ -388,15 +422,17 @@ func supervisionIdentifier(value string) string {
 // SuperviseOptions configures one foreground observer. Interval must be between
 // 100 ms and one minute. Sleep allows an embedding host to supply its clock.
 // Review optionally invokes the engine only after a completed delivery.
+// Execution enables runner continuation after an authorized policy answer.
 type SuperviseOptions struct {
-	Review   *SupervisionReviewOptions
-	Observer SupervisionOptions
-	Interval time.Duration
-	Once     bool
-	Sink     SupervisionSink
-	Policy   *SupervisionPolicy
-	Output   io.Writer
-	Sleep    func(context.Context, time.Duration) error
+	Review    *SupervisionReviewOptions
+	Observer  SupervisionOptions
+	Interval  time.Duration
+	Once      bool
+	Sink      SupervisionSink
+	Policy    *SupervisionPolicy
+	Output    io.Writer
+	Sleep     func(context.Context, time.Duration) error
+	Execution *Options
 }
 
 type supervisionReport struct {
@@ -497,7 +533,30 @@ func Supervise(ctx context.Context, opts SuperviseOptions) error {
 		}
 		var policyErr error
 		if opts.Policy != nil && ctx.Err() == nil {
-			report.Decision, policyErr = supervisePolicy(opts)
+			report.Decision, policyErr = supervisePolicy(ctx, opts)
+			if report.Decision != nil && report.Decision.Outcome == "answered" {
+				observation, err = ObserveSupervision(observer)
+				if err != nil {
+					return err
+				}
+				report.Cursor, report.State, report.Presence = observation.Cursor, observation.TerminalState, observation.Presence
+				report.Completed, report.Pending = observation.Completed, len(observation.Pending)
+				report.Review = observation.Review
+				if policyErr == nil && opts.Review != nil && observation.Completed {
+					report.Review, err = RunSupervisionReview(ctx, observer, *opts.Review)
+					if err != nil {
+						return err
+					}
+					observation, err = ObserveSupervision(observer)
+					if err != nil {
+						return err
+					}
+					report.Pending = len(observation.Pending)
+				}
+				if report.State == "" {
+					report.State = "open"
+				}
+			}
 		}
 		if err := writeSupervisionReport(opts.Output, "summary", report, previous, current); err != nil {
 			return err
@@ -545,7 +604,7 @@ func writeSupervisionReport(output io.Writer, key string, value any, previous, c
 	return err
 }
 
-func supervisePolicy(opts SuperviseOptions) (*SupervisionDecision, error) {
+func supervisePolicy(ctx context.Context, opts SuperviseOptions) (*SupervisionDecision, error) {
 	// Notification acknowledgments do not consume intervention authorization.
 	cursor, err := readSupervisionCursor(opts.Observer)
 	if err != nil {
@@ -559,6 +618,10 @@ func supervisePolicy(opts SuperviseOptions) (*SupervisionDecision, error) {
 		}
 		if event.Kind != KindQuestion || event.TaskID != opts.Policy.TaskID || event.Execution != opts.Policy.Execution || event.QuestionID != opts.Policy.QuestionID {
 			continue
+		}
+		if opts.Execution != nil {
+			decision, err := continueSupervision(ctx, opts, event)
+			return &decision, err
 		}
 		decision, err := InterveneSupervision(opts.Observer, event.ID, opts.Policy)
 		return &decision, err

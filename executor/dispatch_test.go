@@ -82,9 +82,15 @@ func TestDispatchCancellationRetainsIntentAndNeverReplays(t *testing.T) {
 }
 
 func TestDispatchTaskTimeoutExits124AcrossTransports(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", t.TempDir())
 	for _, mode := range []string{"cli", "auto", "acp"} {
 		t.Run(mode, func(t *testing.T) {
 			transport, execution, calls := transportFixture(t)
+			execution.Adapter.Run = fmt.Sprintf("%q {brief}", executable)
 			transport.Mode = mode
 			transport.CLI = CLIBackend{Subprocess: Subprocess{
 				Lookup: func(name string) (string, error) { return filepath.Join(execution.Request.Cwd, name), nil },

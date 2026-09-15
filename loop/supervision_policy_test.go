@@ -48,7 +48,7 @@ func supervisionPolicyFixture(t *testing.T) (*journal.Store, SupervisionOptions,
 }
 
 func TestSupervisionPolicyLeavesUnsafeStatePending(t *testing.T) {
-	for _, scenario := range []string{"stale question", "different execution", "answered", "uncertain", "running", "canceled", "changed plan", "owner", "stale owner", "broken owner", "dispatch intent", "uncertain result", "disconnected success claim"} {
+	for _, scenario := range []string{"stale question", "different execution", "answered", "uncertain", "running", "canceled", "changed plan", "owner", "stale owner", "broken owner", "dispatch intent", "uncertain result", "disconnected success claim", "cleanup", "bookkeeping"} {
 		t.Run(scenario, func(t *testing.T) {
 			store, opts, event, policy := supervisionPolicyFixture(t)
 			records := answerRecords(t, store, opts.Delivery)
@@ -69,6 +69,10 @@ func TestSupervisionPolicyLeavesUnsafeStatePending(t *testing.T) {
 				graph.Tasks[0].BlockerCode = blockerSubmissionUncertain
 			case "running":
 				graph.Tasks = append(graph.Tasks, routing.GraphTask{TaskID: "other", State: routing.GraphTaskRunning})
+			case "cleanup":
+				kind, detail = KindTerminal, `{"state":"waiting_input","cleanup_pending":true}`
+			case "bookkeeping":
+				kind, detail = KindTerminal, `{"state":"waiting_input","bookkeeping_pending":true}`
 			case "canceled":
 				kind, detail = KindTerminal, `{"state":"canceled"}`
 			case "dispatch intent":
@@ -280,7 +284,7 @@ func TestSupervisionPolicyCrashAfterAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	again, err := InterveneSupervision(opts, event.ID, &policy)
-	if err != nil || again.Attempts != 1 || again.Outcome != "pending" {
+	if err != nil || again.Attempts != 1 || again.Outcome != "answered" {
 		t.Fatalf("restart = %+v, %v", again, err)
 	}
 	if len(answerRecords(t, store, opts.Delivery)) != before {
@@ -825,7 +829,7 @@ func TestSupervisionCorrectionObserverDispatchAfterAcknowledgment(t *testing.T) 
 		t.Fatal(err)
 	}
 	var output strings.Builder
-	if err := Supervise(context.Background(), SuperviseOptions{Observer: opts, Interval: 100 * time.Millisecond, Once: true, Policy: &policy, Output: &output}); err != nil {
+	if err := Supervise(context.Background(), SuperviseOptions{Observer: opts, Interval: 100 * time.Millisecond, Once: true, Policy: &policy, Execution: &Options{}, Output: &output}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(output.String(), `"outcome":"proposed"`) || !strings.Contains(output.String(), `"acceptance":"pending"`) {
@@ -929,7 +933,7 @@ func TestSupervisionCorrectionOlderReceiptStaysPending(t *testing.T) {
 			}
 			for i := 0; i < 2; i++ {
 				var output strings.Builder
-				if err := Supervise(context.Background(), SuperviseOptions{Observer: opts, Interval: 100 * time.Millisecond, Once: true, Policy: &policy, Output: &output}); err != nil {
+				if err := Supervise(context.Background(), SuperviseOptions{Observer: opts, Interval: 100 * time.Millisecond, Once: true, Policy: &policy, Execution: &Options{}, Output: &output}); err != nil {
 					t.Fatal(err)
 				}
 				if !strings.Contains(output.String(), `"reason":"review_evidence_mismatch"`) || strings.Contains(output.String(), `"outcome":"proposed"`) {

@@ -83,7 +83,8 @@ supervise  Foreground observation, then full review of a completed delivery.
            failed delivery leaves events pending. Desktop delivery is at least
            once across crashes; stable event IDs support sink deduplication.
            --policy accepts bounded JSON actions: continue_approved_task for a
-           scoped worker answer, or propose_correction after operator judgment of
+           scoped worker answer and routed runner continuation, or propose_correction
+           after operator judgment of
            FIX_BEFORE_SHIP/REWORK. Without policy, review still runs but no answer
            or correction is authorized. Review uses a fixed one-hour timeout;
            ownership-wait interruption returns before a job transition, while
@@ -617,18 +618,39 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	if err := executor.ValidateTransport(*transport); err != nil {
 		return err
 	}
+	executionOptions := func() loop.Options {
+		return loop.Options{
+			Transport: &executor.TransportBackend{Mode: *transport},
+			Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
+			MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
+			Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
+				root, err := workspaceRoot(*workspace)
+				if err != nil {
+					return inventory.InventorySnapshot{}, err
+				}
+				probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				defer cancel()
+				snapshot, _, err := collect(probeCtx, root)
+				return snapshot, err
+			},
+		}
+	}
 	rest := flags.Args()
 	if *supervise != "" {
 		var conflict string
 		flags.Visit(func(f *flag.Flag) {
 			switch f.Name {
 			case "supervise", "workspace", "cursor", "once", "notify", "policy", "interval":
+			case "skills", "transport", "parallel", "task-timeout", "test-timeout", "max-waves", "keep-worktrees", "max-limit-waits", "limit-horizon", "limit-wait":
+				if *policy == "" {
+					conflict = f.Name
+				}
 			default:
 				conflict = f.Name
 			}
 		})
 		if conflict != "" || len(rest) > 0 {
-			return errors.New("--supervise accepts only --workspace, --cursor, --once, --notify, --policy and --interval")
+			return errors.New("--supervise accepts observer flags and, with --policy, runner execution settings")
 		}
 		if !filepath.IsAbs(*cursor) {
 			return errors.New("--supervise requires --cursor with an absolute durable path")
@@ -656,6 +678,17 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 			if err != nil {
 				return err
 			}
+		}
+		if opts.Policy != nil && opts.Policy.Action == loop.SupervisionContinueApprovedTask {
+			execution := executionOptions()
+			execution.Workspace = root
+			execution.Skills, err = loop.FindSkills(root, *skills)
+			if err != nil {
+				return err
+			}
+			// Keep the supervisor output as JSON; worker output has its own stream.
+			execution.Stdout = stderr
+			opts.Execution = &execution
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -690,21 +723,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	if *watch {
 		return errors.New("--watch requires --dashboard")
 	}
-	opts := loop.Options{
-		Transport: &executor.TransportBackend{Mode: *transport},
-		Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
-		MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
-		Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
-			root, err := workspaceRoot(*workspace)
-			if err != nil {
-				return inventory.InventorySnapshot{}, err
-			}
-			probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			defer cancel()
-			snapshot, _, err := collect(probeCtx, root)
-			return snapshot, err
-		},
-	}
+	opts := executionOptions()
 	if *roadmap && *dryRun {
 		return loop.DryRunRoadmap(opts)
 	}
