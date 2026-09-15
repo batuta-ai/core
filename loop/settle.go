@@ -377,7 +377,7 @@ func (r *Runner) replay(records []journal.Record) error {
 			ac.runID = ac.dispatch.RunID
 		}
 		ac.verifierDispatch = verifiers[attemptKey(task.TaskID, attempt.Execution)]
-		if ac.dispatch.mayHaveSubmitted() || ac.verifierDispatch.mayHaveSubmitted() || ac.verifierDispatch.ReconciliationRequired {
+		if ac.dispatch.mayHaveSubmitted() || ac.dispatch.ReconciliationRequired || ac.verifierDispatch.mayHaveSubmitted() || ac.verifierDispatch.ReconciliationRequired {
 			if err := r.recordBlocked(context.Background(), ac, nil, blockerSubmissionUncertain, []string{"the previous ACP dispatch has no verified candidate; reconcile its preserved workspace before another execution"}); err != nil {
 				return err
 			}

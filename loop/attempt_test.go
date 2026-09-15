@@ -424,6 +424,131 @@ func prepareACPAttempt(t *testing.T, f fixture, opts Options) *Runner {
 	return r
 }
 
+func loopACPBeforeSubmission(t *testing.T, shutdown func() error) *executor.TransportBackend {
+	t.Helper()
+	b := loopACPTransport(t, func(executor.Execution) (string, string) {
+		t.Error("unexpected prompt submission")
+		return "", ""
+	})
+	b.ACP.Open = func(ctx context.Context, e executor.Execution) (*acp.Connection, func() error, error) {
+		if err := os.WriteFile(filepath.Join(e.Request.Cwd, "shared.txt"), []byte("unverified startup work"), 0644); err != nil {
+			return nil, nil, err
+		}
+		client, peer := net.Pipe()
+		conn, err := acp.NewConnection(client, client, acp.Options{RequestTimeout: 5 * time.Second})
+		if err != nil {
+			client.Close()
+			peer.Close()
+			return nil, nil, err
+		}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer peer.Close()
+			reader := bufio.NewReader(peer)
+			line, err := reader.ReadBytes('\n')
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			var request struct {
+				ID     json.RawMessage
+				Method string
+			}
+			if err := json.Unmarshal(line, &request); err != nil || request.Method != "initialize" {
+				t.Errorf("ACP initialization: %s / %v", line, err)
+				return
+			}
+			fmt.Fprintf(peer, "{\"jsonrpc\":\"2.0\",\"id\":%s,\"error\":{\"code\":-32000,\"message\":\"initialization rejected\"}}\n", request.ID)
+			if extra, _ := io.ReadAll(reader); len(extra) != 0 {
+				t.Errorf("requests after initialization rejection: %s", extra)
+			}
+		}()
+		return conn, func() error { peer.Close(); <-done; return shutdown() }, nil
+	}
+	return b
+}
+
+func TestACPDispatchShutdownBeforeSubmission(t *testing.T) {
+	for _, behavior := range []string{"shutdown", "canceled_shutdown", "verified_shutdown"} {
+		t.Run(behavior, func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options("default", &out)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			calls := 0
+			opts.Transport = loopACPBeforeSubmission(t, func() error {
+				calls++
+				if behavior == "verified_shutdown" {
+					return nil
+				}
+				if behavior == "canceled_shutdown" {
+					cancel()
+				}
+				return errors.New("shutdown unresolved")
+			})
+			r := prepareACPAttempt(t, f, opts)
+			defer r.Release()
+			if _, err := r.runPreparingWaves(ctx); err != nil {
+				t.Fatal(err)
+			}
+			task, _ := r.graph.Task("task_1")
+			wantReconciliation := behavior != "verified_shutdown"
+			if calls != 1 {
+				t.Fatalf("dispatches = %d", calls)
+			}
+			var dispatch dispatchDetail
+			records := readJournal(t, f, r.delivery)
+			for _, record := range records {
+				if record.Kind == KindDispatchResult {
+					if err := json.Unmarshal(record.Detail, &dispatch); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var receipt executor.Receipt
+			if err := json.Unmarshal(dispatch.Receipt, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if dispatch.Backend != "acp" || dispatch.Submission != executor.SubmissionNotSubmitted || dispatch.ReconciliationRequired != wantReconciliation || (receipt.Transport.Failure == "shutdown") != wantReconciliation {
+				t.Fatalf("incorrect dispatch evidence: %+v receipt=%+v", dispatch, receipt)
+			}
+			if !wantReconciliation {
+				if task.State != routing.GraphTaskPreparing || len(task.Attempts) != 2 || task.Attempts[1].Runtime != task.Attempts[0].Runtime {
+					t.Fatalf("safe non-submission lost ordinary retry: %+v", task)
+				}
+				return
+			}
+			if task.State != routing.GraphTaskBlocked || len(task.Attempts) != 1 || task.BlockerCode != blockerSubmissionUncertain {
+				t.Fatalf("unverified shutdown retried: %+v", task)
+			}
+			if body, err := os.ReadFile(filepath.Join(task.Attempts[0].WorktreeRoot, "shared.txt")); err != nil || string(body) != "unverified startup work" {
+				t.Fatalf("startup work lost: %q / %v", body, err)
+			}
+			counts := kinds(records)
+			if counts[KindStarted] != 1 || counts[KindGates] != 0 || counts[KindCandidate] != 0 || counts[KindLimitWait] != 0 || counts[KindLimitFallback] != 0 {
+				t.Fatalf("unverified shutdown consumed: %v", counts)
+			}
+		})
+	}
+}
+
+func TestCLIDispatchFailureRetainsRetryPolicy(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	r := prepareACPAttempt(t, f, f.options("default", &out))
+	defer r.Release()
+	r.backend = unavailableBackend{}
+	if _, err := r.runPreparingWaves(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	task, _ := r.graph.Task("task_1")
+	if task.State != routing.GraphTaskPreparing || len(task.Attempts) != 2 || task.Attempts[1].Runtime != task.Attempts[0].Runtime {
+		t.Fatalf("CLI failure lost ordinary retry: %+v", task)
+	}
+}
+
 func TestACPAttemptPipelineAndIndependentVerifier(t *testing.T) {
 	f := setup(t)
 	var out bytes.Buffer

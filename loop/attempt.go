@@ -316,7 +316,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	if ctx.Err() != nil {
 		return nil // the deferred interruption handler parks the attempt
 	}
-	if requiresReconciliation(&result) || (execErr != nil && ac.dispatch.mayHaveSubmitted()) {
+	if ac.dispatch.ReconciliationRequired {
 		return r.recordBlocked(ctx, ac, &result, blockerSubmissionUncertain, []string{"the ACP prompt may have changed the worktree; reconcile the preserved work before another execution"})
 	}
 	if execErr != nil {
@@ -790,7 +790,7 @@ func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext,
 		code, policy = blockerInterrupted, routing.ConductingFailurePolicy
 		feedback = []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"}
 	}
-	preserveSubmission := code == blockerSubmissionUncertain || ac.verifierDispatch.ReconciliationRequired || requiresReconciliation(result) || (code == blockerInterrupted && (ac.dispatch.mayHaveSubmitted() || (result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)))
+	preserveSubmission := code == blockerSubmissionUncertain || ac.dispatch.ReconciliationRequired || ac.verifierDispatch.ReconciliationRequired || requiresReconciliation(result) || (code == blockerInterrupted && (ac.dispatch.mayHaveSubmitted() || (result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)))
 	if preserveSubmission {
 		code, policy = blockerSubmissionUncertain, routing.FailurePolicy{}
 		feedback = append(feedback, "ACP submission may have changed the worktree; reconcile the preserved work before another execution")

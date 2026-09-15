@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,6 +14,73 @@ import (
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
 )
+
+func TestResumeDispatchShutdownBeforeSubmission(t *testing.T) {
+	for _, boundary := range []journal.Kind{KindDispatchResult, KindFailure} {
+		t.Run(string(boundary), func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options("default", &out)
+			opts.KeepWorktrees = true
+			opts.Transport = loopACPBeforeSubmission(t, func() error { return errors.New("shutdown unresolved") })
+			r := prepareACPAttempt(t, f, opts)
+			defer r.Release()
+			if _, err := r.runPreparingWaves(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			records := readJournal(t, f, r.delivery)
+			end := 0
+			var dispatch dispatchDetail
+			for i, record := range records {
+				if record.Kind == KindDispatchResult {
+					if err := json.Unmarshal(record.Detail, &dispatch); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if record.Kind == boundary {
+					end = i + 1
+					break
+				}
+			}
+			if end == 0 || dispatch.Submission != executor.SubmissionNotSubmitted || !dispatch.ReconciliationRequired {
+				t.Fatalf("missing %s shutdown evidence: %+v", boundary, dispatch)
+			}
+			records = records[:end]
+			delivery := "shutdown-" + strings.ReplaceAll(string(boundary), "_", "-")
+			copyAnswerDelivery(t, r.store, delivery, records)
+			resumeOpts := f.options("default", &out)
+			resumeOpts.Resume = delivery
+			resumed, err := Resume(context.Background(), resumeOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resumed.Release()
+			task, _ := resumed.graph.Task("task_1")
+			if task.State != routing.GraphTaskBlocked || len(task.Attempts) != 1 || task.BlockerCode != blockerSubmissionUncertain {
+				t.Fatalf("shutdown reconciliation lost at %s: %+v", boundary, task)
+			}
+			if state, err := resumed.Run(context.Background()); err != nil || state != StateBlocked {
+				t.Fatalf("resumed Run = %s, %v\n%s", state, err, out.String())
+			}
+			if body, err := os.ReadFile(filepath.Join(task.Attempts[0].WorktreeRoot, "shared.txt")); err != nil || string(body) != "unverified startup work" {
+				t.Fatalf("startup work lost: %q / %v", body, err)
+			}
+			replayed := answerRecords(t, resumed.store, delivery)
+			if len(replayed) < len(records) {
+				t.Fatal("recovery discarded dispatch history")
+			}
+			for i, original := range records {
+				if !bytes.Equal(replayed[i].Detail, original.Detail) || !bytes.Equal(replayed[i].Graph, original.Graph) || replayed[i].Kind != original.Kind {
+					t.Fatalf("recovery rewrote original record %d", i)
+				}
+			}
+			counts := kinds(replayed)
+			if counts[KindStarted] != 1 || counts[KindDispatchResult] != 1 || counts[KindCandidate] != 0 || counts[KindGates] != 0 || counts[KindSettled] != 0 {
+				t.Fatalf("shutdown recovery consumed work: %v", counts)
+			}
+		})
+	}
+}
 
 func TestResumeDispatchCrashBoundaries(t *testing.T) {
 	for _, boundary := range []string{"before_intent", "intent", "prompt", "result", "gates", "old_cli"} {
