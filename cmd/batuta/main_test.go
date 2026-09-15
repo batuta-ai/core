@@ -1758,40 +1758,191 @@ func TestLoopSupervisionReviewEngineFlags(t *testing.T) {
 }
 
 func TestLoopSupervisionRoutedExecutionSettings(t *testing.T) {
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	fake := filepath.Join(state, "codex")
+	worker := `#!/bin/sh
+set -eu
+case "$1" in
+  --version) echo 'codex 1.0.0';;
+  debug) echo '{"models":[{"slug":"chosen-model"}]}';;
+  doctor|plugin) echo '{}';;
+  run)
+    test "$2" = chosen-model
+    test "$3" = high
+    cp "$4" "$BATUTA_SUPERVISION_CALLS/brief-$(cat "$BATUTA_SUPERVISION_CALLS/next").md"
+    if grep -q '^The answer: ' "$4"; then
+      echo 3 > "$BATUTA_SUPERVISION_CALLS/next"
+      echo 'BATUTA-QUESTION: choose the final behavior'
+    else
+      echo 2 > "$BATUTA_SUPERVISION_CALLS/next"
+      echo 'BATUTA-QUESTION: clarify the approved task ownership'
+    fi
+    ;;
+  *) exit 91;;
+esac
+`
+	plan := "# Plan — Supervised\n\n**Goal:** Test routed continuation.\n**Status:** approved\n\n## Tasks\n- [ ] 1. Add source — backend/high\n      Scope: source.txt\n      Accept: source exists → test -f source.txt\n"
+	for name, payload := range map[string]string{
+		filepath.Join(root, ".gitignore"):             ".batuta/journal/\n.batuta/worktrees/\n.batuta/logs/\n.batuta/asks/\n",
+		filepath.Join(root, ".batuta/profile.md"):     "Stack: shell\nMethodology: TDD\nTest: true\nBuild: true\nExecution: sequential\nWorktree: always\nTemplate: templates/generic.md\n",
+		filepath.Join(root, ".batuta/routing.md"):     "| Lane | Domain | Executor | Model |\n|---|---|---|---|\n| high | * | codex | chosen-model |\n",
+		filepath.Join(root, ".batuta/plans/demo.md"):  plan,
+		filepath.Join(skills, "adapters/codex.md"):    fmt.Sprintf("---\nname: codex\nexecutable: %s\nrun: %s run {model_flags} \"{brief}\"\nrun_file: %s run {model_flags} \"{brief_file}\"\nmodel_flags: {model} {effort}\nreadonly: unused\navailable: codex --version\nmodels: codex debug models\nfinished: exit_code\nbrief_limit_lines: 1\n---\n", fake, fake, fake),
+		filepath.Join(skills, "templates/generic.md"): "## Conventions for briefs\nKeep changes scoped.\n",
+		filepath.Join(state, "next"):                  "1\n",
+		fake:                                          worker,
+	} {
+		if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(payload), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(fake, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Inventory and execution both resolve only this owned executor.
+	t.Setenv("PATH", state+string(os.PathListSeparator)+"/usr/bin:/bin")
+	t.Setenv("BATUTA_SUPERVISION_CALLS", state)
+	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "config", "commit.gpgsign", "false")
+	reviewGit(t, root, "add", ".")
+	reviewGit(t, root, "commit", "-qm", "plan")
+	var stdout, stderr bytes.Buffer
+	initial := []string{"loop", "--workspace", root, "--skills", skills, "--transport", "cli", "demo"}
+	var exit *ExitError
+	if err := run(initial, &stdout, &stderr); !errors.As(err, &exit) || exit.Code != 3 {
+		t.Fatalf("initial waiting run: %v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+	}
 	store, err := journal.Open(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`)}); err != nil {
+	deliveries, err := store.List()
+	if err != nil || len(deliveries) != 1 {
+		t.Fatalf("deliveries=%v err=%v", deliveries, err)
+	}
+	delivery := deliveries[0]
+	cursor := filepath.Join(state, "cursor.json")
+	observation, err := loop.ObserveSupervision(loop.SupervisionOptions{Workspace: root, Delivery: delivery, CursorPath: cursor})
+	if err != nil {
 		t.Fatal(err)
 	}
-	skills := filepath.Join(root, "skills")
-	if err := os.MkdirAll(filepath.Join(skills, "adapters"), 0700); err != nil {
-		t.Fatal(err)
+	var event loop.SupervisionEvent
+	for _, candidate := range observation.Events {
+		if candidate.Kind == loop.KindQuestion {
+			event = candidate
+		}
 	}
-	policy := loop.SupervisionPolicy{Delivery: "supervised", TaskID: "task_1", Execution: 1, QuestionID: "question-one", QuestionDigest: "sha256:" + strings.Repeat("a", 64),
+	if event.ID == "" || observation.TerminalState != loop.StateWaitingInput {
+		t.Fatalf("missing real waiting question: %+v", observation)
+	}
+	policy := loop.SupervisionPolicy{Delivery: delivery, TaskID: event.TaskID, Execution: event.Execution, QuestionID: event.QuestionID, QuestionDigest: event.Evidence.Digest,
 		Action: loop.SupervisionContinueApprovedTask, Ownership: "approved_task", MaxAttempts: 1,
-		PlanEvidence: loop.SupervisionEvidence{Path: "plan.md", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte("approved")))}}
+		PlanEvidence: loop.SupervisionEvidence{Path: ".batuta/plans/demo.md", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(plan)))}}
 	data, err := json.Marshal(policy)
 	if err != nil {
 		t.Fatal(err)
 	}
-	policyPath := filepath.Join(root, "policy.json")
+	policyPath := filepath.Join(state, "policy.json")
 	if err := os.WriteFile(policyPath, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	var stdout, stderr bytes.Buffer
-	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--once", "--policy", policyPath,
+	stdout.Reset()
+	stderr.Reset()
+	args := []string{"loop", "--workspace", root, "--supervise", delivery, "--cursor", cursor, "--once", "--policy", policyPath,
 		"--skills", skills, "--transport", "cli", "--parallel", "1", "--task-timeout", "2m", "--test-timeout", "1m", "--max-waves", "1", "--keep-worktrees", "--max-limit-waits", "2", "--limit-horizon", "1h", "--limit-wait", "1m"}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("continuation: %v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	var decision loop.SupervisionDecision
+	for _, line := range bytes.Split(bytes.TrimSpace(stdout.Bytes()), []byte("\n")) {
+		var report struct {
+			Decision *loop.SupervisionDecision `json:"decision"`
+		}
+		if err := json.Unmarshal(line, &report); err != nil {
+			t.Fatalf("supervision stdout is not JSON: %s: %v", line, err)
+		}
+		if report.Decision != nil {
+			decision = *report.Decision
+		}
+	}
+	if decision.Outcome != "answered" || decision.Continuation != "resumed" || decision.RunState != loop.StateWaitingInput || decision.Attempts != 1 {
+		t.Fatalf("continuation decision=%+v\nstdout=%s stderr=%s", decision, &stdout, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "task_1 e2 → codex/chosen-model") || !strings.Contains(stderr.String(), "choose the final behavior") {
+		t.Fatalf("resumed worker output missing from stderr: %s", &stderr)
+	}
+	brief, err := os.ReadFile(filepath.Join(state, "brief-2.md"))
+	if err != nil || !strings.Contains(string(brief), "The answer: "+loop.SupervisionRoutineAnswer+"\n") {
+		t.Fatalf("worker did not receive durable answer: %s, %v", brief, err)
+	}
+	records, err := store.Read(delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, starts := 0, 0
+	for _, record := range records {
+		switch record.Kind {
+		case loop.KindAnswer:
+			answers++
+			var detail struct {
+				Execution int
+				Answer    string
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil || detail.Execution != event.Execution || detail.Answer != loop.SupervisionRoutineAnswer {
+				t.Fatalf("bound answer=%s err=%v", record.Detail, err)
+			}
+		case loop.KindStarted:
+			starts++
+			var detail struct {
+				Execution                  int
+				Executor, Model, Reasoning string
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil || detail.Execution != starts || detail.Executor != "codex" || detail.Model != "chosen-model" || detail.Reasoning != "high" {
+				t.Fatalf("routed worker=%s err=%v", record.Detail, err)
+			}
+		}
+	}
+	if answers != 1 || starts != 2 {
+		t.Fatalf("answers=%d starts=%d", answers, starts)
+	}
+	var intent struct {
+		Stage    string
+		Settings struct {
+			Skills, Transport, Verifier                              string
+			Parallel, MaxWaves, MaxLimitWaits                        int
+			TaskTimeout, TestTimeout, LimitWaitDefault, LimitHorizon time.Duration
+			KeepWorktrees                                            bool
+		}
+	}
+	readReviewJSON(t, filepath.Join(root, journal.Dir, fmt.Sprintf("%s.continuation-%d.json", delivery, event.Sequence)), &intent)
+	settings := intent.Settings
+	if intent.Stage != "resumed" || settings.Skills != skills || settings.Transport != "cli" || settings.Verifier != "cli" ||
+		settings.Parallel != 1 || settings.MaxWaves != 1 || settings.MaxLimitWaits != 2 || settings.TaskTimeout != 2*time.Minute ||
+		settings.TestTimeout != time.Minute || settings.LimitWaitDefault != time.Minute || settings.LimitHorizon != time.Hour || !settings.KeepWorktrees {
+		t.Fatalf("resolved settings=%+v stage=%s", settings, intent.Stage)
+	}
+	before, err := os.ReadFile(store.Path(delivery))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
 	if err := run(args, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), `"completed":true`) {
-		t.Fatalf("stdout=%s stderr=%s", &stdout, &stderr)
-	}
-	records, err := store.Read("supervised")
-	if err != nil || len(records) != 1 {
-		t.Fatalf("unmatched policy started work: %v %v", records, err)
+	after, err := os.ReadFile(store.Path(delivery))
+	if err != nil || !bytes.Equal(before, after) || stderr.Len() != 0 {
+		t.Fatalf("repeated CLI supervision executed again: %v stderr=%s", err, &stderr)
 	}
 }

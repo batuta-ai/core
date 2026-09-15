@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -48,7 +49,7 @@ func supervisionPolicyFixture(t *testing.T) (*journal.Store, SupervisionOptions,
 }
 
 func TestSupervisionPolicyLeavesUnsafeStatePending(t *testing.T) {
-	for _, scenario := range []string{"stale question", "different execution", "answered", "uncertain", "running", "canceled", "changed plan", "owner", "stale owner", "broken owner", "dispatch intent", "uncertain result", "disconnected success claim", "cleanup", "bookkeeping"} {
+	for _, scenario := range []string{"stale question", "different execution", "answered", "uncertain", "running", "canceled", "changed plan", "owner", "stale owner", "broken owner", "dispatch intent", "uncertain result", "disconnected success claim", "cleanup", "bookkeeping", "pending ref deletions"} {
 		t.Run(scenario, func(t *testing.T) {
 			store, opts, event, policy := supervisionPolicyFixture(t)
 			records := answerRecords(t, store, opts.Delivery)
@@ -73,6 +74,8 @@ func TestSupervisionPolicyLeavesUnsafeStatePending(t *testing.T) {
 				kind, detail = KindTerminal, `{"state":"waiting_input","cleanup_pending":true}`
 			case "bookkeeping":
 				kind, detail = KindTerminal, `{"state":"waiting_input","bookkeeping_pending":true}`
+			case "pending ref deletions":
+				kind, detail = KindTerminal, `{"state":"waiting_input","pending_ref_deletions":[{"ref":"refs/batuta/parked/pending","sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`
 			case "canceled":
 				kind, detail = KindTerminal, `{"state":"canceled"}`
 			case "dispatch intent":
@@ -108,12 +111,19 @@ func TestSupervisionPolicyLeavesUnsafeStatePending(t *testing.T) {
 			if _, err := store.Append(opts.Delivery, journal.Record{Kind: kind, TaskID: event.TaskID, Detail: json.RawMessage(detail), Graph: data, At: opts.Now()}); err != nil {
 				t.Fatal(err)
 			}
-			before := len(answerRecords(t, store, opts.Delivery))
+			before, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil {
+				t.Fatal(err)
+			}
 			decision, err := InterveneSupervision(opts, event.ID, &policy)
 			if err != nil || decision.Outcome != "pending" || decision.Attempts != 0 {
 				t.Fatalf("decision = %+v, %v", decision, err)
 			}
-			if len(answerRecords(t, store, opts.Delivery)) != before {
+			if scenario == "pending ref deletions" && decision.Reason != "reconciliation_required" {
+				t.Fatalf("deletion intent ignored: %+v", decision)
+			}
+			after, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil || !bytes.Equal(before, after) {
 				t.Fatal("unsafe state changed")
 			}
 		})
@@ -264,31 +274,121 @@ func TestSupervisionPolicyFailClosedLedger(t *testing.T) {
 }
 
 func TestSupervisionPolicyCrashAfterAnswer(t *testing.T) {
-	store, opts, event, policy := supervisionPolicyFixture(t)
-	decision, err := InterveneSupervision(opts, event.ID, &policy)
-	if err != nil {
-		t.Fatal(err)
+	for _, reason := range []string{"answer_attempt_recorded", "bound_answer_rejected"} {
+		t.Run(reason, func(t *testing.T) {
+			store, opts, event, policy := supervisionPolicyFixture(t)
+			policy.MaxAttempts = 1
+			decision, err := InterveneSupervision(opts, event.ID, &policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".supervision.json")
+			ledger, err := readSupervisionDecisions(path, opts.Delivery)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Recreate a crash or ownership.stop error after the answer append.
+			pending := decision
+			pending.Outcome, pending.Reason = "pending", reason
+			for key := range ledger.Entries {
+				ledger.Entries[key] = pending
+			}
+			if err := writeSupervisionJSON(path, ledger); err != nil {
+				t.Fatal(err)
+			}
+			opts.CursorPath = filepath.Join(opts.Workspace, "restarted-observer.json")
+			for range 2 {
+				again, err := InterveneSupervision(opts, event.ID, &policy)
+				if err != nil || again != decision {
+					t.Fatalf("restart = %+v, %v; want %+v", again, err, decision)
+				}
+			}
+			after, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("recovery changed journal: %v", err)
+			}
+		})
 	}
-	before := len(answerRecords(t, store, opts.Delivery))
-	path := filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".supervision.json")
-	ledger, err := readSupervisionDecisions(path, opts.Delivery)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Recreate the durable state at a crash between answer and acknowledgment.
-	decision.Outcome, decision.Reason = "pending", "answer_attempt_recorded"
-	for key := range ledger.Entries {
-		ledger.Entries[key] = decision
-	}
-	if err := writeSupervisionJSON(path, ledger); err != nil {
-		t.Fatal(err)
-	}
-	again, err := InterveneSupervision(opts, event.ID, &policy)
-	if err != nil || again.Attempts != 1 || again.Outcome != "answered" {
-		t.Fatalf("restart = %+v, %v", again, err)
-	}
-	if len(answerRecords(t, store, opts.Delivery)) != before {
-		t.Fatal("crash replayed an answer")
+}
+
+func TestSupervisionPolicyRecoveryRejectsMismatches(t *testing.T) {
+	for _, scenario := range []string{"policy", "task", "execution", "question", "answer question", "answer owner", "answer value", "detail answer", "detail execution"} {
+		t.Run(scenario, func(t *testing.T) {
+			store, opts, event, policy := supervisionPolicyFixture(t)
+			policy.MaxAttempts = 1
+			encoded, err := json.Marshal(policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision := SupervisionDecision{EventID: event.ID, QuestionID: event.QuestionID, Evidence: event.Evidence,
+				PlanEvidence: policy.PlanEvidence, PolicyDigest: fmt.Sprintf("%x", sha256.Sum256(encoded)),
+				Outcome: "pending", Reason: "bound_answer_rejected", Attempts: 1, MaxAttempts: 1, At: opts.Now()}
+			ledger := supervisionDecisions{Version: 1, Delivery: opts.Delivery, Entries: map[string]SupervisionDecision{
+				fmt.Sprintf("%s:%d:%s", event.TaskID, event.Execution, event.QuestionID): decision,
+			}}
+			if err := writeSupervisionJSON(filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".supervision.json"), ledger); err != nil {
+				t.Fatal(err)
+			}
+			donorStore, donorOpts, donorEvent, donorPolicy := supervisionPolicyFixture(t)
+			if _, err := InterveneSupervision(donorOpts, donorEvent.ID, &donorPolicy); err != nil {
+				t.Fatal(err)
+			}
+			records := answerRecords(t, donorStore, donorOpts.Delivery)
+			answer := records[len(records)-1]
+			var graph routing.DeliveryGraph
+			if err := json.Unmarshal(answer.Graph, &graph); err != nil {
+				t.Fatal(err)
+			}
+			question := graph.Tasks[0].Attempts[0].Question
+			switch scenario {
+			case "policy":
+				policy.MaxAttempts = 3
+			case "task":
+				answer.TaskID = "task_2"
+			case "execution":
+				graph.Tasks[0].Attempts[0].Execution++
+			case "question":
+				question.RequestID = "different"
+			case "answer question":
+				question.Answer.QuestionOperationID = "different"
+			case "answer owner":
+				question.Answer.LoopRunID = "different"
+			case "answer value":
+				question.Answer.Value = "different"
+			case "detail answer":
+				answer.Detail = json.RawMessage(`{"execution":1,"answer":"different"}`)
+			case "detail execution":
+				answer.Detail, err = json.Marshal(map[string]any{"execution": 2, "answer": SupervisionRoutineAnswer})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			answer.Graph, err = json.Marshal(graph)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Append(opts.Delivery, answer); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for range 2 {
+				got, err := InterveneSupervision(opts, event.ID, &policy)
+				if err != nil || got.Outcome != "pending" || got.Attempts != 1 || got.MaxAttempts != 1 {
+					t.Fatalf("mismatch recovered or reset budget: %+v %v", got, err)
+				}
+			}
+			after, err := os.ReadFile(store.Path(opts.Delivery))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("mismatch changed journal: %v", err)
+			}
+		})
 	}
 }
 

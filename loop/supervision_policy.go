@@ -130,16 +130,20 @@ func InterveneSupervision(opts SupervisionOptions, eventID string, policy *Super
 	}
 	key := fmt.Sprintf("%s:%d:%s", event.TaskID, event.Execution, event.QuestionID)
 	if previous, ok := ledger.Entries[key]; ok {
-		if previous.Outcome == "answered" {
-			return previous, nil
-		}
-		if previous.PolicyDigest == decision.PolicyDigest && previous.Reason == "answer_attempt_recorded" && supervisionBoundAnswer(records, *event) != nil {
+		decision.Attempts = previous.Attempts
+		decision.MaxAttempts = max(decision.Attempts, min(previous.MaxAttempts, policy.MaxAttempts))
+		if supervisionBoundAnswer(records, *event) != nil {
+			if previous.PolicyDigest != decision.PolicyDigest {
+				decision.Reason = "policy_mismatch"
+				return decision, nil
+			}
 			previous.Outcome, previous.Reason = "answered", "explicit_scoped_policy"
 			ledger.Entries[key] = previous
 			return previous, writeSupervisionJSON(path, ledger)
 		}
-		decision.Attempts = previous.Attempts
-		decision.MaxAttempts = max(decision.Attempts, min(previous.MaxAttempts, policy.MaxAttempts))
+		if previous.Outcome == "answered" {
+			return previous, nil
+		}
 	}
 	persist := func() (SupervisionDecision, error) {
 		ledger.Entries[key] = decision
@@ -525,7 +529,7 @@ func supervisionBoundAnswer(records []journal.Record, event SupervisionEvent) *j
 			continue
 		}
 		attempt := task.Attempts[event.Execution-1]
-		if attempt.Question != nil && attempt.Question.RequestID == event.QuestionID && attempt.Question.Answer != nil &&
+		if attempt.Execution == event.Execution && attempt.Question != nil && attempt.Question.RequestID == event.QuestionID && attempt.Question.Answer != nil &&
 			attempt.Question.Answer.QuestionOperationID == event.QuestionID && attempt.Question.Answer.LoopRunID == attempt.ChildRunID && attempt.Question.Answer.Value == SupervisionRoutineAnswer {
 			return record
 		}

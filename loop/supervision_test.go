@@ -617,7 +617,7 @@ func TestSupervisionPolicyResumesRunner(t *testing.T) {
 }
 
 func TestSupervisionContinuationCrashBoundaries(t *testing.T) {
-	for _, stage := range []string{"pending", "acquiring", "acquired", "running"} {
+	for _, stage := range []string{"pending", "acquiring", "acquired", "running", "stop failed"} {
 		t.Run(stage, func(t *testing.T) {
 			f, opts, event := supervisionRunnerFixture(t)
 			decision, err := InterveneSupervision(opts.Observer, event.ID, opts.Policy)
@@ -631,6 +631,10 @@ func TestSupervisionContinuationCrashBoundaries(t *testing.T) {
 				t.Fatal(err)
 			}
 			decision.Outcome, decision.Reason = "pending", "answer_attempt_recorded"
+			if stage == "stop failed" {
+				decision.Reason = "bound_answer_rejected"
+				stage = "acquired"
+			}
 			for key := range ledger.Entries {
 				ledger.Entries[key] = decision
 			}
@@ -669,7 +673,7 @@ func TestSupervisionContinuationCrashBoundaries(t *testing.T) {
 				}
 			}
 			decision, err = continueSupervision(context.Background(), opts, event)
-			if err != nil || decision.Outcome != "answered" || decision.Continuation != "resumed" || decision.RunState != StateWaitingInput {
+			if err != nil || decision.Outcome != "answered" || decision.Continuation != "resumed" || decision.RunState != StateWaitingInput || decision.Attempts != 1 || decision.MaxAttempts != opts.Policy.MaxAttempts {
 				t.Fatalf("restart: %+v %v", decision, err)
 			}
 			records := readJournal(t, f, event.Delivery)
