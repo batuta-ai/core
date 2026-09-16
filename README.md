@@ -68,12 +68,23 @@ automatically. Native subagents are selected by interactive hosts, not by this
 binary. See [dispatch](docs/dispatch.md) and the
 [measurement protocol](docs/dispatch-measurement.md).
 
-Foreground [loop supervision](docs/loop-supervision.md) watches one explicit
-delivery with a durable cursor. It requires a process kept alive by the host;
+Foreground [loop supervision](docs/loop-supervision.md) is enabled by default
+for new, resume, answer and roadmap execution, with a durable cursor at
+`.batuta/runs/supervision/<delivery>.json`. Worker logs remain on stdout and
+observer JSON goes to stderr. Dry-run, dashboard and abandon launch no reviewer.
+`--supervise` remains available as a separate attachment with JSON stdout. It requires a process kept alive by the host;
 local file and supported desktop notifications are opt-in, and no sink leaves
 events durably unread. Observation makes zero model calls. After completion,
 the supervisor runs a full review of the immutable delivery even without
-`--policy`; ordinary loop completion alone does not run it. A policy can provide
+`--policy`. A pending review returns `review_blocked` (exit `2`); runtime or
+evidence errors exit `1`. Missing, failed, incomplete or uncertain review
+durably blocks subsequent roadmap phases. Complete `SHIP` clears progression
+only. Resume with `batuta loop --resume <delivery>` or rerun `--roadmap`; review
+budgets and uncertain attempts are preserved. Inspect without execution using
+`batuta loop --supervise <delivery> --review-status`. Explicit judgment uses
+`--review-judgment accept|reject --review-id <id> --review-digest <sha256:digest>
+--rationale "<reason>"` with the same delivery; see the supervision guide for
+exact usage and recovery limits. A policy can provide
 the fixed scoped worker answer and resume its assigned task with normal routed
 execution settings, or reserve an explicitly authorized correction proposal.
 A resumed completion enters the same automatic review; correction proposals

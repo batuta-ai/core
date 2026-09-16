@@ -62,24 +62,34 @@ settle      integration.GitClient.Preflight in a disposable worktree →
 terminal    done | blocked | waiting_input | canceled | abandoned
 ```
 
-Exit codes: `0` done · `2` blocked · `3` waiting for an answer · `130`
-canceled · `1` an error before or during the run.
+Exit codes: `0` implementation done and required review cleared · `2` blocked
+or `review_blocked` · `3` waiting for an answer · `4` waiting for an approved
+roadmap plan · `130` canceled · `1` an error before or during the run.
 
 ## After the run
 
-When the delivery reaches `done`, run
-`batuta review --spec .batuta/plans/done/<slug>.md`. Resolve any review verdict
-that is not `SHIP`, then open the pull request and attach or link the review
-artefacts. The review is the delivery-level gate between the completed loop and
-the PR; see [review.md](review.md) for its contract. An explicitly running
-foreground supervisor performs this full review automatically against the
-recorded final commit and original base/spec; ordinary `batuta loop` completion
-alone does not. Review runs without a policy. Its durable outcome still awaits
-conductor judgment: implementation may be complete, but acceptance remains
-pending, and SHIP does not authorize publication. Explicitly authorized
-correction proposals inherit a bounded chain budget and require the conductor
-to create a new delivery.
-See [loop-supervision.md](loop-supervision.md) for policy and notification details.
+Normal new, resume, answer and roadmap execution includes passive foreground
+supervision and full review of the recorded final commit against the original
+base/spec after finalization. Worker/progress output remains on stdout;
+structured observer reports go to stderr. Review runs without `--policy`;
+questions and corrections gain no automatic authorization.
+
+Implementation `done` is separate from review. Only intact complete `SHIP`
+evidence or valid explicit digest-bound operator judgment clears progression.
+Findings, missing or failed review, incomplete coverage and uncertain execution
+block later roadmap phases durably. A pending gate returns `review_blocked`
+(exit `2`); runtime/evidence errors return `1`. Resume with
+`batuta loop --resume <delivery>` or rerun `--roadmap`; neither resets the review
+budget nor replays uncertain jobs. Review artifacts remain evidence for
+conductor acceptance and grant no permission to merge or publish. Attach the
+review artifacts to the PR after the conductor's decision.
+
+Use `batuta loop --supervise <delivery> --review-status` to inspect the exact
+progression digest without execution. Explicit judgment uses `--review-judgment
+accept|reject --review-id <id> --review-digest <sha256:digest> --rationale
+"<reason>"` with the same `--supervise <delivery>`. See
+[loop-supervision.md](loop-supervision.md) for full commands, recovery constraints,
+policy and notification details, and [review.md](review.md) for the review contract.
 
 ## Standalone gates
 
@@ -121,7 +131,7 @@ exit `1` with the reason on stderr.
   progress from executor sessions with `execution`, `criterion`, and
   `state` fields; the record timestamp is the event time, and the record
   carries the same graph as every other journal entry.
-- **Supervision is opt-in and foreground.**
+- **Supervision is foreground and enabled for normal execution.**
   `batuta loop --supervise <delivery> --cursor <absolute-path>` observes one
   delivery with a durable outbox and no
   model calls while waiting. An explicit `continue_approved_task` policy can
@@ -366,8 +376,10 @@ Everything else is prose. A broken line fails with its number, like a plan.
 
 `batuta loop --roadmap` runs the phases in order: the first phase not ticked
 must have a plan with `Status: approved`; the loop opens one delivery for it
-on the current branch, runs it to `done`, archives the plan, ticks the
-roadmap line, and opens the next phase on the head the previous one left.
+on the current branch, runs it to implementation `done`, archives the plan,
+and runs full review. Only after the durable review gate clears does it tick
+the roadmap line and open the next phase on the head the previous one left.
+`review_blocked` stops progression with exit `2` across restarts.
 `--dry-run --roadmap` prints the chain (phase, plan, state) and runs nothing.
 The chain stops with the delivery's state: `blocked` is terminal (fix the
 cause and run the roadmap again — a new delivery for the same phase);

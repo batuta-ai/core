@@ -115,5 +115,10 @@ func (r *Runner) runSupervised(ctx context.Context, config SuperviseOptions) (st
 	if err != nil || !gate.Cleared {
 		return StateReviewBlocked, err
 	}
+	// Legacy journals have no durable progression gate, but an explicitly
+	// configured review must still succeed before this invocation reports done.
+	if !gate.Required && config.Review != nil && (observation.Review == nil || observation.Review.State != "reported" || observation.Review.Outcome != "SHIP") {
+		return StateReviewBlocked, nil
+	}
 	return state, nil
 }

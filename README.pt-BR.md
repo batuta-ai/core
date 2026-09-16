@@ -32,12 +32,24 @@ pertencem ao host interativo, não ao binário. Consulte
 [dispatch](docs/dispatch.md) e o
 [protocolo de medição](docs/dispatch-measurement.md).
 
-A [supervisão do loop](docs/loop-supervision.md) acompanha uma entrega explícita
-com cursor durável. O host precisa manter o processo em execução; notificações
+A [supervisão do loop](docs/loop-supervision.md) vem habilitada nas execuções
+normais de plano, retomada, resposta e roadmap, com cursor durável em
+`.batuta/runs/supervision/<entrega>.json`. Logs de execução continuam no stdout;
+JSON do observador vai para stderr. Dry-run, dashboard e abandon não iniciam
+revisores. `--supervise` continua disponível como acompanhamento separado, com
+JSON no stdout. O host precisa manter o processo em execução; notificações
 por arquivo local ou desktop compatível são opt-in, e sem um destino os eventos
 permanecem não lidos. A observação não faz chamadas a modelos. Após a conclusão,
 o supervisor executa uma revisão completa da entrega imutável mesmo sem
-`--policy`; concluir apenas o loop comum não inicia essa revisão. Uma política
+`--policy`. Revisão pendente retorna `review_blocked` (código `2`); erros de
+execução ou evidência retornam `1`. Revisão ausente, falha, incompleta ou incerta
+bloqueia duravelmente as próximas fases. `SHIP` completo libera apenas a
+progressão. Retome com `batuta loop --resume <entrega>` ou execute `--roadmap`
+novamente; os orçamentos e tentativas incertas são preservados. Consulte sem
+executar com `batuta loop --supervise <entrega> --review-status`. O julgamento
+explícito usa `--review-judgment accept|reject --review-id <id>
+--review-digest <sha256:digest> --rationale "<motivo>"` para a mesma entrega;
+veja o guia de supervisão para os comandos e limites de recuperação. Uma política
 pode fornecer a resposta fixa e limitada ao escopo da tarefa e retomá-la com as
 configurações normais de execução, ou reservar uma proposta de correção
 explicitamente autorizada. A conclusão após a retomada inicia a mesma revisão

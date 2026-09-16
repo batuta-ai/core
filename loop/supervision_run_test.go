@@ -407,3 +407,19 @@ func TestSupervisionRunInvalidConfigurationReleasesResume(t *testing.T) {
 		})
 	}
 }
+
+func TestSupervisionRunLegacyDeliveryStillRequiresConfiguredReview(t *testing.T) {
+	f := setup(t)
+	opts := f.options("default", new(bytes.Buffer))
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	// An existing legacy delivery keeps its opening identity when supervised.
+	r.opts.Supervisor = &SuperviseOptions{Review: supervisionRunReview(t, f.root, &launches, "FIX_BEFORE_SHIP")}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateReviewBlocked || launches != 1 {
+		t.Fatalf("legacy supervised review: %s, %v, launches=%d", state, err, launches)
+	}
+}

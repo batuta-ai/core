@@ -1,10 +1,21 @@
 # Foreground loop supervision
 
-`batuta loop --supervise` watches one explicit delivery from its append-only
-journal. It is a local foreground process: it does not install a service, start
-a daemon, or take ownership merely to observe. Observation itself makes no model
-calls. Automatic review is opt-in: it runs only in this `--supervise` process,
-after the delivery is fully finalized, and does not require `--policy`.
+Normal `batuta loop`, `--resume`, `--answer`, and `--roadmap` executions include
+foreground supervision and full delivery review by default. The runner owns
+execution; a passive observer follows its journal, then review runs after
+finalization and release of runner ownership. Observation makes no model calls.
+`--dry-run`, `--dashboard` and `--abandon` do not launch reviewers.
+
+Normal loop stdout keeps its worker/progress contract; structured observer JSON
+goes to stderr. Its private durable cursor is
+`.batuta/runs/supervision/<delivery>.json`. `--interval` controls polling.
+`--supervise` remains a separate foreground attachment to one explicit delivery,
+with observer JSON on stdout and policy-authorized worker output on stderr.
+`--cursor`, `--once`, `--notify` and `--policy` belong to that attachment form.
+Review requires no policy; answering questions and proposing corrections still
+require explicit scoped authorization. Starting a supervised loop grants none.
+The process must stay alive: no service or daemon is installed and no automatic
+chat notification is promised.
 
 ```bash
 batuta loop --workspace /absolute/repository \
@@ -19,6 +30,54 @@ observation in smoke tests. The cursor must be an absolute path outside the
 delivery journal directory and should be private to the intended notification
 consumer. Reusing it after a supervisor restart resumes from the recorded
 journal sequence and preserves unread events.
+
+## Review-pending exit and recovery
+
+Implementation `done` and the archived plan describe finalization, not review
+acceptance. An intact, complete `SHIP` report clears roadmap progression only.
+`FIX_BEFORE_SHIP`, `REWORK`, incomplete coverage, a missing report, failed review
+or uncertain execution keeps progression blocked across restarts. Subsequent
+roadmap phases remain blocked even if their checkbox was edited manually.
+
+Normal execution exits `2` with `review_blocked` when the gate is pending;
+runtime/evidence errors exit `1` with their reason. Neither is unreviewed success.
+Use `batuta loop --resume <delivery>` to recover finalization or inspect the same
+review attempt, or `batuta loop --roadmap` to reconcile archived phase reviews.
+A failed or uncertain attempt is not automatically relaunched, and restart,
+new cursors and judgment never reset its budget. Reconcile reviewer ownership
+and retained evidence before trying recovery; missing or corrupt evidence
+cannot be accepted by a judgment flag.
+
+Inspect the gate without launching review:
+
+```bash
+batuta loop --workspace /absolute/repository \
+  --supervise <delivery> --review-status
+```
+
+This prints JSON containing `review_id`, `evidence_digest`, `cleared` and
+`reason`; it exits `2` while blocked and `0` when cleared. Read the immutable
+report and use exactly that gate's digest (not the notification event digest)
+for an explicit operator decision:
+
+```bash
+batuta loop --workspace /absolute/repository \
+  --supervise <delivery> --review-judgment accept \
+  --review-id <review_id> --review-digest <evidence_digest> \
+  --rationale "Reviewed the remaining findings and approved phase progression."
+```
+
+The JSON `evidence_digest` already includes `sha256:`; pass its value once.
+Use `reject` to retain the block (exit `2`). The nonempty rationale and exact
+delivery/review digest are persisted in the review directory's `progression.json`.
+Changed evidence, uncertain ownership, missing reports and conflicting saved
+decisions are rejected. Status and judgment cannot combine with execution,
+policy or observer flags; neither starts a runner, launches review, answers a
+question, proposes a correction or authorizes merge/publication. After a valid
+acceptance, explicitly resume the loop/roadmap. A rejected decision cannot be
+overwritten for the same evidence; corrections require separately verified
+current evidence. Legacy library callers without supervision retain their
+historical behavior; old journals do not gain a durable gate retroactively.
 
 ## Lifecycle and durable delivery
 
