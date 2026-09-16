@@ -1,5 +1,50 @@
 # Changelog
 
+## [1.1.0-beta.22](https://github.com/batuta-ai/core/compare/v1.1.0-beta.21...v1.1.0-beta.22) (2026-09-16)
+
+
+### Features
+
+* add bounded receipts and honest optional usage ([88a846d](https://github.com/batuta-ai/core/commit/88a846dba30cf96bb82bf7324fb24ab0cd8d412d))
+* add dispatch transports and supervised delivery review ([576c3e2](https://github.com/batuta-ai/core/commit/576c3e24a3ca5e0d4e8542152a8eaf9191380659))
+* align operator documentation with verified review behavior ([bfd8bde](https://github.com/batuta-ai/core/commit/bfd8bde38260a6f19a5d448aebcf2905f2521e88))
+* bind correction proposals to full approved contract and durable ([d54fa6e](https://github.com/batuta-ai/core/commit/d54fa6ede4fc4880e844740e3265b6ea268ef689))
+* bind post-delivery review to immutable delivery identity ([59120cb](https://github.com/batuta-ai/core/commit/59120cb8c94a906a29db6016671c2038db816a03))
+* bound cancellation and reconcile nested review process cleanup ([9768c0b](https://github.com/batuta-ai/core/commit/9768c0b321ab863ae4f625698bfd2835bb7ec4b8))
+* bound intervention and bind answers to their question ([e773408](https://github.com/batuta-ai/core/commit/e773408b56f0c15bcc2b917574343f2595fcdc3b))
+* correct remaining operator claims and record direct documentation ([8e453bd](https://github.com/batuta-ai/core/commit/8e453bd8ebb61699a7290ec948a8cccbfe1b2f57))
+* describe actual evidence and cancellation semantics ([1198346](https://github.com/batuta-ai/core/commit/1198346b4b15450aa2d85ca54c66950f0fdb79af))
+* enforce ACP permission outcomes without implicit approval ([def8060](https://github.com/batuta-ai/core/commit/def80609835ddb3b815139cf824d0a606878e93d))
+* expose bounded dispatch for interactive skills ([d565bbf](https://github.com/batuta-ai/core/commit/d565bbf3f765d82a6ef599a185e55498b173cda9))
+* expose opt-in local supervision and actionable notifications ([fc2aa1b](https://github.com/batuta-ai/core/commit/fc2aa1b9715905736dcdcc36064e88baa595cf22))
+* honor recorded task dispatch reconciliation requirements ([58f45d5](https://github.com/batuta-ai/core/commit/58f45d5026ac5e49e1cea735dee644156ec74295))
+* implement bounded ACP JSON-RPC communication ([3d5f2f2](https://github.com/batuta-ai/core/commit/3d5f2f2640d97cbb0a63adcb7eeb88631227a71f))
+* implement configured ACP task sessions and result mapping ([1547677](https://github.com/batuta-ai/core/commit/15476771088923df3ea20df6366aa52ff0953241))
+* integrate independent verifier submission uncertainty ([5fa6c2b](https://github.com/batuta-ai/core/commit/5fa6c2b0b33aca21dcd4e5effae29438c2af888b))
+* integrate supervisor persistence and authorized resume with ([87c806f](https://github.com/batuta-ai/core/commit/87c806ff0b6f301baa47626f7847501dcc784e2e))
+* introduce a backend seam without changing CLI execution ([3c52f5a](https://github.com/batuta-ai/core/commit/3c52f5a2d7ad8103afe03c92d09d2c8756d82ee7))
+* make cancellation and historical receipt regressions discriminating ([61ce7ba](https://github.com/batuta-ai/core/commit/61ce7baf525a7615a1de62f30abede82f22d9453))
+* make review ownership acquisition cancelable ([ac89f55](https://github.com/batuta-ai/core/commit/ac89f55b92349b912d0bfcb9bb22e5d851cb8612))
+* observe delivery events with durable deduplication ([0cfd580](https://github.com/batuta-ai/core/commit/0cfd58087e35e075cdf64105cb7d1f82bf6b658a))
+* persist dispatch identity and prevent uncertain replay ([cab91e9](https://github.com/batuta-ai/core/commit/cab91e971190d15633f348f8d40652673bf1c348))
+* preserve a valid current proposal when processing an older receipt ([57b11d4](https://github.com/batuta-ai/core/commit/57b11d4e9e0c442ee736c3d3fa5b121f9550d050))
+* preserve completed answers and strengthen recovery fixtures ([bb84f15](https://github.com/batuta-ai/core/commit/bb84f155ed76e9d00c1f57e458d3f90567d20ba8))
+* preserve task timeout classification across transports ([a361484](https://github.com/batuta-ai/core/commit/a361484a2e9f05f3a566f7cf0a0862099bc4b43d))
+* prove CLI review wiring and production failure outcomes ([013620f](https://github.com/batuta-ai/core/commit/013620fdfd27df4eb20d6c809c34dc3d53cc5bd4))
+* recover an existing correction reservation after evidence ([1623e6a](https://github.com/batuta-ai/core/commit/1623e6aaf121046eb415af2eaf678fd74b861cce))
+* recover durable answers after ownership stop errors and prove CLI ([b6f8023](https://github.com/batuta-ai/core/commit/b6f80239496cf8f6b2649b3f370472907dec087f))
+* recover final bookkeeping identity despite commit trailers ([37ba4ef](https://github.com/batuta-ai/core/commit/37ba4ef83a556103a51134b42947a7fb561d70b5))
+* report review outcomes and bound follow-up corrections ([ae6273b](https://github.com/batuta-ai/core/commit/ae6273bff5e2b05786b69dc3d99f7762acda866f))
+* select qualified ACP backends while preserving CLI adapters ([33ed3cf](https://github.com/batuta-ai/core/commit/33ed3cfb0202243b4eaf740637c8af69bf15268b))
+* separate prompt lifetime and inbound response capacity ([231cd3f](https://github.com/batuta-ai/core/commit/231cd3f6ac20f119601190d5a035a4ad2cd7b6e8))
+* verify cancellation and owned subprocess shutdown ([50c0e4f](https://github.com/batuta-ai/core/commit/50c0e4fc13ec1985ca38fe544ca2556e33368bc9))
+* wire optional ACP into attempts and independent verification ([d70c992](https://github.com/batuta-ai/core/commit/d70c99230fc1034fe3f9b9e2f865b68d9443913f))
+
+
+### Bug Fixes
+
+* **acp:** preserve configuration and permission wire order ([ed64237](https://github.com/batuta-ai/core/commit/ed64237a497a24b9eaed96c296a70b82752167ee))
+
 ## [1.1.0-beta.21](https://github.com/batuta-ai/core/compare/v1.1.0-beta.20...v1.1.0-beta.21) (2026-09-08)
 
 
