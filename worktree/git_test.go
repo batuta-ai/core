@@ -130,6 +130,59 @@ func TestWorktreeLifecycle(t *testing.T) {
 	}
 }
 
+func TestEnsureExcludedSupervisionPreservesForeignState(t *testing.T) {
+	ctx := context.Background()
+	p, _ := initRepo(t)
+	write := func(path, content string) {
+		t.Helper()
+		full := filepath.Join(p.Root, path)
+		if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const tracked = ".batuta/reviews/supervision/tracked.md"
+	write(tracked, "original\n")
+	if _, err := p.Commit(ctx, "chore: tracked review", tracked); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := p.EnsureExcluded(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exclude, err := os.ReadFile(filepath.Join(p.Root, ".git", "info", "exclude"))
+	if err != nil || strings.Count(string(exclude), ".batuta/reviews/supervision/\n") != 1 {
+		t.Fatalf("supervision exclusion must appear once: %s, %v", exclude, err)
+	}
+	write(".batuta/reviews/supervision/job/snapshot/file.txt", "owned snapshot\n")
+	write(".batuta/reviews/supervision/job/job.json", "owned job\n")
+	write(".batuta/runs/supervision/delivery.json", "owned cursor\n")
+	status, err := p.Status(ctx, p.Root, false)
+	if err != nil || len(status) != 0 {
+		t.Fatalf("runtime artifacts dirty tree: %v, %v", status, err)
+	}
+	write(tracked, "changed\n")
+	write("README.md", "staged foreign edit\n")
+	if _, err := p.run(ctx, p.Root, "add", "README.md"); err != nil {
+		t.Fatal(err)
+	}
+	write("foreign.txt", "untracked\n")
+	write(".batuta/reviews/foreign.md", "unrelated review\n")
+	write(".batuta/reviews/supervision-other/file.txt", "unrelated directory\n")
+	write(".batuta/foreign.txt", "unrelated state\n")
+	status, err = p.Status(ctx, p.Root, false)
+	want := []string{
+		" M " + tracked, "M  README.md", "?? .batuta/foreign.txt",
+		"?? .batuta/reviews/foreign.md", "?? .batuta/reviews/supervision-other/file.txt", "?? foreign.txt",
+	}
+	if err != nil || strings.Join(status, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("foreign state hidden: %v, %v; want %v", status, err, want)
+	}
+}
+
 func TestCommitRecordsBookkeepingAtTheRoot(t *testing.T) {
 	ctx := context.Background()
 	p, base := initRepo(t)

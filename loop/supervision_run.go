@@ -85,6 +85,11 @@ func (r *Runner) runSupervised(ctx context.Context, config SuperviseOptions) (st
 	config.Once = true
 	if config.Execution != nil {
 		execution := *config.Execution
+		// The continuation and its observer must share this lock when they
+		// inherit the foreground writer; independent wrappers do not serialize it.
+		if execution.Stdout == r.opts.Stdout {
+			execution.Stdout = r.out
+		}
 		child := passive
 		child.Observer = config.Observer
 		execution.Supervisor = &child
