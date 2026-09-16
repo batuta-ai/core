@@ -10,14 +10,50 @@ Os hosts usam o binário deste módulo em vez de reimplementar essas regras.
 
 ```text
 batuta loop --dry-run [<plano>]        mostra ondas e executores sem executar
+batuta dispatch --brief-file <arquivo> --executor <id> --model <id> --cwd <worktree>
+                                       executa uma tentativa externa limitada
 batuta loop [<plano>]                  executa um plano aprovado
 batuta loop --resume <entrega>         continua uma entrega interrompida
 batuta loop --answer <tarefa> "<texto>" responde uma tarefa aguardando entrada
+batuta loop --supervise <entrega> --cursor <caminho-absoluto>
+                                       observa localmente em primeiro plano, sem consultar modelo
 batuta loop --dashboard [<entrega>]    imprime um retrato TSV da entrega
 batuta review --base <ref> [--spec <plano>] revisa uma entrega pelos adaptadores
 batuta watch [<entrega>]               abre o painel interativo ao vivo
 batuta trail [<entrega>]               mostra os registros do diário
 ```
+
+`dispatch` e `loop` aceitam `--transport cli|acp|auto`; sem a opção, o caminho
+CLI legado continua sendo o padrão. ACP exige qualificação exata por executor,
+versão, plataforma, modelo e esforço; o binário padrão ainda não inclui
+lançamentos ACP aprovados. Uma tentativa ACP incerta é preservada para
+reconciliação e nunca é repetida automaticamente via CLI. Subagentes nativos
+pertencem ao host interativo, não ao binário. Consulte
+[dispatch](docs/dispatch.md) e o
+[protocolo de medição](docs/dispatch-measurement.md).
+
+A [supervisão do loop](docs/loop-supervision.md) acompanha uma entrega explícita
+com cursor durável. O host precisa manter o processo em execução; notificações
+por arquivo local ou desktop compatível são opt-in, e sem um destino os eventos
+permanecem não lidos. A observação não faz chamadas a modelos. Após a conclusão,
+o supervisor executa uma revisão completa da entrega imutável mesmo sem
+`--policy`; concluir apenas o loop comum não inicia essa revisão. Uma política
+pode fornecer a resposta fixa e limitada ao escopo da tarefa e retomá-la com as
+configurações normais de execução, ou reservar uma proposta de correção
+explicitamente autorizada. A conclusão após a retomada inicia a mesma revisão
+automática; propostas de correção nunca iniciam um executor. Conclusão da implementação,
+resultado da revisão e aceitação pelo condutor são estados distintos. `job.json`,
+a cópia imutável da especificação e o snapshot do código ficam em
+`.batuta/reviews/supervision/<job-id>/`; somente a saída do motor fica no
+subdiretório `artifacts/`. A CLI de supervisão não oferece uma opção de timeout
+da revisão, portanto usa o padrão fixo de uma hora. Cancelamento ou timeout
+enquanto aguarda a aquisição da posse retorna um erro sem transição do job. Uma
+interrupção da sondagem ou do snapshot resulta em `failed`/`execution_failed`. Cancelamento ou
+timeout enquanto o motor está em execução resulta em
+`uncertain`/`cleanup_unresolved`, sem repetição automática; a verificação após a
+saída do motor pode resultar em `failed`/`execution_failed`. A recuperação de um
+estado durável `launching` resulta em `uncertain`, pode deixar o resultado sem
+valor e não repete a execução automaticamente.
 
 Quando um limite de uso dura além do orçamento de espera, o loop recorre ao
 próximo runtime executável sem gastar uma nova tentativa nem uma escalação.

@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/inventory/adapters"
@@ -41,10 +42,12 @@ Usage:
   batuta capabilities
   batuta inventory [--workspace <dir>] [--timeout <duration>]
   batuta doctor    [--workspace <dir>] [--json] [--timeout <duration>]
-  batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [<plan>]
+  batuta dispatch  --brief-file <path> --executor <id> --model <id> [--effort <value>] --cwd <worktree> [--transport cli|acp|auto] [--timeout 45m]
+  batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [--transport cli|acp|auto] [<plan>]
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
+  batuta loop      --supervise <delivery> --cursor <absolute-path> [--once] [--interval 500ms] [--notify desktop|<absolute-directory>] [--policy <path>]
   batuta watch     [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
   batuta review    [--base <ref>] [--worktree] [--spec <plan>] [--cohort-files N] [--parallel N] [--reviewer <executor/model>] [--full] [--out <dir>]
@@ -58,14 +61,53 @@ Usage:
 capabilities  The subcommands this binary ships, as JSON. Skills probe it
            before calling gate or loop; an older binary fails the probe.
 
+dispatch   One bounded external attempt, compact JSON and private artifacts in
+           the temporary directory. Exit 0 completed, 1 worker failed,
+           2 invalid/unavailable, 3 waiting_input, 4 rate_limited,
+           5 uncertain, 124 timed out, 130 interrupted. Evidence is retained;
+           uncertain work is never replayed. Run acceptance gates separately.
+           CLI is the default. ACP requires qualified runtime evidence;
+           this release has no qualified ACP launches. Auto falls back to CLI
+           before submission. Native tools belong to the interactive host.
+supervise  Foreground observation, then full review of a completed delivery.
+           Automatic review requires --supervise and runs after finalized done,
+           with or without --policy. Waiting makes no model calls; review evidence
+           needs conductor judgment and implementation completion is not acceptance.
+           --interval is bounded to 100ms..1m; Ctrl-C/SIGTERM stops cleanly.
+           --cursor persists unread events; --once performs one observation.
+           Each observation handles up to 32 events, with overflow in the cursor;
+           event output is bounded to 4 KiB. Continuous mode exits on completion.
+           Local sink calls have a five-second timeout.
+           --notify writes private event JSON to an existing local directory,
+           or uses installed desktop notifications on macOS/Linux. No sink or
+           failed delivery leaves events pending. Desktop delivery is at least
+           once across crashes; stable event IDs support sink deduplication.
+           --policy accepts bounded JSON actions: continue_approved_task for a
+           scoped worker answer and routed runner continuation, or propose_correction
+           after operator judgment of
+           FIX_BEFORE_SHIP/REWORK. Without policy, review still runs but no answer
+           or correction is authorized. Review uses a fixed one-hour timeout;
+           ownership-wait interruption returns before a job transition, while
+           probe or snapshot interruption is failed/execution_failed. Cancellation
+           or timeout while the engine runs is uncertain/cleanup_unresolved;
+           post-exit verification may be failed/execution_failed. Recovery from
+           durable launching is uncertain with no outcome necessarily set. Neither
+           uncertain case is replayed automatically; descendant cleanup is not
+           claimed when the host cannot verify it. job.json, the spec and source
+           are under .batuta/reviews/supervision/<job-id>/; engine output is in its
+           artifacts/ subdirectory. No background service
+           is installed; the process must remain running. Local output does not
+           promise an asynchronous chat notification.
+
 loop       The mechanical conductor over an approved plan
-           (.batuta/plan-<slug>.md): routing from .batuta/routing.md, one
+           (.batuta/plans/<slug>.md): routing from .batuta/routing.md, one
            executor session per task in its own worktree through the
            adapter, the four gates, retry then escalation, one commit per
            task integrated onto the checked-out branch, everything
            journaled under .batuta/journal/. Exit 0 when every task
            integrated; 2 blocked; 3 waiting for an answer; 4 waiting for
-           an approved roadmap plan; 130 canceled.
+           an approved roadmap plan; 130 canceled. --transport selects the
+           task transport (default cli); verification stays independently CLI.
 watch      Live dashboard of a delivery (the most recent open one by
            default). --interval sets the journal poll interval; --once prints a
            snapshot; --lang selects labels; --ascii uses ASCII borders and
@@ -80,6 +122,7 @@ trail      One line per journal record of a delivery (the latest by
 review     Read-only, cohort-based delivery review through the configured
            executor adapter. Writes manifest.json, findings.json, review.md
            and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK.
+           The cohort driver uses CLI independently of dispatch transport.
 
 inventory  Redacted snapshot of the executor CLIs installed on this machine
            (codex, opencode, cursor-agent, claude, agy, compozy): versions,
@@ -115,6 +158,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runInventory(args[1:], stdout)
 	case "doctor":
 		return runDoctor(args[1:], stdout)
+	case "dispatch":
+		return runDispatch(args[1:], stdout, stderr)
 	case "loop":
 		return runLoop(args[1:], stdout, stderr)
 	case "watch":
@@ -150,7 +195,7 @@ func version() string {
 
 // commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "doctor", "gate", "inventory", "loop", "review", "roadmap", "trail", "version", "watch"}
+var commands = []string{"capabilities", "dispatch", "doctor", "gate", "inventory", "loop", "review", "roadmap", "trail", "version", "watch"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
@@ -466,11 +511,86 @@ type ExitError struct {
 
 func (e *ExitError) Error() string { return "delivery " + e.State }
 
+func runDispatch(args []string, stdout, stderr io.Writer) error {
+	report := executor.DispatchReport{ExitClass: "invalid_arguments", ExitCode: 2, WorkerExitCode: -1,
+		Receipt: executor.Receipt{Submission: executor.Submission{State: executor.SubmissionNotSubmitted}, Transport: executor.Transport{Outcome: executor.TransportNotStarted}, Worker: executor.WorkerClaim{Outcome: executor.WorkerClaimUnknown}}}
+	finish := func(err error) error {
+		if err != nil {
+			fmt.Fprintln(stderr, "dispatch:", err)
+			if report.ExitCode == 0 {
+				report.ExitClass, report.ExitCode = "uncertain", 5
+			}
+		}
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			return err
+		}
+		if report.ExitCode != 0 {
+			return &ExitError{Code: report.ExitCode, State: report.ExitClass}
+		}
+		return nil
+	}
+	flags := flag.NewFlagSet("dispatch", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	briefFile := flags.String("brief-file", "", "brief file (at most 1 MiB)")
+	executorID := flags.String("executor", "", "external executor adapter ID")
+	model := flags.String("model", "", "explicit model ID")
+	effort := flags.String("effort", "", "reasoning effort")
+	cwd := flags.String("cwd", "", "worktree directory")
+	transport := flags.String("transport", "cli", "cli, acp or auto (no headless native tools)")
+	timeout := flags.Duration("timeout", 45*time.Minute, "time budget for the single attempt")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return finish(err)
+	}
+	if flags.NArg() != 0 || *briefFile == "" || *executorID == "" || *model == "" || *cwd == "" || *timeout <= 0 {
+		return finish(errors.New("dispatch requires --brief-file, --executor, --model, --cwd, a positive timeout and no positional arguments"))
+	}
+	if err := executor.ValidateTransport(*transport); err != nil {
+		return finish(err)
+	}
+	directory, err := filepath.Abs(*cwd)
+	if err != nil {
+		return finish(err)
+	}
+	info, err := os.Stat(*briefFile)
+	if err != nil {
+		return finish(err)
+	}
+	if !info.Mode().IsRegular() || info.Size() > 1<<20 {
+		return finish(errors.New("dispatch brief must be a regular file of at most 1 MiB"))
+	}
+	file, err := os.Open(*briefFile)
+	if err != nil {
+		return finish(err)
+	}
+	brief, readErr := io.ReadAll(io.LimitReader(file, (1<<20)+1))
+	if err := errors.Join(readErr, file.Close()); err != nil {
+		return finish(err)
+	}
+	skills, err := loop.FindSkills(directory, "")
+	if err != nil {
+		return finish(err)
+	}
+	adapter, err := executor.LoadAdapter(skills, *executorID)
+	if err != nil {
+		return finish(err)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	report, err = executor.Dispatch(ctx, executor.DispatchOptions{Adapter: adapter,
+		Request:   executor.Request{Brief: string(brief), Cwd: directory, Model: *model, Effort: *effort},
+		Transport: executor.TransportBackend{Mode: *transport}, Timeout: *timeout})
+	return finish(err)
+}
+
 func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	flags := flag.NewFlagSet("loop", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	workspace := flags.String("workspace", "", "repository root (default: current directory)")
 	skills := flags.String("skills", "", "batuta skill directory holding adapters/ and templates/ (default: auto-detected)")
+	transport := flags.String("transport", "cli", "task transport: cli, acp or auto; verifier remains independent CLI")
 	dryRun := flags.Bool("dry-run", false, "show the waves, executors and worktrees; run nothing")
 	roadmap := flags.Bool("roadmap", false, "run the phases in .batuta/roadmap.md in order")
 	resume := flags.String("resume", "", "continue a delivery from its journal")
@@ -478,6 +598,11 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
 	dashboard := flags.Bool("dashboard", false, "print the state of the open deliveries as TSV")
 	watch := flags.Bool("watch", false, "redraw a live dashboard until the delivery ends")
+	supervise := flags.String("supervise", "", "observe one explicit delivery in the foreground")
+	cursor := flags.String("cursor", "", "absolute durable supervision cursor path, outside the journal")
+	once := flags.Bool("once", false, "observe supervision once, then exit")
+	notify := flags.String("notify", "", "local sink: desktop or an existing absolute directory (default: leave unread)")
+	policy := flags.String("policy", "", "explicit scoped supervision policy JSON file")
 	interval := flags.Duration("interval", 500*time.Millisecond, "journal poll interval")
 	parallel := flags.Int("parallel", 0, "executors per wave, at most 4 (default: the profile's Execution line)")
 	taskTimeout := flags.Duration("task-timeout", 45*time.Minute, "time budget per executor session")
@@ -490,7 +615,95 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	if err := executor.ValidateTransport(*transport); err != nil {
+		return err
+	}
+	executionOptions := func() loop.Options {
+		return loop.Options{
+			Transport: &executor.TransportBackend{Mode: *transport},
+			Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
+			MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
+			Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
+				root, err := workspaceRoot(*workspace)
+				if err != nil {
+					return inventory.InventorySnapshot{}, err
+				}
+				probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+				defer cancel()
+				snapshot, _, err := collect(probeCtx, root)
+				return snapshot, err
+			},
+		}
+	}
 	rest := flags.Args()
+	if *supervise != "" {
+		var conflict string
+		flags.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "supervise", "workspace", "cursor", "once", "notify", "policy", "interval":
+			case "skills", "transport", "parallel", "task-timeout", "test-timeout", "max-waves", "keep-worktrees", "max-limit-waits", "limit-horizon", "limit-wait":
+				if *policy == "" {
+					conflict = f.Name
+				}
+			default:
+				conflict = f.Name
+			}
+		})
+		if conflict != "" || len(rest) > 0 {
+			return errors.New("--supervise accepts observer flags and, with --policy, runner execution settings")
+		}
+		if !filepath.IsAbs(*cursor) {
+			return errors.New("--supervise requires --cursor with an absolute durable path")
+		}
+		root, err := workspaceRoot(*workspace)
+		if err != nil {
+			return err
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		opts := loop.SuperviseOptions{Observer: loop.SupervisionOptions{Workspace: root, Delivery: *supervise, CursorPath: *cursor}, Interval: *interval, Once: *once, Output: stdout}
+		opts.Review = &loop.SupervisionReviewOptions{Executable: executable}
+		if *notify == "desktop" {
+			opts.Sink = loop.NewSupervisionDesktopSink()
+		} else if *notify != "" {
+			if !filepath.IsAbs(*notify) {
+				return errors.New("--notify requires desktop or an existing absolute local directory")
+			}
+			opts.Sink = loop.SupervisionFileSink{Directory: *notify}
+		}
+		if *policy != "" {
+			opts.Policy, err = loop.LoadSupervisionPolicy(*policy)
+			if err != nil {
+				return err
+			}
+		}
+		if opts.Policy != nil && opts.Policy.Action == loop.SupervisionContinueApprovedTask {
+			execution := executionOptions()
+			execution.Workspace = root
+			execution.Skills, err = loop.FindSkills(root, *skills)
+			if err != nil {
+				return err
+			}
+			// Keep the supervisor output as JSON; worker output has its own stream.
+			execution.Stdout = stderr
+			opts.Execution = &execution
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return loop.Supervise(ctx, opts)
+	}
+	var supervisionFlag string
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "supervise", "cursor", "once", "notify", "policy":
+			supervisionFlag = f.Name
+		}
+	})
+	if supervisionFlag != "" {
+		return fmt.Errorf("--%s requires --supervise <delivery>", supervisionFlag)
+	}
 	if *roadmap && (*dashboard || *watch || *abandon != "" || (len(rest) > 0 && *answer == "")) {
 		return errors.New("--roadmap runs .batuta/roadmap.md; it cannot be combined with a plan, --dashboard, --watch or --abandon")
 	}
@@ -510,20 +723,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	if *watch {
 		return errors.New("--watch requires --dashboard")
 	}
-	opts := loop.Options{
-		Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
-		MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
-		Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
-			root, err := workspaceRoot(*workspace)
-			if err != nil {
-				return inventory.InventorySnapshot{}, err
-			}
-			probeCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
-			defer cancel()
-			snapshot, _, err := collect(probeCtx, root)
-			return snapshot, err
-		},
-	}
+	opts := executionOptions()
 	if *roadmap && *dryRun {
 		return loop.DryRunRoadmap(opts)
 	}

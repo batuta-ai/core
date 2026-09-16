@@ -30,31 +30,65 @@ The module is **pre-release**: `v1.1.0-beta.N` until the API stabilizes.
 | `repository` | guarded repository bootstrap: `.gitignore`-aware, blocks unignored sensitive paths, one `chore: initialize workspace` commit |
 | `journal` | append-only, hash-chained JSONL per delivery under `.batuta/journal/`; every record carries the graph after the transition, so `--resume` continues from the last one |
 | `worktree` | `git worktree` per task attempt under `.batuta/worktrees/`, squash to one commit, bookkeeping commits, `.git/info/exclude` |
-| `executor` | adapter frontmatter (`skills/batuta/adapters/*.md`) to argv — never a shell — subprocess with stdin closed, timeout and process-group kill, `finished` and `limit_regex` rules |
+| `executor` | adapter frontmatter to argv, legacy CLI execution, and opt-in qualified ACP sessions with compact receipts and verified shutdown — see [docs/dispatch.md](docs/dispatch.md) |
 | `gates` | the four mechanical gates: finished · tree · tests · verify (scope, proofs, independent read-only verifier) |
 | `loop` | `batuta loop`: the mechanical conductor over `routing.DeliveryGraph` on file hosts — see [docs/loop.md](docs/loop.md) |
 | `review` | `batuta review`: cohort-based, read-only delivery review with a mechanical verdict — see [docs/review.md](docs/review.md) |
 
-No package imports a daemon SDK. Everything runs over `git`, `gh` and the
-executor CLIs through `publication.CommandRunner`.
+No package imports a daemon SDK. Native host children remain host-owned. Core
+runs external executors through the legacy CLI or its bounded ACP client.
 
 ## The binary
 
-`batuta version` · `capabilities` · `inventory` · `doctor` · `loop` · `trail`.
+`batuta version` · `capabilities` · `inventory` · `doctor` · `dispatch` · `loop` · `trail`.
 Skills probe `batuta capabilities` before calling a subcommand.
 
 ```
 batuta loop --dry-run [<plan>]          waves, executors, worktrees; runs nothing
+batuta dispatch --brief-file <path> --executor <id> --model <id> --cwd <worktree>
+                                        one bounded external attempt; CLI by default
 batuta loop --roadmap [--dry-run]       run the approved roadmap delivery
 batuta loop [<plan>]                    run the approved plan to a terminal state
 batuta loop --resume <delivery>         continue after an interruption
 batuta loop --answer <task> "<text>"    answer a parked task and continue
 batuta loop --abandon <delivery>        close a delivery; ticks what integrated
+batuta loop --supervise <delivery> --cursor <absolute-path>
+                                        foreground local observation; no model polling
 batuta loop --dashboard [<delivery>]    one TSV snapshot of delivery state
 batuta review --base <ref> [--spec <plan>] review a delivery through adapters
 batuta watch [<delivery>]               live panel dashboard (watch by default)
 batuta trail [<delivery>]               one line per journal record
 ```
+
+Both `dispatch` and `loop` accept `--transport cli|acp|auto`; omission keeps
+the legacy CLI path. ACP requires exact per-executor/version/platform/model
+qualification. The stock command has no approved ACP launches. Uncertain ACP
+work is preserved for reconciliation and never replayed through CLI
+automatically. Native subagents are selected by interactive hosts, not by this
+binary. See [dispatch](docs/dispatch.md) and the
+[measurement protocol](docs/dispatch-measurement.md).
+
+Foreground [loop supervision](docs/loop-supervision.md) watches one explicit
+delivery with a durable cursor. It requires a process kept alive by the host;
+local file and supported desktop notifications are opt-in, and no sink leaves
+events durably unread. Observation makes zero model calls. After completion,
+the supervisor runs a full review of the immutable delivery even without
+`--policy`; ordinary loop completion alone does not run it. A policy can provide
+the fixed scoped worker answer and resume its assigned task with normal routed
+execution settings, or reserve an explicitly authorized correction proposal.
+A resumed completion enters the same automatic review; correction proposals
+never start a runner. Implementation completion and review outcome remain separate from
+conductor acceptance. `job.json`, the immutable spec copy, and the source
+snapshot are under `.batuta/reviews/supervision/<job-id>/`; only engine output
+is in its `artifacts/` subdirectory.
+The supervision CLI has no review-timeout flag, so its review timeout is fixed
+at the one-hour default. Cancellation or timeout while waiting for review
+ownership returns an error without a job transition. An interrupted probe or
+snapshot is `failed`/`execution_failed`. Cancellation or timeout while the
+engine runs is `uncertain`/`cleanup_unresolved` and is not replayed
+automatically. Post-exit verification can instead be `failed`/`execution_failed`.
+Recovery from a durable `launching` state is `uncertain`; its outcome may remain
+unset, and it is not replayed automatically.
 
 When a usage limit outlasts the wait budget, the loop falls back to the next
 executable runtime without spending a retry or escalation.
@@ -73,7 +107,8 @@ redirected output readable.
 
 - `batuta loop --roadmap [--dry-run]`: the roadmap delivery runner.
 - `cmd/batuta gate <name>`: the gates as standalone subcommands for the interactive skill.
-- Token accounting for CLI executors that report it.
+- Delivery-level token budgeting; optional ACP receipt counters are retained
+  for the external matched-pair measurement protocol.
 
 ## Develop
 

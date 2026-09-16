@@ -31,6 +31,7 @@ type Adapter struct {
 	LimitRegex      string
 	CwdFlag         string
 	BriefLimitLines int
+	ACP             *ACPLaunch
 	Fields          map[string]string
 }
 
@@ -111,6 +112,15 @@ func ParseAdapter(payload []byte) (Adapter, error) {
 		ModelFlags: fields["model_flags"], Readonly: fields["readonly"], Available: fields["available"],
 		Models: fields["models"], Finished: fields["finished"], LimitRegex: fields["limit_regex"],
 		CwdFlag: fields["cwd_flag"], BriefLimitLines: 100, Fields: fields,
+	}
+	for _, key := range []string{"acp_run", "acp_version", "acp_model_config", "acp_effort_config"} {
+		if _, present := fields[key]; present {
+			adapter.ACP = &ACPLaunch{Run: fields["acp_run"], Version: fields["acp_version"], ModelConfigID: fields["acp_model_config"], EffortConfigID: fields["acp_effort_config"]}
+			if _, err := adapter.acpCommand(); err != nil {
+				return Adapter{}, fmt.Errorf("%w: invalid ACP launch metadata", ErrAdapterInvalid)
+			}
+			break
+		}
 	}
 	if raw, present := fields["brief_limit_lines"]; present {
 		limit, err := strconv.Atoi(raw)

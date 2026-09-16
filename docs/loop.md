@@ -1,12 +1,14 @@
 # `batuta loop` — the mechanical conductor on file hosts
 
-`batuta loop` runs an approved plan (`.batuta/plan-<slug>.md`) without a
+`batuta loop` runs an approved plan (`.batuta/plans/<slug>.md`) without a
 model in the conductor's seat. It is the Ralph loop of the
 beer-and-code-harness driven by the core delivery graph instead of a phase
 list, with the same invariants:
 
-1. Every task and every fix cycle runs in a **new executor session** with a
-   self-contained brief. Nothing is reused across sessions.
+1. Every task and every fix cycle runs in a **new external executor session**
+   with a self-contained brief. The transport is the legacy CLI or a qualified
+   ACP session; native host children are not available to the headless loop.
+   Nothing is reused across sessions.
 2. **Zero questions** by default. An executor that must stop prints one
    `BATUTA-QUESTION: <text>` line; the task parks and the run ends with
    `waiting_input` until `--answer` brings the text back.
@@ -49,7 +51,7 @@ loop        AdmitReadyWave → BeginWaveAttempts → attempts in parallel (at
             most 4, `Execution:` line or --parallel) → settle every wave
             that holds candidates → repeat until done, blocked or waiting
 attempt     worktree at the attempt's base → optional Install: → brief →
-            executor via adapter → gates → squash to one conventional
+            executor via selected external transport → gates → squash to one conventional
             commit → integration.GitClient.Candidate → RecordCandidate
             (or RecordFailureWithPolicy: retry same runtime in the same
             worktree with the failure as feedback, then one escalation in
@@ -69,7 +71,15 @@ When the delivery reaches `done`, run
 `batuta review --spec .batuta/plans/done/<slug>.md`. Resolve any review verdict
 that is not `SHIP`, then open the pull request and attach or link the review
 artefacts. The review is the delivery-level gate between the completed loop and
-the PR; see [review.md](review.md) for its contract.
+the PR; see [review.md](review.md) for its contract. An explicitly running
+foreground supervisor performs this full review automatically against the
+recorded final commit and original base/spec; ordinary `batuta loop` completion
+alone does not. Review runs without a policy. Its durable outcome still awaits
+conductor judgment: implementation may be complete, but acceptance remains
+pending, and SHIP does not authorize publication. Explicitly authorized
+correction proposals inherit a bounded chain budget and require the conductor
+to create a new delivery.
+See [loop-supervision.md](loop-supervision.md) for policy and notification details.
 
 ## Standalone gates
 
@@ -95,6 +105,14 @@ exit `1` with the reason on stderr.
 
 ## Decisions
 
+- **External transport is opt-in.** `--transport cli|acp|auto` selects the
+  task transport and defaults to `cli`. `acp` fails before submission when no
+  exact qualification exists. `auto` can fall back to CLI before submission,
+  but never after an ACP prompt may have run. Native host dispatch belongs to
+  an interactive host and is not a loop transport. The independent verifier
+  remains a separate CLI session regardless of task transport. See
+  [dispatch.md](dispatch.md).
+
 - **Journal authority.** On file hosts the delivery journal is the single
   source of truth for a delivery; `--resume` loads the last record's graph
   and verifies the chain. The routing ownership store
@@ -103,6 +121,25 @@ exit `1` with the reason on stderr.
   progress from executor sessions with `execution`, `criterion`, and
   `state` fields; the record timestamp is the event time, and the record
   carries the same graph as every other journal entry.
+- **Supervision is opt-in and foreground.**
+  `batuta loop --supervise <delivery> --cursor <absolute-path>` observes one
+  delivery with a durable outbox and no
+  model calls while waiting. An explicit `continue_approved_task` policy can
+  answer and resume its assigned task with normal runner settings; resumed
+  completion enters automatic review. Correction policies reserve a proposal
+  without starting a runner. A local file or desktop sink may be configured;
+  otherwise events remain unread. The process must remain running, and no chat
+  turn, remote message, or exactly-once notification is implied. See
+  [loop-supervision.md](loop-supervision.md) for lifecycle, policy, host-limit,
+  evidence, cancellation, and cost-accounting details. The CLI review timeout
+  is fixed at one hour: ownership-wait interruption returns before a job
+  transition, and pre-launch probe/snapshot interruption records
+  `failed`/`execution_failed`. Cancellation or timeout while the engine command
+  runs records `uncertain`/`cleanup_unresolved`; post-exit verification can
+  instead record `failed`/`execution_failed`. Recovery from a durable
+  `launching` state records `uncertain` without necessarily setting an outcome.
+  Neither uncertain case is replayed automatically, and unsupported hosts do
+  not claim verified descendant cleanup.
 - **Decisions may be task-scoped.** In `## Decisions and context`, a paragraph
   beginning with `**Task N.**` belongs only to task N; `**Tasks N–M.**` (also
   `N-M`, comma lists, and combinations) belongs to every named task. Unlabelled
@@ -112,8 +149,9 @@ exit `1` with the reason on stderr.
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
-- **Usage-limit fallback.** `--max-limit-waits` (default 20) bounds the waits
-  in one attempt. At that cap, or when a named reset is more than
+- **Usage-limit fallback.** The legacy CLI policy is unchanged:
+  `--max-limit-waits` (default 20) bounds the waits in one attempt. At that
+  cap, or when a named reset is more than
   `--limit-horizon` (default `2h`) away, the loop walks to the cell's next
   executable fallback, using the same cell walk as escalation. It reruns the
   brief in the same worktree with the same execution number and run ID;
@@ -127,6 +165,9 @@ exit `1` with the reason on stderr.
   runtime without incrementing retries or escalations. `--dry-run` lists the
   next limit fallback per task, or `none`. Proposal #54's separate **Limit
   fallback** routing-table column is deferred; no new column is required.
+  An ACP quota response after possible prompt submission is uncertain work,
+  not proof of non-execution, so the loop parks it for reconciliation without
+  a fallback, retry or escalation.
 - **Conflicts keep the same runtime.** A conflicting candidate re-executes on
   the new base with the same executor, model, and reasoning; escalation is
   reserved for verification failures.
@@ -226,14 +267,22 @@ exit `1` with the reason on stderr.
   the runner's clock and cancellable sleep, so tests can drive refreshes
   without waiting for wall time. Acquisition and takeover use the guard
   lock directly and have no timed retry loop.
+- **WORK.md is generated bookkeeping, not approval evidence.** At finalization,
+  the loop derives entries from the delivery summary and journal, writes them
+  with the plan ticks, and commits both once. A `done` entry records
+  implementation completion; review acceptance is a later, separate conductor
+  decision. Existing dirty managed files still fail loop preflight and must be
+  committed before a new delivery.
 - **User-authored command lines** (`Test:`, `Install:`, proofs) run through
   `sh -c` with stdin closed, a timeout and bounded output; they come from
   files the user wrote and approved. **Executor lines never see a shell**:
   the adapter's `run` is tokenized once, placeholders are substituted per
   token, and shell syntax in an adapter line is a parse error.
-- **Interrupted attempts** (a killed loop) are recorded as `stalled` with
-  blocker `interrupted` on `--resume`; the conducting policy then retries in
-  the same worktree.
+- **Interrupted attempts** (a killed loop) are recorded as `stalled` on
+  `--resume`. A legacy CLI attempt follows its existing retry policy in the
+  preserved worktree. An ACP intent that may have submitted blocks as
+  `submission_uncertain`; it is not replayed until the preserved work is
+  reconciled.
 - **Verifier.** The `low` row's executor of the task's domain when it
   differs from the one that wrote the diff, else the task's own adapter;
   invoked through the adapter's `readonly` line with the headless contract
@@ -337,7 +386,7 @@ and from the scope check, committed by the loop with the plan bookkeeping.
 | `.batuta/worktrees/<slug>-task-N-e<k>/` | no | per attempt; removed after integration or abort (`--keep-worktrees` keeps them) |
 | `.batuta/runs/<date>-<slug>-task-N.md` (+ `-e<k>.brief.md`, `-e<k>.out.log`) | no | per attempt |
 | `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` |
-| `WORK.md`, `.batuta/plans/<slug>.md` | yes | once, at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
+| `WORK.md`, `.batuta/plans/<slug>.md` | yes | generated from the terminal delivery summary and journal, once at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
 | `.batuta/plans/done/<slug>.md` | yes | when all tasks are done; the bookkeeping commit carries the plan move |
 
 Legacy `.batuta/plan-<slug>.md` plans remain readable for one release. The
@@ -347,7 +396,10 @@ from plan discovery.
 
 ## Not in this release
 
-- Token accounting: CLI executors do not report tokens, so the graph's
-  budget is unused; the wall budget is `--task-timeout` per session.
+- Delivery token budgeting or aggregation: ACP receipts can retain optional
+  provider-reported usage, but missing counters remain unknown and the graph
+  does not consume them. CLI executors do not report tokens. The wall budget
+  remains `--task-timeout` per session; paired measurement is described in
+  [dispatch-measurement.md](dispatch-measurement.md).
 - Cross-review with lenses (the skill's `/batuta-review`); the loop runs the
   independent verifier only.

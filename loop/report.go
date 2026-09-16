@@ -27,6 +27,7 @@ const kindFinalizing journal.Kind = "delivery_finalizing"
 const kindCleanup journal.Kind = "delivery_cleanup"
 
 type terminalDetail struct {
+	FinalCommit        string               `json:"final_commit,omitempty"`
 	Deletions          []worktree.ParkedRef `json:"pending_ref_deletions,omitempty"`
 	BookkeepingPending bool                 `json:"bookkeeping_pending,omitempty"`
 	BookkeepingError   string               `json:"bookkeeping_error,omitempty"`
@@ -57,7 +58,7 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 		if !r.opts.KeepWorktrees {
 			seen := map[string]bool{}
 			for _, wt := range r.worktrees {
-				if !seen[wt.Root] {
+				if !seen[wt.Root] && !r.uncertainWorktree(wt.Root) {
 					detail.Worktrees = append(detail.Worktrees, wt)
 					seen[wt.Root] = true
 				}
@@ -103,6 +104,9 @@ func (r *Runner) completeFinalization(ctx context.Context, detail terminalDetail
 	}
 	if detail.BookkeepingPending {
 		bookkeepingErr = r.bookkeeping(ctx, detail.State, detail.Summary)
+		if bookkeepingErr == nil && detail.State == StateDone {
+			detail.FinalCommit, bookkeepingErr = r.bookkeepingIdentity(ctx, detail.State, detail.Summary)
+		}
 		detail.BookkeepingPending = bookkeepingErr != nil
 		detail.BookkeepingError = errorString(bookkeepingErr)
 	}
@@ -177,10 +181,26 @@ func (r *Runner) deleteFinalizationRefs(ctx context.Context, detail *terminalDet
 	return nil
 }
 
+func (r *Runner) uncertainWorktree(root string) bool {
+	for _, task := range r.graph.Tasks {
+		if task.BlockerCode == blockerSubmissionUncertain {
+			for _, attempt := range task.Attempts {
+				if attempt.WorktreeRoot == root {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) error {
 	var retained []attemptWorktree
 	var cleanupErr error
 	for _, wt := range detail.Worktrees {
+		if r.uncertainWorktree(wt.Root) {
+			continue
+		}
 		if err := r.removeWorktree(ctx, wt.Root, wt.Branch); err != nil {
 			retained = append(retained, wt)
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("loop: retain worktree %s: %w", wt.Root, err))
@@ -488,11 +508,46 @@ func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary)
 	}); err != nil {
 		return fmt.Errorf("loop: stage plan bookkeeping: %w", err)
 	}
-	message := fmt.Sprintf("chore(batuta): %s — loop %s\n\n%d integrated, %d blocked. Delivery %s.\n", r.plan.Slug, state, len(summary.Integrated), len(summary.Blocked), r.delivery)
-	if _, err := r.git.Commit(ctx, message, "WORK.md"); err != nil {
+	if _, err := r.git.Commit(ctx, r.bookkeepingMessage(state, summary)+"\n", "WORK.md"); err != nil {
 		return fmt.Errorf("loop: bookkeeping commit: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) bookkeepingMessage(state string, summary Summary) string {
+	return fmt.Sprintf("chore(batuta): %s — loop %s\n\n%d integrated, %d blocked. Delivery %s.", r.plan.Slug, state, len(summary.Integrated), len(summary.Blocked), r.delivery)
+}
+
+// A retry after commit but before checkpoint may see a newer branch HEAD.
+// Recover only the unique delivery bookkeeping commit, never that moving HEAD.
+func (r *Runner) bookkeepingIdentity(ctx context.Context, state string, summary Summary) (string, error) {
+	message := r.bookkeepingMessage(state, summary)
+	result, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable: r.git.Git, Directory: r.root,
+		Args: []string{"log", "--format=%H%x00%B%x00%(trailers:only)%x00", "--fixed-strings", "--grep=Delivery " + r.delivery + ".", r.branch, "--"},
+	})
+	if err != nil || result.ExitCode != 0 || result.StdoutTruncated || result.StderrTruncated {
+		return "", errors.Join(errors.New("loop: cannot resolve final bookkeeping commit"), err)
+	}
+	fields := strings.Split(string(result.Stdout), "\x00")
+	var commit string
+	for i := 0; i+2 < len(fields); i += 3 {
+		body := strings.TrimSpace(fields[i+1])
+		if trailers := strings.TrimSpace(fields[i+2]); trailers != "" {
+			// Strip only Git-recognized trailers; all delivery content must match.
+			body = strings.TrimSuffix(body, "\n\n"+trailers)
+		}
+		if body == message {
+			if commit != "" {
+				return "", errors.New("loop: ambiguous final bookkeeping commit")
+			}
+			commit = strings.TrimSpace(fields[i])
+		}
+	}
+	if commit == "" {
+		return "", errors.New("loop: final bookkeeping commit is unknown")
+	}
+	return commit, nil
 }
 
 var (

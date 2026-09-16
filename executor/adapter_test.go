@@ -186,3 +186,24 @@ func TestLoadAdapterReadsFromTheSkillsRoot(t *testing.T) {
 		t.Fatal("LoadAdapter with a path should fail")
 	}
 }
+
+func TestAdapterOptionalACPMetadata(t *testing.T) {
+	legacy, err := ParseAdapter([]byte(codexAdapter))
+	if err != nil || legacy.ACP != nil {
+		t.Fatalf("legacy: %+v / %v", legacy.ACP, err)
+	}
+	payload := strings.Replace(codexAdapter, "name: codex", "name: codex\nacp_run: codex-acp\nacp_version: 1.11.0\nacp_model_config: model\nacp_effort_config: reasoning", 1)
+	adapter, err := ParseAdapter([]byte(payload))
+	if err != nil || adapter.ACP == nil {
+		t.Fatalf("metadata: %+v / %v", adapter.ACP, err)
+	}
+	if adapter.Name != legacy.Name || adapter.Run != legacy.Run || adapter.ACP.Run != "codex-acp" || adapter.ACP.Version != "1.11.0" || adapter.ACP.ModelConfigID != "model" || adapter.ACP.EffortConfigID != "reasoning" {
+		t.Fatalf("adapter: %+v", adapter)
+	}
+	for _, fields := range []string{"acp_run: codex-acp", "acp_version: 1.11.0", "acp_run: npx codex-acp\nacp_version: 1", "acp_run: codex\nacp_version: 1", "acp_run: codex-acp {brief}\nacp_version: 1"} {
+		bad := strings.Replace(codexAdapter, "name: codex", "name: codex\n"+fields, 1)
+		if _, err := ParseAdapter([]byte(bad)); err == nil {
+			t.Errorf("accepted invalid metadata: %s", fields)
+		}
+	}
+}

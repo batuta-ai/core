@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,21 @@ import (
 	"github.com/batuta-ai/core/routing"
 )
 
+func TestMain(m *testing.M) {
+	if len(os.Args) > 1 && (os.Args[1] == "capabilities" || os.Args[1] == "review") {
+		if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
+			var exit *ExitError
+			if errors.As(err, &exit) {
+				os.Exit(exit.Code)
+			}
+			fmt.Fprintln(os.Stderr, "batuta:", err)
+			os.Exit(1)
+		}
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
 func TestRunRequiresASubcommand(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run(nil, &stdout, &stderr); err == nil {
@@ -29,6 +45,193 @@ func TestRunRequiresASubcommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "Usage:") {
 		t.Fatalf("stderr = %q, want usage", stderr.String())
+	}
+}
+
+func TestDispatchWorker(t *testing.T) {
+	if os.Getenv("BATUTA_DISPATCH_FIXTURE") != "1" {
+		return
+	}
+	args := os.Args
+	for len(args) > 0 && args[0] != "--" {
+		args = args[1:]
+	}
+	if len(args) != 5 || args[2] != "chosen-model" || args[3] != "high" {
+		os.Exit(91)
+	}
+	cwd, _ := os.Getwd()
+	want, _ := filepath.EvalSymlinks(args[4])
+	if cwd != want {
+		os.Exit(92)
+	}
+	f, err := os.OpenFile("calls", os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		os.Exit(93)
+	}
+	f.WriteString("call\n")
+	f.Close()
+	fmt.Fprintln(os.Stderr, "worker stderr")
+	switch args[1] {
+	case "fail":
+		os.Exit(7)
+	case "question":
+		fmt.Println("BATUTA-QUESTION: choose a path?")
+	case "limit":
+		fmt.Println("usage limit reached")
+		os.Exit(1)
+	default:
+		fmt.Println("worker completed")
+	}
+	os.Exit(0)
+}
+
+func dispatchCommandFixture(t *testing.T, brief string) (string, []string) {
+	t.Helper()
+	root := t.TempDir()
+	skills := t.TempDir()
+	if err := os.Mkdir(filepath.Join(skills, "adapters"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	adapter := fmt.Sprintf("---\nname: fixture\nrun: '%s '-test.run=^TestDispatchWorker$' -- {brief} {model_flags} {cwd}'\nmodel_flags: '--unused'\nreadonly: unused\navailable: must-never-run\nmodels: must-never-run\nfinished: exit_code\nlimit_regex: usage limit reached\n---\n", "\""+os.Args[0]+"\"")
+	adapter = strings.Replace(adapter, "--unused", "{model} {effort}", 1)
+	if err := os.WriteFile(filepath.Join(skills, "adapters", "fixture.md"), []byte(adapter), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	briefPath := filepath.Join(root, "brief.md")
+	if err := os.WriteFile(briefPath, []byte(brief), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BATUTA_SKILLS", skills)
+	t.Setenv("BATUTA_DISPATCH_FIXTURE", "1")
+	return root, []string{"dispatch", "--brief-file", briefPath, "--executor", "fixture", "--model", "chosen-model", "--effort", "high", "--cwd", root}
+}
+
+func TestDispatchCommandReportsOneAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		brief, mode, class string
+		code               int
+	}{
+		{"success", "", "completed", 0}, {"success", "cli", "completed", 0},
+		{"success", "auto", "completed", 0}, {"fail", "cli", "failed", 1},
+		{"question", "cli", "waiting_input", 3}, {"limit", "auto", "rate_limited", 4},
+		{"success", "acp", "unavailable", 2},
+	} {
+		t.Run(tc.brief+tc.mode, func(t *testing.T) {
+			root, args := dispatchCommandFixture(t, tc.brief)
+			if tc.mode != "" {
+				args = append(args, "--transport", tc.mode)
+			}
+			var stdout, stderr bytes.Buffer
+			err := run(args, &stdout, &stderr)
+			var exit *ExitError
+			if tc.code == 0 && err != nil || tc.code != 0 && (!errors.As(err, &exit) || exit.Code != tc.code) {
+				t.Fatalf("exit = %v; stdout=%s stderr=%s", err, &stdout, &stderr)
+			}
+			var report struct {
+				ExitClass string `json:"exit_class"`
+				ExitCode  int    `json:"exit_code"`
+				Backend   string `json:"backend"`
+				Artifacts struct {
+					Directory string `json:"directory"`
+				} `json:"artifacts"`
+				Receipt executor.Receipt `json:"receipt"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+				t.Fatal(err, stdout.String())
+			}
+			if report.ExitClass != tc.class || report.ExitCode != tc.code || stdout.Len() > executor.ReceiptLimit || strings.Contains(stdout.String(), "worker completed") {
+				t.Fatalf("report = %s", &stdout)
+			}
+			if report.Artifacts.Directory == "" {
+				t.Fatal("missing evidence directory")
+			}
+			t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+			for _, name := range []string{"brief.md", "intent.json", "receipt.json", "stdout.log", "stderr.log"} {
+				info, err := os.Lstat(filepath.Join(report.Artifacts.Directory, name))
+				if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+					t.Fatalf("artifact %s: %v, %v", name, info, err)
+				}
+			}
+			persisted, err := os.ReadFile(filepath.Join(report.Artifacts.Directory, "receipt.json"))
+			if err != nil || !bytes.Equal(bytes.TrimSpace(persisted), bytes.TrimSpace(stdout.Bytes())) {
+				t.Fatalf("persisted report differs: %s, %v", persisted, err)
+			}
+			calls, err := os.ReadFile(filepath.Join(root, "calls"))
+			if tc.mode == "acp" {
+				if !os.IsNotExist(err) || report.Receipt.Submission.State != executor.SubmissionNotSubmitted {
+					t.Fatalf("ACP ran or lost non-submission: %s %+v", calls, report)
+				}
+			} else if err != nil || string(calls) != "call\n" || report.Backend != "cli" || report.Receipt.Submission.State != executor.SubmissionSubmitted {
+				t.Fatalf("attempts=%q, report=%+v, err=%v", calls, report, err)
+			}
+		})
+	}
+}
+
+func TestDispatchInvalidArgumentsNeverRunWorker(t *testing.T) {
+	for _, extra := range [][]string{
+		{"--transport", "native"}, {"--transport", "bogus"}, {"--transport", ""},
+		{"--executor", "../fixture"}, {"--executor", "native"}, {"--executor", "self"},
+		{"--model", ""}, {"--model", "default"}, {"--model", "--injected"},
+		{"--effort", "--injected"}, {"--cwd", "missing"}, {"--brief-file", "missing"},
+		{"--timeout", "0s"}, {"unexpected"}, {"--receipt-file", "victim"},
+	} {
+		t.Run(strings.Join(extra, " "), func(t *testing.T) {
+			root, args := dispatchCommandFixture(t, "success")
+			var stdout, stderr bytes.Buffer
+			err := run(append(args, extra...), &stdout, &stderr)
+			var exit *ExitError
+			if !errors.As(err, &exit) || exit.Code != 2 || !json.Valid(stdout.Bytes()) {
+				t.Fatalf("invalid request: %v %s", err, &stdout)
+			}
+			if _, err := os.Stat(filepath.Join(root, "calls")); !os.IsNotExist(err) {
+				t.Fatal("invalid request ran worker")
+			}
+		})
+	}
+}
+
+func TestDispatchMissingBinaryNeverRunsDiscoveryOrInstall(t *testing.T) {
+	root, args := dispatchCommandFixture(t, "success")
+	adapterPath := filepath.Join(os.Getenv("BATUTA_SKILLS"), "adapters", "fixture.md")
+	payload, err := os.ReadFile(adapterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = bytes.ReplaceAll(payload, []byte(os.Args[0]), []byte(filepath.Join(root, "not-installed")))
+	if err := os.WriteFile(adapterPath, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	var report struct {
+		ExitClass string `json:"exit_class"`
+		Artifacts struct {
+			Directory string `json:"directory"`
+		} `json:"artifacts"`
+	}
+	if err == nil || json.Unmarshal(stdout.Bytes(), &report) != nil || report.ExitClass != "unavailable" {
+		t.Fatalf("missing binary = %v %s", err, &stdout)
+	}
+	if report.Artifacts.Directory != "" {
+		t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	}
+	if _, err := os.Stat(filepath.Join(root, "calls")); !os.IsNotExist(err) {
+		t.Fatal("missing binary triggered worker")
+	}
+}
+
+func TestLoopTransportSelection(t *testing.T) {
+	for _, mode := range []string{"cli", "acp", "auto", "native", "bogus", ""} {
+		var stdout, stderr bytes.Buffer
+		err := run([]string{"loop", "--transport", mode, "--workspace", t.TempDir(), "--dry-run"}, &stdout, &stderr)
+		want := "not a git repository"
+		if mode == "native" || mode == "bogus" || mode == "" {
+			want = "transport must be cli, acp or auto"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("transport %q = %v, want %q", mode, err, want)
+		}
 	}
 }
 
@@ -1397,5 +1600,360 @@ func TestReviewWithMixedSpecRules(t *testing.T) {
 			t.Fatalf("missing or out-of-order %q in %s", want, stdout.String())
 		}
 		previous = position
+	}
+}
+
+func TestLoopSupervisionOnce(t *testing.T) {
+	root := t.TempDir()
+	for name, payload := range map[string]string{
+		".gitignore":            ".batuta/journal/\n.batuta/reviews/\n",
+		".batuta/profile.md":    "Stack: Go\nMethodology: TDD\nTest: true\nBuild: true\nExecution: sequential\nWorktree: off\nTemplate: templates/generic.md\n",
+		".batuta/routing.md":    "| Lane | Domain | Executor | Model |\n|---|---|---|---|\n| high | * | codex | review-model |\n",
+		".batuta/plans/demo.md": "# Plan — Supervised\n\n**Goal:** Test review wiring.\n**Status:** approved\n\n## Tasks\n- [ ] 1. Add source — backend/low\n      Scope: source.txt\n      Accept: source exists → test -f source.txt\n",
+	} {
+		path := filepath.Join(root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "add", ".")
+	reviewGit(t, root, "commit", "-qm", "plan")
+	base := reviewGit(t, root, "rev-parse", "HEAD")
+	plan, err := routing.ParsePlan("demo", []byte("# Plan — Supervised\n\n**Goal:** Test review wiring.\n**Status:** approved\n\n## Tasks\n- [ ] 1. Add source — backend/low\n      Scope: source.txt\n      Accept: source exists → test -f source.txt\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "source.txt"), []byte("delivered\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewGit(t, root, "add", "source.txt")
+	reviewGit(t, root, "commit", "-qm", "delivery")
+	final := reviewGit(t, root, "rev-parse", "HEAD")
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := json.Marshal(map[string]any{"slug": "demo", "plan_path": ".batuta/plans/demo.md", "plan_digest": plan.Set.Digest, "head": base})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindOpened, Detail: opened}); err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := json.Marshal(map[string]any{"state": loop.StateDone, "final_commit": final})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: terminal}); err != nil {
+		t.Fatal(err)
+	}
+	skills := t.TempDir()
+	for name, payload := range map[string]string{
+		"adapters/codex.md":    "---\nname: codex\nrun: fake-reviewer {brief}\nreadonly: fake-reviewer {prompt}\nmodel_flags: --model {model}\navailable: fake-reviewer --version\nmodels: fake-reviewer models\nfinished: exit_code\n---\n",
+		"templates/generic.md": "## Conventions for briefs\nKeep changes scoped.\n",
+		"fake-reviewer":        "#!/bin/sh\nprintf '%s\\n' '<<<FINDINGS' 'FINDINGS>>>'\n",
+	} {
+		path := filepath.Join(skills, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		mode := os.FileMode(0o600)
+		if name == "fake-reviewer" {
+			mode = 0o700
+		}
+		if err := os.WriteFile(path, []byte(payload), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("BATUTA_SKILLS", skills)
+	t.Setenv("PATH", skills+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cursor := filepath.Join(root, "cursor.json")
+	var stdout, stderr bytes.Buffer
+	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", cursor, "--once"}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"completed":true`) || !strings.Contains(stdout.String(), `"notification":"unconfigured"`) ||
+		!strings.Contains(stdout.String(), `"review":{"outcome":"SHIP"`) || !strings.Contains(stdout.String(), `"state":"reported"`) {
+		t.Fatalf("stdout=%s stderr=%s", &stdout, &stderr)
+	}
+	if _, err := os.Stat(cursor); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(stdout.String(), `"id":"supervised:2"`) != 1 || !strings.Contains(stdout.String(), `"attempts":1`) {
+		t.Fatalf("restart output=%s", &stdout)
+	}
+}
+
+func TestLoopSupervisionRejectsAmbiguousFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--once"}, {"--cursor", "/tmp/cursor"}, {"--notify", "desktop"}, {"--policy", "/tmp/policy"},
+		{"--supervise", "demo"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "--dashboard"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "--resume", "demo"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "--dry-run"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "--parallel", "1"},
+		{"--supervise", "demo", "--cursor", "/tmp/cursor", "plan.md"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if err := run(append([]string{"loop"}, args...), &stdout, &stderr); err == nil {
+			t.Fatalf("accepted %v", args)
+		}
+	}
+}
+
+func TestLoopSupervisionLocalFileSink(t *testing.T) {
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	sink := t.TempDir()
+	var stdout, stderr bytes.Buffer
+	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--notify", sink, "--once"}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"notification":"acknowledged"`) || !strings.Contains(stdout.String(), `"pending":0`) {
+		t.Fatalf("output=%s", &stdout)
+	}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	files, err := os.ReadDir(sink)
+	if err != nil || len(files) != 1 {
+		t.Fatalf("files=%v err=%v", files, err)
+	}
+}
+
+func TestLoopSupervisionReviewEngineFlags(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"review", "-h"}, &stdout, &stderr); err == nil {
+		t.Fatal("expected help sentinel")
+	}
+	for _, flag := range []string{"-base string", "-spec string", "-full", "-out string"} {
+		if !strings.Contains(stderr.String(), flag) {
+			t.Fatalf("review engine lacks %s: %s", flag, &stderr)
+		}
+	}
+	stdout.Reset()
+	if err := runCapabilities(&stdout); err != nil {
+		t.Fatal(err)
+	}
+	var caps capabilities
+	if err := json.Unmarshal(stdout.Bytes(), &caps); err != nil || !slices.Contains(caps.Commands, "review") {
+		t.Fatalf("capabilities: %s, %v", &stdout, err)
+	}
+}
+
+func TestLoopSupervisionRoutedExecutionSettings(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	fake := filepath.Join(state, "codex")
+	worker := `#!/bin/sh
+set -eu
+case "$1" in
+  --version) echo 'codex 1.0.0';;
+  debug) echo '{"models":[{"slug":"chosen-model"}]}';;
+  doctor|plugin) echo '{}';;
+  run)
+    test "$2" = chosen-model
+    test "$3" = high
+    cp "$4" "$BATUTA_SUPERVISION_CALLS/brief-$(cat "$BATUTA_SUPERVISION_CALLS/next").md"
+    if grep -q '^The answer: ' "$4"; then
+      echo 3 > "$BATUTA_SUPERVISION_CALLS/next"
+      echo 'BATUTA-QUESTION: choose the final behavior'
+    else
+      echo 2 > "$BATUTA_SUPERVISION_CALLS/next"
+      echo 'BATUTA-QUESTION: clarify the approved task ownership'
+    fi
+    ;;
+  *) exit 91;;
+esac
+`
+	plan := "# Plan — Supervised\n\n**Goal:** Test routed continuation.\n**Status:** approved\n\n## Tasks\n- [ ] 1. Add source — backend/high\n      Scope: source.txt\n      Accept: source exists → test -f source.txt\n"
+	for name, payload := range map[string]string{
+		filepath.Join(root, ".gitignore"):             ".batuta/journal/\n.batuta/worktrees/\n.batuta/logs/\n.batuta/asks/\n",
+		filepath.Join(root, ".batuta/profile.md"):     "Stack: shell\nMethodology: TDD\nTest: true\nBuild: true\nExecution: sequential\nWorktree: always\nTemplate: templates/generic.md\n",
+		filepath.Join(root, ".batuta/routing.md"):     "| Lane | Domain | Executor | Model |\n|---|---|---|---|\n| high | * | codex | chosen-model |\n",
+		filepath.Join(root, ".batuta/plans/demo.md"):  plan,
+		filepath.Join(skills, "adapters/codex.md"):    fmt.Sprintf("---\nname: codex\nexecutable: %s\nrun: %s run {model_flags} \"{brief}\"\nrun_file: %s run {model_flags} \"{brief_file}\"\nmodel_flags: {model} {effort}\nreadonly: unused\navailable: codex --version\nmodels: codex debug models\nfinished: exit_code\nbrief_limit_lines: 1\n---\n", fake, fake, fake),
+		filepath.Join(skills, "templates/generic.md"): "## Conventions for briefs\nKeep changes scoped.\n",
+		filepath.Join(state, "next"):                  "1\n",
+		fake:                                          worker,
+	} {
+		if err := os.MkdirAll(filepath.Dir(name), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(payload), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(fake, 0700); err != nil {
+		t.Fatal(err)
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git, err = filepath.Abs(git)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(git, filepath.Join(state, "git")); err != nil {
+		t.Fatal(err)
+	}
+	// Inventory and execution both resolve only this owned executor.
+	t.Setenv("PATH", state+string(os.PathListSeparator)+"/usr/bin:/bin")
+	t.Setenv("BATUTA_SUPERVISION_CALLS", state)
+	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "config", "commit.gpgsign", "false")
+	reviewGit(t, root, "add", ".")
+	reviewGit(t, root, "commit", "-qm", "plan")
+	var stdout, stderr bytes.Buffer
+	initial := []string{"loop", "--workspace", root, "--skills", skills, "--transport", "cli", "demo"}
+	var exit *ExitError
+	if err := run(initial, &stdout, &stderr); !errors.As(err, &exit) || exit.Code != 3 {
+		t.Fatalf("initial waiting run: %v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveries, err := store.List()
+	if err != nil || len(deliveries) != 1 {
+		t.Fatalf("deliveries=%v err=%v", deliveries, err)
+	}
+	delivery := deliveries[0]
+	cursor := filepath.Join(state, "cursor.json")
+	observation, err := loop.ObserveSupervision(loop.SupervisionOptions{Workspace: root, Delivery: delivery, CursorPath: cursor})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event loop.SupervisionEvent
+	for _, candidate := range observation.Events {
+		if candidate.Kind == loop.KindQuestion {
+			event = candidate
+		}
+	}
+	if event.ID == "" || observation.TerminalState != loop.StateWaitingInput {
+		t.Fatalf("missing real waiting question: %+v", observation)
+	}
+	policy := loop.SupervisionPolicy{Delivery: delivery, TaskID: event.TaskID, Execution: event.Execution, QuestionID: event.QuestionID, QuestionDigest: event.Evidence.Digest,
+		Action: loop.SupervisionContinueApprovedTask, Ownership: "approved_task", MaxAttempts: 1,
+		PlanEvidence: loop.SupervisionEvidence{Path: ".batuta/plans/demo.md", Digest: fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(plan)))}}
+	data, err := json.Marshal(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policyPath := filepath.Join(state, "policy.json")
+	if err := os.WriteFile(policyPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	args := []string{"loop", "--workspace", root, "--supervise", delivery, "--cursor", cursor, "--once", "--policy", policyPath,
+		"--skills", skills, "--transport", "cli", "--parallel", "1", "--task-timeout", "2m", "--test-timeout", "1m", "--max-waves", "1", "--keep-worktrees", "--max-limit-waits", "2", "--limit-horizon", "1h", "--limit-wait", "1m"}
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("continuation: %v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	var decision loop.SupervisionDecision
+	for _, line := range bytes.Split(bytes.TrimSpace(stdout.Bytes()), []byte("\n")) {
+		var report struct {
+			Decision *loop.SupervisionDecision `json:"decision"`
+		}
+		if err := json.Unmarshal(line, &report); err != nil {
+			t.Fatalf("supervision stdout is not JSON: %s: %v", line, err)
+		}
+		if report.Decision != nil {
+			decision = *report.Decision
+		}
+	}
+	if decision.Outcome != "answered" || decision.Continuation != "resumed" || decision.RunState != loop.StateWaitingInput || decision.Attempts != 1 {
+		t.Fatalf("continuation decision=%+v\nstdout=%s stderr=%s", decision, &stdout, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "task_1 e2 → codex/chosen-model") || !strings.Contains(stderr.String(), "choose the final behavior") {
+		t.Fatalf("resumed worker output missing from stderr: %s", &stderr)
+	}
+	brief, err := os.ReadFile(filepath.Join(state, "brief-2.md"))
+	if err != nil || !strings.Contains(string(brief), "The answer: "+loop.SupervisionRoutineAnswer+"\n") {
+		t.Fatalf("worker did not receive durable answer: %s, %v", brief, err)
+	}
+	records, err := store.Read(delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answers, starts := 0, 0
+	for _, record := range records {
+		switch record.Kind {
+		case loop.KindAnswer:
+			answers++
+			var detail struct {
+				Execution int
+				Answer    string
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil || detail.Execution != event.Execution || detail.Answer != loop.SupervisionRoutineAnswer {
+				t.Fatalf("bound answer=%s err=%v", record.Detail, err)
+			}
+		case loop.KindStarted:
+			starts++
+			var detail struct {
+				Execution                  int
+				Executor, Model, Reasoning string
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil || detail.Execution != starts || detail.Executor != "codex" || detail.Model != "chosen-model" || detail.Reasoning != "high" {
+				t.Fatalf("routed worker=%s err=%v", record.Detail, err)
+			}
+		}
+	}
+	if answers != 1 || starts != 2 {
+		t.Fatalf("answers=%d starts=%d", answers, starts)
+	}
+	var intent struct {
+		Stage    string
+		Settings struct {
+			Skills, Transport, Verifier                              string
+			Parallel, MaxWaves, MaxLimitWaits                        int
+			TaskTimeout, TestTimeout, LimitWaitDefault, LimitHorizon time.Duration
+			KeepWorktrees                                            bool
+		}
+	}
+	readReviewJSON(t, filepath.Join(root, journal.Dir, fmt.Sprintf("%s.continuation-%d.json", delivery, event.Sequence)), &intent)
+	settings := intent.Settings
+	if intent.Stage != "resumed" || settings.Skills != skills || settings.Transport != "cli" || settings.Verifier != "cli" ||
+		settings.Parallel != 1 || settings.MaxWaves != 1 || settings.MaxLimitWaits != 2 || settings.TaskTimeout != 2*time.Minute ||
+		settings.TestTimeout != time.Minute || settings.LimitWaitDefault != time.Minute || settings.LimitHorizon != time.Hour || !settings.KeepWorktrees {
+		t.Fatalf("resolved settings=%+v stage=%s", settings, intent.Stage)
+	}
+	before, err := os.ReadFile(store.Path(delivery))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(store.Path(delivery))
+	if err != nil || !bytes.Equal(before, after) || stderr.Len() != 0 {
+		t.Fatalf("repeated CLI supervision executed again: %v stderr=%s", err, &stderr)
 	}
 }

@@ -25,3 +25,12 @@ func configureProcess(cmd *exec.Cmd) {
 	}
 	cmd.WaitDelay = 2 * time.Second
 }
+
+// Signal only the retained child handle: discovering a process group and then
+// killing its numeric ID cannot exclude PID reuse. WaitDelay escalates through
+// os.Process.Kill and bounds inherited pipe waits. Descendants remain uncertain.
+func configureReviewProcess(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 2 * time.Second
+}

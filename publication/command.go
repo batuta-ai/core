@@ -44,6 +44,28 @@ type CommandRunner interface {
 type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, command Command) (CommandResult, error) {
+	return runExecCommand(ctx, command, configureProcess)
+}
+
+// ErrReviewCleanupUnresolved means engine exit does not prove descendant exit.
+var ErrReviewCleanupUnresolved = errors.New("publication: review descendant cleanup unresolved")
+
+// ReviewRunner lets the review engine propagate cancellation to its independently
+// grouped workers before bounded escalation. Existing ExecRunner callers retain
+// their immediate group cancellation semantics.
+type ReviewRunner struct{}
+
+func (ReviewRunner) Run(ctx context.Context, command Command) (CommandResult, error) {
+	result, err := runExecCommand(ctx, command, configureReviewProcess)
+	var exitErr *exec.ExitError
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, exec.ErrWaitDelay) ||
+		(errors.As(err, &exitErr) && exitErr.ExitCode() < 0) {
+		err = errors.Join(ErrReviewCleanupUnresolved, err)
+	}
+	return result, err
+}
+
+func runExecCommand(ctx context.Context, command Command, configure func(*exec.Cmd)) (CommandResult, error) {
 	if strings.TrimSpace(command.Executable) == "" || !filepath.IsAbs(command.Executable) {
 		return CommandResult{ExitCode: -1}, errors.New("publication: executable must be absolute")
 	}
@@ -80,7 +102,7 @@ func (ExecRunner) Run(ctx context.Context, command Command) (CommandResult, erro
 	if command.StderrObserver != nil {
 		cmd.Stderr = io.MultiWriter(stderr, command.StderrObserver)
 	}
-	configureProcess(cmd)
+	configure(cmd)
 
 	err := cmd.Run()
 	result := CommandResult{
