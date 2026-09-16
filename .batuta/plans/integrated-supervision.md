@@ -4,7 +4,7 @@
 **Created:** 2026-09-16 · **Status:** approved
 
 ## Tasks
-- [ ] 1. Persist evidence-bound review progression decisions — backend/high
+- [x] 1. Persist evidence-bound review progression decisions — backend/high
       Scope: loop/supervision_gate.go, loop/supervision_gate_test.go, loop/supervision_review.go, loop/supervision_review_test.go, loop/report.go, loop/report_test.go, loop/runner.go, loop/roadmap.go, loop/roadmap_test.go
       Accept: supervision-enabled delivery completion cannot persist a roadmap completion that bypasses pending or adverse review on restart, while library callers without supervision preserve behavior; complete intact SHIP evidence clears progression without claiming conductor acceptance, failed/incomplete/uncertain reviews block, and explicit judgment is digest-bound with reason, ownership and integrity checks; replay cannot accept a changed report/job/delivery or duplicate progression, and legacy completed phases without this gate keep their historical behavior → go test -race ./loop -run 'SupervisionGate|Roadmap|Bookkeeping'; existing supervision review recovery remains valid → go test ./loop -run SupervisionReview
 - [ ] 2. Compose foreground runner and observer with bounded lifecycle — backend/high
