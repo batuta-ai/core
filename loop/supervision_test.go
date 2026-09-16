@@ -493,7 +493,7 @@ func TestSupervisionLifecycleScenarios(t *testing.T) {
 			t.Fatal(err)
 		}
 		got := supervisionObserve(t, opts)
-		if got.Presence != "running" || got.TerminalState != "" || got.Completed || len(got.Events) != 0 {
+		if got.Presence != "running" || got.TerminalState != "" || got.Completed || len(got.Events) != 1 || got.Events[0].Kind != KindStarted {
 			t.Fatalf("observation = %+v", got)
 		}
 	})
@@ -856,5 +856,23 @@ func TestSupervisionJSONReplacement(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	if err != nil || len(entries) != 1 || entries[0].Name() != "state.json" {
 		t.Fatalf("temporary files left behind: %v, %v", entries, err)
+	}
+}
+
+func TestSupervisionStartedMetadata(t *testing.T) {
+	store, opts := supervisionFixture(t)
+	supervisionAppend(t, store, opts, KindOpened, `{}`)
+	record := supervisionAppend(t, store, opts, KindStarted, `{"execution":2,"executor":"secret executor text","worktree":"/private/path","request_id":"invalid question!"}`)
+	observation := supervisionObserve(t, opts)
+	if len(observation.Events) != 1 {
+		t.Fatalf("running observation: %+v", observation)
+	}
+	event := observation.Events[0]
+	if event.Kind != KindStarted || event.Execution != 2 || event.TaskID != "task_1" || event.QuestionID != "" || event.Completed || event.Evidence.Digest != record.Digest {
+		t.Fatalf("running metadata: %+v", event)
+	}
+	data, err := json.Marshal(event)
+	if err != nil || len(data) > SupervisionEventLimit || bytes.Contains(data, []byte("secret")) || bytes.Contains(data, []byte("/private")) {
+		t.Fatalf("unbounded or unvalidated event: %s, %v", data, err)
 	}
 }

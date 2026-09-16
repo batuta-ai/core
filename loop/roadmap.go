@@ -34,6 +34,16 @@ func RunRoadmap(ctx context.Context, opts Options) (state string, runErr error) 
 		if err != nil || blocked {
 			return StateReviewBlocked, err
 		}
+		if opts.Resume != "" {
+			observer := SupervisionOptions{Workspace: root, Delivery: opts.Resume}
+			records, readErr := readSupervisionGateRecords(observer)
+			if readErr == nil && supervisionReviewCandidateInWorkspace(root, opts.Resume, records) != nil {
+				var opened openedDetail
+				if json.Unmarshal(records[0].Detail, &opened) == nil && opened.Supervision {
+					opts.Resume = ""
+				}
+			}
+		}
 		roadmap, err = loader.Load()
 		if err != nil {
 			return "", err
@@ -171,7 +181,7 @@ func reconcileRoadmapSupervision(ctx context.Context, root string, opts Options,
 	}
 	var ready []completed
 	for _, id := range ids {
-		observer := SupervisionOptions{Workspace: root, Delivery: id, CursorPath: filepath.Join(root, ".batuta", "supervision", id+".json"), Now: opts.Now}
+		observer := SupervisionOptions{Workspace: root, Delivery: id, Now: opts.Now}
 		records, err := readSupervisionGateRecords(observer)
 		if err != nil {
 			return true, err
@@ -213,6 +223,19 @@ func reconcileRoadmapSupervision(ctx context.Context, root string, opts Options,
 		}
 		if terminal.State != StateDone {
 			continue
+		}
+		if opts.Supervisor != nil && supervisionReviewCandidateInWorkspace(root, id, records) != nil {
+			config, err := runnerSupervision(root, id, *opts.Supervisor)
+			if err != nil {
+				return true, err
+			}
+			// Discovery may encounter an archived implementation before New can load
+			// its plan. Only final review runs here; continuation needs a live runner.
+			config.Once, config.Policy, config.Execution = true, nil, nil
+			if err := Supervise(ctx, config); err != nil {
+				return true, err
+			}
+			observer = config.Observer
 		}
 		gate, err := CheckSupervisionGate(ctx, observer)
 		if err != nil {

@@ -75,6 +75,9 @@ var ErrStopped = errors.New("loop: stopped after the requested number of waves")
 type Options struct {
 	// Supervision durably requires review evidence before roadmap progression.
 	Supervision bool
+	// Supervisor composes passive observation and post-ownership review with Run.
+	// Nil preserves the legacy runner lifecycle.
+	Supervisor *SuperviseOptions
 
 	// Nil uses the legacy CLI. Each configured transport creates a new session
 	// per execution; verifier qualification and permission policy are independent.
@@ -298,6 +301,16 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 		return nil, fmt.Errorf("loop: journal: %w", err)
 	}
 	r.opts.Supervision = opened.Supervision
+	// Completed supervised deliveries remain resumable for review even after
+	// their implementation plan was archived. Do not replay finalization again.
+	if opened.Supervision && supervisionReviewCandidateInWorkspace(r.root, opts.Resume, records) != nil {
+		if r.branch != opened.Branch {
+			return nil, errors.New("loop: review delivery branch changed")
+		}
+		r.delivery, r.plan.Slug = opts.Resume, opened.Slug
+		r.journaled, r.terminal = true, StateDone
+		return r, nil
+	}
 	if detail := pendingFinalization(records); detail != nil {
 		if err := r.restoreFinalization(records, opened, detail); err != nil {
 			return nil, err
@@ -337,6 +350,9 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 }
 
 func prepare(ctx context.Context, opts Options) (*Runner, error) {
+	if opts.Supervisor != nil {
+		opts.Supervision = true
+	}
 	if opts.Stdout == nil {
 		opts.Stdout = io.Discard
 	}
@@ -763,6 +779,13 @@ func PrintPreview(w io.Writer, preview Preview) {
 // Run drives the delivery to a terminal state, or returns ErrStopped when
 // --max-waves ended it early.
 func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
+	if r.opts.Supervisor != nil {
+		return r.runSupervised(ctx, *r.opts.Supervisor)
+	}
+	return r.runOwned(ctx, nil)
+}
+
+func (r *Runner) runOwned(ctx context.Context, opened func() error) (state string, runErr error) {
 	if r.ownership == nil {
 		ownership, err := acquireDeliveryOwnership(ctx, r.root, r.delivery, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
 		if err != nil {
@@ -780,6 +803,14 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 		return "", err
 	}
 
+	if opened != nil {
+		if err := opened(); err != nil {
+			return "", err
+		}
+	}
+	if r.terminal == StateDone {
+		return StateDone, nil
+	}
 	if r.pendingFinish != nil {
 		return r.retryFinalization(ctx)
 	}
