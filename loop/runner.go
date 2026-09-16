@@ -73,6 +73,9 @@ var ErrStopped = errors.New("loop: stopped after the requested number of waves")
 
 // Options configure one run.
 type Options struct {
+	// Supervision durably requires review evidence before roadmap progression.
+	Supervision bool
+
 	// Nil uses the legacy CLI. Each configured transport creates a new session
 	// per execution; verifier qualification and permission policy are independent.
 	Transport         *executor.TransportBackend
@@ -171,18 +174,19 @@ type attemptWorktree struct {
 }
 
 type openedDetail struct {
-	Slug       string                    `json:"slug"`
-	Roadmap    string                    `json:"roadmap,omitempty"`
-	Phase      int                       `json:"phase,omitempty"`
-	PhaseTitle string                    `json:"phase_title,omitempty"`
-	PlanPath   string                    `json:"plan_path"`
-	PlanDigest string                    `json:"plan_digest"`
-	Branch     string                    `json:"branch"`
-	Head       string                    `json:"head"`
-	Parallel   int                       `json:"parallel"`
-	Workspace  string                    `json:"workspace"`
-	Generation routing.RoutingGeneration `json:"generation"`
-	Tasks      []taskSummary             `json:"tasks"`
+	Supervision bool                      `json:"supervision,omitempty"`
+	Slug        string                    `json:"slug"`
+	Roadmap     string                    `json:"roadmap,omitempty"`
+	Phase       int                       `json:"phase,omitempty"`
+	PhaseTitle  string                    `json:"phase_title,omitempty"`
+	PlanPath    string                    `json:"plan_path"`
+	PlanDigest  string                    `json:"plan_digest"`
+	Branch      string                    `json:"branch"`
+	Head        string                    `json:"head"`
+	Parallel    int                       `json:"parallel"`
+	Workspace   string                    `json:"workspace"`
+	Generation  routing.RoutingGeneration `json:"generation"`
+	Tasks       []taskSummary             `json:"tasks"`
 }
 
 type taskSummary struct {
@@ -293,6 +297,7 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
 		return nil, fmt.Errorf("loop: journal: %w", err)
 	}
+	r.opts.Supervision = opened.Supervision
 	if detail := pendingFinalization(records); detail != nil {
 		if err := r.restoreFinalization(records, opened, detail); err != nil {
 			return nil, err
@@ -864,7 +869,8 @@ func (r *Runner) open() error {
 		tasks = append(tasks, taskSummary{ID: task.ID, Number: task.Number, Title: task.Title, Domain: string(task.Domain), Complexity: string(task.Complexity), Hint: hint})
 	}
 	detail := openedDetail{
-		Slug: r.plan.Slug, Roadmap: r.roadmap, Phase: r.phase, PhaseTitle: r.phaseTitle,
+		Supervision: r.opts.Supervision,
+		Slug:        r.plan.Slug, Roadmap: r.roadmap, Phase: r.phase, PhaseTitle: r.phaseTitle,
 		PlanPath: r.plan.Path, PlanDigest: r.plan.Set.Digest,
 		Branch: r.branch, Head: r.openedHead, Parallel: r.parallel, Workspace: r.root,
 		Generation: r.generation, Tasks: tasks,
