@@ -181,6 +181,9 @@
 - [x] Recover durable answers after ownership stop errors and prove CLI continuation → codex (gpt-6-astra), commit b6f80239496c (trail: .batuta/runs/2026-09-15-integration-review-fixes-task-2.md, delivery integration-review-fixes-20260915-153700, plan integration-review-fixes, 2026-09-15)
 - [x] Preserve completed answers and strengthen recovery fixtures → codex (gpt-6-astra), commit bb84f155ed76 (trail: .batuta/runs/2026-09-15-answered-replay-fix-task-1.md, delivery answered-replay-fix-20260915-223741, plan answered-replay-fix, 2026-09-15)
 - [x] Persist evidence-bound review progression decisions → codex (gpt-6-astra), 1 retry, commit 91fe5e49d500 (trail: .batuta/runs/2026-09-16-integrated-supervision-task-1.md, delivery integrated-supervision-20260916-173553, plan integrated-supervision, 2026-09-16)
+- [x] Persist evidence-bound review progression decisions → ticked in the plan before the run, commit 5d6691894bbf (trail: .batuta/runs/2026-09-16-integrated-supervision-followup-task-1.md, delivery integrated-supervision-followup-20260916-222751, plan integrated-supervision-followup, 2026-09-16)
+- [x] Compose foreground runner and observer with bounded lifecycle → codex (gpt-6-astra), commit 99428813b169 (trail: .batuta/runs/2026-09-16-integrated-supervision-followup-task-2.md, delivery integrated-supervision-followup-20260916-222751, plan integrated-supervision-followup, 2026-09-16)
+- [x] Wire normal CLI execution and document the release behavior → codex (gpt-6-astra), commit aed3589760f8 (trail: .batuta/runs/2026-09-16-integrated-supervision-followup-task-3.md, delivery integrated-supervision-followup-20260916-222751, plan integrated-supervision-followup, 2026-09-16)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

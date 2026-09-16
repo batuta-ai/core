@@ -1,17 +1,17 @@
 # Plan — integrate supervision and durable review gates into normal loop execution
 
 **Goal:** Observe normal foreground loop deliveries proactively and run the existing deep delivery review after finalization, blocking roadmap progression durably when review requires judgment or is unavailable, incomplete or uncertain.
-**Created:** 2026-09-16 · **Status:** approved
+**Created:** 2026-09-16 · **Status:** done
 
 ## Tasks
 - [x] 1. Persist evidence-bound review progression decisions — backend/high
       Scope: loop/supervision_gate.go, loop/supervision_gate_test.go, loop/supervision_review.go, loop/supervision_review_test.go, loop/report.go, loop/report_test.go, loop/runner.go, loop/roadmap.go, loop/roadmap_test.go
       Accept: supervision-enabled delivery completion cannot persist a roadmap completion that bypasses pending or adverse review on restart, while library callers without supervision preserve behavior; complete intact SHIP evidence clears progression without claiming conductor acceptance, failed/incomplete/uncertain reviews block, and explicit judgment is digest-bound with reason, ownership and integrity checks; replay cannot accept a changed report/job/delivery or duplicate progression, and legacy completed phases without this gate keep their historical behavior → go test -race ./loop -run 'SupervisionGate|Roadmap|Bookkeeping'; existing supervision review recovery remains valid → go test ./loop -run SupervisionReview
-- [ ] 2. Compose foreground runner and observer with bounded lifecycle — backend/high
+- [x] 2. Compose foreground runner and observer with bounded lifecycle — backend/high
       Depends on: 1
       Scope: loop/supervision_run.go, loop/supervision_run_test.go, loop/supervision.go, loop/supervision_test.go, loop/runner.go, loop/roadmap.go, loop/roadmap_test.go, loop/supervision_gate.go, loop/supervision_gate_test.go, worktree/git.go, worktree/git_test.go
       Accept: observation starts after durable opening and emits events while work runs, runner retains sole execution ownership, final review starts once after finalization and ownership release, and review gate controls every roadmap phase; new/resume/answer use stable cursor and review identities without duplicate workers/reviewers, cancellation or observer error joins all owned activity, waiting-input without authorized policy and max-waves terminate predictably, unfinished work is never finally reviewed → go test -race ./loop -run 'SupervisionRun|SupervisionGate|Roadmap'; existing policy guards remain effective without a second retry owner → go test ./loop -run 'SupervisionPolicy|SupervisionReview'
-- [ ] 3. Wire normal CLI execution and document the release behavior — backend/high
+- [x] 3. Wire normal CLI execution and document the release behavior — backend/high
       Depends on: 2
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, docs/loop.md, docs/loop-supervision.md, README.md, README.pt-BR.md, loop/supervision_run.go, loop/supervision_run_test.go, loop/supervision_gate.go, loop/supervision_gate_test.go
       Accept: new/resume/answer/roadmap execution defaults to composed supervision and the existing executable-backed deep review, standalone supervise remains supported, dry-run/dashboard/abandon do not launch reviewers, and structured supervisor output never races or mixes with worker output; explicit CLI review judgment records a reason against exact delivery and review digest and cannot become an execution or permission bypass → go test ./cmd/batuta -run 'Loop|Supervis'; operator docs match defaults, review-pending exit/recovery, explicit judgment, foreground lifetime and no daemon or automatic chat claims; full suite and build pass → go test -p 1 ./... -timeout=15m; all packages build → go build ./...
