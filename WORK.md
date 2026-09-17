@@ -187,6 +187,7 @@
 - [x] Preserve signal cancellation while exposing independent failures → codex (gpt-6-astra), commit a09ab9cb0869 (trail: .batuta/runs/2026-09-17-integrated-supervision-review-fixes-task-1.md, delivery integrated-supervision-review-fixes-20260917-013654, plan integrated-supervision-review-fixes, 2026-09-17)
 - [x] Carry explicit skills selection into required review → codex (gpt-5.6-sol), commit 2e65a00ac6ea (trail: .batuta/runs/2026-09-17-integrated-supervision-review-fixes-task-2.md, delivery integrated-supervision-review-fixes-20260917-013654, plan integrated-supervision-review-fixes, 2026-09-17)
 - [x] Serialize arbitrary writer output without unsafe interface equality → codex (gpt-6-astra), commit 5cf8eb965032 (trail: .batuta/runs/2026-09-17-integrated-supervision-review-fixes-task-3.md, delivery integrated-supervision-review-fixes-20260917-013654, plan integrated-supervision-review-fixes, 2026-09-17)
+- [x] Fix supervision cancellation and skills discovery boundaries → codex (gpt-6-astra), commit da889a07cd17 (trail: .batuta/runs/2026-09-17-supervision-boundary-fixes-task-1.md, delivery supervision-boundary-fixes-20260917-125426, plan supervision-boundary-fixes, 2026-09-17)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

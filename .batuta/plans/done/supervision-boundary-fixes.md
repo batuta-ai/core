@@ -1,10 +1,10 @@
 # Plan — close supervision cancellation and discovery boundaries
 
 **Goal:** Resolve the remaining automatic-review findings with discriminating cancellation, relative-path and clean-home tests before whole-branch review.
-**Created:** 2026-09-17 · **Status:** approved
+**Created:** 2026-09-17 · **Status:** done
 
 ## Tasks
-- [ ] 1. Fix supervision cancellation and skills discovery boundaries — backend/high
+- [x] 1. Fix supervision cancellation and skills discovery boundaries — backend/high
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, loop/supervision_run.go, loop/supervision_run_test.go, loop/supervision_review.go, loop/supervision_review_test.go, loop/profile.go, loop/profile_test.go
       Accept: cancellation during final review after implementation completed exits 130 after owned activity joins, while a joined independent observer/runtime failure remains visible and durable completed implementation is not rewritten as undone → go test ./cmd/batuta -run 'Loop|Supervis'; relative --skills from a caller outside the workspace resolves to the selected absolute directory for review and does not silently select a different installation → go test ./cmd/batuta -run 'Loop|Supervis'; passive standalone supervision with isolated home, no BATUTA_SKILLS and no installed skills still delivers local events for a journal without a review candidate, while required review cannot silently succeed when adapters are unavailable → go test ./cmd/batuta -run 'Loop|Supervis'; supervision cleanup and writer/policy regressions pass → go test -race ./loop -run 'SupervisionRun|SupervisionReview|SupervisionPolicy'; full suite passes → go test -p 1 ./... -timeout=15m; build passes → go build ./...
 
