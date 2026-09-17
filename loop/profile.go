@@ -110,11 +110,21 @@ func FindSkills(root, explicit string) (string, error) {
 			filepath.Join(home, ".config", "opencode", "skills", "batuta"),
 		)
 	}
+	// An explicit selection must never fall through to another installation.
+	if explicit != "" {
+		candidates = []string{explicit}
+	} else if env := strings.TrimSpace(os.Getenv("BATUTA_SKILLS")); env != "" {
+		candidates = []string{env}
+	}
 	for _, candidate := range candidates {
 		if candidate == "" {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(candidate, "adapters")); err == nil {
+		if info, err := os.Stat(filepath.Join(candidate, "adapters")); err == nil && info.IsDir() {
+			candidate, err = filepath.Abs(candidate)
+			if err != nil {
+				return "", err
+			}
 			if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
 				return resolved, nil
 			}

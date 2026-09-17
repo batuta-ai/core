@@ -732,7 +732,9 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 			return err
 		}
 		reviewSkills, err := loop.FindSkills(root, *skills)
-		if err != nil {
+		// Passive observation does not require an implicit skills installation.
+		// Keep explicit selections strict; review will report missing defaults.
+		if err != nil && (*skills != "" || strings.TrimSpace(os.Getenv("BATUTA_SKILLS")) != "") {
 			return err
 		}
 		opts := loop.SuperviseOptions{Observer: loop.SupervisionOptions{Workspace: root, Delivery: *supervise, CursorPath: *cursor}, Interval: *interval, Once: *once, Output: stdout}
@@ -764,7 +766,17 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return loop.Supervise(ctx, opts)
+		if err := errors.Join(loop.Supervise(ctx, opts), ctx.Err()); err != nil {
+			return loopRunExit(loop.StateCanceled, err)
+		}
+		observation, err := loop.ObserveSupervision(opts.Observer)
+		if err != nil {
+			return err
+		}
+		if job := observation.Review; job != nil && job.ID != "" && (job.State != "reported" || job.Outcome != "SHIP") {
+			return loopExit(loop.StateReviewBlocked)
+		}
+		return nil
 	}
 	var supervisionFlag string
 	flags.Visit(func(f *flag.Flag) {
@@ -881,7 +893,11 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 }
 
 func loopRunExit(state string, err error) error {
-	if err != nil && !(state == loop.StateCanceled && cancellationOnly(err)) {
+	if err != nil {
+		if (state == loop.StateCanceled || state == loop.StateDone) && cancellationOnly(err) {
+			// Foreground cancellation does not rewrite completed implementation.
+			return loopExit(loop.StateCanceled)
+		}
 		return err
 	}
 	return loopExit(state)
