@@ -1641,6 +1641,8 @@ func loopSupervisionIsolatedFixture(t *testing.T) (string, string) {
 		}
 	}
 	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "config", "user.name", "Batuta Test")
+	reviewGit(t, root, "config", "user.email", "batuta@example.test")
 	reviewGit(t, root, "add", ".")
 	reviewGit(t, root, "commit", "-qm", "plan")
 	base := reviewGit(t, root, "rev-parse", "HEAD")
