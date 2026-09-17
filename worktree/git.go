@@ -27,7 +27,7 @@ const Dir = ".batuta/worktrees"
 
 // Excluded lists the runtime directories the loop keeps out of the user's
 // index through `.git/info/exclude` (never `.gitignore`, which is theirs).
-var Excluded = []string{".batuta/worktrees/", ".batuta/journal/", ".batuta/runs/", ".batuta/asks/", ".batuta/scout/", ".batuta/handoff.md"}
+var Excluded = []string{".batuta/worktrees/", ".batuta/journal/", ".batuta/runs/", ".batuta/asks/", ".batuta/scout/", ".batuta/reviews/supervision/", ".batuta/handoff.md"}
 
 // ManagedPaths are the tracked files the conductor owns; a dirty one never
 // fails a clean-tree check (references/state.md).

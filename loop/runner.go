@@ -73,6 +73,12 @@ var ErrStopped = errors.New("loop: stopped after the requested number of waves")
 
 // Options configure one run.
 type Options struct {
+	// Supervision durably requires review evidence before roadmap progression.
+	Supervision bool
+	// Supervisor composes passive observation and post-ownership review with Run.
+	// Nil preserves the legacy runner lifecycle.
+	Supervisor *SuperviseOptions
+
 	// Nil uses the legacy CLI. Each configured transport creates a new session
 	// per execution; verifier qualification and permission policy are independent.
 	Transport         *executor.TransportBackend
@@ -132,7 +138,7 @@ type Runner struct {
 	sections   []string
 	missing    []string
 	now        func() time.Time
-	out        io.Writer
+	out        *lockedWriter
 
 	worktreeMu sync.Mutex // add/remove/prune share the repository worktree registry
 	mu         sync.Mutex
@@ -153,7 +159,7 @@ type Runner struct {
 
 // Parallel attempts share the output sink, which may be an unguarded buffer.
 type lockedWriter struct {
-	mu     sync.Mutex
+	mu     *sync.Mutex
 	writer io.Writer
 }
 
@@ -161,6 +167,15 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.writer.Write(p)
+}
+
+// All streams in a supervised run share a lock: arbitrary writers may alias
+// even when their dynamic values cannot be compared. Keep each destination.
+func (w *lockedWriter) serialize(writer io.Writer) *lockedWriter {
+	if locked, ok := writer.(*lockedWriter); ok && locked.mu == w.mu {
+		return locked
+	}
+	return &lockedWriter{mu: w.mu, writer: writer}
 }
 
 type attemptWorktree struct {
@@ -171,18 +186,19 @@ type attemptWorktree struct {
 }
 
 type openedDetail struct {
-	Slug       string                    `json:"slug"`
-	Roadmap    string                    `json:"roadmap,omitempty"`
-	Phase      int                       `json:"phase,omitempty"`
-	PhaseTitle string                    `json:"phase_title,omitempty"`
-	PlanPath   string                    `json:"plan_path"`
-	PlanDigest string                    `json:"plan_digest"`
-	Branch     string                    `json:"branch"`
-	Head       string                    `json:"head"`
-	Parallel   int                       `json:"parallel"`
-	Workspace  string                    `json:"workspace"`
-	Generation routing.RoutingGeneration `json:"generation"`
-	Tasks      []taskSummary             `json:"tasks"`
+	Supervision bool                      `json:"supervision,omitempty"`
+	Slug        string                    `json:"slug"`
+	Roadmap     string                    `json:"roadmap,omitempty"`
+	Phase       int                       `json:"phase,omitempty"`
+	PhaseTitle  string                    `json:"phase_title,omitempty"`
+	PlanPath    string                    `json:"plan_path"`
+	PlanDigest  string                    `json:"plan_digest"`
+	Branch      string                    `json:"branch"`
+	Head        string                    `json:"head"`
+	Parallel    int                       `json:"parallel"`
+	Workspace   string                    `json:"workspace"`
+	Generation  routing.RoutingGeneration `json:"generation"`
+	Tasks       []taskSummary             `json:"tasks"`
 }
 
 type taskSummary struct {
@@ -293,6 +309,20 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
 		return nil, fmt.Errorf("loop: journal: %w", err)
 	}
+	r.opts.Supervision = opened.Supervision
+	// Completed supervised deliveries remain resumable for review even after
+	// their implementation plan was archived. Do not replay finalization again.
+	if opened.Supervision && supervisionReviewCandidateInWorkspace(r.root, opts.Resume, records) != nil {
+		if opts.Supervisor == nil {
+			return nil, fmt.Errorf("loop: delivery %s already ended: %s; supervisor required for review recovery", opts.Resume, StateDone)
+		}
+		if r.branch != opened.Branch {
+			return nil, errors.New("loop: review delivery branch changed")
+		}
+		r.delivery, r.plan.Slug = opts.Resume, opened.Slug
+		r.journaled, r.terminal = true, StateDone
+		return r, nil
+	}
 	if detail := pendingFinalization(records); detail != nil {
 		if err := r.restoreFinalization(records, opened, detail); err != nil {
 			return nil, err
@@ -332,6 +362,9 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 }
 
 func prepare(ctx context.Context, opts Options) (*Runner, error) {
+	if opts.Supervisor != nil {
+		opts.Supervision = true
+	}
 	if opts.Stdout == nil {
 		opts.Stdout = io.Discard
 	}
@@ -429,6 +462,11 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	if opts.Parallel > 0 {
 		parallel = min(opts.Parallel, routing.MaxParallelTasks)
 	}
+	// A continuation inherits its parent's lock along with its output stream.
+	out, ok := opts.Stdout.(*lockedWriter)
+	if !ok {
+		out = &lockedWriter{mu: new(sync.Mutex), writer: opts.Stdout}
+	}
 	return &Runner{
 		opts: opts, root: root, git: git,
 		gitState: publication.GitClient{Executable: git.Git, Runner: opts.Runner},
@@ -437,7 +475,7 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		branch: branch, openedHead: head, parallel: parallel, shell: shell,
 		backend: backend, verifier: verifier,
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
-		now: opts.Now, out: &lockedWriter{writer: opts.Stdout},
+		now: opts.Now, out: out,
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
 		candidates: map[string]integration.CandidateEvidence{}, commits: map[string]string{},
 		started: map[string]bool{}, preflights: map[string]integration.PreflightResult{},
@@ -758,6 +796,13 @@ func PrintPreview(w io.Writer, preview Preview) {
 // Run drives the delivery to a terminal state, or returns ErrStopped when
 // --max-waves ended it early.
 func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
+	if r.opts.Supervisor != nil {
+		return r.runSupervised(ctx, *r.opts.Supervisor)
+	}
+	return r.runOwned(ctx, nil)
+}
+
+func (r *Runner) runOwned(ctx context.Context, opened func() error) (state string, runErr error) {
 	if r.ownership == nil {
 		ownership, err := acquireDeliveryOwnership(ctx, r.root, r.delivery, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
 		if err != nil {
@@ -775,6 +820,14 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 		return "", err
 	}
 
+	if opened != nil {
+		if err := opened(); err != nil {
+			return "", err
+		}
+	}
+	if r.terminal == StateDone {
+		return StateDone, nil
+	}
 	if r.pendingFinish != nil {
 		return r.retryFinalization(ctx)
 	}
@@ -864,7 +917,8 @@ func (r *Runner) open() error {
 		tasks = append(tasks, taskSummary{ID: task.ID, Number: task.Number, Title: task.Title, Domain: string(task.Domain), Complexity: string(task.Complexity), Hint: hint})
 	}
 	detail := openedDetail{
-		Slug: r.plan.Slug, Roadmap: r.roadmap, Phase: r.phase, PhaseTitle: r.phaseTitle,
+		Supervision: r.opts.Supervision,
+		Slug:        r.plan.Slug, Roadmap: r.roadmap, Phase: r.phase, PhaseTitle: r.phaseTitle,
 		PlanPath: r.plan.Path, PlanDigest: r.plan.Set.Digest,
 		Branch: r.branch, Head: r.openedHead, Parallel: r.parallel, Workspace: r.root,
 		Generation: r.generation, Tasks: tasks,

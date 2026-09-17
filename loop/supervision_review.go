@@ -49,6 +49,7 @@ type SupervisionReviewJob struct {
 // adapters and independent proof checks in `review`. No fallback is installed.
 type SupervisionReviewOptions struct {
 	Executable string
+	Skills     string
 	Runner     publication.CommandRunner
 	Timeout    time.Duration
 }
@@ -60,11 +61,16 @@ func supervisionReviewCandidate(delivery string, records []journal.Record) *Supe
 }
 
 func supervisionReviewCandidateInWorkspace(workspace, delivery string, records []journal.Record) *SupervisionReviewJob {
-	if len(records) < 2 || records[0].Kind != KindOpened || records[len(records)-1].Kind != KindTerminal {
+	// Ownership takeover is an audit of recovery, not a new implementation.
+	end := len(records) - 1
+	for end >= 0 && records[end].Kind == KindPresenceTakenOver {
+		end--
+	}
+	if end < 1 || records[0].Kind != KindOpened || records[end].Kind != KindTerminal {
 		return nil
 	}
 	var terminal terminalDetail
-	if json.Unmarshal(records[len(records)-1].Detail, &terminal) != nil || terminal.State != StateDone || terminal.CleanupPending || terminal.BookkeepingPending {
+	if json.Unmarshal(records[end].Detail, &terminal) != nil || terminal.State != StateDone || terminal.CleanupPending || terminal.BookkeepingPending {
 		return nil
 	}
 	if len(terminal.Deletions) > 0 && (workspace == "" || !supervisionDeletionsAbsent(workspace, terminal.Deletions)) {
@@ -208,7 +214,7 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	if _, err := persist(); err != nil {
 		return nil, err
 	}
-	result, runErr := runner.Run(reviewCtx, publication.Command{Executable: opts.Executable, Directory: job.Snapshot, Args: []string{"review", "--base", job.Base, "--spec", job.Spec, "--full", "--out", job.Artifacts}})
+	result, runErr := runner.Run(reviewCtx, publication.Command{Executable: opts.Executable, Directory: job.Snapshot, Environment: supervisionReviewEnvironment(opts), Args: []string{"review", "--base", job.Base, "--spec", job.Spec, "--full", "--out", job.Artifacts}})
 	job.ExitCode = result.ExitCode
 	if reviewCtx.Err() != nil || errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded) || errors.Is(runErr, publication.ErrReviewCleanupUnresolved) {
 		// The durable attempt remains the owner after releasing the in-process
@@ -275,14 +281,14 @@ func probeSupervisionReview(ctx context.Context, opts SupervisionReviewOptions, 
 	if opts.Executable == "" {
 		return errors.New("loop: review engine is unavailable")
 	}
-	result, err := opts.Runner.Run(ctx, publication.Command{Executable: opts.Executable, Directory: root, Args: []string{"capabilities"}})
+	result, err := opts.Runner.Run(ctx, publication.Command{Executable: opts.Executable, Directory: root, Environment: supervisionReviewEnvironment(opts), Args: []string{"capabilities"}})
 	var capabilities struct {
 		Commands []string `json:"commands"`
 	}
 	if err != nil || result.ExitCode != 0 || result.StdoutTruncated || json.Unmarshal(result.Stdout, &capabilities) != nil || !slices.Contains(capabilities.Commands, "review") {
 		return errors.Join(errors.New("loop: core review engine is unavailable"), err)
 	}
-	result, err = opts.Runner.Run(ctx, publication.Command{Executable: opts.Executable, Directory: root, Args: []string{"review", "-h"}})
+	result, err = opts.Runner.Run(ctx, publication.Command{Executable: opts.Executable, Directory: root, Environment: supervisionReviewEnvironment(opts), Args: []string{"review", "-h"}})
 	// FlagSet prints help and may return a nonzero exit. Inspect the supported
 	// flag declarations as well as the machine-readable command capability.
 	help := string(result.Stdout) + string(result.Stderr)
@@ -295,6 +301,13 @@ func probeSupervisionReview(ctx context.Context, opts SupervisionReviewOptions, 
 		}
 	}
 	return nil
+}
+
+func supervisionReviewEnvironment(opts SupervisionReviewOptions) []string {
+	if opts.Skills == "" {
+		return nil
+	}
+	return []string{"BATUTA_SKILLS=" + opts.Skills}
 }
 
 func supervisionReviewGit(ctx context.Context, root string, args ...string) ([]byte, error) {

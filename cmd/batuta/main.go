@@ -48,6 +48,8 @@ Usage:
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
   batuta loop      --supervise <delivery> --cursor <absolute-path> [--once] [--interval 500ms] [--notify desktop|<absolute-directory>] [--policy <path>]
+  batuta loop      --supervise <delivery> --review-status
+  batuta loop      --supervise <delivery> --review-judgment accept|reject --review-id <id> --review-digest <sha256:digest> --rationale "<reason>"
   batuta watch     [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
   batuta review    [--base <ref>] [--worktree] [--spec <plan>] [--cohort-files N] [--parallel N] [--reviewer <executor/model>] [--full] [--out <dir>]
@@ -70,9 +72,18 @@ dispatch   One bounded external attempt, compact JSON and private artifacts in
            this release has no qualified ACP launches. Auto falls back to CLI
            before submission. Native tools belong to the interactive host.
 supervise  Foreground observation, then full review of a completed delivery.
-           Automatic review requires --supervise and runs after finalized done,
-           with or without --policy. Waiting makes no model calls; review evidence
-           needs conductor judgment and implementation completion is not acceptance.
+           Normal new/resume/answer/roadmap runs include supervision and full
+           review after finalized done. --supervise attaches separately.
+           Waiting makes no model calls; --policy remains opt-in. Implementation
+           completion and SHIP do not grant conductor acceptance or Git approval.
+           Normal loop stdout retains worker logs; observer JSON goes to stderr.
+           --supervise emits JSON on stdout and continuation logs on stderr.
+           Normal cursors live at .batuta/runs/supervision/<delivery>.json.
+           --review-status prints the progression gate and exact evidence digest
+           without launching review. --review-judgment records accept/reject with
+           exact --review-id, --review-digest and nonempty --rationale; it cannot
+           combine with execution, policy or observer flags. A rejection remains
+           blocked. Judgment grants progression only, never execution permission.
            --interval is bounded to 100ms..1m; Ctrl-C/SIGTERM stops cleanly.
            --cursor persists unread events; --once performs one observation.
            Each observation handles up to 32 events, with overflow in the cursor;
@@ -104,10 +115,14 @@ loop       The mechanical conductor over an approved plan
            executor session per task in its own worktree through the
            adapter, the four gates, retry then escalation, one commit per
            task integrated onto the checked-out branch, everything
-           journaled under .batuta/journal/. Exit 0 when every task
-           integrated; 2 blocked; 3 waiting for an answer; 4 waiting for
-           an approved roadmap plan; 130 canceled. --transport selects the
-           task transport (default cli); verification stays independently CLI.
+           journaled under .batuta/journal/. Exit 0 after implementation and
+           required review clear progression; 2 blocked or review_blocked;
+           3 waiting for an answer; 4 waiting for an approved roadmap plan;
+           1 runtime error; 130 canceled. Missing, failed, uncertain or incomplete
+           review cannot return unreviewed success. Resume retains review budgets.
+           Dry-run, dashboard and abandon do not launch reviewers.
+           --transport selects the task transport (default cli); verification
+           stays independently CLI.
 watch      Live dashboard of a delivery (the most recent open one by
            default). --interval sets the journal poll interval; --once prints a
            snapshot; --lang selects labels; --ascii uses ASCII borders and
@@ -603,6 +618,11 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	once := flags.Bool("once", false, "observe supervision once, then exit")
 	notify := flags.String("notify", "", "local sink: desktop or an existing absolute directory (default: leave unread)")
 	policy := flags.String("policy", "", "explicit scoped supervision policy JSON file")
+	reviewStatus := flags.Bool("review-status", false, "inspect the delivery progression gate without launching review")
+	reviewJudgment := flags.String("review-judgment", "", "explicit progression judgment: accept or reject")
+	reviewID := flags.String("review-id", "", "exact review job ID for judgment")
+	reviewDigest := flags.String("review-digest", "", "exact current progression evidence digest for judgment")
+	rationale := flags.String("rationale", "", "operator rationale for the progression judgment")
 	interval := flags.Duration("interval", 500*time.Millisecond, "journal poll interval")
 	parallel := flags.Int("parallel", 0, "executors per wave, at most 4 (default: the profile's Execution line)")
 	taskTimeout := flags.Duration("task-timeout", 45*time.Minute, "time budget per executor session")
@@ -636,12 +656,60 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		}
 	}
 	rest := flags.Args()
+	var judgmentMode bool
+	flags.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "review-status", "review-judgment", "review-id", "review-digest", "rationale":
+			judgmentMode = true
+		}
+	})
+	if judgmentMode {
+		var conflict string
+		flags.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "workspace", "supervise", "review-status", "review-judgment", "review-id", "review-digest", "rationale":
+			default:
+				conflict = f.Name
+			}
+		})
+		if conflict != "" || len(rest) != 0 || *supervise == "" || (*reviewStatus == (*reviewJudgment != "")) {
+			return errors.New("review status/judgment requires --supervise <delivery> and exactly one of --review-status or --review-judgment; execution and observer flags are not allowed")
+		}
+		if *reviewStatus && (*reviewID != "" || *reviewDigest != "" || *rationale != "") {
+			return errors.New("--review-id, --review-digest and --rationale require --review-judgment")
+		}
+		root, err := workspaceRoot(*workspace)
+		if err != nil {
+			return err
+		}
+		observer := loop.SupervisionOptions{Workspace: root, Delivery: *supervise}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		var gate loop.SupervisionGate
+		if *reviewStatus {
+			gate, err = loop.CheckSupervisionGate(ctx, observer)
+		} else {
+			gate, err = loop.JudgeSupervisionGate(ctx, observer, loop.SupervisionJudgment{
+				Delivery: *supervise, ReviewID: *reviewID, EvidenceDigest: *reviewDigest, Decision: *reviewJudgment, Rationale: *rationale,
+			})
+		}
+		if err != nil {
+			return err
+		}
+		if err := json.NewEncoder(stdout).Encode(gate); err != nil {
+			return err
+		}
+		if !gate.Cleared {
+			return loopExit(loop.StateReviewBlocked)
+		}
+		return nil
+	}
 	if *supervise != "" {
 		var conflict string
 		flags.Visit(func(f *flag.Flag) {
 			switch f.Name {
-			case "supervise", "workspace", "cursor", "once", "notify", "policy", "interval":
-			case "skills", "transport", "parallel", "task-timeout", "test-timeout", "max-waves", "keep-worktrees", "max-limit-waits", "limit-horizon", "limit-wait":
+			case "supervise", "workspace", "cursor", "once", "notify", "policy", "interval", "skills":
+			case "transport", "parallel", "task-timeout", "test-timeout", "max-waves", "keep-worktrees", "max-limit-waits", "limit-horizon", "limit-wait":
 				if *policy == "" {
 					conflict = f.Name
 				}
@@ -663,8 +731,14 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if err != nil {
 			return err
 		}
+		reviewSkills, err := loop.FindSkills(root, *skills)
+		// Passive observation does not require an implicit skills installation.
+		// Keep explicit selections strict; review will report missing defaults.
+		if err != nil && (*skills != "" || strings.TrimSpace(os.Getenv("BATUTA_SKILLS")) != "") {
+			return err
+		}
 		opts := loop.SuperviseOptions{Observer: loop.SupervisionOptions{Workspace: root, Delivery: *supervise, CursorPath: *cursor}, Interval: *interval, Once: *once, Output: stdout}
-		opts.Review = &loop.SupervisionReviewOptions{Executable: executable}
+		opts.Review = &loop.SupervisionReviewOptions{Executable: executable, Skills: reviewSkills}
 		if *notify == "desktop" {
 			opts.Sink = loop.NewSupervisionDesktopSink()
 		} else if *notify != "" {
@@ -692,7 +766,23 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return loop.Supervise(ctx, opts)
+		if err := errors.Join(loop.Supervise(ctx, opts), ctx.Err()); err != nil {
+			return loopRunExit(loop.StateCanceled, err)
+		}
+		observation, err := loop.ObserveSupervision(opts.Observer)
+		if err != nil {
+			return err
+		}
+		if job := observation.Review; job != nil {
+			gate, err := loop.CheckSupervisionGate(ctx, opts.Observer)
+			if err != nil {
+				return err
+			}
+			if !gate.Cleared || (!gate.Required && opts.Review != nil && job.ID != "" && (job.State != "reported" || job.Outcome != "SHIP")) {
+				return loopExit(loop.StateReviewBlocked)
+			}
+		}
+		return nil
 	}
 	var supervisionFlag string
 	flags.Visit(func(f *flag.Flag) {
@@ -736,6 +826,31 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		fmt.Fprintf(stdout, "delivery %s %s\n", *abandon, state)
 		return nil
 	}
+	if !*dryRun {
+		if *interval < 100*time.Millisecond || *interval > time.Minute {
+			return errors.New("loop: supervision interval must be between 100ms and 1m")
+		}
+		executable, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("loop: required review executable: %w", err)
+		}
+		root, err := workspaceRoot(*workspace)
+		if err != nil {
+			return err
+		}
+		reviewSkills, err := loop.FindSkills(root, *skills)
+		// A roadmap can stop at a missing plan before it needs an implicit skills
+		// installation. Explicit selections remain strict, and execution resolves
+		// its required adapters before opening a delivery.
+		if err != nil && (!*roadmap || *skills != "" || strings.TrimSpace(os.Getenv("BATUTA_SKILLS")) != "") {
+			return err
+		}
+		// Preserve loop stdout; observer reports use a separate stream.
+		opts.Supervisor = &loop.SuperviseOptions{
+			Interval: *interval, Output: stderr,
+			Review: &loop.SupervisionReviewOptions{Executable: executable, Skills: reviewSkills},
+		}
+	}
 	if *answer != "" {
 		if len(rest) != 1 {
 			return errors.New("usage: batuta loop --answer <task> \"<text>\"")
@@ -754,10 +869,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if errors.Is(err, loop.ErrStopped) {
 			return nil
 		}
-		if err != nil {
-			return err
-		}
-		return loopExit(state)
+		return loopRunExit(state, err)
 	}
 	var runner *loop.Runner
 	var err error
@@ -782,14 +894,43 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		return nil
 	}
 	state, err := runner.Run(ctx)
+	if errors.Is(err, loop.ErrStopped) {
+		fmt.Fprintf(stdout, "stopped after %d wave(s); resume with: batuta loop --resume %s\n", *maxWaves, runner.Delivery())
+		return nil
+	}
+	return loopRunExit(state, err)
+}
+
+func loopRunExit(state string, err error) error {
 	if err != nil {
-		if errors.Is(err, loop.ErrStopped) {
-			fmt.Fprintf(stdout, "stopped after %d wave(s); resume with: batuta loop --resume %s\n", *maxWaves, runner.Delivery())
-			return nil
+		if (state == loop.StateCanceled || state == loop.StateDone || state == loop.StateReviewBlocked) && cancellationOnly(err) {
+			// Foreground cancellation does not rewrite completed implementation.
+			return loopExit(loop.StateCanceled)
 		}
 		return err
 	}
 	return loopExit(state)
+}
+
+// errors.Is alone would hide independent failures joined with cancellation.
+func cancellationOnly(err error) bool {
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		errors := e.Unwrap()
+		if len(errors) == 0 {
+			return false
+		}
+		for _, child := range errors {
+			if !cancellationOnly(child) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return cancellationOnly(e.Unwrap())
+	default:
+		return err == context.Canceled
+	}
 }
 
 func loopExit(state string) error {

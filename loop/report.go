@@ -631,6 +631,9 @@ func (r *Runner) tickPlan(summary Summary) (bool, error) {
 			changed = true
 		}
 		r.planPath = done
+		if r.opts.Supervision {
+			return changed, nil
+		}
 		roadmap := filepath.Join(r.root, ".batuta", "roadmap.md")
 		if _, err := os.Stat(roadmap); err == nil {
 			if err := routing.TickPhase(roadmap, r.plan.Slug); err != nil {

@@ -21,7 +21,8 @@ import (
 const SupervisionEventLimit = 4 << 10
 
 // SupervisionOptions binds a passive observer to one delivery and durable cursor.
-// CursorPath must be absolute and outside the journal directory. Now observes
+// CursorPath defaults to a private delivery cursor under .batuta/runs/supervision.
+// An explicit path must be absolute and outside the journal directory. Now observes
 // freshness only; the observer has no executor, answer or process-launch hook.
 type SupervisionOptions struct {
 	Workspace  string
@@ -259,6 +260,13 @@ func AcknowledgeSupervision(opts SupervisionOptions, eventID string) error {
 }
 
 func normalizeSupervisionOptions(opts SupervisionOptions) (SupervisionOptions, error) {
+	if opts.CursorPath == "" && filepath.IsAbs(opts.Workspace) && journal.ValidDeliveryID(opts.Delivery) {
+		directory := filepath.Join(opts.Workspace, ".batuta", "runs", "supervision")
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			return opts, err
+		}
+		opts.CursorPath = filepath.Join(directory, opts.Delivery+".json")
+	}
 	if !filepath.IsAbs(opts.Workspace) || !filepath.IsAbs(opts.CursorPath) || !journal.ValidDeliveryID(opts.Delivery) {
 		return opts, errors.New("loop: supervision requires absolute workspace and cursor paths and an explicit delivery ID")
 	}
@@ -353,6 +361,8 @@ func supervisionEventID(delivery string, sequence int) string {
 func supervisionEvent(delivery string, record journal.Record) (*SupervisionEvent, error) {
 	action := ""
 	switch record.Kind {
+	case KindStarted:
+		action = "Executor is running; observe progress while the runner retains execution ownership."
 	case KindQuestion:
 		action = "Inspect the referenced question and use the bound-answer API only within an authorized policy."
 	case KindFailure:

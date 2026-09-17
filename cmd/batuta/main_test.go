@@ -24,7 +24,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && (os.Args[1] == "capabilities" || os.Args[1] == "review") {
+	if len(os.Args) > 1 && (os.Args[1] == "capabilities" || os.Args[1] == "review" || os.Args[1] == "loop") {
 		if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 			var exit *ExitError
 			if errors.As(err, &exit) {
@@ -803,25 +803,45 @@ func TestLoopRoadmapDryRunPrintsTheChain(t *testing.T) {
 }
 
 func TestLoopRoadmapWaitingPlanExitCode(t *testing.T) {
-	root := t.TempDir()
+	t.Parallel()
+	root := tempDir(t)
 	if err := os.MkdirAll(filepath.Join(root, ".batuta"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".batuta", "roadmap.md"), []byte("# Roadmap — Delivery\n\n- [ ] 1. Missing → plans/missing.md\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var stdout, stderr bytes.Buffer
-	err := run([]string{"loop", "--workspace", root, "--roadmap"}, &stdout, &stderr)
-	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != 4 || exit.State != loop.StateWaitingPlan {
-		t.Fatalf("waiting plan exit = %v, want code 4, waiting_plan", err)
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "waiting_plan") {
-		t.Fatalf("waiting_plan was not printed: %s", &stdout)
+	cmd := exec.Command(binary, "loop", "--workspace", root, "--roadmap")
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "HOME=") && !strings.HasPrefix(entry, "BATUTA_SKILLS=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, "HOME="+tempDir(t))
+	output, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 4 {
+		t.Fatalf("waiting plan exit = %v, want code 4, waiting_plan\n%s", err, output)
+	}
+	if !bytes.Contains(output, []byte("waiting_plan")) {
+		t.Fatalf("waiting_plan was not printed: %s", output)
 	}
 	if _, err := os.Stat(filepath.Join(root, journal.Dir)); !os.IsNotExist(err) {
 		t.Fatalf("waiting plan opened a journal: %v", err)
 	}
+}
+
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func watchDelivery(t *testing.T, root, delivery string) (*journal.Store, json.RawMessage) {
@@ -1603,10 +1623,30 @@ func TestReviewWithMixedSpecRules(t *testing.T) {
 	}
 }
 
-func TestLoopSupervisionOnce(t *testing.T) {
-	root := t.TempDir()
+func loopSupervisionFixture(t *testing.T) string {
+	t.Helper()
+	root, skills := loopSupervisionFixtureWithoutAmbientSkills(t)
+	t.Setenv("BATUTA_SKILLS", skills)
+	return root
+}
+
+func loopSupervisionFixtureWithoutAmbientSkills(t *testing.T) (string, string) {
+	t.Helper()
+	root, skills := loopSupervisionIsolatedFixture(t)
+	t.Setenv("BATUTA_SKILLS", "")
+	t.Setenv("PATH", skills+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return root, skills
+}
+
+func loopSupervisionIsolatedFixture(t *testing.T) (string, string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	for name, payload := range map[string]string{
-		".gitignore":            ".batuta/journal/\n.batuta/reviews/\n",
+		".gitignore":            ".batuta/journal/\n.batuta/reviews/\n.batuta/runs/\n",
+		".batuta/roadmap.md":    "# Roadmap — Delivery\n\n- [ ] 1. Demo → plans/demo.md\n",
 		".batuta/profile.md":    "Stack: Go\nMethodology: TDD\nTest: true\nBuild: true\nExecution: sequential\nWorktree: off\nTemplate: templates/generic.md\n",
 		".batuta/routing.md":    "| Lane | Domain | Executor | Model |\n|---|---|---|---|\n| high | * | codex | review-model |\n",
 		".batuta/plans/demo.md": "# Plan — Supervised\n\n**Goal:** Test review wiring.\n**Status:** approved\n\n## Tasks\n- [ ] 1. Add source — backend/low\n      Scope: source.txt\n      Accept: source exists → test -f source.txt\n",
@@ -1620,6 +1660,9 @@ func TestLoopSupervisionOnce(t *testing.T) {
 		}
 	}
 	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "config", "user.name", "Batuta Test")
+	reviewGit(t, root, "config", "user.email", "batuta@example.test")
+	reviewGit(t, root, "config", "commit.gpgsign", "false")
 	reviewGit(t, root, "add", ".")
 	reviewGit(t, root, "commit", "-qm", "plan")
 	base := reviewGit(t, root, "rev-parse", "HEAD")
@@ -1637,7 +1680,7 @@ func TestLoopSupervisionOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	opened, err := json.Marshal(map[string]any{"slug": "demo", "plan_path": ".batuta/plans/demo.md", "plan_digest": plan.Set.Digest, "head": base})
+	opened, err := json.Marshal(map[string]any{"slug": "demo", "plan_path": ".batuta/plans/demo.md", "plan_digest": plan.Set.Digest, "head": base, "branch": reviewGit(t, root, "branch", "--show-current"), "supervision": true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1669,11 +1712,14 @@ func TestLoopSupervisionOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("BATUTA_SKILLS", skills)
-	t.Setenv("PATH", skills+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return root, skills
+}
+
+func TestLoopSupervisionOnce(t *testing.T) {
+	root, skills := loopSupervisionFixtureWithoutAmbientSkills(t)
 	cursor := filepath.Join(root, "cursor.json")
 	var stdout, stderr bytes.Buffer
-	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", cursor, "--once"}
+	args := []string{"loop", "--workspace", root, "--skills", skills, "--supervise", "supervised", "--cursor", cursor, "--once"}
 	if err := run(args, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
@@ -1843,6 +1889,18 @@ esac
 		t.Fatalf("deliveries=%v err=%v", deliveries, err)
 	}
 	delivery := deliveries[0]
+	initialRecords, err := store.Read(delivery)
+	if err != nil || len(initialRecords) == 0 || !bytes.Contains(initialRecords[0].Detail, []byte(`"supervision":true`)) {
+		t.Fatalf("normal loop omitted durable supervision: %v, %v", initialRecords, err)
+	}
+	if strings.Contains(stdout.String(), `"delivery":`) || stderr.Len() == 0 {
+		t.Fatalf("normal output streams: stdout=%s stderr=%s", &stdout, &stderr)
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(stderr.Bytes()), []byte("\n")) {
+		if !json.Valid(line) {
+			t.Fatalf("normal observation is not JSON: %s", line)
+		}
+	}
 	cursor := filepath.Join(state, "cursor.json")
 	observation, err := loop.ObserveSupervision(loop.SupervisionOptions{Workspace: root, Delivery: delivery, CursorPath: cursor})
 	if err != nil {
@@ -1955,5 +2013,472 @@ esac
 	after, err := os.ReadFile(store.Path(delivery))
 	if err != nil || !bytes.Equal(before, after) || stderr.Len() != 0 {
 		t.Fatalf("repeated CLI supervision executed again: %v stderr=%s", err, &stderr)
+	}
+	for _, action := range [][]string{{"--answer", "1", "explicit operator answer"}, {"--resume", delivery}} {
+		stdout.Reset()
+		stderr.Reset()
+		normal := append([]string{"loop", "--workspace", root, "--skills", skills}, action...)
+		if err := run(normal, &stdout, &stderr); !errors.As(err, &exit) || exit.Code != 3 {
+			t.Fatalf("normal continuation: %v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+		}
+		if stderr.Len() == 0 || strings.Contains(stdout.String(), `"delivery":`) {
+			t.Fatalf("normal continuation streams: stdout=%s stderr=%s", &stdout, &stderr)
+		}
+		for _, line := range bytes.Split(bytes.TrimSpace(stderr.Bytes()), []byte("\n")) {
+			if !json.Valid(line) {
+				t.Fatalf("continuation observation is not JSON: %s", line)
+			}
+		}
+	}
+}
+
+func TestLoopRunExitPreservesIndependentFailures(t *testing.T) {
+	failure := errors.New("observer or runtime failed")
+	for _, tc := range []struct {
+		name  string
+		state string
+		err   error
+		code  int
+	}{
+		{"canceled-state", loop.StateCanceled, nil, 130},
+		{"cancellation", loop.StateCanceled, context.Canceled, 130},
+		{"wrapped-cancellation", loop.StateCanceled, fmt.Errorf("run: %w", context.Canceled), 130},
+		{"joined-cancellations", loop.StateCanceled, errors.Join(context.Canceled, fmt.Errorf("observer: %w", context.Canceled)), 130},
+		{"joined-failure", loop.StateCanceled, errors.Join(context.Canceled, failure), 0},
+		{"nested-failure", loop.StateCanceled, fmt.Errorf("run: %w", errors.Join(failure, context.Canceled)), 0},
+		{"failure", loop.StateCanceled, failure, 0},
+		{"deadline", loop.StateCanceled, errors.Join(context.Canceled, context.DeadlineExceeded), 0},
+		{"unfinished", "", context.Canceled, 0},
+		{"done", loop.StateDone, nil, 0},
+		{"final-review-cancellation", loop.StateDone, context.Canceled, 130},
+		{"rediscovered-review-cancellation", loop.StateReviewBlocked, context.Canceled, 130},
+		{"rediscovered-review-failure", loop.StateReviewBlocked, errors.Join(context.Canceled, failure), 0},
+		{"final-review-joined-failure", loop.StateDone, errors.Join(context.Canceled, failure), 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := loopRunExit(tc.state, tc.err)
+			var exit *ExitError
+			if tc.code != 0 {
+				if !errors.As(err, &exit) || exit.Code != tc.code {
+					t.Fatalf("exit=%v, want %d", err, tc.code)
+				}
+			} else if err != tc.err || errors.As(err, &exit) {
+				t.Fatalf("error=%v, want original %v without exit mapping", err, tc.err)
+			}
+		})
+	}
+}
+
+func TestLoopSupervisionCancellationWorker(t *testing.T) {
+	ready := os.Getenv("BATUTA_CANCELLATION_READY")
+	if ready == "" {
+		return
+	}
+	if err := os.WriteFile(ready, []byte(fmt.Sprint(os.Getpid())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The executor must terminate this process; the timer bounds a broken test.
+	<-time.After(30 * time.Second)
+	os.Exit(91)
+}
+
+func TestLoopSupervisionNormalCompletion(t *testing.T) {
+	for _, mode := range []string{"resume", "roadmap", "unavailable"} {
+		t.Run(mode, func(t *testing.T) {
+			root, skills := loopSupervisionFixtureWithoutAmbientSkills(t)
+			args := []string{"loop", "--workspace", root, "--skills", skills, "--resume", "supervised"}
+			if mode == "roadmap" {
+				args = []string{"loop", "--workspace", root, "--skills", skills, "--roadmap"}
+			}
+			if mode == "unavailable" {
+				if err := os.Remove(filepath.Join(skills, "fake-reviewer")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stdout, stderr bytes.Buffer
+			err := run(args, &stdout, &stderr)
+			if mode == "unavailable" {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || exit.State != loop.StateReviewBlocked {
+					t.Fatalf("missing required review: %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("%v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+			}
+			observation, err := loop.ObserveSupervision(loop.SupervisionOptions{Workspace: root, Delivery: "supervised"})
+			if err != nil || observation.Review == nil {
+				t.Fatalf("review missing: %+v, %v", observation, err)
+			}
+			if mode != "unavailable" && observation.Review.Outcome != "SHIP" {
+				t.Fatalf("review: %+v", observation.Review)
+			}
+			if strings.Contains(stdout.String(), `"delivery":`) {
+				t.Fatalf("observer mixed into worker stdout: %s", &stdout)
+			}
+			if stderr.Len() == 0 {
+				t.Fatal("missing structured observation")
+			}
+			for _, line := range bytes.Split(bytes.TrimSpace(stderr.Bytes()), []byte("\n")) {
+				if !json.Valid(line) {
+					t.Fatalf("observer output is not JSON: %s", line)
+				}
+			}
+		})
+	}
+}
+
+func TestLoopSupervisionJudgment(t *testing.T) {
+	for _, decision := range []string{"accept", "reject"} {
+		t.Run(decision, func(t *testing.T) {
+			root := loopSupervisionFixture(t)
+			base := []string{"loop", "--workspace", root, "--supervise", "supervised"}
+			var stdout, stderr bytes.Buffer
+			err := run(append(slices.Clone(base), "--review-status"), &stdout, &stderr)
+			var exit *ExitError
+			if !errors.As(err, &exit) || exit.Code != 2 {
+				t.Fatalf("pending status: %v", err)
+			}
+			var gate loop.SupervisionGate
+			if err := json.Unmarshal(stdout.Bytes(), &gate); err != nil || gate.Cleared || gate.EvidenceDigest != "" {
+				t.Fatalf("pending gate: %+v, %v", gate, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".batuta/reviews/supervision", gate.ReviewID, "job.json")); !os.IsNotExist(err) {
+				t.Fatalf("status launched review: %v", err)
+			}
+			stdout.Reset()
+			if err := run(append(slices.Clone(base), "--cursor", filepath.Join(root, "cursor.json"), "--once"), &stdout, &stderr); err != nil {
+				t.Fatal(err)
+			}
+			stdout.Reset()
+			if err := run(append(slices.Clone(base), "--review-status"), &stdout, &stderr); err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &gate); err != nil || !gate.Cleared || gate.EvidenceDigest == "" {
+				t.Fatalf("reported gate: %+v, %v", gate, err)
+			}
+			args := append(slices.Clone(base), "--review-judgment", decision, "--review-id", gate.ReviewID, "--review-digest", gate.EvidenceDigest, "--rationale", "I reviewed the exact evidence.")
+			for _, invalid := range [][]string{
+				args[:len(args)-2],
+				append(slices.Clone(args), "--resume", "supervised"),
+				append(slices.Clone(args), "--policy", "missing.json"),
+				append(slices.Clone(args), "--once"),
+				append(slices.Clone(args), "--review-digest", "sha256:stale"),
+			} {
+				if err := run(invalid, &stdout, &stderr); err == nil {
+					t.Fatalf("invalid judgment accepted: %v", invalid)
+				}
+			}
+			before, err := os.ReadFile(filepath.Join(root, journal.Dir, "supervised.jsonl"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			stdout.Reset()
+			err = run(args, &stdout, &stderr)
+			if decision == "accept" && err != nil || decision == "reject" && (!errors.As(err, &exit) || exit.Code != 2) {
+				t.Fatalf("judgment: %v", err)
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &gate); err != nil || gate.Cleared != (decision == "accept") {
+				t.Fatalf("judged gate: %+v, %v", gate, err)
+			}
+			data, err := os.ReadFile(filepath.Join(root, ".batuta/reviews/supervision", gate.ReviewID, "progression.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved loop.SupervisionJudgment
+			if err := json.Unmarshal(data, &saved); err != nil || saved.EvidenceDigest != gate.EvidenceDigest || saved.Decision != decision || saved.Rationale != "I reviewed the exact evidence." {
+				t.Fatalf("saved: %+v, %v", saved, err)
+			}
+			after, err := os.ReadFile(filepath.Join(root, journal.Dir, "supervised.jsonl"))
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("judgment executed work: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoopSupervisionStandaloneHonorsJudgment(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name         string
+		reviewOutput string
+		initialExit  int
+		decision     string
+		finalExit    int
+	}{
+		{name: "accepted adverse review", reviewOutput: "<<<FINDINGS\n{\"severity\":\"major\",\"kind\":\"defect\",\"file\":\"source.txt\",\"line\":1,\"premise\":\"The delivered value is wrong.\",\"path\":\"Read source.txt.\",\"verdict\":\"The value cannot ship.\",\"fix\":\"Correct the value.\"}\nFINDINGS>>>\n", initialExit: 2, decision: "accept", finalExit: 0},
+		{name: "rejected SHIP review", reviewOutput: "<<<FINDINGS\nFINDINGS>>>\n", initialExit: 0, decision: "reject", finalExit: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root, skills := loopSupervisionIsolatedFixture(t)
+			if err := os.WriteFile(filepath.Join(skills, "fake-reviewer"), []byte("#!/bin/sh\nprintf '%s' '"+tc.reviewOutput+"'\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			assertExit := func(err error, want int, output []byte) {
+				t.Helper()
+				var exit *exec.ExitError
+				if want == 0 && err != nil || want != 0 && (!errors.As(err, &exit) || exit.ExitCode() != want) {
+					t.Fatalf("exit=%v, want %d\n%s", err, want, output)
+				}
+			}
+
+			observeArgs := []string{"--skills", skills, "--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--once"}
+			output, err := loopSupervisionCommand(t, root, skills, observeArgs...).CombinedOutput()
+			assertExit(err, tc.initialExit, output)
+
+			status := loopSupervisionCommand(t, root, skills, "--supervise", "supervised", "--review-status")
+			output, err = status.Output()
+			assertExit(err, tc.initialExit, output)
+			var gate loop.SupervisionGate
+			if err := json.Unmarshal(output, &gate); err != nil || gate.EvidenceDigest == "" {
+				t.Fatalf("gate=%+v, err=%v, output=%s", gate, err, output)
+			}
+
+			judgment := loopSupervisionCommand(t, root, skills, "--supervise", "supervised", "--review-judgment", tc.decision, "--review-id", gate.ReviewID, "--review-digest", gate.EvidenceDigest, "--rationale", "Reviewed the exact evidence.")
+			output, err = judgment.Output()
+			assertExit(err, tc.finalExit, output)
+
+			output, err = loopSupervisionCommand(t, root, skills, observeArgs...).CombinedOutput()
+			assertExit(err, tc.finalExit, output)
+		})
+	}
+}
+
+func TestLoopSupervisionNonexecutingCommands(t *testing.T) {
+	for _, args := range [][]string{{"--dashboard"}, {"--roadmap", "--dry-run"}, {"--resume", "supervised", "--dry-run"}, {"--abandon", "supervised"}} {
+		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+			root := loopSupervisionFixture(t)
+			var stdout, stderr bytes.Buffer
+			err := run(append([]string{"loop", "--workspace", root}, args...), &stdout, &stderr)
+			if args[0] == "--abandon" || args[0] == "--resume" {
+				if err == nil || !strings.Contains(err.Error(), "already ended: done") {
+					t.Fatalf("abandon completed delivery: %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".batuta/reviews")); !os.IsNotExist(err) {
+				t.Fatalf("nonexecuting command launched review: %v", err)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("nonexecuting command observed: %s", &stderr)
+			}
+		})
+	}
+}
+
+func loopSupervisionCommand(t *testing.T, root, skills string, args ...string) *exec.Cmd {
+	t.Helper()
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	cmd := exec.CommandContext(ctx, binary, append([]string{"loop", "--workspace", root}, args...)...)
+	cmd.Dir = t.TempDir()
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "HOME=") && !strings.HasPrefix(entry, "BATUTA_SKILLS=") && !strings.HasPrefix(entry, "PATH=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd.Env = append(cmd.Env, "HOME="+home, "PATH="+skills+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return cmd
+}
+
+func TestLoopSupervisionRelativeSkills(t *testing.T) {
+	for _, mode := range []string{"resume", "standalone", "missing-explicit"} {
+		t.Run(mode, func(t *testing.T) {
+			root, skills := loopSupervisionIsolatedFixture(t)
+			args := []string{"--resume", "supervised"}
+			if mode == "standalone" {
+				args = []string{"--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--once"}
+			}
+			cmd := loopSupervisionCommand(t, root, skills, args...)
+			relative, err := filepath.Rel(cmd.Dir, skills)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A fallback installation deliberately disagrees with the selected adapter.
+			fallback := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(fallback, "adapters"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			cmd.Env = append(cmd.Env, "BATUTA_SKILLS="+fallback)
+			if mode == "missing-explicit" {
+				cmd.Env[len(cmd.Env)-1] = "BATUTA_SKILLS=" + skills
+				relative = "missing-skills"
+			}
+			cmd.Args = append(cmd.Args, "--skills", relative)
+			output, err := cmd.CombinedOutput()
+			if mode == "missing-explicit" {
+				if err == nil {
+					t.Fatalf("invalid explicit skills silently fell back: %s", output)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("relative skills: %v\n%s", err, output)
+			}
+			observation, err := loop.ObserveSupervision(loop.SupervisionOptions{Workspace: root, Delivery: "supervised"})
+			if err != nil || observation.Review == nil || observation.Review.State != "reported" || observation.Review.Outcome != "SHIP" {
+				t.Fatalf("selected adapter did not complete review: %+v %v\n%s", observation.Review, err, output)
+			}
+		})
+	}
+}
+
+func TestLoopSupervisionIsolatedHome(t *testing.T) {
+	for _, candidate := range []bool{false, true} {
+		t.Run(fmt.Sprint(candidate), func(t *testing.T) {
+			root := t.TempDir()
+			if candidate {
+				root, _ = loopSupervisionIsolatedFixture(t)
+			} else {
+				store, err := journal.Open(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			sink := t.TempDir()
+			args := []string{"--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--notify", sink, "--once"}
+			for range 2 {
+				cmd := loopSupervisionCommand(t, root, t.TempDir(), args...)
+				output, err := cmd.CombinedOutput()
+				if candidate {
+					var exit *exec.ExitError
+					if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+						t.Fatalf("required review not blocked: %v\n%s", err, output)
+					}
+					gate, err := loop.CheckSupervisionGate(context.Background(), loop.SupervisionOptions{Workspace: root, Delivery: "supervised"})
+					if err != nil || !gate.Required || gate.Cleared {
+						t.Fatalf("gate=%+v err=%v", gate, err)
+					}
+				} else if err != nil || !bytes.Contains(output, []byte(`"pending":0`)) {
+					t.Fatalf("passive observation: %v\n%s", err, output)
+				}
+			}
+			files, err := os.ReadDir(sink)
+			if err != nil || len(files) == 0 || (!candidate && len(files) != 1) {
+				t.Fatalf("notifications=%v err=%v", files, err)
+			}
+		})
+	}
+}
+
+func TestLoopSupervisionRequiredReviewMissingIdentity(t *testing.T) {
+	t.Parallel()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindOpened, Detail: json.RawMessage(`{"supervision":true}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("supervised", journal.Record{Kind: loop.KindTerminal, Detail: json.RawMessage(`{"state":"done"}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := loopSupervisionCommand(t, root, t.TempDir(), "--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--once")
+	output, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+		t.Fatalf("missing required review identity not blocked: %v\n%s", err, output)
+	}
+}
+
+func TestLoopSupervisionStandaloneLegacyReview(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"adverse", "failed", "uncertain", "passive"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			root, skills := loopSupervisionIsolatedFixture(t)
+			store, err := journal.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := store.Read("supervised")
+			if err != nil {
+				t.Fatal(err)
+			}
+			records[0].Detail = bytes.Replace(records[0].Detail, []byte(`"supervision":true`), []byte(`"supervision":false`), 1)
+			if scenario == "passive" {
+				records = records[:1]
+			}
+			if err := os.Remove(store.Path("supervised")); err != nil {
+				t.Fatal(err)
+			}
+			for _, record := range records {
+				if _, err := store.Append("supervised", record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "adverse" {
+				payload := "#!/bin/sh\nprintf '%s\\n' '<<<FINDINGS' '{\"severity\":\"major\",\"kind\":\"defect\",\"file\":\"source.txt\",\"line\":1,\"premise\":\"Wrong value.\",\"path\":\"Read source.txt.\",\"verdict\":\"Cannot ship.\",\"fix\":\"Correct value.\"}' 'FINDINGS>>>'\n"
+				if err := os.WriteFile(filepath.Join(skills, "fake-reviewer"), []byte(payload), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			observer := loop.SupervisionOptions{Workspace: root, Delivery: "supervised"}
+			if scenario == "failed" || scenario == "uncertain" {
+				// Seed a durable failed/uncertain launch through the public review API.
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				_, err := loop.RunSupervisionReview(ctx, observer, loop.SupervisionReviewOptions{Executable: "fake", Runner: mainReviewRunner(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+					if len(cmd.Args) == 1 {
+						return publication.CommandResult{Stdout: []byte(`{"commands":["review"]}`)}, nil
+					}
+					if len(cmd.Args) == 2 {
+						return publication.CommandResult{Stderr: []byte(" -base string\n -spec string\n -full\n -out string\n")}, nil
+					}
+					if scenario == "uncertain" {
+						cancel()
+						return publication.CommandResult{}, ctx.Err()
+					}
+					return publication.CommandResult{ExitCode: 1}, errors.New("review failed")
+				})})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"--skills", skills, "--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--once"}
+			output, err := loopSupervisionCommand(t, root, skills, args...).CombinedOutput()
+			if scenario == "passive" {
+				if err != nil {
+					t.Fatalf("passive: %v\n%s", err, output)
+				}
+			} else {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+					t.Fatalf("legacy %s: %v, want exit 2\n%s", scenario, err, output)
+				}
+				observation, err := loop.ObserveSupervision(observer)
+				if err != nil || observation.Review == nil {
+					t.Fatalf("observation: %+v, %v", observation, err)
+				}
+				want := scenario
+				if scenario == "adverse" {
+					want = "reported"
+				}
+				if observation.Review.State != want {
+					t.Fatalf("review=%+v, want %s", observation.Review, want)
+				}
+			}
+			gate, err := loop.CheckSupervisionGate(context.Background(), observer)
+			if err != nil || gate.Required || !gate.Cleared {
+				t.Fatalf("legacy acquired durable gate: %+v, %v", gate, err)
+			}
+		})
 	}
 }
