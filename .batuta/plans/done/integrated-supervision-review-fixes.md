@@ -1,17 +1,17 @@
 # Plan — fix integrated supervision review findings
 
 **Goal:** Correct cancellation exit semantics, explicit skills propagation to final review, and arbitrary writer handling before releasing integrated supervision.
-**Created:** 2026-09-16 · **Status:** approved
+**Created:** 2026-09-16 · **Status:** done
 
 ## Tasks
-- [ ] 1. Preserve signal cancellation while exposing independent failures — backend/high
+- [x] 1. Preserve signal cancellation while exposing independent failures — backend/high
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, loop/supervision_run.go, loop/supervision_run_test.go
       Accept: normal supervised new/resume/roadmap execution returns cancellation exit 130 after joining activity, while independent observer/runtime errors are not hidden by a joined context cancellation; an actual CLI cancellation regression distinguishes this from generic exit 1 → go test ./cmd/batuta -run 'Loop|Supervis'; supervision cancellation and cleanup regressions pass → go test -race ./loop -run SupervisionRun
-- [ ] 2. Carry explicit skills selection into required review — backend/medium
+- [x] 2. Carry explicit skills selection into required review — backend/medium
       Depends on: 1
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, loop/supervision_review.go, loop/supervision_review_test.go, loop/supervision_run_test.go
       Accept: review receives the resolved absolute skills directory selected by --skills including from another working directory, without requiring caller BATUTA_SKILLS; normal/resume/roadmap and applicable standalone supervision use consistent explicit selection, and tests do not mask the issue by populating global BATUTA_SKILLS → go test ./cmd/batuta -run 'Loop|Supervis'; review subprocess/probe and existing recovery regressions pass → go test ./loop -run SupervisionReview
-- [ ] 3. Serialize arbitrary writer output without unsafe interface equality — backend/high
+- [x] 3. Serialize arbitrary writer output without unsafe interface equality — backend/high
       Depends on: 2
       Scope: loop/supervision_run.go, loop/supervision_run_test.go, loop/runner.go
       Accept: initial and continuation supervision accept non-comparable io.Writer implementations including function-valued writerFunc without panic, preserving shared serialization when worker and observer share output and preserving independent streams; focused regressions exercise both equality sites and continuation → go test -race ./loop -run SupervisionRun; integrated supervision and durable gates remain valid → go test -race ./loop -run 'SupervisionGate|Roadmap'; full suite passes → go test -p 1 ./... -timeout=15m; build passes → go build ./...
