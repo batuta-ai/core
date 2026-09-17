@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -175,13 +176,19 @@ func supervisionGateEvidence(ctx context.Context, opts SupervisionOptions, recor
 	path := filepath.Join(directory, "progression.json")
 	data, err := readSupervisionFile(path, 1<<20)
 	var saved *SupervisionJudgment
+	stale := false
 	if err == nil {
 		saved = &SupervisionJudgment{}
 		if err := json.Unmarshal(data, saved); err != nil {
 			return gate, err
 		}
-		if saved.Delivery != opts.Delivery || saved.ReviewID != job.ID || saved.EvidenceDigest != gate.EvidenceDigest || strings.TrimSpace(saved.Rationale) == "" || (saved.Decision != "accept" && saved.Decision != "reject") {
+		digest, digestErr := hex.DecodeString(strings.TrimPrefix(saved.EvidenceDigest, "sha256:"))
+		if saved.Delivery != opts.Delivery || saved.ReviewID != job.ID || !strings.HasPrefix(saved.EvidenceDigest, "sha256:") || digestErr != nil || len(digest) != sha256.Size || strings.TrimSpace(saved.Rationale) == "" || (saved.Decision != "accept" && saved.Decision != "reject") {
 			return gate, errors.New("loop: progression judgment no longer matches current evidence")
+		}
+		if saved.EvidenceDigest != gate.EvidenceDigest {
+			saved, stale = nil, true
+			gate.Reason = "saved progression judgment is stale; explicitly re-judge the current evidence digest"
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return gate, err
@@ -202,6 +209,9 @@ func supervisionGateEvidence(ctx context.Context, opts SupervisionOptions, recor
 			}
 			saved = judgment
 		}
+	}
+	if stale && saved == nil {
+		return gate, nil
 	}
 	if saved != nil {
 		gate.Cleared = saved.Decision == "accept"

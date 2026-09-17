@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -182,20 +183,18 @@ func reconcileRoadmapSupervision(ctx context.Context, root string, opts Options,
 	var ready []completed
 	for _, id := range ids {
 		observer := SupervisionOptions{Workspace: root, Delivery: id, Now: opts.Now}
-		records, err := readSupervisionGateRecords(observer)
+		opened, err := readRoadmapOpening(observer)
 		if err != nil {
-			return true, err
-		}
-		if len(records) == 0 || records[0].Kind != KindOpened {
-			continue
-		}
-		var opened openedDetail
-		if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
 			return true, err
 		}
 		if !opened.Supervision {
 			continue
 		}
+		records, err := readSupervisionGateRecords(observer)
+		if err != nil {
+			return true, err
+		}
+
 		matched := false
 		for _, phase := range roadmap.Phases {
 			// Titles and phase numbers are editable presentation. The linked plan
@@ -256,6 +255,34 @@ func reconcileRoadmapSupervision(ctx context.Context, root string, opts Options,
 	return false, nil
 }
 
+// Only a verified opening can establish that a legacy journal has no gate.
+// Its unfinished tail keeps the historical roadmap discovery behavior.
+func readRoadmapOpening(opts SupervisionOptions) (openedDetail, error) {
+	data, err := readSupervisionFile(filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".jsonl"), 256<<20)
+	if err != nil {
+		return openedDetail{}, err
+	}
+	end := bytes.IndexByte(data, '\n')
+	if end < 0 {
+		return openedDetail{}, errors.New("loop: missing complete delivery opening identity")
+	}
+	records, err := journal.Decode(bytes.NewReader(data[:end+1]))
+	if err != nil {
+		return openedDetail{}, err
+	}
+	if len(records) != 1 || records[0].Kind != KindOpened {
+		return openedDetail{}, errors.New("loop: missing delivery opening identity")
+	}
+	var opened *openedDetail
+	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
+		return openedDetail{}, err
+	}
+	if opened == nil {
+		return openedDetail{}, errors.New("loop: missing delivery opening identity")
+	}
+	return *opened, nil
+}
+
 func completeSupervisionRoadmapPhase(ctx context.Context, observer SupervisionOptions, opened openedDetail) error {
 	records, err := readSupervisionGateRecords(observer)
 	if err != nil {
@@ -277,6 +304,23 @@ func completeSupervisionRoadmapPhase(ctx context.Context, observer SupervisionOp
 	if !gate.Cleared {
 		return errors.New("loop: review progression is blocked")
 	}
+	const relative = ".batuta/roadmap.md"
+	path := filepath.Join(observer.Workspace, relative)
+	committed, err := supervisionReviewGit(ctx, observer.Workspace, "show", "HEAD:"+relative)
+	if err != nil {
+		return err
+	}
+	before := string(committed)
+	lines := strings.Split(before, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "- [ ] ") && strings.HasSuffix(strings.TrimSpace(line), "plans/"+opened.Slug+".md") {
+			lines[i] = "- [x]" + line[5:]
+		}
+	}
+	after := strings.Join(lines, "\n")
+	if after == before {
+		return nil
+	}
 	git, err := worktree.New(ctx, observer.Workspace)
 	if err != nil {
 		return err
@@ -295,12 +339,7 @@ func completeSupervisionRoadmapPhase(ctx context.Context, observer SupervisionOp
 	if !ancestor {
 		return errors.New("loop: reviewed delivery is not on the current branch")
 	}
-	const relative = ".batuta/roadmap.md"
-	path := filepath.Join(observer.Workspace, relative)
-	committed, err := supervisionReviewGit(ctx, observer.Workspace, "show", "HEAD:"+relative)
-	if err != nil {
-		return err
-	}
+
 	current, err := readSupervisionFile(path, 1<<20)
 	if err != nil {
 		return err
@@ -316,14 +355,6 @@ func completeSupervisionRoadmapPhase(ctx context.Context, observer SupervisionOp
 	}
 	// Permit only the exact interrupted tick; unrelated roadmap edits remain the
 	// operator's work. TickPhase preserves all bytes outside the matching line.
-	before := string(committed)
-	lines := strings.Split(before, "\n")
-	for i, line := range lines {
-		if strings.HasPrefix(line, "- [ ] ") && strings.HasSuffix(strings.TrimSpace(line), "plans/"+opened.Slug+".md") {
-			lines[i] = "- [x]" + line[5:]
-		}
-	}
-	after := strings.Join(lines, "\n")
 	if string(current) != before && string(current) != after {
 		return errors.New("loop: roadmap changed outside the pending progression tick")
 	}

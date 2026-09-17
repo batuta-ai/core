@@ -778,7 +778,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 			if err != nil {
 				return err
 			}
-			if !gate.Cleared {
+			if !gate.Cleared || (!gate.Required && opts.Review != nil && job.ID != "" && (job.State != "reported" || job.Outcome != "SHIP")) {
 				return loopExit(loop.StateReviewBlocked)
 			}
 		}
@@ -903,7 +903,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 
 func loopRunExit(state string, err error) error {
 	if err != nil {
-		if (state == loop.StateCanceled || state == loop.StateDone) && cancellationOnly(err) {
+		if (state == loop.StateCanceled || state == loop.StateDone || state == loop.StateReviewBlocked) && cancellationOnly(err) {
 			// Foreground cancellation does not rewrite completed implementation.
 			return loopExit(loop.StateCanceled)
 		}

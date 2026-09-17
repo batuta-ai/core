@@ -313,6 +313,9 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 	// Completed supervised deliveries remain resumable for review even after
 	// their implementation plan was archived. Do not replay finalization again.
 	if opened.Supervision && supervisionReviewCandidateInWorkspace(r.root, opts.Resume, records) != nil {
+		if opts.Supervisor == nil {
+			return nil, fmt.Errorf("loop: delivery %s already ended: %s; supervisor required for review recovery", opts.Resume, StateDone)
+		}
 		if r.branch != opened.Branch {
 			return nil, errors.New("loop: review delivery branch changed")
 		}

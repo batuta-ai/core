@@ -46,7 +46,7 @@ func supervisionRunReview(t *testing.T, root string, launches *int, verdict stri
 		if err := os.MkdirAll(cmd.Args[7], 0700); err != nil {
 			return publication.CommandResult{}, err
 		}
-		return publication.CommandResult{}, writeSupervisionReviewEvidenceError(cmd, verdict, true)
+		return publication.CommandResult{ExitCode: map[string]int{"SHIP": 0, "FIX_BEFORE_SHIP": 2, "REWORK": 3}[verdict]}, writeSupervisionReviewEvidenceError(cmd, verdict, true)
 	})}
 }
 
@@ -522,5 +522,107 @@ func TestSupervisionRunLegacyDeliveryStillRequiresConfiguredReview(t *testing.T)
 	state, err := r.Run(context.Background())
 	if err != nil || state != StateReviewBlocked || launches != 1 {
 		t.Fatalf("legacy supervised review: %s, %v, launches=%d", state, err, launches)
+	}
+}
+
+func TestSupervisionRunCompletedTakeoverPreservesReview(t *testing.T) {
+	t.Parallel()
+	for _, verdict := range []string{"SHIP", "REWORK"} {
+		t.Run(verdict, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t)
+			opts := f.options("default", new(bytes.Buffer))
+			launches := 0
+			opts.Supervisor = &SuperviseOptions{Review: supervisionRunReview(t, f.root, &launches, verdict)}
+			r, err := New(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := StateDone
+			if verdict == "REWORK" {
+				want = StateReviewBlocked
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != want {
+				t.Fatalf("initial: %s, %v", state, err)
+			}
+			observer := SupervisionOptions{Workspace: f.root, Delivery: r.Delivery()}
+			before := supervisionObserve(t, observer)
+			counts := kinds(readJournal(t, f, r.Delivery()))
+			gate, err := CheckSupervisionGate(context.Background(), observer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			judgment := SupervisionJudgment{Delivery: r.Delivery(), ReviewID: gate.ReviewID, EvidenceDigest: gate.EvidenceDigest, Decision: "accept", Rationale: "Reviewed before ownership recovery."}
+			if _, err := JudgeSupervisionGate(context.Background(), observer, judgment); err != nil {
+				t.Fatal(err)
+			}
+			stale := opts.Now().Add(-time.Hour)
+			if err := writeSupervisionJSON(filepath.Join(f.root, ".batuta/journal", r.Delivery()+".lock"), presenceLock{PID: 123, Host: "unknown", StartedAt: stale, RefreshedAt: stale}); err != nil {
+				t.Fatal(err)
+			}
+			if gate, err := CheckSupervisionGate(context.Background(), observer); err == nil || gate.Cleared {
+				t.Fatalf("stale lock cleared gate: %+v, %v", gate, err)
+			}
+			opts.Resume = r.Delivery()
+			for i := 0; i < 2; i++ {
+				resumed, err := Resume(context.Background(), opts)
+				if err != nil {
+					t.Fatalf("takeover/restart %d: %v", i, err)
+				}
+				if state, err := resumed.Run(context.Background()); err != nil || state != StateReviewBlocked {
+					t.Fatalf("stale judgment after takeover: %s, %v", state, err)
+				}
+			}
+			after := supervisionObserve(t, observer)
+			got := kinds(readJournal(t, f, r.Delivery()))
+			if launches != 1 || after.Review == nil || after.Review.ID != before.Review.ID || after.Review.Attempts != 1 || got[KindStarted] != counts[KindStarted] || got[KindTerminal] != counts[KindTerminal] || got[KindPresenceTakenOver] != 1 {
+				t.Fatalf("recovery duplicated work: launches=%d before=%v after=%v review=%+v", launches, counts, got, after.Review)
+			}
+			gate, err = CheckSupervisionGate(context.Background(), observer)
+			if err != nil || gate.Cleared || gate.EvidenceDigest == judgment.EvidenceDigest {
+				t.Fatalf("recovered gate: %+v, %v", gate, err)
+			}
+			judgment.EvidenceDigest = gate.EvidenceDigest
+			if gate, err := JudgeSupervisionGate(context.Background(), observer, judgment); err != nil || !gate.Cleared {
+				t.Fatalf("re-judge takeover: %+v, %v", gate, err)
+			}
+		})
+	}
+}
+
+func TestResumeCompletedSupervisionWithoutSupervisor(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	opts := f.options("default", new(bytes.Buffer))
+	opts.Supervision = true
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("implementation: %s, %v", state, err)
+	}
+	before, err := os.ReadFile(r.store.Path(r.Delivery()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), opts)
+	if err == nil {
+		if releaseErr := resumed.Release(); releaseErr != nil {
+			t.Fatal(releaseErr)
+		}
+		t.Fatal("completed supervised resume allowed execution without a supervisor")
+	}
+	if !strings.Contains(err.Error(), "already ended: done") || !strings.Contains(err.Error(), "supervisor required") {
+		t.Fatalf("unexpected resume error: %v", err)
+	}
+
+	after, err := os.ReadFile(r.store.Path(r.Delivery()))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("completed implementation rewritten: %v", err)
+	}
+	if err := supervisionGateNoOwner(SupervisionOptions{Workspace: f.root}); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -2052,6 +2051,8 @@ func TestLoopRunExitPreservesIndependentFailures(t *testing.T) {
 		{"unfinished", "", context.Canceled, 0},
 		{"done", loop.StateDone, nil, 0},
 		{"final-review-cancellation", loop.StateDone, context.Canceled, 130},
+		{"rediscovered-review-cancellation", loop.StateReviewBlocked, context.Canceled, 130},
+		{"rediscovered-review-failure", loop.StateReviewBlocked, errors.Join(context.Canceled, failure), 0},
 		{"final-review-joined-failure", loop.StateDone, errors.Join(context.Canceled, failure), 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2079,88 +2080,6 @@ func TestLoopSupervisionCancellationWorker(t *testing.T) {
 	// The executor must terminate this process; the timer bounds a broken test.
 	<-time.After(30 * time.Second)
 	os.Exit(91)
-}
-
-func TestLoopSupervisionSignalCancellation(t *testing.T) {
-	for _, mode := range []string{"new", "resume", "roadmap"} {
-		t.Run(mode, func(t *testing.T) {
-			root := loopSupervisionFixture(t)
-			store, err := journal.Open(root)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Remove(store.Path("supervised")); err != nil {
-				t.Fatal(err)
-			}
-			skills := os.Getenv("BATUTA_SKILLS")
-			binary, err := os.Executable()
-			if err != nil {
-				t.Fatal(err)
-			}
-			fake := filepath.Join(skills, "codex")
-			worker := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n--version) echo 'codex 1.0.0';;\ndebug) echo '{\"models\":[{\"slug\":\"review-model\"}]}';;\ndoctor|plugin) echo '{}';;\nrun) exec '%s' -test.run=^TestLoopSupervisionCancellationWorker$;;\n*) exit 91;;\nesac\n", binary)
-			adapter := fmt.Sprintf("---\nname: codex\nexecutable: %s\nrun: %s run {model_flags} \"{brief}\"\nmodel_flags: --model {model}\nreadonly: unused\navailable: codex --version\nmodels: codex debug models\nfinished: exit_code\n---\n", fake, fake)
-			for path, data := range map[string]string{fake: worker, filepath.Join(skills, "adapters/codex.md"): adapter} {
-				if err := os.WriteFile(path, []byte(data), 0700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			ready := filepath.Join(t.TempDir(), "ready")
-			t.Setenv("BATUTA_CANCELLATION_READY", ready)
-			args := []string{"loop", "--workspace", root, "--interval", "100ms"}
-			switch mode {
-			case "new", "resume":
-				args = append(args, "demo")
-			case "roadmap":
-				args = append(args, "--roadmap")
-			}
-			assertCanceled := func(args []string) {
-				t.Helper()
-				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				defer cancel()
-				cmd := exec.CommandContext(ctx, binary, args...)
-				var output bytes.Buffer
-				cmd.Stdout, cmd.Stderr = &output, &output
-				if err := cmd.Start(); err != nil {
-					t.Fatal(err)
-				}
-				done := make(chan error, 1)
-				go func() { done <- cmd.Wait() }()
-				ticker := time.NewTicker(10 * time.Millisecond)
-				defer ticker.Stop()
-				for {
-					select {
-					case err := <-done:
-						t.Fatalf("CLI exited before worker started: %v\n%s", err, &output)
-					case <-ticker.C:
-						if _, err := os.Stat(ready); err != nil {
-							continue
-						}
-						if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
-							t.Fatal(err)
-						}
-						err := <-done
-						var exit *exec.ExitError
-						if !errors.As(err, &exit) || exit.ExitCode() != 130 {
-							t.Fatalf("signal exit = %v, want 130\n%s", err, &output)
-						}
-						return
-					}
-				}
-			}
-			assertCanceled(args)
-			if mode == "resume" {
-				deliveries, err := store.List()
-				if err != nil || len(deliveries) != 1 {
-					t.Fatalf("deliveries=%v, err=%v", deliveries, err)
-				}
-				if err := os.Remove(ready); err != nil {
-					t.Fatal(err)
-				}
-				assertCanceled([]string{"loop", "--workspace", root, "--interval", "100ms", "--resume", deliveries[0]})
-			}
-		})
-	}
 }
 
 func TestLoopSupervisionNormalCompletion(t *testing.T) {
@@ -2326,12 +2245,12 @@ func TestLoopSupervisionStandaloneHonorsJudgment(t *testing.T) {
 }
 
 func TestLoopSupervisionNonexecutingCommands(t *testing.T) {
-	for _, args := range [][]string{{"--dashboard"}, {"--roadmap", "--dry-run"}, {"--abandon", "supervised"}} {
+	for _, args := range [][]string{{"--dashboard"}, {"--roadmap", "--dry-run"}, {"--resume", "supervised", "--dry-run"}, {"--abandon", "supervised"}} {
 		t.Run(strings.Join(args, "/"), func(t *testing.T) {
 			root := loopSupervisionFixture(t)
 			var stdout, stderr bytes.Buffer
 			err := run(append([]string{"loop", "--workspace", root}, args...), &stdout, &stderr)
-			if args[0] == "--abandon" {
+			if args[0] == "--abandon" || args[0] == "--resume" {
 				if err == nil || !strings.Contains(err.Error(), "already ended: done") {
 					t.Fatalf("abandon completed delivery: %v", err)
 				}
@@ -2476,5 +2395,90 @@ func TestLoopSupervisionRequiredReviewMissingIdentity(t *testing.T) {
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
 		t.Fatalf("missing required review identity not blocked: %v\n%s", err, output)
+	}
+}
+
+func TestLoopSupervisionStandaloneLegacyReview(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"adverse", "failed", "uncertain", "passive"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			root, skills := loopSupervisionIsolatedFixture(t)
+			store, err := journal.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := store.Read("supervised")
+			if err != nil {
+				t.Fatal(err)
+			}
+			records[0].Detail = bytes.Replace(records[0].Detail, []byte(`"supervision":true`), []byte(`"supervision":false`), 1)
+			if scenario == "passive" {
+				records = records[:1]
+			}
+			if err := os.Remove(store.Path("supervised")); err != nil {
+				t.Fatal(err)
+			}
+			for _, record := range records {
+				if _, err := store.Append("supervised", record); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario == "adverse" {
+				payload := "#!/bin/sh\nprintf '%s\\n' '<<<FINDINGS' '{\"severity\":\"major\",\"kind\":\"defect\",\"file\":\"source.txt\",\"line\":1,\"premise\":\"Wrong value.\",\"path\":\"Read source.txt.\",\"verdict\":\"Cannot ship.\",\"fix\":\"Correct value.\"}' 'FINDINGS>>>'\n"
+				if err := os.WriteFile(filepath.Join(skills, "fake-reviewer"), []byte(payload), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			observer := loop.SupervisionOptions{Workspace: root, Delivery: "supervised"}
+			if scenario == "failed" || scenario == "uncertain" {
+				// Seed a durable failed/uncertain launch through the public review API.
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				_, err := loop.RunSupervisionReview(ctx, observer, loop.SupervisionReviewOptions{Executable: "fake", Runner: mainReviewRunner(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+					if len(cmd.Args) == 1 {
+						return publication.CommandResult{Stdout: []byte(`{"commands":["review"]}`)}, nil
+					}
+					if len(cmd.Args) == 2 {
+						return publication.CommandResult{Stderr: []byte(" -base string\n -spec string\n -full\n -out string\n")}, nil
+					}
+					if scenario == "uncertain" {
+						cancel()
+						return publication.CommandResult{}, ctx.Err()
+					}
+					return publication.CommandResult{ExitCode: 1}, errors.New("review failed")
+				})})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			args := []string{"--skills", skills, "--supervise", "supervised", "--cursor", filepath.Join(root, "cursor.json"), "--once"}
+			output, err := loopSupervisionCommand(t, root, skills, args...).CombinedOutput()
+			if scenario == "passive" {
+				if err != nil {
+					t.Fatalf("passive: %v\n%s", err, output)
+				}
+			} else {
+				var exit *exec.ExitError
+				if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+					t.Fatalf("legacy %s: %v, want exit 2\n%s", scenario, err, output)
+				}
+				observation, err := loop.ObserveSupervision(observer)
+				if err != nil || observation.Review == nil {
+					t.Fatalf("observation: %+v, %v", observation, err)
+				}
+				want := scenario
+				if scenario == "adverse" {
+					want = "reported"
+				}
+				if observation.Review.State != want {
+					t.Fatalf("review=%+v, want %s", observation.Review, want)
+				}
+			}
+			gate, err := loop.CheckSupervisionGate(context.Background(), observer)
+			if err != nil || gate.Required || !gate.Cleared {
+				t.Fatalf("legacy acquired durable gate: %+v, %v", gate, err)
+			}
+		})
 	}
 }

@@ -397,6 +397,8 @@ and from the scope check, committed by the loop with the plan bookkeeping.
 | `.batuta/journal/<delivery>.jsonl` | no (`.git/info/exclude`) | every transition |
 | `.batuta/worktrees/<slug>-task-N-e<k>/` | no | per attempt; removed after integration or abort (`--keep-worktrees` keeps them) |
 | `.batuta/runs/<date>-<slug>-task-N.md` (+ `-e<k>.brief.md`, `-e<k>.out.log`) | no | per attempt |
+| `.batuta/runs/supervision/<delivery>.json` | no (`.git/info/exclude`) | durable foreground observer cursor |
+| `.batuta/reviews/supervision/<job-id>/` | no (`.git/info/exclude`) | final review snapshot, reports, job state and progression judgment |
 | `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` |
 | `WORK.md`, `.batuta/plans/<slug>.md` | yes | generated from the terminal delivery summary and journal, once at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
 | `.batuta/plans/done/<slug>.md` | yes | when all tasks are done; the bookkeeping commit carries the plan move |

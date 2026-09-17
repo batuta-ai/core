@@ -61,11 +61,16 @@ func supervisionReviewCandidate(delivery string, records []journal.Record) *Supe
 }
 
 func supervisionReviewCandidateInWorkspace(workspace, delivery string, records []journal.Record) *SupervisionReviewJob {
-	if len(records) < 2 || records[0].Kind != KindOpened || records[len(records)-1].Kind != KindTerminal {
+	// Ownership takeover is an audit of recovery, not a new implementation.
+	end := len(records) - 1
+	for end >= 0 && records[end].Kind == KindPresenceTakenOver {
+		end--
+	}
+	if end < 1 || records[0].Kind != KindOpened || records[end].Kind != KindTerminal {
 		return nil
 	}
 	var terminal terminalDetail
-	if json.Unmarshal(records[len(records)-1].Detail, &terminal) != nil || terminal.State != StateDone || terminal.CleanupPending || terminal.BookkeepingPending {
+	if json.Unmarshal(records[end].Detail, &terminal) != nil || terminal.State != StateDone || terminal.CleanupPending || terminal.BookkeepingPending {
 		return nil
 	}
 	if len(terminal.Deletions) > 0 && (workspace == "" || !supervisionDeletionsAbsent(workspace, terminal.Deletions)) {

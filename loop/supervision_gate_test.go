@@ -431,13 +431,16 @@ func TestSupervisionGateRoadmapWaitingDoesNotCreateJournal(t *testing.T) {
 }
 
 func TestSupervisionGateRoadmapPreservesOperatorWork(t *testing.T) {
-	for _, changed := range []string{"branch", "staged", "roadmap"} {
+	for _, changed := range []string{"branch", "staged", "roadmap", "ancestry"} {
 		t.Run(changed, func(t *testing.T) {
 			opts, _, spec := supervisionGateRoadmapFixture(t)
 			gateReview(t, opts, spec, "SHIP", true)
 			f := fixture{root: opts.Workspace, git: "git"}
 			path := filepath.Join(opts.Workspace, ".batuta/roadmap.md")
 			switch changed {
+			case "ancestry":
+				commit := f.run(t, "commit-tree", "HEAD^{tree}", "-m", "unrelated history")
+				f.run(t, "reset", "--hard", commit)
 			case "branch":
 				f.run(t, "checkout", "-qb", "other")
 			case "staged":
@@ -496,7 +499,7 @@ func TestSupervisionGateFailedReviewStaysBlocked(t *testing.T) {
 }
 
 func TestSupervisionGateSavedJudgmentIntegrity(t *testing.T) {
-	for _, changed := range []string{"job", "delivery", "journal-chain", "snapshot", "spec", "stale-owner", "judgment"} {
+	for _, changed := range []string{"job", "delivery", "journal-chain", "snapshot", "spec", "stale-owner", "judgment", "judgment-digest", "judgment-delivery", "judgment-review"} {
 		t.Run(changed, func(t *testing.T) {
 			opts, store, spec := supervisionGateFixture(t)
 			job := gateReview(t, opts, spec, "REWORK", true)
@@ -530,16 +533,27 @@ func TestSupervisionGateSavedJudgmentIntegrity(t *testing.T) {
 				err = os.WriteFile(job.Spec, []byte("changed"), 0600)
 			case "stale-owner":
 				err = writeSupervisionJSON(filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".lock"), presenceLock{PID: 123, Host: "unknown", RefreshedAt: opts.Now().Add(-time.Hour)})
-			case "judgment":
-				changed := judgment
-				changed.Rationale = " "
-				err = writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "progression.json"), changed)
+			case "judgment", "judgment-digest", "judgment-delivery", "judgment-review":
+				invalid := judgment
+				switch changed {
+				case "judgment":
+					invalid.Rationale = " "
+				case "judgment-digest":
+					invalid.EvidenceDigest = "sha256:broken"
+				case "judgment-delivery":
+					invalid.Delivery = "another-delivery"
+				case "judgment-review":
+					invalid.ReviewID = strings.Repeat("a", 64)
+				}
+				err = writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "progression.json"), invalid)
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
-			if gate, err := CheckSupervisionGate(context.Background(), opts); err == nil || gate.Cleared {
-				t.Fatalf("saved judgment bypassed changed %s: %+v, %v", changed, gate, err)
+			gate, checkErr := CheckSupervisionGate(context.Background(), opts)
+			stale := changed == "job" || changed == "delivery"
+			if gate.Cleared || (stale && (checkErr != nil || gate.EvidenceDigest == "" || gate.EvidenceDigest == judgment.EvidenceDigest)) || (!stale && checkErr == nil) {
+				t.Fatalf("saved judgment bypassed changed %s: %+v, %v", changed, gate, checkErr)
 			}
 			if _, err := JudgeSupervisionGate(context.Background(), opts, judgment); err == nil {
 				t.Fatal("stale decision replay succeeded")
@@ -578,5 +592,44 @@ func TestSupervisionGateCorrectionProposalDoesNotClearParent(t *testing.T) {
 	gateReview(t, child, spec, "SHIP", true)
 	if state, err := RunRoadmap(context.Background(), Options{Workspace: opts.Workspace}); err != nil || state != StateReviewBlocked {
 		t.Fatalf("child SHIP released parent: %s, %v", state, err)
+	}
+}
+
+func TestSupervisionGateExplicitJudgmentAfterEvidenceChange(t *testing.T) {
+	t.Parallel()
+	for _, verdict := range []string{"SHIP", "REWORK"} {
+		t.Run(verdict, func(t *testing.T) {
+			t.Parallel()
+			opts, _, spec := supervisionGateFixture(t)
+			job := gateReview(t, opts, spec, verdict, true)
+			gate, err := CheckSupervisionGate(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			judgment := SupervisionJudgment{Delivery: opts.Delivery, ReviewID: job.ID, EvidenceDigest: gate.EvidenceDigest, Decision: "reject", Rationale: "Operator rejects this evidence."}
+			if _, err := JudgeSupervisionGate(context.Background(), opts, judgment); err != nil {
+				t.Fatal(err)
+			}
+			job.Reason = "Reconciled existing review receipt."
+			if err := writeSupervisionJSON(filepath.Join(supervisionReviewDirectory(opts, *job), "job.json"), job); err != nil {
+				t.Fatal(err)
+			}
+			gate, err = CheckSupervisionGate(context.Background(), opts)
+			if err != nil || gate.Cleared || gate.EvidenceDigest == "" || gate.EvidenceDigest == judgment.EvidenceDigest {
+				t.Fatalf("stale saved decision: %+v, %v", gate, err)
+			}
+			if _, err := JudgeSupervisionGate(context.Background(), opts, judgment); err == nil {
+				t.Fatal("old digest accepted")
+			}
+			judgment.EvidenceDigest, judgment.Decision = gate.EvidenceDigest, "accept"
+			gate, err = JudgeSupervisionGate(context.Background(), opts, judgment)
+			if err != nil || !gate.Cleared {
+				t.Fatalf("new explicit decision: %+v, %v", gate, err)
+			}
+			judgment.Decision = "reject"
+			if _, err := JudgeSupervisionGate(context.Background(), opts, judgment); err == nil {
+				t.Fatal("same-digest conflict accepted")
+			}
+		})
 	}
 }
