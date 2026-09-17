@@ -804,25 +804,45 @@ func TestLoopRoadmapDryRunPrintsTheChain(t *testing.T) {
 }
 
 func TestLoopRoadmapWaitingPlanExitCode(t *testing.T) {
-	root := t.TempDir()
+	t.Parallel()
+	root := tempDir(t)
 	if err := os.MkdirAll(filepath.Join(root, ".batuta"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, ".batuta", "roadmap.md"), []byte("# Roadmap — Delivery\n\n- [ ] 1. Missing → plans/missing.md\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	var stdout, stderr bytes.Buffer
-	err := run([]string{"loop", "--workspace", root, "--roadmap"}, &stdout, &stderr)
-	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != 4 || exit.State != loop.StateWaitingPlan {
-		t.Fatalf("waiting plan exit = %v, want code 4, waiting_plan", err)
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "waiting_plan") {
-		t.Fatalf("waiting_plan was not printed: %s", &stdout)
+	cmd := exec.Command(binary, "loop", "--workspace", root, "--roadmap")
+	for _, entry := range os.Environ() {
+		if !strings.HasPrefix(entry, "HOME=") && !strings.HasPrefix(entry, "BATUTA_SKILLS=") {
+			cmd.Env = append(cmd.Env, entry)
+		}
+	}
+	cmd.Env = append(cmd.Env, "HOME="+tempDir(t))
+	output, err := cmd.CombinedOutput()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 4 {
+		t.Fatalf("waiting plan exit = %v, want code 4, waiting_plan\n%s", err, output)
+	}
+	if !bytes.Contains(output, []byte("waiting_plan")) {
+		t.Fatalf("waiting_plan was not printed: %s", output)
 	}
 	if _, err := os.Stat(filepath.Join(root, journal.Dir)); !os.IsNotExist(err) {
 		t.Fatalf("waiting plan opened a journal: %v", err)
 	}
+}
+
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 func watchDelivery(t *testing.T, root, delivery string) (*journal.Store, json.RawMessage) {

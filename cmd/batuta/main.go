@@ -839,7 +839,10 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 			return err
 		}
 		reviewSkills, err := loop.FindSkills(root, *skills)
-		if err != nil {
+		// A roadmap can stop at a missing plan before it needs an implicit skills
+		// installation. Explicit selections remain strict, and execution resolves
+		// its required adapters before opening a delivery.
+		if err != nil && (!*roadmap || *skills != "" || strings.TrimSpace(os.Getenv("BATUTA_SKILLS")) != "") {
 			return err
 		}
 		// Preserve loop stdout; observer reports use a separate stream.
