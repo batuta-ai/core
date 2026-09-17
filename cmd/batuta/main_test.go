@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -24,7 +25,7 @@ import (
 )
 
 func TestMain(m *testing.M) {
-	if len(os.Args) > 1 && (os.Args[1] == "capabilities" || os.Args[1] == "review") {
+	if len(os.Args) > 1 && (os.Args[1] == "capabilities" || os.Args[1] == "review" || os.Args[1] == "loop") {
 		if err := run(os.Args[1:], os.Stdout, os.Stderr); err != nil {
 			var exit *ExitError
 			if errors.As(err, &exit) {
@@ -1993,6 +1994,134 @@ esac
 				t.Fatalf("continuation observation is not JSON: %s", line)
 			}
 		}
+	}
+}
+
+func TestLoopRunExitPreservesIndependentFailures(t *testing.T) {
+	failure := errors.New("observer or runtime failed")
+	for _, tc := range []struct {
+		name  string
+		state string
+		err   error
+		code  int
+	}{
+		{"canceled-state", loop.StateCanceled, nil, 130},
+		{"cancellation", loop.StateCanceled, context.Canceled, 130},
+		{"wrapped-cancellation", loop.StateCanceled, fmt.Errorf("run: %w", context.Canceled), 130},
+		{"joined-cancellations", loop.StateCanceled, errors.Join(context.Canceled, fmt.Errorf("observer: %w", context.Canceled)), 130},
+		{"joined-failure", loop.StateCanceled, errors.Join(context.Canceled, failure), 0},
+		{"nested-failure", loop.StateCanceled, fmt.Errorf("run: %w", errors.Join(failure, context.Canceled)), 0},
+		{"failure", loop.StateCanceled, failure, 0},
+		{"deadline", loop.StateCanceled, errors.Join(context.Canceled, context.DeadlineExceeded), 0},
+		{"unfinished", "", context.Canceled, 0},
+		{"done", loop.StateDone, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := loopRunExit(tc.state, tc.err)
+			var exit *ExitError
+			if tc.code != 0 {
+				if !errors.As(err, &exit) || exit.Code != tc.code {
+					t.Fatalf("exit=%v, want %d", err, tc.code)
+				}
+			} else if err != tc.err || errors.As(err, &exit) {
+				t.Fatalf("error=%v, want original %v without exit mapping", err, tc.err)
+			}
+		})
+	}
+}
+
+func TestLoopSupervisionCancellationWorker(t *testing.T) {
+	ready := os.Getenv("BATUTA_CANCELLATION_READY")
+	if ready == "" {
+		return
+	}
+	if err := os.WriteFile(ready, []byte("ready"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// The executor must terminate this process; the timer bounds a broken test.
+	<-time.After(30 * time.Second)
+	os.Exit(91)
+}
+
+func TestLoopSupervisionSignalCancellation(t *testing.T) {
+	for _, mode := range []string{"new", "resume", "roadmap"} {
+		t.Run(mode, func(t *testing.T) {
+			root := loopSupervisionFixture(t)
+			store, err := journal.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(store.Path("supervised")); err != nil {
+				t.Fatal(err)
+			}
+			skills := os.Getenv("BATUTA_SKILLS")
+			binary, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			fake := filepath.Join(skills, "codex")
+			worker := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n--version) echo 'codex 1.0.0';;\ndebug) echo '{\"models\":[{\"slug\":\"review-model\"}]}';;\ndoctor|plugin) echo '{}';;\nrun) exec '%s' -test.run=^TestLoopSupervisionCancellationWorker$;;\n*) exit 91;;\nesac\n", binary)
+			adapter := fmt.Sprintf("---\nname: codex\nexecutable: %s\nrun: %s run {model_flags} \"{brief}\"\nmodel_flags: --model {model}\nreadonly: unused\navailable: codex --version\nmodels: codex debug models\nfinished: exit_code\n---\n", fake, fake)
+			for path, data := range map[string]string{fake: worker, filepath.Join(skills, "adapters/codex.md"): adapter} {
+				if err := os.WriteFile(path, []byte(data), 0700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ready := filepath.Join(t.TempDir(), "ready")
+			t.Setenv("BATUTA_CANCELLATION_READY", ready)
+			args := []string{"loop", "--workspace", root, "--interval", "100ms"}
+			switch mode {
+			case "new", "resume":
+				args = append(args, "demo")
+			case "roadmap":
+				args = append(args, "--roadmap")
+			}
+			assertCanceled := func(args []string) {
+				t.Helper()
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(ctx, binary, args...)
+				var output bytes.Buffer
+				cmd.Stdout, cmd.Stderr = &output, &output
+				if err := cmd.Start(); err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan error, 1)
+				go func() { done <- cmd.Wait() }()
+				ticker := time.NewTicker(10 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case err := <-done:
+						t.Fatalf("CLI exited before worker started: %v\n%s", err, &output)
+					case <-ticker.C:
+						if _, err := os.Stat(ready); err != nil {
+							continue
+						}
+						if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+							t.Fatal(err)
+						}
+						err := <-done
+						var exit *exec.ExitError
+						if !errors.As(err, &exit) || exit.ExitCode() != 130 {
+							t.Fatalf("signal exit = %v, want 130\n%s", err, &output)
+						}
+						return
+					}
+				}
+			}
+			assertCanceled(args)
+			if mode == "resume" {
+				deliveries, err := store.List()
+				if err != nil || len(deliveries) != 1 {
+					t.Fatalf("deliveries=%v, err=%v", deliveries, err)
+				}
+				if err := os.Remove(ready); err != nil {
+					t.Fatal(err)
+				}
+				assertCanceled([]string{"loop", "--workspace", root, "--interval", "100ms", "--resume", deliveries[0]})
+			}
+		})
 	}
 }
 

@@ -836,10 +836,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if errors.Is(err, loop.ErrStopped) {
 			return nil
 		}
-		if err != nil {
-			return err
-		}
-		return loopExit(state)
+		return loopRunExit(state, err)
 	}
 	var runner *loop.Runner
 	var err error
@@ -864,14 +861,39 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		return nil
 	}
 	state, err := runner.Run(ctx)
-	if err != nil {
-		if errors.Is(err, loop.ErrStopped) {
-			fmt.Fprintf(stdout, "stopped after %d wave(s); resume with: batuta loop --resume %s\n", *maxWaves, runner.Delivery())
-			return nil
-		}
+	if errors.Is(err, loop.ErrStopped) {
+		fmt.Fprintf(stdout, "stopped after %d wave(s); resume with: batuta loop --resume %s\n", *maxWaves, runner.Delivery())
+		return nil
+	}
+	return loopRunExit(state, err)
+}
+
+func loopRunExit(state string, err error) error {
+	if err != nil && !(state == loop.StateCanceled && cancellationOnly(err)) {
 		return err
 	}
 	return loopExit(state)
+}
+
+// errors.Is alone would hide independent failures joined with cancellation.
+func cancellationOnly(err error) bool {
+	switch e := err.(type) {
+	case interface{ Unwrap() []error }:
+		errors := e.Unwrap()
+		if len(errors) == 0 {
+			return false
+		}
+		for _, child := range errors {
+			if !cancellationOnly(child) {
+				return false
+			}
+		}
+		return true
+	case interface{ Unwrap() error }:
+		return cancellationOnly(e.Unwrap())
+	default:
+		return err == context.Canceled
+	}
 }
 
 func loopExit(state string) error {

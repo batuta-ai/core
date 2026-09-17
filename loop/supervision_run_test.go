@@ -173,7 +173,7 @@ func TestSupervisionRunRoadmapReviewsEveryPhase(t *testing.T) {
 }
 
 func TestSupervisionRunJoinsCanceledActivity(t *testing.T) {
-	for _, scenario := range []string{"cancellation", "observer-error"} {
+	for _, scenario := range []string{"cancellation", "observer-error", "joined-observer-error"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := setup(t)
 			opts := f.options("default", new(bytes.Buffer))
@@ -189,6 +189,9 @@ func TestSupervisionRunJoinsCanceledActivity(t *testing.T) {
 				case <-started:
 				case <-ctx.Done():
 					return ctx.Err()
+				}
+				if scenario == "joined-observer-error" {
+					return errors.Join(context.Canceled, observerFailure)
 				}
 				if scenario == "observer-error" {
 					return observerFailure
@@ -209,11 +212,14 @@ func TestSupervisionRunJoinsCanceledActivity(t *testing.T) {
 			})
 			state, err := r.Run(ctx)
 			wantErr := error(context.Canceled)
-			if scenario == "observer-error" {
+			if scenario != "cancellation" {
 				wantErr = observerFailure
 			}
 			if !errors.Is(err, wantErr) || state != StateCanceled || r.ownership != nil || launches != 0 {
 				t.Fatalf("run: %s, %v, owner=%v, launches=%d", state, err, r.ownership, launches)
+			}
+			if scenario == "joined-observer-error" && !errors.Is(err, context.Canceled) {
+				t.Fatalf("joined cancellation lost: %v", err)
 			}
 			for _, joined := range []chan struct{}{workerJoined, observerJoined} {
 				select {
