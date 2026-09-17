@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.23](https://github.com/batuta-ai/core/compare/v1.1.0-beta.22...v1.1.0-beta.23) (2026-09-17)
+
+
+### Features
+
+* **loop:** integrate foreground supervision and durable review gates ([#88](https://github.com/batuta-ai/core/issues/88)) ([43f23e0](https://github.com/batuta-ai/core/commit/43f23e0bcbddaf086bf8d0fe8d408ab910a081a9))
+
 ## [1.1.0-beta.22](https://github.com/batuta-ai/core/compare/v1.1.0-beta.21...v1.1.0-beta.22) (2026-09-16)
 
 
