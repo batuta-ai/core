@@ -138,7 +138,7 @@ type Runner struct {
 	sections   []string
 	missing    []string
 	now        func() time.Time
-	out        io.Writer
+	out        *lockedWriter
 
 	worktreeMu sync.Mutex // add/remove/prune share the repository worktree registry
 	mu         sync.Mutex
@@ -159,7 +159,7 @@ type Runner struct {
 
 // Parallel attempts share the output sink, which may be an unguarded buffer.
 type lockedWriter struct {
-	mu     sync.Mutex
+	mu     *sync.Mutex
 	writer io.Writer
 }
 
@@ -167,6 +167,15 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.writer.Write(p)
+}
+
+// All streams in a supervised run share a lock: arbitrary writers may alias
+// even when their dynamic values cannot be compared. Keep each destination.
+func (w *lockedWriter) serialize(writer io.Writer) *lockedWriter {
+	if locked, ok := writer.(*lockedWriter); ok && locked.mu == w.mu {
+		return locked
+	}
+	return &lockedWriter{mu: w.mu, writer: writer}
 }
 
 type attemptWorktree struct {
@@ -450,6 +459,11 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	if opts.Parallel > 0 {
 		parallel = min(opts.Parallel, routing.MaxParallelTasks)
 	}
+	// A continuation inherits its parent's lock along with its output stream.
+	out, ok := opts.Stdout.(*lockedWriter)
+	if !ok {
+		out = &lockedWriter{mu: new(sync.Mutex), writer: opts.Stdout}
+	}
 	return &Runner{
 		opts: opts, root: root, git: git,
 		gitState: publication.GitClient{Executable: git.Git, Runner: opts.Runner},
@@ -458,7 +472,7 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		branch: branch, openedHead: head, parallel: parallel, shell: shell,
 		backend: backend, verifier: verifier,
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
-		now: opts.Now, out: &lockedWriter{writer: opts.Stdout},
+		now: opts.Now, out: out,
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
 		candidates: map[string]integration.CandidateEvidence{}, commits: map[string]string{},
 		started: map[string]bool{}, preflights: map[string]integration.PreflightResult{},

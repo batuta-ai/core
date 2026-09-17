@@ -39,8 +39,10 @@ func (r *Runner) runSupervised(ctx context.Context, config SuperviseOptions) (st
 		return "", err
 	}
 	// Both paths can share a caller's unguarded writer, such as bytes.Buffer.
-	if config.Output == nil || config.Output == r.opts.Stdout {
+	if config.Output == nil {
 		config.Output = r.out
+	} else {
+		config.Output = r.out.serialize(config.Output)
 	}
 	passive := config
 	passive.Review, passive.Policy, passive.Execution = nil, nil, nil
@@ -87,8 +89,8 @@ func (r *Runner) runSupervised(ctx context.Context, config SuperviseOptions) (st
 		execution := *config.Execution
 		// The continuation and its observer must share this lock when they
 		// inherit the foreground writer; independent wrappers do not serialize it.
-		if execution.Stdout == r.opts.Stdout {
-			execution.Stdout = r.out
+		if execution.Stdout != nil {
+			execution.Stdout = r.out.serialize(execution.Stdout)
 		}
 		child := passive
 		child.Observer = config.Observer

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,6 +48,79 @@ func supervisionRunReview(t *testing.T, root string, launches *int, verdict stri
 		}
 		return publication.CommandResult{}, writeSupervisionReviewEvidenceError(cmd, verdict, true)
 	})}
+}
+
+// A slice field also makes a value writer non-comparable.
+type supervisionRunSliceWriter struct {
+	io.Writer
+	unused []byte
+}
+
+func TestSupervisionRunArbitraryWriters(t *testing.T) {
+	for _, mode := range []string{"function-shared", "function-inherited", "function-independent", "slice-shared"} {
+		t.Run(mode, func(t *testing.T) {
+			f := setup(t)
+			var worker, observer bytes.Buffer
+			opts := f.options("default", &worker)
+			opts.Stdout = writerFunc(worker.Write)
+			if mode == "slice-shared" {
+				opts.Stdout = supervisionRunSliceWriter{Writer: &worker}
+			}
+			launches := 0
+			started := make(chan struct{})
+			var once sync.Once
+			opts.Supervisor = &SuperviseOptions{Output: opts.Stdout, Interval: 100 * time.Millisecond,
+				Review: supervisionRunReview(t, f.root, &launches, "SHIP"),
+				Sink: supervisionRunSink(func(_ context.Context, n SupervisionNotification) error {
+					if n.Event.Kind == KindStarted {
+						once.Do(func() { close(started) })
+					}
+					return nil
+				})}
+			if mode == "function-inherited" {
+				opts.Supervisor.Output = nil
+			}
+			if mode == "function-independent" {
+				opts.Supervisor.Output = writerFunc(observer.Write)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			r, err := New(ctx, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := r.backend
+			r.backend = supervisionRunBackend(func(ctx context.Context, e executor.Execution) (executor.Result, error) {
+				select {
+				case <-started:
+				case <-ctx.Done():
+					return executor.Result{}, ctx.Err()
+				}
+				// These writes contend with the observer's started report and
+				// with the other parallel attempt on the same unguarded buffer.
+				for range 1000 {
+					if _, err := fmt.Fprintln(r.out, "worker-output"); err != nil {
+						return executor.Result{}, err
+					}
+				}
+				return backend.Execute(ctx, e)
+			})
+			if state, err := r.Run(ctx); err != nil || state != StateDone || launches != 1 {
+				t.Fatalf("run: %s, %v, launches=%d", state, err, launches)
+			}
+			if got := strings.Count(worker.String(), "worker-output\n"); got != 3000 {
+				t.Fatalf("worker output lost: got %d lines", got)
+			}
+			const report = `"delivery":`
+			if mode == "function-independent" {
+				if strings.Contains(worker.String(), report) || !strings.Contains(observer.String(), report) || strings.Contains(observer.String(), "worker-output") {
+					t.Fatal("independent worker and observer streams mixed")
+				}
+			} else if !strings.Contains(worker.String(), report) {
+				t.Fatal("shared output lost observer reports")
+			}
+		})
+	}
 }
 
 func TestSupervisionRunObservesBeforeReviewAndResumesArchive(t *testing.T) {
@@ -236,8 +310,9 @@ func TestSupervisionRunJoinsCanceledActivity(t *testing.T) {
 }
 
 func TestSupervisionRunAnswerContinuation(t *testing.T) {
-	for _, automatic := range []bool{false, true} {
-		t.Run(fmt.Sprintf("automatic=%t", automatic), func(t *testing.T) {
+	for _, mode := range []string{"manual", "automatic-shared", "automatic-independent", "automatic-nil"} {
+		t.Run(mode, func(t *testing.T) {
+			automatic := mode != "manual"
 			f := setup(t)
 			// Isolate the answered task from the fixture's dependent third task.
 			planPath := ".batuta/plans/greetings.md"
@@ -247,7 +322,9 @@ func TestSupervisionRunAnswerContinuation(t *testing.T) {
 			}
 			f.run(t, "add", planPath)
 			f.run(t, "commit", "-qm", "test: one waiting task")
-			opts := f.options("ask", new(bytes.Buffer))
+			var foreground, continuation, observerOutput bytes.Buffer
+			opts := f.options("ask", &foreground)
+			opts.Stdout = writerFunc(foreground.Write)
 			launches := 0
 			opts.Supervisor = &SuperviseOptions{Interval: 100 * time.Millisecond, Review: supervisionRunReview(t, f.root, &launches, "SHIP")}
 			r, err := New(context.Background(), opts)
@@ -278,6 +355,13 @@ func TestSupervisionRunAnswerContinuation(t *testing.T) {
 				execution := opts
 				execution.Plan = ""
 				execution.Transport = &executor.TransportBackend{Mode: "cli"}
+				if mode == "automatic-independent" {
+					execution.Stdout = writerFunc(continuation.Write)
+					opts.Supervisor.Output = writerFunc(observerOutput.Write)
+				}
+				if mode == "automatic-nil" {
+					execution.Stdout = nil
+				}
 				opts.Supervisor.Execution = &execution
 			} else if delivery, err := Answer(f.root, "1", "hello there"); err != nil || delivery != r.Delivery() {
 				t.Fatalf("answer: %s, %v", delivery, err)
@@ -289,6 +373,17 @@ func TestSupervisionRunAnswerContinuation(t *testing.T) {
 			}
 			if state, err := resumed.Run(context.Background()); err != nil || state != StateDone || launches != 1 {
 				t.Fatalf("answered run: %s, %v, launches=%d", state, err, launches)
+			}
+			if mode == "automatic-independent" {
+				if !strings.Contains(continuation.String(), "task_1 e2") || strings.Contains(foreground.String(), "task_1 e2") || strings.Contains(observerOutput.String(), "task_1 e2") || strings.Contains(continuation.String(), `"delivery":`) || !strings.Contains(observerOutput.String(), `"delivery":`) {
+					t.Fatal("independent continuation streams mixed or lost output")
+				}
+			} else if mode == "automatic-nil" {
+				if strings.Contains(foreground.String(), "task_1 e2") {
+					t.Fatal("nil continuation stdout should discard worker output")
+				}
+			} else if !strings.Contains(foreground.String(), "task_1 e2") {
+				t.Fatal("inherited continuation output lost")
 			}
 			after := supervisionObserve(t, observer)
 			got := kinds(readJournal(t, f, r.Delivery()))
