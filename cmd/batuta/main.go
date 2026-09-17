@@ -773,8 +773,14 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if err != nil {
 			return err
 		}
-		if job := observation.Review; job != nil && job.ID != "" && (job.State != "reported" || job.Outcome != "SHIP") {
-			return loopExit(loop.StateReviewBlocked)
+		if job := observation.Review; job != nil {
+			gate, err := loop.CheckSupervisionGate(ctx, opts.Observer)
+			if err != nil {
+				return err
+			}
+			if !gate.Cleared {
+				return loopExit(loop.StateReviewBlocked)
+			}
 		}
 		return nil
 	}
