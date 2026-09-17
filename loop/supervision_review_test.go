@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -129,6 +130,28 @@ func TestSupervisionReviewDeduplicatesAcrossCursors(t *testing.T) {
 	job, e := RunSupervisionReview(context.Background(), opts, engine)
 	if e != nil || job.ID != observation.Review.ID || launches != 1 {
 		t.Fatalf("restart: %+v, launches=%d, %v", job, launches, e)
+	}
+}
+
+func TestSupervisionReviewCarriesExplicitSkillsIntoSnapshot(t *testing.T) {
+	opts, _, spec := supervisionReviewFixture(t)
+	skills, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	launches := 0
+	engine := fakeSupervisionReview(t, opts, spec, &launches)
+	engine.Skills = skills
+	original := engine.Runner
+	engine.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		if !slices.Contains(command.Environment, "BATUTA_SKILLS="+skills) {
+			return publication.CommandResult{}, fmt.Errorf("review command omitted explicit skills: %+v", command)
+		}
+		return original.Run(ctx, command)
+	})
+	job, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil || job == nil || job.State != "reported" || launches != 1 {
+		t.Fatalf("review: job=%+v err=%v launches=%d", job, err, launches)
 	}
 }
 

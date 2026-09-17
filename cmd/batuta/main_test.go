@@ -1606,6 +1606,13 @@ func TestReviewWithMixedSpecRules(t *testing.T) {
 
 func loopSupervisionFixture(t *testing.T) string {
 	t.Helper()
+	root, skills := loopSupervisionFixtureWithoutAmbientSkills(t)
+	t.Setenv("BATUTA_SKILLS", skills)
+	return root
+}
+
+func loopSupervisionFixtureWithoutAmbientSkills(t *testing.T) (string, string) {
+	t.Helper()
 	root, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1675,16 +1682,16 @@ func loopSupervisionFixture(t *testing.T) string {
 			t.Fatal(err)
 		}
 	}
-	t.Setenv("BATUTA_SKILLS", skills)
+	t.Setenv("BATUTA_SKILLS", "")
 	t.Setenv("PATH", skills+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return root
+	return root, skills
 }
 
 func TestLoopSupervisionOnce(t *testing.T) {
-	root := loopSupervisionFixture(t)
+	root, skills := loopSupervisionFixtureWithoutAmbientSkills(t)
 	cursor := filepath.Join(root, "cursor.json")
 	var stdout, stderr bytes.Buffer
-	args := []string{"loop", "--workspace", root, "--supervise", "supervised", "--cursor", cursor, "--once"}
+	args := []string{"loop", "--workspace", root, "--skills", skills, "--supervise", "supervised", "--cursor", cursor, "--once"}
 	if err := run(args, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
@@ -2128,13 +2135,13 @@ func TestLoopSupervisionSignalCancellation(t *testing.T) {
 func TestLoopSupervisionNormalCompletion(t *testing.T) {
 	for _, mode := range []string{"resume", "roadmap", "unavailable"} {
 		t.Run(mode, func(t *testing.T) {
-			root := loopSupervisionFixture(t)
-			args := []string{"loop", "--workspace", root, "--resume", "supervised"}
+			root, skills := loopSupervisionFixtureWithoutAmbientSkills(t)
+			args := []string{"loop", "--workspace", root, "--skills", skills, "--resume", "supervised"}
 			if mode == "roadmap" {
-				args = []string{"loop", "--workspace", root, "--roadmap"}
+				args = []string{"loop", "--workspace", root, "--skills", skills, "--roadmap"}
 			}
 			if mode == "unavailable" {
-				if err := os.Remove(filepath.Join(os.Getenv("BATUTA_SKILLS"), "fake-reviewer")); err != nil {
+				if err := os.Remove(filepath.Join(skills, "fake-reviewer")); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -708,8 +708,8 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		var conflict string
 		flags.Visit(func(f *flag.Flag) {
 			switch f.Name {
-			case "supervise", "workspace", "cursor", "once", "notify", "policy", "interval":
-			case "skills", "transport", "parallel", "task-timeout", "test-timeout", "max-waves", "keep-worktrees", "max-limit-waits", "limit-horizon", "limit-wait":
+			case "supervise", "workspace", "cursor", "once", "notify", "policy", "interval", "skills":
+			case "transport", "parallel", "task-timeout", "test-timeout", "max-waves", "keep-worktrees", "max-limit-waits", "limit-horizon", "limit-wait":
 				if *policy == "" {
 					conflict = f.Name
 				}
@@ -731,8 +731,12 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if err != nil {
 			return err
 		}
+		reviewSkills, err := loop.FindSkills(root, *skills)
+		if err != nil {
+			return err
+		}
 		opts := loop.SuperviseOptions{Observer: loop.SupervisionOptions{Workspace: root, Delivery: *supervise, CursorPath: *cursor}, Interval: *interval, Once: *once, Output: stdout}
-		opts.Review = &loop.SupervisionReviewOptions{Executable: executable}
+		opts.Review = &loop.SupervisionReviewOptions{Executable: executable, Skills: reviewSkills}
 		if *notify == "desktop" {
 			opts.Sink = loop.NewSupervisionDesktopSink()
 		} else if *notify != "" {
@@ -812,10 +816,18 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if err != nil {
 			return fmt.Errorf("loop: required review executable: %w", err)
 		}
+		root, err := workspaceRoot(*workspace)
+		if err != nil {
+			return err
+		}
+		reviewSkills, err := loop.FindSkills(root, *skills)
+		if err != nil {
+			return err
+		}
 		// Preserve loop stdout; observer reports use a separate stream.
 		opts.Supervisor = &loop.SuperviseOptions{
 			Interval: *interval, Output: stderr,
-			Review: &loop.SupervisionReviewOptions{Executable: executable},
+			Review: &loop.SupervisionReviewOptions{Executable: executable, Skills: reviewSkills},
 		}
 	}
 	if *answer != "" {
