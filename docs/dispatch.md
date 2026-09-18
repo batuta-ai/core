@@ -49,10 +49,14 @@ effort selector. `--transport` accepts `cli`, `acp` or `auto` and defaults to
   when worker shutdown was verified. It never switches transport after a
   prompt may have been submitted.
 
-The stock command currently carries no approved qualification records, so an
-explicit ACP request is unavailable and `auto` takes the CLI path. An embedding
-release owner must supply the qualified lifecycle and evidence described below
-before enabling an ACP launch.
+Stock dispatch and loop task attempts use the native transport factory. It
+launches a fresh managed process with fixed resolved argv, an absolute requested
+workspace, inherited environment and bounded protocol I/O and owned shutdown.
+Prompts travel through the protocol, never a shell command. The factory carries
+no approved qualification records, so explicit ACP remains unavailable and
+`auto` takes the CLI path. Runtime support requires the release owner to supply
+real evidence for each exact qualification described below; wiring the factory
+does not qualify any provider.
 
 The command writes one compact JSON report to stdout and puts its brief,
 pre-submission intent, complete evidence and bounded stdout/stderr in a new
@@ -119,12 +123,18 @@ The known launch families are Codex's dedicated `codex-acp` wrapper, Claude's
 dedicated `claude-agent-acp` wrapper, `opencode acp`, and `cursor-agent acp`.
 OpenCode and Cursor remain pilot candidates; Codex still requires permission
 and cleanup qualification; Claude still requires authenticated task evidence;
-Agy retains CLI. Unsupported Windows combinations remain ineligible until they
-have native lifecycle evidence. No wrapper is downloaded automatically.
+Agy retains CLI. Native Windows execution remains unavailable: the command builds
+there, but the lifecycle rejects launch until native ownership and teardown are
+implemented and qualified. No wrapper is downloaded automatically.
 
-ACP permission requests are structured control messages. The client rejects an
-unsupported request, and an unattended run cannot infer approval from prompt
-text. Cancellation acknowledgement and verified worker shutdown are separate
+ACP permission requests are structured control messages. The stock factory
+denies every new permission request, even when the prompt claims approval or
+the worker also reports `end_turn`. A denial remains non-success. Unsupported
+client methods are rejected. Existing provider-side permissions and configuration
+are inherited unchanged; the factory injects no approval, install or auth flags.
+This callback policy is not an OS sandbox and does not restrict actions the
+provider can already perform without requesting permission.
+Cancellation acknowledgement and verified worker shutdown are separate
 facts; cleanup must be verified before the worktree can be discarded or an
 `auto` compatibility fallback can run.
 

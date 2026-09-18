@@ -168,6 +168,41 @@ func TestDispatchCommandReportsOneAttempt(t *testing.T) {
 	}
 }
 
+func TestDispatchAdapterMetadataCannotQualifyNativeLaunch(t *testing.T) {
+	for _, mode := range []string{"acp", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			root, args := dispatchCommandFixture(t, "success")
+			adapterPath := filepath.Join(os.Getenv("BATUTA_SKILLS"), "adapters", "fixture.md")
+			data, err := os.ReadFile(adapterPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = bytes.Replace(data, []byte("name: fixture"), []byte("name: codex\nacp_run: codex-acp\nacp_version: native-fixture-1"), 1)
+			if err := os.WriteFile(filepath.Join(filepath.Dir(adapterPath), "codex.md"), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			args = append(args, "--executor", "codex", "--transport", mode)
+			var stdout, stderr bytes.Buffer
+			err = run(args, &stdout, &stderr)
+			var report executor.DispatchReport
+			if decodeErr := json.Unmarshal(stdout.Bytes(), &report); decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			if report.Artifacts.Directory != "" {
+				t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+			}
+			calls, readErr := os.ReadFile(filepath.Join(root, "calls"))
+			if mode == "acp" {
+				if err == nil || report.ExitClass != "unavailable" || report.Receipt.Submission.State != executor.SubmissionNotSubmitted || !os.IsNotExist(readErr) {
+					t.Fatalf("metadata qualified native launch: %+v / %v; calls=%s", report, err, calls)
+				}
+			} else if err != nil || report.Backend != "cli" || report.ExitClass != "completed" || readErr != nil || string(calls) != "call\n" {
+				t.Fatalf("auto fallback changed: %+v / %v; calls=%s", report, err, calls)
+			}
+		})
+	}
+}
+
 func TestDispatchInvalidArgumentsNeverRunWorker(t *testing.T) {
 	for _, extra := range [][]string{
 		{"--transport", "native"}, {"--transport", "bogus"}, {"--transport", ""},

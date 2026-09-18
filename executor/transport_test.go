@@ -65,6 +65,66 @@ func TestTransportKeepsCLISelectable(t *testing.T) {
 	}
 }
 
+func TestNativeTransportRequiresReleaseQualification(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"", "cli", "auto", "acp"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			fixture, execution, calls := transportFixture(t)
+			backend := NewNativeTransport(mode)
+			backend.CLI = fixture.CLI
+			backend.Lookup = func(string) (string, error) {
+				t.Fatal("unqualified native launch attempted discovery")
+				return "", nil
+			}
+			if backend.Mode != mode || backend.ACP.Open == nil || backend.ACP.PermissionPolicy == nil || len(backend.Qualifications) != 0 {
+				t.Fatal("native constructor lost policy, ownership or qualification boundary")
+			}
+			permission := acp.PermissionRequest{Options: []acp.PermissionOption{{OptionID: "yes", Kind: "allow_always"}}}
+			if choice := backend.ACP.PermissionPolicy(context.Background(), execution, permission); choice != "" {
+				t.Fatalf("default policy granted permission: %q", choice)
+			}
+			result, err := backend.Execute(context.Background(), execution)
+			if mode == "acp" {
+				if !errors.Is(err, ErrACPUnavailable) || *calls != 0 || result.Receipt.Submission.State != SubmissionNotSubmitted {
+					t.Fatalf("unqualified native launch: %+v / %v calls=%d", result, err, *calls)
+				}
+			} else if err != nil || *calls != 1 || !result.Finished || string(result.Stdout) != "legacy" {
+				t.Fatalf("CLI behavior changed: %+v / %v calls=%d", result, err, *calls)
+			}
+		})
+	}
+}
+
+func TestNativeTransportDefaultDenialNeverFallsBack(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"acp", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			fixture, execution, calls := transportFixture(t)
+			backend := NewNativeTransport(mode)
+			backend.CLI, backend.Lookup, backend.VersionRunner = fixture.CLI, fixture.Lookup, fixture.VersionRunner
+			backend.Qualifications = fixture.Qualifications
+			peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+				backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+				backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"medium"}]}]}`)
+				prompt := backendRead(t, reader, "session/prompt")
+				io.WriteString(conn, `{"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"task","toolCall":{"toolCallId":"write"},"options":[{"optionId":"yes","kind":"allow_once"}]}}`+"\n")
+				line, err := reader.ReadString('\n')
+				if err != nil || !strings.Contains(line, `"cancelled"`) {
+					t.Errorf("default policy response: %s / %v", line, err)
+				}
+				backendReply(conn, prompt, `{"stopReason":"end_turn"}`)
+			})
+			backend.ACP.Open = peer.Open
+			result, err := backend.Execute(context.Background(), execution)
+			if !errors.Is(err, acp.ErrPermissionDenied) || *calls != 0 || result.Finished || result.ExitCode == 0 || result.Receipt.Transport.Failure != "permission_denied" || result.Receipt.Worker.Outcome == WorkerClaimedSuccess {
+				t.Fatalf("denied task replayed or succeeded: %+v / %v calls=%d", result, err, *calls)
+			}
+		})
+	}
+}
+
 func TestTransportEligibilityFailsClosed(t *testing.T) {
 	for _, reason := range []string{"legacy", "agy", "unknown", "unqualified", "version", "model", "effort", "os", "arch", "permissions", "cleanup", "task", "platform", "policy", "owner", "missing", "observed version"} {
 		for _, mode := range []string{"acp", "auto"} {
