@@ -81,8 +81,9 @@ type ACPQualification struct {
 
 // TransportBackend selects transport per execution without changing provider or
 // route. Zero Mode means CLI. Qualifications has no default approved entries.
-// ACP.Open must own a qualified lifecycle; the current acp.Process implementation
-// reports unresolved descendant cleanup and must not receive a qualified record.
+// ACP.Open must own a qualified lifecycle; acp.Process verifies a managed process
+// group, not arbitrary descendant containment. Provider qualification still
+// requires separate native lifecycle and authenticated task evidence.
 // Open receives the resolved ACP command in Execution.Invocation. CLI always
 // receives the original invocation. Session negotiation verifies actual protocol
 // and selected model/effort before the single task prompt; no model probe runs.

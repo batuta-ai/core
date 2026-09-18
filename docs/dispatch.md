@@ -128,6 +128,20 @@ text. Cancellation acknowledgement and verified worker shutdown are separate
 facts; cleanup must be verified before the worktree can be discarded or an
 `auto` compatibility fallback can run.
 
+On native macOS, `acp.Process` owns a dedicated process group. Shutdown closes
+its transport for cooperative EOF, then sends TERM and KILL to that group as
+needed, with bounded waits. Success requires direct-child reaping and verified
+group disappearance, including when the root exits before shutdown. Concurrent
+and repeated shutdown calls return the same result. Discovery failures, observed
+escaped survivors, signal errors and failure to drain remain unresolved.
+
+This boundary is a managed process group, not arbitrary descendant containment.
+A child that enters a new session or leaves the group can escape; advisory
+process snapshots may miss a fork and reparent between observations. Discovered
+PIDs are never individual signal targets. A successful group shutdown does not
+qualify any provider, launch, or platform combination; qualification records and
+native provider evidence are separate requirements.
+
 ## Uncertainty and rollback
 
 The intent is durably recorded before the prompt. A disconnect, timeout,

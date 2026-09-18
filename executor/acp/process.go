@@ -6,17 +6,18 @@ import (
 	"os"
 	"os/exec"
 	"sync"
-	"time"
 )
 
 var (
 	ErrProcessUnavailable = errors.New("acp: owned process execution unavailable on this platform")
-	ErrCleanupUnresolved  = errors.New("acp: owned descendant cleanup unresolved")
+	ErrCleanupUnresolved  = errors.New("acp: managed process cleanup unresolved")
 	ErrProcessStart       = errors.New("acp: worker process did not start")
 )
 
-// Process owns a single worker attempt and its transport. Shutdown proves direct
-// child exit or returns an error; descendant uncertainty always remains an error.
+// Process owns a single worker attempt, its transport and its managed process
+// group. Shutdown verifies direct child reaping and group exit; observed escapes
+// and discovery failures remain unresolved. New-session descendants can escape
+// the group boundary, so this is not arbitrary descendant containment.
 // A protocol result, including cancelled, is never evidence of process exit.
 type Process struct {
 	Connection  *Connection
@@ -86,31 +87,14 @@ func StartProcess(ctx context.Context, cmd *exec.Cmd, options Options) (*Process
 	return p, nil
 }
 
-// Shutdown is concurrent-safe and bounded. Unix discovery cannot exclude a fork
-// and reparent between snapshots, or atomically bind a discovered PID to a signal.
-// Consequently it never signals descendants or reports verified tree cleanup.
-// It kills only the retained os.Process (whose Signal/Wait synchronize PID reuse).
-// A future platform containment implementation can strengthen this contract.
+// Shutdown is concurrent-safe and bounded. It closes the transport, allows EOF
+// exit, then escalates from TERM to KILL for the dedicated process group as needed.
+// A successful result verifies group disappearance and direct child reaping.
 func (p *Process) Shutdown() error {
 	p.once.Do(func() {
-		p.Connection.Close()
 		close(p.stop)
-		grace := time.NewTimer(100 * time.Millisecond)
-		defer grace.Stop()
-		select {
-		case <-p.exited:
-		case <-grace.C:
-			_ = p.cmd.Process.Kill()
-		}
-		limit := time.NewTimer(time.Second)
-		defer limit.Stop()
-		select {
-		case <-p.exited:
-		case <-limit.C:
-		}
-		// Discovery commands have their own short deadline and bounded output.
 		<-p.tracked
-		p.shutdownErr = ErrCleanupUnresolved
+		p.shutdownErr = p.shutdownGroup()
 	})
 	return p.shutdownErr
 }
