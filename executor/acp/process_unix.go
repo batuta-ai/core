@@ -153,12 +153,16 @@ func (p *Process) shutdownGroup() error {
 }
 
 func waitProcessGroup(group int, exited <-chan struct{}, grace time.Duration) (bool, error) {
+	return waitProcessGroupStatus(func() error { return syscall.Kill(-group, 0) }, exited, grace)
+}
+
+func waitProcessGroupStatus(probe func() error, exited <-chan struct{}, grace time.Duration) (bool, error) {
 	limit := time.NewTimer(grace)
 	defer limit.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		err := syscall.Kill(-group, 0)
+		err := probe()
 		if errors.Is(err, syscall.ESRCH) {
 			// Once disappearance is observed, never signal this group ID again.
 			select {
@@ -168,7 +172,9 @@ func waitProcessGroup(group int, exited <-chan struct{}, grace time.Duration) (b
 				return false, ErrCleanupUnresolved
 			}
 		}
-		if err != nil {
+		// EPERM cannot establish absence; keep polling and allow escalation
+		// when this stage expires, just as for a group that is still present.
+		if err != nil && !errors.Is(err, syscall.EPERM) {
 			return false, err
 		}
 		select {

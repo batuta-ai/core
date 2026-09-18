@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -313,6 +314,55 @@ func TestProcessGroupDrainRequiresExitAndReaping(t *testing.T) {
 			if drained != tc.drained || (err != nil) != tc.wantErr {
 				t.Fatalf("drain = %v / %v, want %v / error %v", drained, err, tc.drained, tc.wantErr)
 			}
+		})
+	}
+}
+
+func TestProcessGroupStatusPermissionDenied(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		next      error
+		reapAfter time.Duration
+		drained   bool
+		wantErr   error
+		elapsed   time.Duration
+	}{
+		{name: "transient-before-reaping", next: syscall.ESRCH, reapAfter: 30 * time.Millisecond, drained: true, elapsed: 30 * time.Millisecond},
+		{name: "transient-after-reaping", next: syscall.ESRCH, reapAfter: 10 * time.Millisecond, drained: true, elapsed: 20 * time.Millisecond},
+		{name: "persistent-with-reaping", next: syscall.EPERM, reapAfter: 30 * time.Millisecond, elapsed: 100 * time.Millisecond},
+		{name: "persistent-without-reaping", next: syscall.EPERM, elapsed: 100 * time.Millisecond},
+		{name: "active-after-denial", reapAfter: 30 * time.Millisecond, elapsed: 100 * time.Millisecond},
+		{name: "disappeared-without-reaping", next: syscall.ESRCH, wantErr: ErrCleanupUnresolved, elapsed: 100 * time.Millisecond},
+		{name: "other-error-after-denial", next: syscall.EINVAL, wantErr: syscall.EINVAL, elapsed: 20 * time.Millisecond},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				exited := make(chan struct{})
+				if tc.reapAfter != 0 {
+					time.AfterFunc(tc.reapAfter, func() { close(exited) })
+				}
+				disappeared := false
+				probe := func() error {
+					if disappeared {
+						t.Fatal("probed group ID after observing disappearance")
+					}
+					if time.Since(start) < 20*time.Millisecond {
+						return syscall.EPERM
+					}
+					disappeared = errors.Is(tc.next, syscall.ESRCH)
+					return tc.next
+				}
+				drained, err := waitProcessGroupStatus(probe, exited, 100*time.Millisecond)
+				if drained != tc.drained || !errors.Is(err, tc.wantErr) {
+					t.Fatalf("drain = %v / %v, want %v / %v", drained, err, tc.drained, tc.wantErr)
+				}
+				if elapsed := time.Since(start); elapsed != tc.elapsed {
+					t.Fatalf("returned after %v, want %v", elapsed, tc.elapsed)
+				}
+			})
 		})
 	}
 }
