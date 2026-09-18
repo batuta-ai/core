@@ -202,7 +202,6 @@ func TestProcessManagedGroupShutdown(t *testing.T) {
 			if err := process.Shutdown(); tc.unresolved && !errors.Is(err, ErrCleanupUnresolved) || !tc.unresolved && err != nil {
 				t.Fatalf("repeated shutdown: %v", err)
 			}
-
 		})
 	}
 }
@@ -318,6 +317,52 @@ func TestProcessGroupDrainRequiresExitAndReaping(t *testing.T) {
 	}
 }
 
+func TestProcessGroupStatusReapingAfterStageDeadline(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		reaped    bool
+		reapAfter time.Duration
+		elapsed   time.Duration
+		wantErr   error
+	}{
+		{name: "both-ready", reaped: true, elapsed: 100 * time.Millisecond},
+		{name: "delayed-reaping", reapAfter: 150 * time.Millisecond, elapsed: 150 * time.Millisecond},
+		{name: "unreaped-bound", elapsed: 1100 * time.Millisecond, wantErr: ErrCleanupUnresolved},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			synctest.Test(t, func(t *testing.T) {
+				start := time.Now()
+				exited := make(chan struct{})
+				if tc.reaped {
+					close(exited)
+				} else if tc.reapAfter != 0 {
+					time.AfterFunc(tc.reapAfter, func() { close(exited) })
+				}
+				probes := 0
+				probe := func() error {
+					probes++
+					if probes != 1 {
+						t.Fatal("probed group ID after observing disappearance")
+					}
+					// Hold the observation until the stage expires without relying
+					// on which ready polling channel the scheduler selects.
+					<-time.After(100 * time.Millisecond)
+					return syscall.ESRCH
+				}
+				drained, err := waitProcessGroupStatus(probe, exited, 100*time.Millisecond)
+				if drained != (tc.wantErr == nil) || !errors.Is(err, tc.wantErr) {
+					t.Fatalf("drain = %v / %v, want %v / %v", drained, err, tc.wantErr == nil, tc.wantErr)
+				}
+				if elapsed := time.Since(start); elapsed != tc.elapsed {
+					t.Fatalf("returned after %v, want %v", elapsed, tc.elapsed)
+				}
+			})
+		})
+	}
+}
+
 func TestProcessGroupStatusPermissionDenied(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -333,7 +378,7 @@ func TestProcessGroupStatusPermissionDenied(t *testing.T) {
 		{name: "persistent-with-reaping", next: syscall.EPERM, reapAfter: 30 * time.Millisecond, elapsed: 100 * time.Millisecond},
 		{name: "persistent-without-reaping", next: syscall.EPERM, elapsed: 100 * time.Millisecond},
 		{name: "active-after-denial", reapAfter: 30 * time.Millisecond, elapsed: 100 * time.Millisecond},
-		{name: "disappeared-without-reaping", next: syscall.ESRCH, wantErr: ErrCleanupUnresolved, elapsed: 100 * time.Millisecond},
+		{name: "disappeared-without-reaping", next: syscall.ESRCH, wantErr: ErrCleanupUnresolved, elapsed: 1020 * time.Millisecond},
 		{name: "other-error-after-denial", next: syscall.EINVAL, wantErr: syscall.EINVAL, elapsed: 20 * time.Millisecond},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -226,7 +227,7 @@ func TestDispatchInvalidArgumentsNeverRunWorker(t *testing.T) {
 	}
 }
 
-func TestDispatchNativeOpenCodeMetadataAndModelReachAvailabilityGate(t *testing.T) {
+func TestDispatchNativeOpenCodeMissingBinaryStaysUnavailable(t *testing.T) {
 	root, args := dispatchCommandFixture(t, "success")
 	adapterPath := filepath.Join(os.Getenv("BATUTA_SKILLS"), "adapters", "fixture.md")
 	payload, err := os.ReadFile(adapterPath)
@@ -252,10 +253,75 @@ func TestDispatchNativeOpenCodeMetadataAndModelReachAvailabilityGate(t *testing.
 	}
 	var exit *ExitError
 	if !errors.As(err, &exit) || exit.Code != 2 || report.ExitClass != "unavailable" || report.Executor != "opencode" || report.Model != "opencode/big-pickle" || report.Effort != "" || report.Receipt.Submission.State != executor.SubmissionNotSubmitted || report.Artifacts.Directory == "" {
-		t.Fatalf("exact route did not reach availability gate: %+v / %v", report, err)
+		t.Fatalf("missing native provider was not rejected: %+v / %v", report, err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "calls")); !os.IsNotExist(err) {
 		t.Fatal("unavailable explicit ACP ran CLI")
+	}
+}
+
+func TestDispatchNativeOpenCodeLaunchEvidence(t *testing.T) {
+	for _, model := range []string{"opencode/big-pickle", "opencode/other"} {
+		t.Run(model, func(t *testing.T) {
+			root, args := dispatchCommandFixture(t, "success")
+			bin := t.TempDir()
+			// Only shell builtins are needed. Every invocation and input line is
+			// recorded before failure, including any attempted CLI replay.
+			fixture := `#!/bin/sh
+printf '%s\n' "$*" >> native-calls || exit 91
+case "$*" in
+  --version) printf '1.18.31\n' ;;
+  acp)
+    while IFS= read -r line; do
+      printf '%s\n' "$line" >> native-input || exit 92
+      printf 'invalid-acp\n' || exit 93
+    done
+    exit 7 ;;
+  *) exit 7 ;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(bin, "opencode"), []byte(fixture), 0700); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin)
+			adapter := "---\nname: opencode\nrun: 'opencode run {brief} {model_flags} {cwd}'\nmodel_flags: '{model} {effort}'\nreadonly: unused\navailable: must-never-run\nmodels: must-never-run\nfinished: exit_code\nacp_run: opencode acp\nacp_version: 1.18.31\nacp_model_config: model\n---\n"
+			if err := os.WriteFile(filepath.Join(os.Getenv("BATUTA_SKILLS"), "adapters", "opencode.md"), []byte(adapter), 0600); err != nil {
+				t.Fatal(err)
+			}
+			args = append(args, "--executor", "opencode", "--model", model, "--effort", "", "--transport", "acp", "--timeout", "2s")
+			var stdout, stderr bytes.Buffer
+			err := run(args, &stdout, &stderr)
+			var report executor.DispatchReport
+			if decodeErr := json.Unmarshal(stdout.Bytes(), &report); decodeErr != nil {
+				t.Fatalf("dispatch report: %v; stdout=%s stderr=%s", decodeErr, &stdout, &stderr)
+			}
+			if report.Artifacts.Directory != "" {
+				t.Cleanup(func() {
+					if err := os.RemoveAll(report.Artifacts.Directory); err != nil {
+						t.Error(err)
+					}
+				})
+			}
+			if err == nil || report.Executor != "opencode" || report.Model != model || report.Effort != "" || report.Receipt.Submission.State != executor.SubmissionNotSubmitted || report.Backend == "cli" || report.Artifacts.Directory == "" {
+				t.Fatalf("fixture failure submitted or replayed work: %+v / %v", report, err)
+			}
+			calls, callsErr := os.ReadFile(filepath.Join(root, "native-calls"))
+			input, inputErr := os.ReadFile(filepath.Join(root, "native-input"))
+			if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" && model == "opencode/big-pickle" {
+				if report.Backend != "acp" || report.Receipt.Transport.Failure != "protocol" || callsErr != nil || string(calls) != "--version\nacp\n" || inputErr != nil {
+					t.Fatalf("native route did not reach fixture protocol failure: %+v / %v; calls=%q / %v input=%q / %v", report, err, calls, callsErr, input, inputErr)
+				}
+				var request struct{ Method string }
+				if err := json.Unmarshal(bytes.TrimSpace(input), &request); err != nil || request.Method != "initialize" {
+					t.Fatalf("expected only initialization, without a task prompt: %q / %v", input, err)
+				}
+			} else {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || report.ExitClass != "unavailable" || !os.IsNotExist(callsErr) || !os.IsNotExist(inputErr) {
+					t.Fatalf("unqualified platform/model launched provider: %+v / %v; calls=%q / %v input=%q / %v", report, err, calls, callsErr, input, inputErr)
+				}
+			}
+		})
 	}
 }
 

@@ -27,8 +27,10 @@ batuta trail [<entrega>]               mostra os registros do diário
 CLI legado continua sendo o padrão. ACP exige qualificação exata por executor,
 versão, plataforma, modelo e esforço. O construtor no código-fonte qualifica
 apenas OpenCode 1.18.31 (`opencode acp`), modelo `opencode/big-pickle`, sem
-esforço, em macOS arm64 nativo; Linux e Windows continuam via CLI. Isso não
-descreve as capacidades de um binário beta23 instalado. Uma tentativa ACP
+esforço, em macOS arm64 nativo. Todas as outras combinações de sistema operacional
+e arquitetura, incluindo macOS amd64 (Intel ou Rosetta), Linux e Windows,
+continuam via CLI. Isso não descreve as capacidades de um binário beta23
+instalado. Uma tentativa ACP
 incerta é preservada para reconciliação e nunca é repetida automaticamente via
 CLI. Subagentes nativos
 pertencem ao host interativo, não ao binário. Consulte

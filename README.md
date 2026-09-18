@@ -64,7 +64,8 @@ Both `dispatch` and `loop` accept `--transport cli|acp|auto`; omission keeps
 the legacy CLI path. ACP requires exact per-executor/version/platform/model
 and effort qualification. The source constructor qualifies only OpenCode
 1.18.31 (`opencode acp`), model `opencode/big-pickle`, empty effort, on native
-macOS arm64; Linux and Windows remain on CLI. This does not describe an
+macOS arm64. Every other OS/architecture, including macOS amd64 (Intel or
+Rosetta), Linux and Windows, remains on CLI. This does not describe an
 installed beta23 binary's capabilities. Uncertain ACP work is preserved for
 reconciliation and never replayed through CLI
 automatically. Native subagents are selected by interactive hosts, not by this

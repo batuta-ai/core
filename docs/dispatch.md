@@ -172,9 +172,15 @@ facts; cleanup must be verified before the worktree can be discarded or an
 
 On native macOS, `acp.Process` owns a dedicated process group. Shutdown closes
 its transport for cooperative EOF, then sends TERM and KILL to that group as
-needed, with bounded waits. Success requires direct-child reaping and verified
-group disappearance, including when the root exits before shutdown. Concurrent
-and repeated shutdown calls return the same result. Discovery failures, observed
+needed, with bounded waits. Once group disappearance is observed, no further
+probe or signal targets that group ID. Already-complete direct-child reaping
+succeeds immediately; pending reaping gets its own wait of at most one second,
+independent of the expired stage grace period. Group absence without reaping
+remains unresolved after that bound. Success requires both direct-child reaping
+and verified group disappearance, including when the root exits before shutdown.
+Concurrent and repeated shutdown calls return the same result. Discovery
+failures remain sticky uncertainty even if later snapshots succeed: later
+observations cannot reconstruct a missed interval. Discovery failures, observed
 escaped survivors, signal errors and failure to drain remain unresolved.
 
 This boundary is a managed process group, not arbitrary descendant containment.

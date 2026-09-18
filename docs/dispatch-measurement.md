@@ -15,6 +15,11 @@ macOS **26.6.2**, `darwin/arm64`, Go **1.26.4**, and native constructor commit
 The provider executable SHA-256 was
 `16c960ba77421da11b53e785f359b73f328a86118b48feb4af143db5d9afb198`.
 The constructor now supplies only this qualification.
+Those provider executions are historical evidence for that pinned constructor.
+The later independent direct-child reaping budget has real-process fixture,
+unit, and race-test coverage, but none of those later runs called a real
+provider or refreshed the qualification. Real-provider requalification at the
+final lifecycle revision remains pending.
 
 The probes called the production constructor's ACP backend directly, bypassing
 only the then-absent qualification record. The exact version was checked

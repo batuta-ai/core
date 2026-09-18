@@ -133,12 +133,21 @@ func (p *Process) shutdownGroup() error {
 		{signal: syscall.SIGTERM, grace: 100 * time.Millisecond},
 		{signal: syscall.SIGKILL, grace: time.Second},
 	} {
+		absent := false
 		if stage.signal != 0 {
-			if err := syscall.Kill(-group, stage.signal); err != nil && !errors.Is(err, syscall.ESRCH) {
+			err := syscall.Kill(-group, stage.signal)
+			absent = errors.Is(err, syscall.ESRCH)
+			if err != nil && !absent {
 				return ErrCleanupUnresolved
 			}
 		}
-		drained, err := waitProcessGroup(group, p.exited, stage.grace)
+		var drained bool
+		var err error
+		if absent {
+			drained, err = waitProcessReaped(p.exited)
+		} else {
+			drained, err = waitProcessGroup(group, p.exited, stage.grace)
+		}
 		if err != nil {
 			return ErrCleanupUnresolved
 		}
@@ -164,13 +173,8 @@ func waitProcessGroupStatus(probe func() error, exited <-chan struct{}, grace ti
 	for {
 		err := probe()
 		if errors.Is(err, syscall.ESRCH) {
-			// Once disappearance is observed, never signal this group ID again.
-			select {
-			case <-exited:
-				return true, nil
-			case <-limit.C:
-				return false, ErrCleanupUnresolved
-			}
+			// Once disappearance is observed, never probe or signal this group ID again.
+			return waitProcessReaped(exited)
 		}
 		// EPERM cannot establish absence; keep polling and allow escalation
 		// when this stage expires, just as for a group that is still present.
@@ -182,6 +186,25 @@ func waitProcessGroupStatus(probe func() error, exited <-chan struct{}, grace ti
 			return false, nil
 		case <-ticker.C:
 		}
+	}
+}
+
+func waitProcessReaped(exited <-chan struct{}) (bool, error) {
+	// Completed reaping wins even when the preceding stage has expired.
+	select {
+	case <-exited:
+		return true, nil
+	default:
+	}
+	// Group absence is not proof of direct-child reaping. Give Wait its own
+	// bounded budget, independent of the grace period for group disappearance.
+	limit := time.NewTimer(time.Second)
+	defer limit.Stop()
+	select {
+	case <-exited:
+		return true, nil
+	case <-limit.C:
+		return false, ErrCleanupUnresolved
 	}
 }
 

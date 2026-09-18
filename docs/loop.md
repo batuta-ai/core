@@ -120,7 +120,8 @@ exit `1` with the reason on stderr.
   exact qualification exists. `auto` can fall back to CLI before submission,
   but never after an ACP prompt may have run. The source constructor qualifies
   only OpenCode 1.18.31 with `opencode acp`, model `opencode/big-pickle` and
-  empty effort on native macOS arm64; Linux and Windows remain on CLI.
+  empty effort on native macOS arm64. Every other OS/architecture, including
+  macOS amd64 (Intel or Rosetta), Linux and Windows, remains on CLI.
   Native host dispatch belongs to an interactive host and is not a loop
   transport. The independent verifier
   remains a separate CLI session regardless of task transport. See

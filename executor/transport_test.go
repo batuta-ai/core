@@ -98,19 +98,50 @@ func TestNativeTransportRequiresReleaseQualification(t *testing.T) {
 
 func TestNativeTransportExactReleaseSelection(t *testing.T) {
 	t.Parallel()
-	for _, scenario := range []string{"qualified", "version", "model", "effort", "launch", "codex", "claude", "cursor-agent", "agy", "missing", "observed version", "version error"} {
+	for _, scenario := range []struct {
+		name          string
+		syntheticHost bool
+		wantLookup    bool
+		wantProbe     bool
+		wantACP       bool
+	}{
+		{name: "qualified", wantLookup: true, wantProbe: true, wantACP: true},
+		{name: "synthetic host qualification", syntheticHost: true, wantLookup: true, wantProbe: true, wantACP: true},
+		{name: "version"},
+		{name: "model"},
+		{name: "effort"},
+		{name: "launch"},
+		{name: "codex"},
+		{name: "claude"},
+		{name: "cursor-agent"},
+		{name: "agy"},
+		{name: "missing", syntheticHost: true, wantLookup: true},
+		{name: "observed version", syntheticHost: true, wantLookup: true, wantProbe: true},
+		{name: "version error", syntheticHost: true, wantLookup: true, wantProbe: true},
+	} {
 		for _, mode := range []string{"", "cli", "acp", "auto"} {
-			t.Run(scenario+"/"+mode, func(t *testing.T) {
+			t.Run(scenario.name+"/"+mode, func(t *testing.T) {
 				t.Parallel()
 				fixture, execution, calls := transportFixture(t)
 				execution.Adapter.Name = "opencode"
 				execution.Adapter.ACP = &ACPLaunch{Run: "opencode acp", Version: "1.18.31", ModelConfigID: "model"}
 				execution.Request.Model, execution.Request.Effort = "opencode/big-pickle", ""
 				backend := NewNativeTransport(mode)
-				if len(backend.Qualifications) != 1 || backend.Qualifications[0].GOOS != "darwin" || backend.Qualifications[0].GOARCH != "arm64" {
-					t.Fatal("native evidence must cover exactly one macOS arm64 qualification")
+				wantQualification := ACPQualification{
+					Executor: "opencode", Run: "opencode acp", Version: "1.18.31",
+					GOOS: "darwin", GOARCH: "arm64", Model: "opencode/big-pickle", Effort: "",
+					Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
 				}
-				switch scenario {
+				if len(backend.Qualifications) != 1 || backend.Qualifications[0] != wantQualification {
+					t.Fatalf("release qualification changed: %+v", backend.Qualifications)
+				}
+				switch scenario.name {
+				case "synthetic host qualification", "missing", "observed version", "version error":
+					// Exercise selection and probe paths on every CI host. This
+					// test-owned copy is not native qualification evidence.
+					qualification := backend.Qualifications[0]
+					qualification.GOOS, qualification.GOARCH = runtime.GOOS, runtime.GOARCH
+					backend.Qualifications = []ACPQualification{qualification}
 				case "version":
 					execution.Adapter.ACP.Version = "1.18.32"
 				case "model":
@@ -120,8 +151,8 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 				case "launch":
 					execution.Adapter.ACP.Run = filepath.Join(execution.Request.Cwd, "opencode") + " acp"
 				case "codex", "claude", "cursor-agent", "agy":
-					execution.Adapter.Name = scenario
-					execution.Adapter.ACP.Run = map[string]string{"codex": "codex-acp", "claude": "claude-agent-acp", "cursor-agent": "cursor-agent acp", "agy": "agy acp"}[scenario]
+					execution.Adapter.Name = scenario.name
+					execution.Adapter.ACP.Run = map[string]string{"codex": "codex-acp", "claude": "claude-agent-acp", "cursor-agent": "cursor-agent acp", "agy": "agy acp"}[scenario.name]
 				}
 				backend.CLI = fixture.CLI
 				lookups, probes, opens := 0, 0, 0
@@ -131,7 +162,7 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 					if name != "opencode" {
 						t.Errorf("unexpected discovery: %s", name)
 					}
-					if scenario == "missing" {
+					if scenario.name == "missing" {
 						return "", os.ErrNotExist
 					}
 					return resolved, nil
@@ -141,10 +172,10 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 					if command.Executable != resolved || strings.Join(command.Args, " ") != "--version" || command.Directory != execution.Request.Cwd || len(command.Stdin) != 0 || command.StdoutLimit != 4096 || command.StderrLimit != 4096 {
 						t.Errorf("version probe changed: %+v", command)
 					}
-					if scenario == "version error" {
+					if scenario.name == "version error" {
 						return publication.CommandResult{}, errors.New("version failed")
 					}
-					if scenario == "observed version" {
+					if scenario.name == "observed version" {
 						return publication.CommandResult{Stdout: []byte("1.18.32\n")}, nil
 					}
 					return publication.CommandResult{Stdout: []byte("1.18.31\n")}, nil
@@ -163,11 +194,12 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 					return peer.Open(ctx, got)
 				}
 				result, err := backend.Execute(context.Background(), execution)
-				eligible := (mode == "acp" || mode == "auto") && runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
-				wantLookup := eligible && (scenario == "qualified" || scenario == "missing" || scenario == "observed version" || scenario == "version error")
-				wantACP := eligible && scenario == "qualified"
+				eligible := (mode == "acp" || mode == "auto") && (scenario.syntheticHost || (runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"))
+				wantLookup := eligible && scenario.wantLookup
+				wantProbe := eligible && scenario.wantProbe
+				wantACP := eligible && scenario.wantACP
 				wantCLI := mode == "" || mode == "cli" || (mode == "auto" && !wantACP)
-				if lookups != boolCount(wantLookup) || probes != boolCount(wantLookup && scenario != "missing") || opens != boolCount(wantACP) || *calls != boolCount(wantCLI) {
+				if lookups != boolCount(wantLookup) || probes != boolCount(wantProbe) || opens != boolCount(wantACP) || *calls != boolCount(wantCLI) {
 					t.Fatalf("unexpected attempts: lookup=%d version=%d ACP=%d CLI=%d", lookups, probes, opens, *calls)
 				}
 				if wantACP || wantCLI {
