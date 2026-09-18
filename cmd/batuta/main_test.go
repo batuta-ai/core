@@ -194,7 +194,8 @@ func TestDispatchAdapterMetadataCannotQualifyNativeLaunch(t *testing.T) {
 			}
 			calls, readErr := os.ReadFile(filepath.Join(root, "calls"))
 			if mode == "acp" {
-				if err == nil || report.ExitClass != "unavailable" || report.Receipt.Submission.State != executor.SubmissionNotSubmitted || !os.IsNotExist(readErr) {
+				var exit *ExitError
+				if !errors.As(err, &exit) || exit.Code != 2 || report.ExitClass != "unavailable" || report.Receipt.Submission.State != executor.SubmissionNotSubmitted || !os.IsNotExist(readErr) {
 					t.Fatalf("metadata qualified native launch: %+v / %v; calls=%s", report, err, calls)
 				}
 			} else if err != nil || report.Backend != "cli" || report.ExitClass != "completed" || readErr != nil || string(calls) != "call\n" {

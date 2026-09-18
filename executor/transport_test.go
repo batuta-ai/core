@@ -107,14 +107,14 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 	}{
 		{name: "qualified", wantLookup: true, wantProbe: true, wantACP: true},
 		{name: "synthetic host qualification", syntheticHost: true, wantLookup: true, wantProbe: true, wantACP: true},
-		{name: "version"},
-		{name: "model"},
-		{name: "effort"},
-		{name: "launch"},
-		{name: "codex"},
-		{name: "claude"},
-		{name: "cursor-agent"},
-		{name: "agy"},
+		{name: "version", syntheticHost: true},
+		{name: "model", syntheticHost: true},
+		{name: "effort", syntheticHost: true},
+		{name: "launch", syntheticHost: true},
+		{name: "codex", syntheticHost: true},
+		{name: "claude", syntheticHost: true},
+		{name: "cursor-agent", syntheticHost: true},
+		{name: "agy", syntheticHost: true},
 		{name: "missing", syntheticHost: true, wantLookup: true},
 		{name: "observed version", syntheticHost: true, wantLookup: true, wantProbe: true},
 		{name: "version error", syntheticHost: true, wantLookup: true, wantProbe: true},
@@ -135,13 +135,14 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 				if len(backend.Qualifications) != 1 || backend.Qualifications[0] != wantQualification {
 					t.Fatalf("release qualification changed: %+v", backend.Qualifications)
 				}
-				switch scenario.name {
-				case "synthetic host qualification", "missing", "observed version", "version error":
+				if scenario.syntheticHost {
 					// Exercise selection and probe paths on every CI host. This
 					// test-owned copy is not native qualification evidence.
 					qualification := backend.Qualifications[0]
 					qualification.GOOS, qualification.GOARCH = runtime.GOOS, runtime.GOARCH
 					backend.Qualifications = []ACPQualification{qualification}
+				}
+				switch scenario.name {
 				case "version":
 					execution.Adapter.ACP.Version = "1.18.32"
 				case "model":
