@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.24](https://github.com/batuta-ai/core/compare/v1.1.0-beta.23...v1.1.0-beta.24) (2026-09-18)
+
+
+### Features
+
+* **acp:** enable qualified native OpenCode on macOS arm64 ([#90](https://github.com/batuta-ai/core/issues/90)) ([3102c84](https://github.com/batuta-ai/core/commit/3102c845631a0ff13975da7d1861f9720d727935))
+
 ## [1.1.0-beta.23](https://github.com/batuta-ai/core/compare/v1.1.0-beta.22...v1.1.0-beta.23) (2026-09-17)
 
 
