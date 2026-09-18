@@ -10,3 +10,8 @@ func prepareProcess(*exec.Cmd) {}
 type ownedProcesses struct{}
 
 func (*ownedProcesses) track(int, <-chan struct{}) {}
+
+func (p *Process) shutdownGroup() error {
+	p.Connection.Close()
+	return ErrProcessUnavailable
+}

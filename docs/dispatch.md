@@ -49,10 +49,15 @@ effort selector. `--transport` accepts `cli`, `acp` or `auto` and defaults to
   when worker shutdown was verified. It never switches transport after a
   prompt may have been submitted.
 
-The stock command currently carries no approved qualification records, so an
-explicit ACP request is unavailable and `auto` takes the CLI path. An embedding
-release owner must supply the qualified lifecycle and evidence described below
-before enabling an ACP launch.
+Stock dispatch and loop task attempts use the native transport factory. It
+launches a fresh managed process with fixed resolved argv, an absolute requested
+workspace, inherited environment and bounded protocol I/O and owned shutdown.
+Prompts travel through the protocol, never a shell command. The factory carries
+one release-owned qualification: OpenCode **1.18.31**, fixed launch
+`opencode acp`, native **macOS arm64** (`darwin/arm64`), model
+`opencode/big-pickle`, and **empty effort**. All other combinations remain
+unavailable for explicit ACP; `auto` uses CLI before submission. This describes
+the source constructor, not ACP availability in an installed beta23 binary.
 
 The command writes one compact JSON report to stdout and puts its brief,
 pre-submission intent, complete evidence and bounded stdout/stderr in a new
@@ -117,16 +122,73 @@ executor, version, model or platform does not transfer to another.
 
 The known launch families are Codex's dedicated `codex-acp` wrapper, Claude's
 dedicated `claude-agent-acp` wrapper, `opencode acp`, and `cursor-agent acp`.
-OpenCode and Cursor remain pilot candidates; Codex still requires permission
-and cleanup qualification; Claude still requires authenticated task evidence;
-Agy retains CLI. Unsupported Windows combinations remain ineligible until they
-have native lifecycle evidence. No wrapper is downloaded automatically.
+Only the exact OpenCode tuple above has accepted native qualification evidence.
+Other OpenCode versions, models, efforts and platforms, as well as Cursor,
+Codex, Claude and Agy, remain on CLI. Linux and Windows require their own native
+evidence; Windows also requires native lifecycle ownership and teardown before
+launch. No wrapper is downloaded automatically.
 
-ACP permission requests are structured control messages. The client rejects an
-unsupported request, and an unattended run cannot infer approval from prompt
-text. Cancellation acknowledgement and verified worker shutdown are separate
+For the qualified tuple, add these existing fields to an operator-owned
+`opencode` adapter's frontmatter, retaining its required CLI fields:
+
+```yaml
+acp_run: opencode acp
+acp_version: 1.18.31
+acp_model_config: model
+```
+
+Metadata does not grant qualification. The resolved executable must still
+return exactly `1.18.31` from `opencode --version` before
+every ACP launch. No install, authentication or global configuration is changed.
+
+```text
+batuta dispatch \
+  --brief-file /absolute/path/task.brief.md \
+  --executor opencode \
+  --model opencode/big-pickle \
+  --cwd /absolute/path/task-worktree \
+  --transport acp \
+  --timeout 45m
+```
+
+Leave `--effort` unset. A different requested model or any nonempty effort
+fails qualification before launch. The session must also acknowledge the exact
+model before receiving the prompt; incompatible configuration fails explicit
+ACP and permits `auto` fallback only after verified pre-submission shutdown.
+Neither path silently changes the requested model or effort. See the
+[qualification evidence](dispatch-measurement.md#native-opencode-qualification)
+for the tested scope and usage gaps.
+
+ACP permission requests are structured control messages. The stock factory
+denies every new permission request, even when the prompt claims approval or
+the worker also reports `end_turn`. A denial remains non-success. Unsupported
+client methods are rejected. Existing provider-side permissions and configuration
+are inherited unchanged; the factory injects no approval, install or auth flags.
+This callback policy is not an OS sandbox and does not restrict actions the
+provider can already perform without requesting permission.
+Cancellation acknowledgement and verified worker shutdown are separate
 facts; cleanup must be verified before the worktree can be discarded or an
 `auto` compatibility fallback can run.
+
+On native macOS, `acp.Process` owns a dedicated process group. Shutdown closes
+its transport for cooperative EOF, then sends TERM and KILL to that group as
+needed, with bounded waits. Once group disappearance is observed, no further
+probe or signal targets that group ID. Already-complete direct-child reaping
+succeeds immediately; pending reaping gets its own wait of at most one second,
+independent of the expired stage grace period. Group absence without reaping
+remains unresolved after that bound. Success requires both direct-child reaping
+and verified group disappearance, including when the root exits before shutdown.
+Concurrent and repeated shutdown calls return the same result. Discovery
+failures remain sticky uncertainty even if later snapshots succeed: later
+observations cannot reconstruct a missed interval. Discovery failures, observed
+escaped survivors, signal errors and failure to drain remain unresolved.
+
+This boundary is a managed process group, not arbitrary descendant containment.
+A child that enters a new session or leaves the group can escape; advisory
+process snapshots may miss a fork and reparent between observations. Discovered
+PIDs are never individual signal targets. A successful group shutdown does not
+qualify any provider, launch, or platform combination; qualification records and
+native provider evidence are separate requirements.
 
 ## Uncertainty and rollback
 

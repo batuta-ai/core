@@ -1,9 +1,135 @@
 # Dispatch measurement protocol
 
 This protocol measures whether compact dispatch reduces orchestration cost
-without weakening acceptance. It defines comparable observations; it does not
-contain pilot results or a savings verdict. The host release plan owns the
-actual paired pilot, qualification decision and rollout.
+without weakening acceptance. It defines comparable observations and records
+historical qualification plus fresh final-lifecycle requalification below; it
+does not contain matched pilot results or a savings verdict. The host release
+plan owns the actual paired pilot and rollout.
+
+## Native OpenCode qualification
+
+### Final lifecycle requalification
+
+Parent review accepted four fresh native cases on **2026-09-18** at final
+lifecycle revision `f604e3cf9990e8e47fc3be3f63fac5345ee37183`, using macOS
+**26.6.2**, `darwin/arm64`, and Go **1.26.4**. The route and provider were
+unchanged from the historical qualification: executor `opencode`, fixed argv
+`opencode acp`, version **1.18.31**, model `opencode/big-pickle`, empty effort,
+model config ID `model`, and provider executable SHA-256
+`16c960ba77421da11b53e785f359b73f328a86118b48feb4af143db5d9afb198`.
+The production source hashes recorded for the tested revision remained
+unchanged through parent acceptance.
+
+Each fresh case ran once in a disposable workspace through the production
+constructor's ACP backend, bypassing only the outer qualification gate. The
+fixed invocation and version were checked separately. Each used a 60-second
+task timeout and 90-second wall limit. There were no evidence gaps or retries.
+
+| Accepted case | Required observation and result | Duration / shutdown |
+|---|---|---|
+| Task | `artifact.txt` was a regular file containing exactly `batuta-native-acp-ok` and one newline; submitted, completed, worker success | 7,498 / 58 ms |
+| Permission | One callback rejected; `denied.txt` absent; `permission_denied`, uncertain submission, failed transport, unknown worker | 7,044 / 158 ms |
+| Running-child cancellation | Live marked child identified before cancellation at 8,306 ms; uncertain submission, canceled transport, unknown worker; child and expiry marker absent afterward | 9,271 / 81 ms |
+| Deadline | Live marked child observed through 59,903 ms; 60-second execution deadline; uncertain submission, failed transport with timeout, unknown worker; child and expiry marker absent afterward | 61,002 / 108 ms |
+
+All four fresh cases verified managed-group disappearance and direct-child
+reaping. The cancellation child marker appeared at 7,204 ms; the deadline
+child marker appeared at 5,003 ms. Both marked children had a 120-second
+independent lifetime and were absent after shutdown, before that lifetime could
+expire. These results cover the managed-group contract, not containment of
+arbitrary escaped descendants. They also do not constitute a fresh outer
+stock-dispatch smoke; that separate smoke remains historical below.
+
+The four cases were four first attempts, with zero gaps and zero retries. The
+complete evidence now contains **ten real attempts**: five historical
+qualification probes including the inconclusive initial cancel probe, the
+historical stock-dispatch smoke, and these four fresh cases. The new attempts
+do not erase or reclassify the historical inconclusive attempt.
+
+Only the fresh task case reported worker usage: raw input/cached-input/output
+counters of **17,497 / 1,792 / 18**, with provenance
+`acp/session-prompt/usage (draft)`. Usage for the fresh permission,
+cancellation and deadline cases is **unknown**, not zero. These optional raw
+counters do not establish normalized token totals, billing, quota, model
+identity or savings.
+
+### Historical constructor qualification (2026-09-17)
+
+Release-owner review accepted four native cases on **2026-09-17**, using
+macOS **26.6.2**, `darwin/arm64`, Go **1.26.4**, and native constructor commit
+`76da07454db4612c9cb882ff328b055ade84c23a`. The exact candidate was executor
+`opencode`, fixed argv `opencode acp`, version **1.18.31**, model
+`opencode/big-pickle`, empty effort, and model config ID `model`.
+The provider executable SHA-256 was
+`16c960ba77421da11b53e785f359b73f328a86118b48feb4af143db5d9afb198`.
+`76da074` had no qualification record; `2f0abd7` added it after the probes.
+Those provider executions are historical evidence for that pinned constructor.
+Before the requalification above, the later independent direct-child reaping
+budget had real-process fixture, unit, and race-test coverage, but those runs
+had not called a real provider or refreshed the qualification. The four
+2026-09-18 cases close that evidence gap at the final lifecycle revision
+without replacing this historical evidence.
+
+The probes called the production constructor's ACP backend directly, bypassing
+only the then-absent qualification record. The exact version was checked
+separately. They retained the constructor's reject callback and managed-group
+shutdown. They did not exercise outer dispatch selection; injected gate tests
+cover selection. Separately, a historical real stock `batuta dispatch` smoke
+passed with backend `acp`, exit class `completed`, exit code 0, and exact file
+contents verified independently. It took **10,456 ms** and used candidate
+binary SHA-256
+`95b884c7bcbaa072e2e800fea66712895e825a676c6b39da1a23cc8ee4ea5695`.
+This was an additional sixth real attempt beyond the five qualification probes;
+it was not rerun as part of the four fresh direct-backend cases.
+
+To reproduce the qualification, pin that constructor and provider, verify the
+version and binary hash, and run each case once in a fresh disposable workspace
+on the native platform. Use a 60-second task timeout and 90-second wall limit.
+Keep existing provider permissions for task/cancel/deadline; tighten only the
+permission case with project-local edit/bash `ask`. Count rejected callbacks
+by wrapping the original policy without changing its decision. Verify actual
+filesystem contents, child identity and shutdown rather than model prose.
+
+| Accepted case | Required observation and result | Duration / shutdown |
+|---|---|---|
+| Task | `artifact.txt` contained exactly `batuta-native-acp-ok` and one newline; submitted, completed, worker success | 29,385 / 67 ms |
+| Permission | One callback rejected; `denied.txt` absent; `permission_denied`, uncertain submission, unknown worker | 4,918 / 160 ms |
+| Running-child cancellation | Live marked child identified before context cancellation; uncertain submission, canceled transport, unknown worker; child separately observed absent afterward | 18,819 / 79 ms |
+| Deadline | Live marked child observed through 59,905 ms; 60-second execution deadline; uncertain submission, timeout, unknown worker; child separately observed absent afterward | 60,400 / 89 ms |
+
+For cancel/deadline, use a foreground shell child with a 120-second independent
+lifetime, a startup marker, and an expiry marker. Interrupt only after verifying
+the marked child's live identity; verify absence afterward and ensure expiry
+did not cause the result. All four cases verified managed-group disappearance
+and direct-child reaping. This is the managed-group contract, not containment
+of arbitrary escaped descendants; discovered PIDs are never individual signal
+targets.
+
+There were **five historical real qualification attempts**, including one
+inconclusive initial cancel probe. That probe completed without an observed
+live child, so it proved neither in-flight cancellation nor child absence.
+Ambiguous command punctuation was a plausible explanation, not a proven
+provider cause. After verified cleanup, a deliberately clarified command in a
+fresh fixture supplied the accepted cancellation evidence. Both attempts
+remain in the evidence; no uncertain task was replayed. The corrected probe
+source SHA-256 was
+`11b5604b45ffb05b375d7711d5bd505ecff12dc59333d2fed350bf741e048087`.
+
+Among the historical qualification probes, only the task and inconclusive
+cancel attempt reported worker usage, with provenance
+`acp/session-prompt/usage (draft)`. Their raw input/cached-input/output counters
+were respectively **325 / 22,272 / 64** and **184 / 19,200 / 12**.
+The separate stock-dispatch smoke reported **175 / 19,712 / 36** with the same
+provenance. Cached input exceeds reported input in these observations; retain
+the raw fields without inferring normalized totals or billing semantics. Usage for
+permission rejection, accepted cancellation and deadline is **unknown**, not
+zero. Conductor usage, reasoning counters, subscription quota, API spend and
+independently verified effective model/billing were not established.
+
+These are functional qualification results, **not a token-savings result**.
+There was no matched CLI/native-host baseline, no completed matched-pair
+cohort, and no aggregate consumption estimate. The protocol below still
+governs any future pilot; qualification does not satisfy its acceptance targets.
 
 ## Cohorts
 

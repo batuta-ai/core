@@ -429,7 +429,7 @@ func TestACPBackendHardTimeoutReapsUncooperativeWorker(t *testing.T) {
 					return
 				}
 				result := got.result
-				if !errors.Is(got.err, context.DeadlineExceeded) || !result.TimedOut || result.Finished || result.ExitCode == 0 || result.Receipt.Submission.State != SubmissionUncertain || result.Receipt.Transport.Failure != "shutdown" {
+				if !errors.Is(got.err, context.DeadlineExceeded) || !result.TimedOut || result.Finished || result.ExitCode == 0 || result.Receipt.Submission.State != SubmissionUncertain || result.Receipt.Transport.Failure != "timeout" {
 					t.Fatalf("timeout or cleanup erased: %+v / %+v / %v", result, result.Receipt, got.err)
 				}
 				if cmd.ProcessState == nil {

@@ -65,6 +65,192 @@ func TestTransportKeepsCLISelectable(t *testing.T) {
 	}
 }
 
+func TestNativeTransportRequiresReleaseQualification(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"", "cli", "auto", "acp"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			fixture, execution, calls := transportFixture(t)
+			backend := NewNativeTransport(mode)
+			backend.CLI = fixture.CLI
+			backend.Lookup = func(string) (string, error) {
+				t.Fatal("unqualified native launch attempted discovery")
+				return "", nil
+			}
+			if backend.Mode != mode || backend.ACP.Open == nil || backend.ACP.PermissionPolicy == nil {
+				t.Fatal("native constructor lost policy, ownership or qualification boundary")
+			}
+			permission := acp.PermissionRequest{Options: []acp.PermissionOption{{OptionID: "yes", Kind: "allow_always"}}}
+			if choice := backend.ACP.PermissionPolicy(context.Background(), execution, permission); choice != "" {
+				t.Fatalf("default policy granted permission: %q", choice)
+			}
+			result, err := backend.Execute(context.Background(), execution)
+			if mode == "acp" {
+				if !errors.Is(err, ErrACPUnavailable) || *calls != 0 || result.Receipt.Submission.State != SubmissionNotSubmitted {
+					t.Fatalf("unqualified native launch: %+v / %v calls=%d", result, err, *calls)
+				}
+			} else if err != nil || *calls != 1 || !result.Finished || string(result.Stdout) != "legacy" {
+				t.Fatalf("CLI behavior changed: %+v / %v calls=%d", result, err, *calls)
+			}
+		})
+	}
+}
+
+func TestNativeTransportExactReleaseSelection(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []struct {
+		name          string
+		syntheticHost bool
+		wantLookup    bool
+		wantProbe     bool
+		wantACP       bool
+	}{
+		{name: "qualified", wantLookup: true, wantProbe: true, wantACP: true},
+		{name: "synthetic host qualification", syntheticHost: true, wantLookup: true, wantProbe: true, wantACP: true},
+		{name: "version", syntheticHost: true},
+		{name: "model", syntheticHost: true},
+		{name: "effort", syntheticHost: true},
+		{name: "launch", syntheticHost: true},
+		{name: "codex", syntheticHost: true},
+		{name: "claude", syntheticHost: true},
+		{name: "cursor-agent", syntheticHost: true},
+		{name: "agy", syntheticHost: true},
+		{name: "missing", syntheticHost: true, wantLookup: true},
+		{name: "observed version", syntheticHost: true, wantLookup: true, wantProbe: true},
+		{name: "version error", syntheticHost: true, wantLookup: true, wantProbe: true},
+	} {
+		for _, mode := range []string{"", "cli", "acp", "auto"} {
+			t.Run(scenario.name+"/"+mode, func(t *testing.T) {
+				t.Parallel()
+				fixture, execution, calls := transportFixture(t)
+				execution.Adapter.Name = "opencode"
+				execution.Adapter.ACP = &ACPLaunch{Run: "opencode acp", Version: "1.18.31", ModelConfigID: "model"}
+				execution.Request.Model, execution.Request.Effort = "opencode/big-pickle", ""
+				backend := NewNativeTransport(mode)
+				wantQualification := ACPQualification{
+					Executor: "opencode", Run: "opencode acp", Version: "1.18.31",
+					GOOS: "darwin", GOARCH: "arm64", Model: "opencode/big-pickle", Effort: "",
+					Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
+				}
+				if len(backend.Qualifications) != 1 || backend.Qualifications[0] != wantQualification {
+					t.Fatalf("release qualification changed: %+v", backend.Qualifications)
+				}
+				if scenario.syntheticHost {
+					// Exercise selection and probe paths on every CI host. This
+					// test-owned copy is not native qualification evidence.
+					qualification := backend.Qualifications[0]
+					qualification.GOOS, qualification.GOARCH = runtime.GOOS, runtime.GOARCH
+					backend.Qualifications = []ACPQualification{qualification}
+				}
+				switch scenario.name {
+				case "version":
+					execution.Adapter.ACP.Version = "1.18.32"
+				case "model":
+					execution.Request.Model = "opencode/other"
+				case "effort":
+					execution.Request.Effort = "high"
+				case "launch":
+					execution.Adapter.ACP.Run = filepath.Join(execution.Request.Cwd, "opencode") + " acp"
+				case "codex", "claude", "cursor-agent", "agy":
+					execution.Adapter.Name = scenario.name
+					execution.Adapter.ACP.Run = map[string]string{"codex": "codex-acp", "claude": "claude-agent-acp", "cursor-agent": "cursor-agent acp", "agy": "agy acp"}[scenario.name]
+				}
+				backend.CLI = fixture.CLI
+				lookups, probes, opens := 0, 0, 0
+				resolved := filepath.Join(execution.Request.Cwd, "opencode")
+				backend.Lookup = func(name string) (string, error) {
+					lookups++
+					if name != "opencode" {
+						t.Errorf("unexpected discovery: %s", name)
+					}
+					if scenario.name == "missing" {
+						return "", os.ErrNotExist
+					}
+					return resolved, nil
+				}
+				backend.VersionRunner = backendCommandRunner(func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+					probes++
+					if command.Executable != resolved || strings.Join(command.Args, " ") != "--version" || command.Directory != execution.Request.Cwd || len(command.Stdin) != 0 || command.StdoutLimit != 4096 || command.StderrLimit != 4096 {
+						t.Errorf("version probe changed: %+v", command)
+					}
+					if scenario.name == "version error" {
+						return publication.CommandResult{}, errors.New("version failed")
+					}
+					if scenario.name == "observed version" {
+						return publication.CommandResult{Stdout: []byte("1.18.32\n")}, nil
+					}
+					return publication.CommandResult{Stdout: []byte("1.18.31\n")}, nil
+				})
+				peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+					backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+					backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"model","category":"model","type":"select","currentValue":"opencode/big-pickle","options":[{"value":"opencode/big-pickle"}]}]}`)
+					backendReply(conn, backendRead(t, reader, "session/prompt"), `{"stopReason":"end_turn"}`)
+					io.Copy(io.Discard, reader)
+				})
+				backend.ACP.Open = func(ctx context.Context, got Execution) (*acp.Connection, func() error, error) {
+					opens++
+					if probes != 1 || got.Invocation.Executable != resolved || strings.Join(got.Invocation.Args, " ") != "acp" || got.Invocation.Dir != execution.Request.Cwd {
+						t.Errorf("launch before exact version or with changed argv: %+v", got.Invocation)
+					}
+					return peer.Open(ctx, got)
+				}
+				result, err := backend.Execute(context.Background(), execution)
+				eligible := (mode == "acp" || mode == "auto") && (scenario.syntheticHost || (runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"))
+				wantLookup := eligible && scenario.wantLookup
+				wantProbe := eligible && scenario.wantProbe
+				wantACP := eligible && scenario.wantACP
+				wantCLI := mode == "" || mode == "cli" || (mode == "auto" && !wantACP)
+				if lookups != boolCount(wantLookup) || probes != boolCount(wantProbe) || opens != boolCount(wantACP) || *calls != boolCount(wantCLI) {
+					t.Fatalf("unexpected attempts: lookup=%d version=%d ACP=%d CLI=%d", lookups, probes, opens, *calls)
+				}
+				if wantACP || wantCLI {
+					if err != nil || !result.Finished || (wantACP && (result.Receipt == nil || result.Receipt.Submission.State != SubmissionSubmitted)) {
+						t.Fatalf("selected transport failed: %+v / %v", result, err)
+					}
+				} else if !errors.Is(err, ErrACPUnavailable) || result.Finished || result.Receipt.Submission.State != SubmissionNotSubmitted {
+					t.Fatalf("unqualified task submitted: %+v / %v", result, err)
+				}
+			})
+		}
+	}
+}
+
+func boolCount(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func TestNativeTransportDefaultDenialNeverFallsBack(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"acp", "auto"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			fixture, execution, calls := transportFixture(t)
+			backend := NewNativeTransport(mode)
+			backend.CLI, backend.Lookup, backend.VersionRunner = fixture.CLI, fixture.Lookup, fixture.VersionRunner
+			backend.Qualifications = fixture.Qualifications
+			peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+				backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+				backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"medium"}]}]}`)
+				prompt := backendRead(t, reader, "session/prompt")
+				io.WriteString(conn, `{"jsonrpc":"2.0","id":"permission","method":"session/request_permission","params":{"sessionId":"task","toolCall":{"toolCallId":"write"},"options":[{"optionId":"yes","kind":"allow_once"}]}}`+"\n")
+				line, err := reader.ReadString('\n')
+				if err != nil || !strings.Contains(line, `"cancelled"`) {
+					t.Errorf("default policy response: %s / %v", line, err)
+				}
+				backendReply(conn, prompt, `{"stopReason":"end_turn"}`)
+			})
+			backend.ACP.Open = peer.Open
+			result, err := backend.Execute(context.Background(), execution)
+			if !errors.Is(err, acp.ErrPermissionDenied) || *calls != 0 || result.Finished || result.ExitCode == 0 || result.Receipt.Transport.Failure != "permission_denied" || result.Receipt.Worker.Outcome == WorkerClaimedSuccess {
+				t.Fatalf("denied task replayed or succeeded: %+v / %v calls=%d", result, err, *calls)
+			}
+		})
+	}
+}
+
 func TestTransportEligibilityFailsClosed(t *testing.T) {
 	for _, reason := range []string{"legacy", "agy", "unknown", "unqualified", "version", "model", "effort", "os", "arch", "permissions", "cleanup", "task", "platform", "policy", "owner", "missing", "observed version"} {
 		for _, mode := range []string{"acp", "auto"} {

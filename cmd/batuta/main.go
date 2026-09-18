@@ -596,7 +596,7 @@ func runDispatch(args []string, stdout, stderr io.Writer) error {
 	defer stop()
 	report, err = executor.Dispatch(ctx, executor.DispatchOptions{Adapter: adapter,
 		Request:   executor.Request{Brief: string(brief), Cwd: directory, Model: *model, Effort: *effort},
-		Transport: executor.TransportBackend{Mode: *transport}, Timeout: *timeout})
+		Transport: executor.NewNativeTransport(*transport), Timeout: *timeout})
 	return finish(err)
 }
 
@@ -639,8 +639,9 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		return err
 	}
 	executionOptions := func() loop.Options {
+		backend := executor.NewNativeTransport(*transport)
 		return loop.Options{
-			Transport: &executor.TransportBackend{Mode: *transport},
+			Transport: &backend,
 			Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
 			MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
 			Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {

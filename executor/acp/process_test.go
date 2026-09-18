@@ -8,6 +8,7 @@ import (
 )
 
 func TestProcessCanceledBeforeStart(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	cmd := exec.Command("must-not-launch")
