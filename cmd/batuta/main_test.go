@@ -226,6 +226,39 @@ func TestDispatchInvalidArgumentsNeverRunWorker(t *testing.T) {
 	}
 }
 
+func TestDispatchNativeOpenCodeMetadataAndModelReachAvailabilityGate(t *testing.T) {
+	root, args := dispatchCommandFixture(t, "success")
+	adapterPath := filepath.Join(os.Getenv("BATUTA_SKILLS"), "adapters", "fixture.md")
+	payload, err := os.ReadFile(adapterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = bytes.Replace(payload, []byte("name: fixture"), []byte("name: opencode\nacp_run: opencode acp\nacp_version: 1.18.31\nacp_model_config: model"), 1)
+	if err := os.WriteFile(filepath.Join(filepath.Dir(adapterPath), "opencode.md"), payload, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Keep the public command's native constructor, but prevent provider launch.
+	// The CLI fixture executable is absolute and does not depend on PATH.
+	t.Setenv("PATH", t.TempDir())
+	args = append(args, "--executor", "opencode", "--model", "opencode/big-pickle", "--effort", "", "--transport", "acp")
+	var stdout, stderr bytes.Buffer
+	err = run(args, &stdout, &stderr)
+	var report executor.DispatchReport
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &report); decodeErr != nil {
+		t.Fatal(decodeErr)
+	}
+	if report.Artifacts.Directory != "" {
+		t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	}
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 || report.ExitClass != "unavailable" || report.Executor != "opencode" || report.Model != "opencode/big-pickle" || report.Effort != "" || report.Receipt.Submission.State != executor.SubmissionNotSubmitted || report.Artifacts.Directory == "" {
+		t.Fatalf("exact route did not reach availability gate: %+v / %v", report, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "calls")); !os.IsNotExist(err) {
+		t.Fatal("unavailable explicit ACP ran CLI")
+	}
+}
+
 func TestDispatchMissingBinaryNeverRunsDiscoveryOrInstall(t *testing.T) {
 	root, args := dispatchCommandFixture(t, "success")
 	adapterPath := filepath.Join(os.Getenv("BATUTA_SKILLS"), "adapters", "fixture.md")

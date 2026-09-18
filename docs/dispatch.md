@@ -53,10 +53,11 @@ Stock dispatch and loop task attempts use the native transport factory. It
 launches a fresh managed process with fixed resolved argv, an absolute requested
 workspace, inherited environment and bounded protocol I/O and owned shutdown.
 Prompts travel through the protocol, never a shell command. The factory carries
-no approved qualification records, so explicit ACP remains unavailable and
-`auto` takes the CLI path. Runtime support requires the release owner to supply
-real evidence for each exact qualification described below; wiring the factory
-does not qualify any provider.
+one release-owned qualification: OpenCode **1.18.31**, fixed launch
+`opencode acp`, native **macOS arm64** (`darwin/arm64`), model
+`opencode/big-pickle`, and **empty effort**. All other combinations remain
+unavailable for explicit ACP; `auto` uses CLI before submission. This describes
+the source constructor, not ACP availability in an installed beta23 binary.
 
 The command writes one compact JSON report to stdout and puts its brief,
 pre-submission intent, complete evidence and bounded stdout/stderr in a new
@@ -121,11 +122,42 @@ executor, version, model or platform does not transfer to another.
 
 The known launch families are Codex's dedicated `codex-acp` wrapper, Claude's
 dedicated `claude-agent-acp` wrapper, `opencode acp`, and `cursor-agent acp`.
-OpenCode and Cursor remain pilot candidates; Codex still requires permission
-and cleanup qualification; Claude still requires authenticated task evidence;
-Agy retains CLI. Native Windows execution remains unavailable: the command builds
-there, but the lifecycle rejects launch until native ownership and teardown are
-implemented and qualified. No wrapper is downloaded automatically.
+Only the exact OpenCode tuple above has accepted native qualification evidence.
+Other OpenCode versions, models, efforts and platforms, as well as Cursor,
+Codex, Claude and Agy, remain on CLI. Linux and Windows require their own native
+evidence; Windows also requires native lifecycle ownership and teardown before
+launch. No wrapper is downloaded automatically.
+
+For the qualified tuple, add these existing fields to an operator-owned
+`opencode` adapter's frontmatter, retaining its required CLI fields:
+
+```yaml
+acp_run: opencode acp
+acp_version: 1.18.31
+acp_model_config: model
+```
+
+Metadata does not grant qualification. The resolved executable must still
+return exactly `1.18.31` from `opencode --version` before
+every ACP launch. No install, authentication or global configuration is changed.
+
+```text
+batuta dispatch \
+  --brief-file /absolute/path/task.brief.md \
+  --executor opencode \
+  --model opencode/big-pickle \
+  --cwd /absolute/path/task-worktree \
+  --transport acp \
+  --timeout 45m
+```
+
+Leave `--effort` unset. A different requested model or any nonempty effort
+fails qualification before launch. The session must also acknowledge the exact
+model before receiving the prompt; incompatible configuration fails explicit
+ACP and permits `auto` fallback only after verified pre-submission shutdown.
+Neither path silently changes the requested model or effort. See the
+[qualification evidence](dispatch-measurement.md#native-opencode-qualification)
+for the tested scope and usage gaps.
 
 ACP permission requests are structured control messages. The stock factory
 denies every new permission request, even when the prompt claims approval or

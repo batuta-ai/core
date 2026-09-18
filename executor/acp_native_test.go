@@ -85,7 +85,6 @@ func nativeACPFixture() int {
 	}
 	scenario, _ := os.ReadFile("scenario")
 	reader := bufio.NewScanner(os.Stdin)
-	var prompt map[string]json.RawMessage
 	for reader.Scan() {
 		var request map[string]json.RawMessage
 		if json.Unmarshal(reader.Bytes(), &request) != nil {
@@ -104,7 +103,6 @@ func nativeACPFixture() int {
 			}
 			backendReply(os.Stdout, request, `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"medium"}]}]}`)
 		case `"session/prompt"`:
-			prompt = request
 			if os.WriteFile("prompt.json", request["params"], 0600) != nil {
 				return 5
 			}
@@ -131,8 +129,15 @@ func nativeACPFixture() int {
 			}
 			fmt.Fprint(os.Stdout, response)
 		case `"session/cancel"`:
-			backendReply(os.Stdout, prompt, `{"stopReason":"cancelled"}`)
+			if os.WriteFile("cancel.json", request["params"], 0600) != nil {
+				return 10
+			}
+			// The client may have closed its read pipe after cancellation.
+			// Drain stdin to EOF without writing a late prompt reply.
 		}
+	}
+	if reader.Err() != nil {
+		return 11
 	}
 	if os.WriteFile("eof", []byte("closed"), 0600) != nil {
 		return 8
@@ -211,6 +216,15 @@ func TestNativeTransportProcessOutcomes(t *testing.T) {
 				var compatibility *acpCompatibilityError
 				if !errors.As(err, &compatibility) || result.Receipt.Submission.State != SubmissionNotSubmitted {
 					t.Fatalf("compatibility cleanup: %+v / %v", result, err)
+				}
+			case "canceled":
+				if !errors.Is(err, context.Canceled) || result.Finished || result.TimedOut || result.ExitCode == 0 || result.Receipt.Submission.State != SubmissionUncertain || result.Receipt.Worker.Outcome != WorkerClaimUnknown || result.Receipt.Transport.Outcome != TransportCanceled || result.Receipt.Transport.Failure != "canceled" {
+					t.Fatalf("cancellation lost: %+v / %v", result, err)
+				}
+				data, readErr := os.ReadFile(filepath.Join(execution.Request.Cwd, "cancel.json"))
+				var cancellation struct{ SessionID string }
+				if readErr != nil || json.Unmarshal(data, &cancellation) != nil || cancellation.SessionID != "task" {
+					t.Fatalf("cancel not received for task session: %s / %v", data, readErr)
 				}
 			default:
 				if err == nil || result.Finished || result.Receipt.Submission.State != SubmissionUncertain {

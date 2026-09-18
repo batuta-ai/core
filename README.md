@@ -62,8 +62,11 @@ batuta trail [<delivery>]               one line per journal record
 
 Both `dispatch` and `loop` accept `--transport cli|acp|auto`; omission keeps
 the legacy CLI path. ACP requires exact per-executor/version/platform/model
-qualification. The stock command has no approved ACP launches. Uncertain ACP
-work is preserved for reconciliation and never replayed through CLI
+and effort qualification. The source constructor qualifies only OpenCode
+1.18.31 (`opencode acp`), model `opencode/big-pickle`, empty effort, on native
+macOS arm64; Linux and Windows remain on CLI. This does not describe an
+installed beta23 binary's capabilities. Uncertain ACP work is preserved for
+reconciliation and never replayed through CLI
 automatically. Native subagents are selected by interactive hosts, not by this
 binary. See [dispatch](docs/dispatch.md) and the
 [measurement protocol](docs/dispatch-measurement.md).

@@ -9,9 +9,9 @@ import (
 	"github.com/batuta-ai/core/executor/acp"
 )
 
-// NewNativeTransport wires the managed-group lifecycle without qualifying any
-// provider. Release-owned evidence must populate exact Qualifications before
-// native execution is eligible; adapter metadata cannot supply that evidence.
+// NewNativeTransport wires the managed-group lifecycle and the exact OpenCode
+// macOS arm64 qualification supported by release-owned native evidence. Adapter
+// metadata cannot qualify other launches; see docs/dispatch-measurement.md.
 func NewNativeTransport(mode string) TransportBackend {
 	return TransportBackend{
 		Mode: mode,
@@ -21,6 +21,11 @@ func NewNativeTransport(mode string) TransportBackend {
 				return ""
 			},
 		},
+		Qualifications: []ACPQualification{{
+			Executor: "opencode", Run: "opencode acp", Version: "1.18.31",
+			GOOS: "darwin", GOARCH: "arm64", Model: "opencode/big-pickle", Effort: "",
+			Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
+		}},
 	}
 }
 
