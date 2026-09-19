@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0-beta.25](https://github.com/batuta-ai/core/compare/v1.1.0-beta.24...v1.1.0-beta.25) (2026-09-19)
+
+
+### Bug Fixes
+
+* **routing:** declare the fable alias for the claude executor ([62e03f8](https://github.com/batuta-ai/core/commit/62e03f88d260806e676a49bfd69fbfa900b8be3a))
+* **routing:** declare the fable alias; record ACP closeout bookkeeping ([2f50759](https://github.com/batuta-ai/core/commit/2f507594fc93ba6323dd5774f675612d51d89028))
+
 ## [1.1.0-beta.24](https://github.com/batuta-ai/core/compare/v1.1.0-beta.23...v1.1.0-beta.24) (2026-09-18)
 
 
