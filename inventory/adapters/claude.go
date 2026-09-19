@@ -9,7 +9,7 @@ import (
 // claudeDeclaredModels are the aliases `claude -p --model` accepts. Claude
 // Code has no command that lists models, so the routing doctrine declares
 // them; the evidence state says so.
-var claudeDeclaredModels = []string{"haiku", "sonnet", "opus"}
+var claudeDeclaredModels = []string{"haiku", "sonnet", "opus", "fable"}
 
 func NewClaude(executable string) (Adapter, error) {
 	ids := map[string]inventory.ProbeID{

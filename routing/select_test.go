@@ -831,7 +831,7 @@ func TestDefaultSelectionPolicyClassifiesKnownModelQualityHints(t *testing.T) {
 	t.Parallel()
 
 	policy := DefaultSelectionPolicy()
-	if policy.Version != "2026-08-31.v6" ||
+	if policy.Version != "2026-09-19.v7" ||
 		policy.modelTier("cursor", "grok-4.6") != ModelTierFrontier ||
 		policy.modelTier("claude", "claude-opus-5") != ModelTierFrontier ||
 		policy.modelTier("codex", "gpt-5.6-terra") != ModelTierAdvanced {
