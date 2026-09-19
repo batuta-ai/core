@@ -1,13 +1,13 @@
 # Plan — make supervision complete real lifecycle transitions
 
 **Goal:** Correct the confirmed real-journal completion error and make an authorized routine answer actually resume the existing runner without duplicate or uncertain execution.
-**Created:** 2026-09-12 · **Status:** approved
+**Created:** 2026-09-12 · **Status:** done — absorbed by release-integration task 1 (integrated-supervision, PR88), evidence: `.batuta/plans/done/release-integration.md`, `loop.supervisionDeletionsAbsent`, `TestSupervisionTerminalDeletionIntent`, `TestSupervisionPolicyResumesRunner`
 
 ## Tasks
-- [ ] 1. Reconcile terminal deletion intent against exact existing refs — backend/high
+- [x] 1. Reconcile terminal deletion intent against exact existing refs — backend/high
       Scope: loop/supervision.go, loop/supervision_test.go, loop/supervision_notify_test.go
       Accept: done with historical deletion intent and all exact refs absent becomes completed, while any present ref including a replaced SHA, lookup failure, cleanup or bookkeeping flags remains unresolved → go test ./loop -run Supervision; restarted cursors reconcile old terminal outbox state without conflicting completion notifications, observation never deletes refs or rewrites the journal → go test -race ./loop -run Supervision
-- [ ] 2. Resume the runner after a policy-authorized bound answer — backend/high
+- [x] 2. Resume the runner after a policy-authorized bound answer — backend/high
       Depends on: 1
       Scope: loop/supervision.go, loop/supervision_test.go, loop/supervision_policy.go, loop/supervision_policy_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go, docs/loop-supervision.md
       Accept: configured policy answer leads through normal Resume and Run to new delivery activity with explicit execution settings, absent policy remains observation-only → go test ./cmd/batuta ./loop -run Supervision; separate durable continuation intent survives crashes after answer and before/after ownership acquisition without concurrent duplicate runners, uncertain work remains blocked → go test -race ./loop -run Supervision; full suite and build pass → go test ./...; module builds → go build ./...
