@@ -26,9 +26,11 @@ type ComplexityPolicySnapshot struct {
 
 func DefaultSelectionPolicy() SelectionPolicy {
 	return SelectionPolicy{
-		Version: "2026-08-31.v6",
+		Version: "2026-09-19.v7",
 		ModelTiers: map[string]ModelTier{
 			ModelKey("claude", "claude-fable-5[1m]"):                                               ModelTierFrontier,
+			ModelKey("claude", "fable"):                                                            ModelTierFrontier,
+			ModelKey("claude", "fable[1m]"):                                                        ModelTierFrontier,
 			ModelKey("claude", "claude-opus-5"):                                                    ModelTierFrontier,
 			ModelKey("claude", "opus[1m]"):                                                         ModelTierFrontier,
 			ModelKey("claude", "sonnet"):                                                           ModelTierAdvanced,

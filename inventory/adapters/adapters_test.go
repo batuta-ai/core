@@ -268,7 +268,7 @@ func TestClaudeAndAgyAdaptersNormalizeInstalledMissingMalformedPartialAndSkewed(
 		if installed.Availability != inventory.AvailabilityAvailable || installed.Version.State != inventory.ResolutionResolved {
 			t.Fatalf("%s installed snapshot = %#v", name, installed)
 		}
-		wantBindings := []inventory.ProviderBinding{{ProviderID: "claude"}, {ProviderID: "claude", ModelID: "haiku"}, {ProviderID: "claude", ModelID: "sonnet"}, {ProviderID: "claude", ModelID: "opus"}}
+		wantBindings := []inventory.ProviderBinding{{ProviderID: "claude"}, {ProviderID: "claude", ModelID: "haiku"}, {ProviderID: "claude", ModelID: "sonnet"}, {ProviderID: "claude", ModelID: "opus"}, {ProviderID: "claude", ModelID: "fable"}}
 		if name == "agy" {
 			wantBindings = []inventory.ProviderBinding{{ProviderID: "agy"}, {ProviderID: "agy", ModelID: "gemini-3.8-flash-high"}, {ProviderID: "agy", ModelID: "gemini-3.8-flash-low"}}
 		}
@@ -734,7 +734,7 @@ func TestModelBindingsBackDoctorCountsForEveryExecutor(t *testing.T) {
 	want := map[string][]inventory.ProviderBinding{
 		"cursor": {{ProviderID: "cursor"}, {ProviderID: "cursor", ModelID: "auto"}, {ProviderID: "cursor", ModelID: "grok-4.6"}, {ProviderID: "cursor", ModelID: "composer-2.5"}},
 		"agy":    {{ProviderID: "agy"}, {ProviderID: "agy", ModelID: "gemini-3.8-flash-high"}, {ProviderID: "agy", ModelID: "gemini-3.8-flash-low"}},
-		"claude": {{ProviderID: "claude"}, {ProviderID: "claude", ModelID: "haiku"}, {ProviderID: "claude", ModelID: "sonnet"}, {ProviderID: "claude", ModelID: "opus"}},
+		"claude": {{ProviderID: "claude"}, {ProviderID: "claude", ModelID: "haiku"}, {ProviderID: "claude", ModelID: "sonnet"}, {ProviderID: "claude", ModelID: "opus"}, {ProviderID: "claude", ModelID: "fable"}},
 	}
 	for name, bindings := range want {
 		snapshot := fixtureAdapter(t, name).Normalize(fixtureOutputs(t, name))
