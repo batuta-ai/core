@@ -26,3 +26,7 @@
 - `batuta review` aborts with `source tree changed during review` for any tree mutation while it runs, including an edit to `.git/info/exclude`. Do nothing in the repository while a review is running.
 - `gpt-5.4-mini` is no longer served to the ChatGPT account (`The 'gpt-5.4-mini' model is not supported when using Codex with a ChatGPT account.`). The `low` lane moved to `agy gemini-3.8-flash-low`, which took its first loop task (the commit-subject fix) on the first attempt.
 - A review round whose findings all sit in freshly written code converges: three rounds on the installer branch went 5 → 4 → 1, and the `review-proofs` branch went 1 → 0 after one surgical cycle.
+
+- 2026-09-17 ACP review: preserve sticky process-discovery uncertainty. A later successful snapshot cannot reconstruct a missed observation interval; clearing the latch changes the approved fail-closed contract. Reject recommendations to relax it solely to improve availability.
+
+- 2026-09-18 ACP review: do not accept unresolved shutdown as a passing native integration outcome or remove cooperative-exit assertions to hide timing failures. Investigate the lifecycle cause; tuning sampling/grace periods must account for escape-observation coverage and total shutdown bounds.
