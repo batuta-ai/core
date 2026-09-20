@@ -21,10 +21,22 @@ Prose the conductor reads.
 | high | * | codex | gpt-5.6-sol | subscription |
 | critical | * | self | — | host |
 
-| Role | Executor |
-|---|---|
-| research | opencode |
+| Role | Executor | Model |
+|---|---|---|
+| research | opencode | kimi/k2.5 |
 `
+
+const routingRoleTableFixture = `| Role | Lane | Executor | Model | Cost |
+|---|---|---|---|---|
+| review | — | codex | provider/reviewer | subscription |
+| research | high | codex | gpt-5.6-sol | subscription |
+| research | low | opencode | kimi/k2.5 | cents |
+| research | medium | codex | gpt-5.6-terra | subscription |
+`
+
+func routingTableWithoutRole() string {
+	return routingTableFixture[:strings.Index(routingTableFixture, "\n| Role |")]
+}
 
 func tableSnapshot(t *testing.T, available ...inventory.ExecutorID) inventory.InventorySnapshot {
 	t.Helper()
@@ -75,8 +87,7 @@ func TestParseRoutingTableReviewRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	roleTable := "\n| Model | Role | Executor |\n|---|---|---|\n"
-	payload := routingTableFixture + roleTable + "| `provider/reviewer` | review | codex |\n"
+	payload := routingTableWithoutRole() + "\n" + routingRoleTableFixture
 	table, err := ParseRoutingTable([]byte(payload))
 	if err != nil {
 		t.Fatal(err)
@@ -84,9 +95,13 @@ func TestParseRoutingTableReviewRole(t *testing.T) {
 	if table.Review == nil || table.Review.Executor != inventory.ExecutorCodex || table.Review.Model != "provider/reviewer" || table.Review.Line == 0 {
 		t.Fatalf("review role = %+v", table.Review)
 	}
+	if len(table.Research) != 3 || table.Research[0].Lane != ComplexityHigh || table.Research[0].Domain != DomainAny || table.Research[0].Line == 0 {
+		t.Fatalf("research rows = %+v", table.Research)
+	}
 	if len(table.Rows) != len(base.Rows) || base.Review != nil || table.Digest == base.Digest {
 		t.Fatal("review role must be separate from lanes and included in the digest")
 	}
+	roleTable := "\n| Model | Role | Executor |\n|---|---|---|\n"
 	for _, row := range []string{
 		"| model | review | self |", "| default | review | codex |",
 		"| <model> | review | codex |", "| | review | codex |",
@@ -99,6 +114,77 @@ func TestParseRoutingTableReviewRole(t *testing.T) {
 	}
 	if _, err := ParseRoutingTable([]byte(routingTableFixture + "\n| Role | Executor |\n|---|---|\n| review | codex |\n")); !errors.Is(err, ErrRoutingTableInvalid) {
 		t.Fatalf("review without model: %v", err)
+	}
+}
+
+func TestParseRoutingTableResearchDefaultsToLow(t *testing.T) {
+	t.Parallel()
+	table, err := ParseRoutingTable([]byte(routingTableFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(table.Research) != 1 {
+		t.Fatalf("research rows = %+v", table.Research)
+	}
+	row := table.Research[0]
+	if row.Lane != ComplexityLow || row.Domain != DomainAny || row.Executor != inventory.ExecutorOpenCode || row.Model != "kimi/k2.5" || row.Line == 0 {
+		t.Fatalf("research row = %+v", row)
+	}
+}
+
+func TestParseRoutingTableRejectsBrokenResearchRows(t *testing.T) {
+	t.Parallel()
+	roleTable := "\n| Role | Lane | Executor | Model |\n|---|---|---|---|\n"
+	cases := map[string]string{
+		"self":              "| research | low | self | model |\n",
+		"placeholder model": "| research | low | codex | <model> |\n",
+		"default model":     "| research | low | codex | default |\n",
+		"unknown lane":      "| research | tiny | codex | model |\n",
+		"duplicate lane":    "| research | low | codex | model |\n| research | low | opencode | other-model |\n",
+	}
+	for name, rows := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := ParseRoutingTable([]byte(routingTableWithoutRole() + roleTable + rows))
+			if !errors.Is(err, ErrRoutingTableInvalid) {
+				t.Fatalf("error = %v, want ErrRoutingTableInvalid", err)
+			}
+			if name == "duplicate lane" && (!strings.Contains(err.Error(), "line ") || !strings.Contains(err.Error(), "first at line")) {
+				t.Fatalf("duplicate error must name both lines: %v", err)
+			}
+		})
+	}
+}
+
+func TestParseRoutingTableResearchDigest(t *testing.T) {
+	t.Parallel()
+	base, err := ParseRoutingTable([]byte(routingTableFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	changed, err := ParseRoutingTable([]byte(strings.Replace(routingTableFixture, "kimi/k2.5 |\n", "kimi/k2.5-research |\n", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed.Digest == base.Digest {
+		t.Fatal("digest must change when a research model changes")
+	}
+}
+
+func TestRoutingTableResearchRow(t *testing.T) {
+	t.Parallel()
+	table, err := ParseRoutingTable([]byte(routingTableWithoutRole() + "\n" + routingRoleTableFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row, ok := table.ResearchRow(ComplexityHigh); !ok || row.Lane != ComplexityHigh || row.Model != "gpt-5.6-sol" {
+		t.Fatalf("ResearchRow(high) = %+v, %v", row, ok)
+	}
+	table.Research = table.Research[2:]
+	if row, ok := table.ResearchRow(ComplexityHigh); !ok || row.Lane != ComplexityMedium || row.Model != "gpt-5.6-terra" {
+		t.Fatalf("ResearchRow(high) fallback = %+v, %v", row, ok)
+	}
+	if _, ok := table.ResearchRow(ComplexityLow); ok {
+		t.Fatal("ResearchRow(low) must be absent without a low row")
 	}
 }
 

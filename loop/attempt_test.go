@@ -55,12 +55,136 @@ func TestVerifierUsesIndependentBackend(t *testing.T) {
 	if !verdict.Pass || !strings.HasPrefix(verdict.Signal, "codex/fake-low: ") {
 		t.Fatalf("verify() = %#v", verdict)
 	}
+	if ac.verifierDispatch.Executor != "codex" || ac.verifierDispatch.Model != "fake-low" {
+		t.Fatalf("verifier dispatch = %#v", ac.verifierDispatch)
+	}
 	evidence, err := os.ReadFile(filepath.Join(f.state, "verifier-git-config"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(evidence), "command line:\tfalse") {
 		t.Fatalf("verifier lost CLI environment: %s", evidence)
+	}
+}
+
+func TestVerifierUsesResearchRowOfTaskLane(t *testing.T) {
+	t.Parallel()
+	roles := "\n| Role | Lane | Executor | Model | Cost |\n|---|---|---|---|---|\n" +
+		"| research | low | claude | research-low | cents |\n" +
+		"| research | medium | claude | research-medium | cents |\n" +
+		"| research | high | claude | research-high | cents |\n"
+	for _, lane := range []routing.Complexity{routing.ComplexityLow, routing.ComplexityMedium, routing.ComplexityHigh} {
+		t.Run(string(lane), func(t *testing.T) {
+			t.Parallel()
+			assertVerifierSeat(t, lane, roles, "claude", "claude", "research-"+string(lane))
+		})
+	}
+	t.Run("unseated lane uses nearest lower row", func(t *testing.T) {
+		t.Parallel()
+		assertVerifierSeat(t, routing.ComplexityHigh, strings.ReplaceAll(roles, "| research | high | claude | research-high | cents |\n", ""), "claude", "claude", "research-medium")
+	})
+	t.Run("writer row uses nearest lower independent row", func(t *testing.T) {
+		t.Parallel()
+		assertVerifierSeat(t, routing.ComplexityHigh, strings.ReplaceAll(roles, "high | claude", "high | codex"), "claude", "claude", "research-medium")
+	})
+	t.Run("legacy role table means low", func(t *testing.T) {
+		t.Parallel()
+		assertVerifierSeat(t, routing.ComplexityHigh, "\n| Role | Executor | Model |\n|---|---|---|\n| research | claude | research-low |\n", "claude", "claude", "research-low")
+	})
+}
+
+func TestVerifierSkipsUnavailableResearchRow(t *testing.T) {
+	t.Parallel()
+	for _, mediumExecutor := range []string{"claude", "missing", "codex"} {
+		t.Run(mediumExecutor, func(t *testing.T) {
+			t.Parallel()
+			roles := "\n| Role | Lane | Executor | Model |\n|---|---|---|---|\n" +
+				"| research | low | claude | research-low |\n" +
+				"| research | medium | " + mediumExecutor + " | research-medium |\n" +
+				"| research | high | missing | research-high |\n"
+			wantModel := "research-low"
+			if mediumExecutor == "claude" {
+				wantModel = "research-medium"
+			}
+			assertVerifierSeat(t, routing.ComplexityHigh, roles, "claude", "claude", wantModel)
+		})
+	}
+}
+
+func TestVerifierUsesIndependentBackendFallback(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		roles       string
+		lowExecutor string
+		wantName    string
+		wantModel   string
+	}{
+		{"no research independent low", "", "claude", "claude", "fake-low"},
+		{"no research same writer low", "", "codex", "codex", "fake-high"},
+		{"no research unavailable low", "", "missing", "codex", "fake-high"},
+		{"research same writer", "| research | low | codex | research-low |\n", "claude", "claude", "fake-low"},
+		{"research unavailable", "| research | low | missing | research-low |\n", "claude", "claude", "fake-low"},
+		{"research and low unavailable", "| research | low | missing | research-low |\n", "missing", "codex", "fake-high"},
+		{"higher research ignored", "| research | low | codex | research-low |\n| research | critical | claude | research-critical |\n", "claude", "claude", "fake-low"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			roles := ""
+			if tt.roles != "" {
+				roles = "\n| Role | Lane | Executor | Model |\n|---|---|---|---|\n" + tt.roles
+			}
+			assertVerifierSeat(t, routing.ComplexityHigh, roles, tt.lowExecutor, tt.wantName, tt.wantModel)
+		})
+	}
+}
+
+func assertVerifierSeat(t *testing.T, lane routing.Complexity, roles, lowExecutor, wantName, wantModel string) {
+	t.Helper()
+	f := setup(t)
+	payload, err := os.ReadFile(filepath.Join(f.skills, "adapters", "codex.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.skills, "adapters", "claude.md"), bytes.Replace(payload, []byte("name: codex"), []byte("name: claude"), 1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", "skills-batuta/adapters/claude.md")
+	f.run(t, "commit", "-q", "-m", "test: add independent verifier adapter")
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err = os.ReadFile(filepath.Join(f.root, ".batuta", "routing.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	table := strings.Replace(string(payload), "| low | * | codex |", "| low | * | "+lowExecutor+" |", 1) + roles
+	r.table, err = routing.ParseRoutingTable([]byte(table))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := r.adapterLocked("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.backend = unavailableBackend{}
+	ac := attemptContext{
+		adapter: adapter, runtime: routing.RuntimeValue{Provider: "codex", Model: "fake-high"},
+		worktree: attemptWorktree{Root: f.root}, base: f.base,
+		plan: routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Add greeting one", Complexity: lane, Domain: routing.DomainBackend}},
+	}
+	verdict, err := r.verify(context.Background(), &ac, gates.ParseCriteria([]string{"greeting is correct"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verdict.Pass {
+		t.Fatalf("verify() = %#v", verdict)
+	}
+	if ac.verifierDispatch.Executor != wantName || ac.verifierDispatch.Model != wantModel {
+		t.Fatalf("verifier dispatch = %s/%s, want %s/%s", ac.verifierDispatch.Executor, ac.verifierDispatch.Model, wantName, wantModel)
 	}
 }
 

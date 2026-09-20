@@ -47,9 +47,10 @@ type RoutingRow struct {
 
 // RoutingTable is the user's confirmed routing decision for a project.
 type RoutingTable struct {
-	Rows   []RoutingRow
-	Review *RoutingRole
-	Digest string
+	Rows     []RoutingRow
+	Review   *RoutingRole
+	Research []RoutingRow
+	Digest   string
 }
 
 // RoutingRole selects an executor outside the implementation lane ladder.
@@ -63,8 +64,9 @@ type RoutingRole struct {
 // Lane, Domain, Executor and Model columns (any order, other columns
 // ignored). Rows name a lane, a domain or `*`, an executor and a model;
 // backticks around the model are stripped. `self` is accepted only on the
-// critical lane. An optional review row in a Role/Executor/Model table
-// selects the independent reviewer without adding an implementation lane.
+// critical lane. Optional review and research rows in a
+// Role/Lane/Executor/Model table select read-only roles without adding
+// implementation lanes; Lane may be omitted for backward compatibility.
 func ParseRoutingTable(payload []byte) (RoutingTable, error) {
 	if len(payload) > maxTaskArtifactBytes {
 		return RoutingTable{}, fmt.Errorf("%w: byte budget exceeded", ErrRoutingTableInvalid)
@@ -154,11 +156,11 @@ func ParseRoutingTable(payload []byte) (RoutingTable, error) {
 	if len(rows) == 0 {
 		return RoutingTable{}, fmt.Errorf("%w: no `| Lane | Domain | Executor | Model |` table found", ErrRoutingTableInvalid)
 	}
-	review, err := parseReviewRole(payload)
+	review, research, err := parseRoutingRoles(payload)
 	if err != nil {
 		return RoutingTable{}, err
 	}
-	table := RoutingTable{Rows: rows, Review: review}
+	table := RoutingTable{Rows: rows, Review: review, Research: research}
 	hash := sha256.New()
 	for _, row := range rows {
 		for _, part := range []string{string(row.Lane), string(row.Domain), string(row.Executor), row.Model} {
@@ -170,12 +172,24 @@ func ParseRoutingTable(payload []byte) (RoutingTable, error) {
 			writeDigestPart(hash, part)
 		}
 	}
+	for _, lane := range complexityLadder {
+		for _, row := range research {
+			if row.Lane != lane {
+				continue
+			}
+			for _, part := range []string{"research", string(row.Lane), string(row.Executor), row.Model} {
+				writeDigestPart(hash, part)
+			}
+		}
+	}
 	table.Digest = "table:" + hex.EncodeToString(hash.Sum(nil))
 	return table, nil
 }
 
-func parseReviewRole(payload []byte) (*RoutingRole, error) {
+func parseRoutingRoles(payload []byte) (*RoutingRole, []RoutingRow, error) {
 	var role *RoutingRole
+	var research []RoutingRow
+	seenResearch := map[Complexity]int{}
 	var columns map[string]int
 	for i, line := range strings.Split(string(payload), "\n") {
 		line = strings.TrimSpace(line)
@@ -204,21 +218,40 @@ func parseReviewRole(payload []byte) (*RoutingRole, error) {
 			}
 			return strings.Trim(cells[index], "` ")
 		}
-		if !strings.EqualFold(cell("role"), "review") {
+		roleName := strings.ToLower(cell("role"))
+		if roleName != "review" && roleName != "research" {
 			continue
 		}
-		if role != nil {
-			return nil, fmt.Errorf("%w: line %d: duplicate review role (first at line %d)", ErrRoutingTableInvalid, i+1, role.Line)
+		executor := inventory.ExecutorID(strings.ToLower(cell("executor")))
+		model := cell("model")
+		if !tableExecutorPattern.MatchString(string(executor)) || executor == ExecutorSelf {
+			return nil, nil, fmt.Errorf("%w: line %d: %s requires a CLI executor", ErrRoutingTableInvalid, i+1, roleName)
 		}
-		role = &RoutingRole{Executor: inventory.ExecutorID(strings.ToLower(cell("executor"))), Model: cell("model"), Line: i + 1}
-		if !tableExecutorPattern.MatchString(string(role.Executor)) || role.Executor == ExecutorSelf {
-			return nil, fmt.Errorf("%w: line %d: review requires a CLI executor", ErrRoutingTableInvalid, i+1)
+		if model == "" || model == "—" || model == "-" || strings.HasPrefix(model, "<") || strings.EqualFold(model, "default") || strings.EqualFold(model, "default model") {
+			return nil, nil, fmt.Errorf("%w: line %d: %s requires an exact model", ErrRoutingTableInvalid, i+1, roleName)
 		}
-		if role.Model == "" || role.Model == "—" || role.Model == "-" || strings.HasPrefix(role.Model, "<") || strings.EqualFold(role.Model, "default") || strings.EqualFold(role.Model, "default model") {
-			return nil, fmt.Errorf("%w: line %d: review requires an exact model", ErrRoutingTableInvalid, i+1)
+		if roleName == "review" {
+			if role != nil {
+				return nil, nil, fmt.Errorf("%w: line %d: duplicate review role (first at line %d)", ErrRoutingTableInvalid, i+1, role.Line)
+			}
+			role = &RoutingRole{Executor: executor, Model: model, Line: i + 1}
+			continue
 		}
+		laneName := strings.ToLower(cell("lane"))
+		if laneName == "" || laneName == "—" {
+			laneName = string(ComplexityLow)
+		}
+		lane := Complexity(laneName)
+		if !lane.Valid() {
+			return nil, nil, fmt.Errorf("%w: line %d: research lane %q is not low|medium|high|critical", ErrRoutingTableInvalid, i+1, lane)
+		}
+		if prior, duplicate := seenResearch[lane]; duplicate {
+			return nil, nil, fmt.Errorf("%w: line %d: duplicate research lane %s (first at line %d)", ErrRoutingTableInvalid, i+1, lane, prior)
+		}
+		seenResearch[lane] = i + 1
+		research = append(research, RoutingRow{Lane: lane, Domain: DomainAny, Executor: executor, Model: model, Line: i + 1})
 	}
-	return role, nil
+	return role, research, nil
 }
 
 func splitTableRow(line string) []string {
@@ -253,6 +286,23 @@ func (t RoutingTable) Row(lane Complexity, domain Domain) (RoutingRow, bool) {
 	}
 	if wildcard != nil {
 		return *wildcard, true
+	}
+	return RoutingRow{}, false
+}
+
+// ResearchRow returns the research row for a lane, falling back to the
+// nearest lower seated lane.
+func (t RoutingTable) ResearchRow(lane Complexity) (RoutingRow, bool) {
+	start := slices.Index(complexityLadder, lane)
+	if start < 0 {
+		return RoutingRow{}, false
+	}
+	for index := start; index >= 0; index-- {
+		for _, row := range t.Research {
+			if row.Lane == complexityLadder[index] {
+				return row, true
+			}
+		}
 	}
 	return RoutingRow{}, false
 }
