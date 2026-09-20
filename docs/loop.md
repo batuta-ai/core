@@ -297,9 +297,11 @@ exit `1` with the reason on stderr.
   preserved worktree. An ACP intent that may have submitted blocks as
   `submission_uncertain`; it is not replayed until the preserved work is
   reconciled.
-- **Verifier.** The `low` row's executor of the task's domain when it
-  differs from the one that wrote the diff, else the task's own adapter;
-  invoked through the adapter's `readonly` line with the headless contract
+- **Verifier.** Selects the first loadable adapter with an executor different
+  from the writer's, starting with the research row of the task's lane and
+  descending through lower research rows, then the implementation `low` row
+  of the task's domain, falling back to the task's own adapter and model.
+  Invoked through the adapter's `readonly` line with the headless contract
   (no background work, quick synchronous commands only, `TASK n:
   DONE|INCOMPLETE` mandatory). Any tree change during the verifier round
   invalidates it.

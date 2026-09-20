@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -632,14 +633,27 @@ func (r *Runner) attach(ac *attemptContext, wt attemptWorktree) error {
 	})
 }
 
-// verify dispatches the independent read-only verifier: the `low` row's
-// executor when it differs from the one that wrote the diff, else the
-// task's own adapter on the task's model.
+// verify dispatches the independent read-only verifier on a research row
+// at or below the task's lane, falling back to the implementation low row
+// or the task's own adapter and model.
 func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gates.Criterion, proofs []gates.Verdict) (gates.Verdict, error) {
 	name, model := ac.adapter.Name, ac.runtime.Model
-	if row, found := r.table.Row(routing.ComplexityLow, ac.plan.Domain); found && row.Executor != routing.ExecutorSelf && string(row.Executor) != ac.adapter.Name {
+	lanes := []routing.Complexity{routing.ComplexityLow, routing.ComplexityMedium, routing.ComplexityHigh, routing.ComplexityCritical}
+	for index := slices.Index(lanes, ac.plan.Complexity); index >= 0; index-- {
+		row, found := r.table.ResearchRow(lanes[index])
+		if !found || row.Lane != lanes[index] || string(row.Executor) == ac.adapter.Name {
+			continue
+		}
 		if _, err := r.adapterLocked(string(row.Executor)); err == nil {
 			name, model = string(row.Executor), row.Model
+			break
+		}
+	}
+	if name == ac.adapter.Name {
+		if row, found := r.table.Row(routing.ComplexityLow, ac.plan.Domain); found && row.Executor != routing.ExecutorSelf && string(row.Executor) != ac.adapter.Name {
+			if _, err := r.adapterLocked(string(row.Executor)); err == nil {
+				name, model = string(row.Executor), row.Model
+			}
 		}
 	}
 	adapter, err := r.adapterLocked(name)
