@@ -200,6 +200,7 @@
 - [x] Parse research rows by lane into the routing table → codex (gpt-5.6-sol), commit 66eb7eb56f31 (trail: .batuta/runs/2026-09-20-research-ladder-task-1.md, delivery research-ladder-20260920-001419, plan research-ladder, 2026-09-20)
 - [x] Seat the independent verifier on the research row of the task's lane → codex (gpt-6-astra), commit ca973df34153 (trail: .batuta/runs/2026-09-20-research-ladder-task-2.md, delivery research-ladder-20260920-001419, plan research-ladder, 2026-09-20)
 - [x] Reseat this repository's research rows → agy (gemini-3.8-flash-low), already satisfied on the base 66eb7eb56f31, no commit (trail: .batuta/runs/2026-09-20-research-ladder-task-3.md, delivery research-ladder-20260920-001419, plan research-ladder, 2026-09-20)
+- [x] Run the proofs on the base before accepting a silent attempt as satisfied → codex (gpt-5.6-sol), commit 30b34459f499 (trail: .batuta/runs/2026-09-20-silent-proofs-task-1.md, delivery silent-proofs-20260920-105706, plan silent-proofs, 2026-09-20)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

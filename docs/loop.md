@@ -204,9 +204,10 @@ exit `1` with the reason on stderr.
   A branch that moved outside the loop is refused on `--resume` with the
   advice to `--abandon` and start a new delivery; ticked tasks carry over.
 - **A silent session is a signal.** Gate 1 unchanged and the criteria hold
-  on the base per gates 2 and 3 → the task is *already satisfied*: no
-  candidate, no commit, ticked in the plan at the end. Unchanged and the
-  criteria do not hold → failure (`no_changes`).
+  on the base — the test command, every proof command and the read-only
+  verifier all pass there — → the task is *already satisfied*: no
+  candidate, no commit, ticked in the plan at the end. Unchanged and any
+  of them fails → failure (`no_changes`) with the failed proof as feedback.
 - **Same-runtime retry keeps the worktree**, so the fix session sees the
   partial work and the brief carries the real cause. An escalation starts
   clean.

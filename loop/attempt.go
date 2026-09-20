@@ -377,13 +377,18 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		report.Tree.Signal = "the worktree equals the attempt's base"
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "nothing changed"}
+		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
 		if len(criteria) > 0 {
 			verdict, err := r.verify(ctx, &ac, criteria, report.Proofs)
 			if err != nil {
 				return err
 			}
 			report.Verifier = &verdict
-			if verdict.Pass && report.Tests.Pass {
+			proofsPass := true
+			for _, proof := range report.Proofs {
+				proofsPass = proofsPass && proof.Pass
+			}
+			if verdict.Pass && report.Tests.Pass && proofsPass {
 				report.Passed = true
 				if err := r.locked(KindGates, taskID, report, nil); err != nil {
 					return err

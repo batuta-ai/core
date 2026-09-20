@@ -40,6 +40,7 @@ text=$1
 state="${FAKE_STATE:-/tmp}"
 if [ "$mode" = "verify" ]; then
   if [ "${FAKE_SCENARIO:-default}" = satisfied-unverified ]; then exit 0; fi
+  if [ "${FAKE_SCENARIO:-default}" = satisfied-proof-fails ]; then printf '%s\n' "$text" > "$state/verifier-prompt"; fi
   if [ "${FAKE_SCENARIO:-default}" = unsigned-config ]; then
     git config --show-origin commit.gpgsign > "$state/verifier-git-config"
   fi
@@ -1444,6 +1445,68 @@ func TestLoopAlreadySatisfiedOnlyWhenWorktreeEqualsBase(t *testing.T) {
 				t.Fatalf("base-equivalent tree was committed: %s", commits)
 			}
 		})
+	}
+}
+
+func TestLoopSilentAttemptRequiresProofsOnBase(t *testing.T) {
+	f := setup(t)
+	plan := strings.Replace(testPlan, "test -f out/1.txt", "exit 1", 1)
+	plan = strings.Replace(plan, "- [ ] 2.", "- [x] 2.", 1)
+	plan = strings.Replace(plan, "- [ ] 3.", "- [x] 3.", 1)
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(f.root, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "out", "1.txt"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/plans/greetings.md", "out/1.txt")
+	f.run(t, "commit", "-q", "-m", "chore: existing greeting with failing proof")
+
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("satisfied-proof-fails", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if state == StateDone {
+		t.Fatalf("Run() = %s, want non-done state\n%s", state, out.String())
+	}
+
+	var failingProof bool
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.TaskID != "task_1" {
+			continue
+		}
+		switch record.Kind {
+		case KindGates:
+			var report gates.Report
+			if err := json.Unmarshal(record.Detail, &report); err != nil {
+				t.Fatal(err)
+			}
+			for _, proof := range report.Proofs {
+				failingProof = failingProof || !proof.Pass
+			}
+		case KindFailure:
+			if strings.Contains(string(record.Detail), blockerAlreadySatisfied) {
+				t.Fatalf("failing base proof marked already satisfied: %s", record.Detail)
+			}
+		}
+	}
+	if !failingProof {
+		t.Fatal("silent gates records contain no failing proof")
+	}
+	prompt, err := os.ReadFile(filepath.Join(f.state, "verifier-prompt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prompt), "proof run by the conductor: failed") {
+		t.Fatalf("verifier prompt does not contain the failed proof verdict:\n%s", prompt)
 	}
 }
 
