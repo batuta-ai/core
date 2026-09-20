@@ -251,21 +251,90 @@ func TestProviders(t *testing.T) {
 
 	t.Run("vercel", func(t *testing.T) {
 		t.Parallel()
-		called := false
+		j := NewHTTPJudge(Options{Provider: ProviderVercel})
+		if j.baseURL != defaultVercelBaseURL || j.path != typesafePath || j.model != defaultVercelModel {
+			t.Fatalf("defaults = %q %q %q", j.baseURL, j.path, j.model)
+		}
+
+		var (
+			path string
+			auth string
+			body struct {
+				Model string `json:"model"`
+			}
+		)
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			called = true
+			path = r.URL.Path
+			auth = r.Header.Get("Authorization")
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{
+				"model": "typesafe-ai/jev",
+				"answers": {"q": {"type": "noul", "noul": 0.9}},
+				"usage": {"input_tokens": 7, "output_tokens": 1},
+				"provider_metadata": {"gateway": {"cost": 0.00013, "generationId": "gw_1"}}
+			}`)
 		}))
 		t.Cleanup(srv.Close)
-		_, err := NewHTTPJudge(Options{
-			Provider: ProviderVercel,
-			BaseURL:  srv.URL,
-			Key:      "test-key",
+
+		resp, err := NewHTTPJudge(Options{
+			Provider:      ProviderVercel,
+			BaseURL:       srv.URL,
+			Key:           "test-key",
+			MaxStateBytes: 4096,
 		}).Ask(context.Background(), probeRequest())
-		if called {
-			t.Fatal("vercel issued an HTTP request")
+		if err != nil {
+			t.Fatalf("Ask() error = %v", err)
 		}
-		requireUnavailable(t, err, "transport_undocumented")
+		if path != "/v1/systemone" {
+			t.Fatalf("path = %q, want /v1/systemone", path)
+		}
+		if auth != "Bearer test-key" {
+			t.Fatalf("Authorization = %q", auth)
+		}
+		if body.Model != "typesafe-ai/jev" {
+			t.Fatalf("model = %q, want typesafe-ai/jev", body.Model)
+		}
+		if resp.Model != "typesafe-ai/jev" {
+			t.Fatalf("response model = %q, want typesafe-ai/jev", resp.Model)
+		}
+		answer, ok := resp.Answers["q"]
+		if !ok || answer.Type != QuestionNoul || answer.Noul != 0.9 {
+			t.Fatalf("noul answer = %#v", answer)
+		}
+		if resp.Usage.InputTokens != 7 || resp.Usage.OutputTokens != 1 {
+			t.Fatalf("usage = %#v", resp.Usage)
+		}
 	})
+}
+
+func TestVercelErrorEnvelope(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		reason string
+	}{
+		{"gateway_reason", http.StatusBadRequest, `{"message":"state exceeds the context limit","error_type":"invalid_request"}`, "gateway_invalid_request"},
+		{"rate_limited", http.StatusTooManyRequests, `{"message":"throttled","error_type":"rate_limit_exceeded"}`, "rate_limited"},
+		{"server_error", http.StatusBadGateway, `{"message":"upstream failed","error_type":"upstream_error"}`, "server_error"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j := vercelJudge(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			_, err := j.Ask(context.Background(), probeRequest())
+			requireUnavailable(t, err, tc.reason)
+		})
+	}
 }
 
 func judgeAgainst(t *testing.T, handler http.Handler, opts Options) *HTTPJudge {
@@ -279,6 +348,18 @@ func judgeAgainst(t *testing.T, handler http.Handler, opts Options) *HTTPJudge {
 		opts.MaxStateBytes = 4096
 	}
 	return NewHTTPJudge(opts)
+}
+
+func vercelJudge(t *testing.T, handler http.Handler) *HTTPJudge {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return NewHTTPJudge(Options{
+		Provider:      ProviderVercel,
+		BaseURL:       srv.URL,
+		Key:           "test-key",
+		MaxStateBytes: 4096,
+	})
 }
 
 func probeRequest() Request {

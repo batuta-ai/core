@@ -17,10 +17,10 @@ Date: 2026-09-20. Status: research, no implementation authorized. Requested by t
 |---|---|---|---|---|
 | TypeSafe direct | `jev-latest` → `jev-1.13.0` | `POST https://api.typesafe.ai/v1/systemone`, `Authorization: Bearer` | `TYPESAFE_API_KEY` | Native shape. Response `model` reports the versioned id. Python/JS SDKs; HTTP is enough for Go. |
 | OpenRouter | `typesafe/jev-1.13` | `POST https://openrouter.ai/api/alpha/decisions` (not `/v1`, not chat completions) | `OPENROUTER_API_KEY` | Same body shape. 32k context. No free tier, prepaid credits. Errors wrapped as `{"error":{...}}`. |
-| Vercel AI Gateway | `typesafe-ai/jev` | Only documented through AI SDK 7 `experimental_evaluate`; raw HTTP shape not published | `AI_GATEWAY_API_KEY` | Yes/no type is `boolean`, not `noul`. Free until 2026-09-25 with very tight throttling (429 after a few questions); price after that not published. Unverified for a Go client. |
+| Vercel AI Gateway | `typesafe-ai/jev` | Two raw HTTP routes, verified 2026-09-20 from Vercel's docs: TypeSafe-compatible `POST https://ai-gateway.vercel.sh/typesafe/v1/systemone` (TypeSafe's exact body, TypeSafe's response shape plus a `provider_metadata.gateway` object, errors as `{"message":…,"error_type":…}`) and gateway-native `POST https://ai-gateway.vercel.sh/v1/evaluate` (`boolean` instead of `noul`, camelCase `usage`) | `AI_GATEWAY_API_KEY` | The judge uses the TypeSafe-compatible route because it needs no second parser. Free until 2026-09-25 with very tight throttling (429 after a few questions); price after that not published. |
 | opencode | `opencode/jev-1.13-free` | chat wrapper | — | **Does not work.** Probe on 2026-09-20: `Error: Upstream request failed: Endpoint is unavailable.` opencode speaks chat completions; Jev only answers the decisions API. Not a viable route. |
 
-Recommendation: implement the native TypeSafe shape once in Go (`net/http`, standard library) and make the base URL and model id configurable; OpenRouter is the same body with another URL and model id. Treat Vercel as a later transport once its HTTP contract is documented.
+Recommendation: implement the native TypeSafe shape once in Go (`net/http`, standard library) and make the base URL and model id configurable; OpenRouter is the same body with another URL and model id. Vercel serves the same TypeSafe shape at base URL `https://ai-gateway.vercel.sh/typesafe`, so the one parser covers it too; the gateway-native `/v1/evaluate` route stays unused.
 
 ## 3. Where the core decides today
 

@@ -56,14 +56,19 @@ decision is off.
 |---|---|---|---|
 | `typesafe` | `jev-latest` | `POST https://api.typesafe.ai/v1/systemone` | `TYPESAFE_API_KEY` |
 | `openrouter` | `typesafe/jev-1.13` | `POST https://openrouter.ai/api/alpha/decisions` | `OPENROUTER_API_KEY` |
-| `vercel` | — | raw HTTP contract not documented | `AI_GATEWAY_API_KEY` |
+| `vercel` | `typesafe-ai/jev` | `POST https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `AI_GATEWAY_API_KEY` |
 
 The native shape posts `{state, model, questions}` and receives
 `{model, answers, usage}`; every question in one call is evaluated against the
 same state. OpenRouter wraps errors as `{"error":{...}}` and has a 32k
-context. The `vercel` provider exists in the enum but refuses every call as
-unavailable (`transport_undocumented`) until its raw HTTP contract is
-published.
+context. The Vercel AI Gateway serves Jev over raw HTTP in two shapes: a
+TypeSafe-compatible API at base URL `https://ai-gateway.vercel.sh/typesafe`
+(`POST /typesafe/v1/systemone`, TypeSafe's exact request body, TypeSafe's
+response shape plus a `provider_metadata.gateway` object, errors as
+`{"message":…,"error_type":…}`), and a gateway-native API at
+`POST https://ai-gateway.vercel.sh/v1/evaluate` with `boolean` instead of
+`noul` and camelCase `usage`. The judge uses the TypeSafe-compatible route
+because it needs no second parser.
 
 ## The CLI
 

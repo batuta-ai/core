@@ -17,8 +17,10 @@ import (
 const (
 	defaultTypesafeBaseURL   = "https://api.typesafe.ai"
 	defaultOpenRouterBaseURL = "https://openrouter.ai/api/alpha"
+	defaultVercelBaseURL     = "https://ai-gateway.vercel.sh/typesafe"
 	defaultTypesafeModel     = "jev-latest"
 	defaultOpenRouterModel   = "typesafe/jev-1.13"
+	defaultVercelModel       = "typesafe-ai/jev"
 	typesafePath             = "/v1/systemone"
 	openRouterPath           = "/decisions"
 )
@@ -60,6 +62,13 @@ func NewHTTPJudge(opts Options) *HTTPJudge {
 			j.model = defaultOpenRouterModel
 		}
 	case ProviderVercel:
+		j.path = typesafePath
+		if j.baseURL == "" {
+			j.baseURL = defaultVercelBaseURL
+		}
+		if j.model == "" {
+			j.model = defaultVercelModel
+		}
 	default:
 		j.path = typesafePath
 		if j.baseURL == "" {
@@ -75,9 +84,6 @@ func NewHTTPJudge(opts Options) *HTTPJudge {
 func (j *HTTPJudge) Ask(ctx context.Context, req Request) (Response, error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if j.provider == ProviderVercel {
-		return Response{}, unavailable(ReasonTransportUndocumented, nil)
 	}
 	if j.key == "" {
 		return Response{}, unavailable(ReasonKeyMissing, nil)
@@ -143,6 +149,11 @@ func (j *HTTPJudge) Ask(ctx context.Context, req Request) (Response, error) {
 
 	if reason, ok := openRouterErrorReason(body); ok {
 		return Response{}, unavailable(reason, nil)
+	}
+	if j.provider == ProviderVercel {
+		if reason, ok := gatewayErrorReason(body, httpResp.StatusCode); ok {
+			return Response{}, unavailable(reason, nil)
+		}
 	}
 	if httpResp.StatusCode < 200 || httpResp.StatusCode >= 300 {
 		return Response{}, unavailable(ReasonServerError, fmt.Errorf("http %d", httpResp.StatusCode))
@@ -228,6 +239,25 @@ func openRouterErrorReason(body []byte) (string, bool) {
 		return ReasonRateLimited, true
 	}
 	return ReasonServerError, true
+}
+
+func gatewayErrorReason(body []byte, status int) (string, bool) {
+	var envelope struct {
+		Message   string `json:"message"`
+		ErrorType string `json:"error_type"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.ErrorType == "" {
+		return "", false
+	}
+	switch {
+	case status == http.StatusTooManyRequests:
+		return ReasonRateLimited, true
+	case status >= 500:
+		return ReasonServerError, true
+	case status >= 400:
+		return "gateway_" + envelope.ErrorType, true
+	}
+	return "", false
 }
 
 func parseErrorCode(raw json.RawMessage) string {

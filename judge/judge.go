@@ -14,15 +14,14 @@ import (
 var ErrUnavailable = errors.New("judge: unavailable")
 
 const (
-	ReasonJudgeOff              = "judge_off"
-	ReasonKeyMissing            = "key_missing"
-	ReasonTransportUndocumented = "transport_undocumented"
-	ReasonTimeout               = "timeout"
-	ReasonRateLimited           = "rate_limited"
-	ReasonServerError           = "server_error"
-	ReasonMalformedResponse     = "malformed_response"
-	ReasonAnswerMismatch        = "answer_mismatch"
-	ReasonStateTooLarge         = "state_too_large"
+	ReasonJudgeOff          = "judge_off"
+	ReasonKeyMissing        = "key_missing"
+	ReasonTimeout           = "timeout"
+	ReasonRateLimited       = "rate_limited"
+	ReasonServerError       = "server_error"
+	ReasonMalformedResponse = "malformed_response"
+	ReasonAnswerMismatch    = "answer_mismatch"
+	ReasonStateTooLarge     = "state_too_large"
 )
 
 type Provider string
