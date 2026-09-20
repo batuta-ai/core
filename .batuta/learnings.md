@@ -30,3 +30,5 @@
 - 2026-09-17 ACP review: preserve sticky process-discovery uncertainty. A later successful snapshot cannot reconstruct a missed observation interval; clearing the latch changes the approved fail-closed contract. Reject recommendations to relax it solely to improve availability.
 
 - 2026-09-18 ACP review: do not accept unresolved shutdown as a passing native integration outcome or remove cooperative-exit assertions to hide timing failures. Investigate the lifecycle cause; tuning sampling/grace periods must account for escape-observation coverage and total shutdown bounds.
+
+- 2026-09-20 judge-vercel-auto: two scope violations in one plan, both mine. A task's Scope must list every file that holds a symbol the criteria touch (the reasons list lived in `judge/judge.go`, the probe output in `cmd/batuta/judge.go`); grep the symbols before writing Scope instead of naming files from memory. The loop never widens a Scope, so the only recovery is abandon, fix the plan, relaunch.

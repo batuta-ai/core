@@ -53,6 +53,8 @@ Usage:
   batuta watch     [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
   batuta review    [--base <ref>] [--worktree] [--spec <plan>] [--cohort-files N] [--parallel N] [--reviewer <executor/model>] [--full] [--out <dir>]
+  batuta judge     ask --state-file <path> --questions-file <path> [--decision <name>] [--config <path>] [--workspace <dir>] [--base-url <url>]
+  batuta judge     probe [--config <path>] [--workspace <dir>] [--base-url <url>]
   batuta gate tree --snapshot [--dir <d>]
   batuta gate tree --before '<json>' [--dir <d>]
   batuta gate tests --command "<cmd>" [--dir <d>] [--timeout <duration>]
@@ -139,6 +141,15 @@ review     Read-only, cohort-based delivery review through the configured
            and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK.
            The cohort driver uses CLI independently of dispatch transport.
 
+judge      Manual probes of a System One decision model (Jev): typed noul,
+           choice and score questions over a bounded state. Config lives in
+           .batuta/judge.json; BATUTA_JUDGE selects another file or off.
+           ask prints the Response as indented JSON. probe sends one noul
+           question to confirm the configuration works. Exit 0 answered,
+           2 unavailable — the judge never approves, clears a gate, answers
+           a question or widens a scope, so unavailable keeps today's
+           deterministic rule — and 1 usage or config error.
+
 inventory  Redacted snapshot of the executor CLIs installed on this machine
            (codex, opencode, cursor-agent, claude, agy, compozy): versions,
            provider/model bindings, credential state, diagnostics. JSON.
@@ -183,6 +194,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runTrail(args[1:], stdout)
 	case "review":
 		return runReview(args[1:], stdout, stderr)
+	case "judge":
+		return runJudge(args[1:], stdout, stderr)
 	case "gate":
 		return runGate(args[1:], stdout)
 	case "help", "--help", "-h":
@@ -210,7 +223,7 @@ func version() string {
 
 // commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "dispatch", "doctor", "gate", "inventory", "loop", "review", "roadmap", "trail", "version", "watch"}
+var commands = []string{"capabilities", "dispatch", "doctor", "gate", "inventory", "judge", "loop", "review", "roadmap", "trail", "version", "watch"}
 
 type capabilities struct {
 	Version  string   `json:"version"`
