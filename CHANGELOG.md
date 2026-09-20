@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.28](https://github.com/batuta-ai/core/compare/v1.1.0-beta.27...v1.1.0-beta.28) (2026-09-20)
+
+
+### Features
+
+* strip ANSI escapes before parsing cursor-agent model lines ([0e6ded3](https://github.com/batuta-ai/core/commit/0e6ded363e359432e6768774f46f3766022bc245))
+
 ## [1.1.0-beta.27](https://github.com/batuta-ai/core/compare/v1.1.0-beta.26...v1.1.0-beta.27) (2026-09-20)
 
 
