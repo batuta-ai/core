@@ -2,21 +2,21 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Give the core a `judge` package that asks a System One decision model (TypeSafe Jev, directly or through OpenRouter) typed `noul`/`choice`/`score` questions over a bounded state, configured from `.batuta/judge.json` and the `BATUTA_JUDGE` environment variable, with every failure surfacing as a typed `ErrUnavailable` so callers keep today's deterministic rule. Ships with a `batuta judge` CLI for manual probes and a trace record shape for later journaling. No decision point in the loop changes in this plan; that is the next plan (`.batuta/judge-research.md`, section 5).
-**Created:** 2026-09-20 · **Status:** approved
+**Created:** 2026-09-20 · **Status:** done
 
 ## Tasks
-- [ ] 1. Judge client over the native System One HTTP shape — backend/high
+- [x] 1. Judge client over the native System One HTTP shape — backend/high
       Scope: judge/*.go
       Accept: a noul, a choice and a score question sent to an httptest server produce typed answers with probability, chosen option, confidence and the versioned model id from the response → go test ./judge -run TestHTTPJudgeAnswers; the request body carries state, model and the questions map exactly in the TypeSafe shape and the Authorization bearer from the key → go test ./judge -run TestHTTPJudgeRequestShape; HTTP 429, 5xx, a timeout, a malformed body and an answer whose keys do not match the questions all return an error that matches ErrUnavailable with a distinct reason → go test ./judge -run TestHTTPJudgeUnavailable; a state larger than the configured byte budget is refused before any request → go test ./judge -run TestHTTPJudgeStateBudget; the openrouter provider only changes base URL, model id and error envelope while the vercel provider returns ErrUnavailable with reason transport_undocumented → go test ./judge -run TestProviders; the package builds with the standard library only → go build ./judge
-- [ ] 2. Configuration from .batuta/judge.json and BATUTA_JUDGE — backend/medium
+- [x] 2. Configuration from .batuta/judge.json and BATUTA_JUDGE — backend/medium
       Depends on: 1
       Scope: judge/config.go, judge/config_test.go
       Accept: a missing file yields a config with provider off and Judge() returning ErrUnavailable with reason judge_off → go test ./judge -run TestLoadConfigAbsent; BATUTA_JUDGE set to off disables the judge even when the file exists and set to a path loads that path instead → go test ./judge -run TestLoadConfigEnv; unknown fields, a second JSON value, a file over 4 KiB, an unknown provider, an empty model, an invalid key_env name, a timeout outside 500ms–30s, max_state_bytes outside 1KiB–200KiB, a decision mode outside off/shadow/enforce or a threshold outside 0–1 are each rejected with an error naming the field → go test ./judge -run TestLoadConfigRejects; the API key is read from the named environment variable at Judge() time and never stored in the config struct or its JSON form → go test ./judge -run TestConfigKeyFromEnv; the package stays green → go test ./judge
-- [ ] 3. Trace records and the state digest — backend/medium
+- [x] 3. Trace records and the state digest — backend/medium
       Depends on: 1
       Scope: judge/trace.go, judge/trace_test.go
       Accept: Traced wraps a Judge and emits one intent record before and one result record after each Ask through a caller-supplied sink, carrying decision name, question keys, sha256 digest of the canonical state, model version, answers, usage, latency and the unavailable reason on failure, never the state body → go test ./judge -run TestTracedRecords; the digest is stable across key order and whitespace of an equivalent state → go test ./judge -run TestStateDigestCanonical; a sink error does not change the Ask result but is returned alongside it → go test ./judge -run TestTracedSinkError; the package stays green → go test ./judge
-- [ ] 4. batuta judge CLI and documentation — backend/medium
+- [x] 4. batuta judge CLI and documentation — backend/medium
       Depends on: 2, 3
       Scope: cmd/batuta/main.go, cmd/batuta/judge.go, cmd/batuta/judge_test.go, docs/judge.md
       Accept: batuta judge ask --state-file and --questions-file print the answers as JSON on stdout and exit 0 against an httptest server named through --base-url → go test ./cmd/batuta -run TestJudgeAskCommand; with the judge off or the key missing the command prints the unavailable reason on stderr and exits 2 → go test ./cmd/batuta -run TestJudgeAskUnavailable; batuta judge probe validates the config and sends one noul question, exiting 0 on an answer and 2 on ErrUnavailable → go test ./cmd/batuta -run TestJudgeProbeCommand; capabilities lists judge → go test ./cmd/batuta -run TestCapabilitiesListsJudge; docs/judge.md documents the config file, the environment variables, the providers and the rule that the judge never approves → grep -q 'never approves' docs/judge.md; the module builds and the suite passes → go build ./... && go test ./...
