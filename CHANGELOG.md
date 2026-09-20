@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0-beta.29](https://github.com/batuta-ai/core/compare/v1.1.0-beta.28...v1.1.0-beta.29) (2026-09-20)
+
+
+### Features
+
+* automatic provider selection with a fallback chain ([db5c984](https://github.com/batuta-ai/core/commit/db5c984af512a3c23ee1aee130145110b586ae52))
+* batuta judge CLI and documentation ([eaf9d05](https://github.com/batuta-ai/core/commit/eaf9d05be2d4be0fe39cadbe77104b36d124ad4b))
+* configuration from .batuta/judge.json and BATUTA_JUDGE ([1b25a57](https://github.com/batuta-ai/core/commit/1b25a57103d3ee57813f3656e4602261d3edbecf))
+* judge client over the native System One HTTP shape ([ae7a4a1](https://github.com/batuta-ai/core/commit/ae7a4a1f91ea6d4110694770e4be83ea0c28c75d))
+* **judge:** System One decision client, config, trace records and CLI ([afbcc8c](https://github.com/batuta-ai/core/commit/afbcc8c140fff7c7e8cc0cdfc4bb415a80e533cb))
+* trace records and the state digest ([81abd95](https://github.com/batuta-ai/core/commit/81abd955086c1c6111ededb673992a11cd978da0))
+* vercel provider over the TypeSafe-compatible gateway API ([a15c7da](https://github.com/batuta-ai/core/commit/a15c7dac22969df667df9bc549c54f87759cb1cd))
+
 ## [1.1.0-beta.28](https://github.com/batuta-ai/core/compare/v1.1.0-beta.27...v1.1.0-beta.28) (2026-09-20)
 
 
