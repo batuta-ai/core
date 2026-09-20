@@ -1,6 +1,8 @@
 package adapters
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -621,7 +623,7 @@ func fixtureAdapter(t *testing.T, name string) Adapter {
 		return mustNewCodex(t, "/opt/bin/codex")
 	case "opencode":
 		return mustNewOpenCode(t, "/opt/bin/opencode")
-	case "cursor":
+	case "cursor", "cursor-ansi":
 		return mustNewCursor(t, "/opt/bin/agent")
 	case "claude":
 		return mustNewClaude(t, "/opt/bin/claude")
@@ -725,6 +727,33 @@ func TestCompozyAdapterCapturesCatalogModelCosts(t *testing.T) {
 	}
 	if !slices.Equal(snapshot.CatalogModelCosts, want) {
 		t.Fatalf("catalog model costs = %#v, want live and unknown priced pairs only %#v", snapshot.CatalogModelCosts, want)
+	}
+}
+
+func TestCursorModelsParseThroughAnsi(t *testing.T) {
+	t.Parallel()
+
+	adapter := fixtureAdapter(t, "cursor-ansi")
+	outputs := fixtureOutputs(t, "cursor-ansi")
+	snapshot := adapter.Normalize(outputs)
+	want := []inventory.ProviderBinding{
+		{ProviderID: "cursor"},
+		{ProviderID: "cursor", ModelID: "auto"},
+		{ProviderID: "cursor", ModelID: "cursor-grok-4.6-high"},
+		{ProviderID: "cursor", ModelID: "composer-2.5"},
+	}
+	if !slices.Equal(snapshot.ProviderBindings, want) {
+		t.Fatalf("bindings = %#v, want %#v", snapshot.ProviderBindings, want)
+	}
+	models := hasEvidenceState(snapshot.Capabilities, "models", inventory.ResolutionResolved)
+	if !models {
+		t.Fatalf("models evidence = %#v, want resolved", snapshot.Capabilities)
+	}
+	digest := sha256.Sum256(outputs[adapter.ProbeID("models")])
+	for _, capability := range snapshot.Capabilities {
+		if capability.Name == "models" && capability.Digest != "sha256:"+hex.EncodeToString(digest[:]) {
+			t.Fatalf("models evidence digest = %q, want digest of the raw ANSI payload", capability.Digest)
+		}
 	}
 }
 

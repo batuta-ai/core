@@ -1,0 +1,5 @@
+{
+  "version": "Cursor Agent 2026.08.20",
+  "status": "Authenticated as fixture-user",
+  "models": "\u001b[2mAvailable models\u001b[22m\n\n\u001b[36mauto\u001b[39m \u001b[2m- Auto\u001b[22m\u001b[2m (default)\u001b[22m\n\u001b[36mcursor-grok-4.6-high\u001b[39m \u001b[2m- Cursor Grok 4.6\u001b[22m\n\u001b[36mcomposer-2.5\u001b[39m \u001b[2m- Composer 2.5\u001b[22m\n"
+}
