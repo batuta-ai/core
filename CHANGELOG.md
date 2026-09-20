@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0-beta.27](https://github.com/batuta-ai/core/compare/v1.1.0-beta.26...v1.1.0-beta.27) (2026-09-20)
+
+
+### Features
+
+* **loop:** run the proofs on the base before accepting a silent attempt as satisfied ([f2904c7](https://github.com/batuta-ai/core/commit/f2904c7719babbcdae08d3cb0848d8daa8c1e4b3))
+* run the proofs on the base before accepting a silent attempt as ([30b3445](https://github.com/batuta-ai/core/commit/30b34459f499cb2a671b7521937442ca957b25c2))
+
 ## [1.1.0-beta.26](https://github.com/batuta-ai/core/compare/v1.1.0-beta.25...v1.1.0-beta.26) (2026-09-20)
 
 
