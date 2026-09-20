@@ -5,7 +5,7 @@
 **Created:** 2026-09-20 · **Status:** approved
 
 ## Tasks
-- [ ] 1. Vercel provider over the TypeSafe-compatible gateway API — backend/medium
+- [x] 1. Vercel provider over the TypeSafe-compatible gateway API — backend/medium
       Scope: judge/judge.go, judge/http.go, judge/http_test.go, judge/config.go, judge/config_test.go, docs/judge.md, .batuta/judge-research.md
       Accept: the vercel provider posts the native TypeSafe body to base URL https://ai-gateway.vercel.sh/typesafe and path /v1/systemone with model typesafe-ai/jev and the AI_GATEWAY_API_KEY bearer, and parses the TypeSafe-shaped answers → go test ./judge -run TestProviders; a gateway error body of the form {"message":"...","error_type":"..."} maps to an ErrUnavailable reason carrying the error_type → go test ./judge -run TestVercelErrorEnvelope; no provider returns transport_undocumented any more → ! grep -rq 'transport_undocumented' judge docs/judge.md; docs/judge.md and the research note describe the two Vercel routes and name the TypeSafe-compatible one as the one the judge uses → grep -q 'ai-gateway.vercel.sh/typesafe' docs/judge.md && grep -q 'ai-gateway.vercel.sh/typesafe' .batuta/judge-research.md; the package stays green → go test ./judge
 - [ ] 2. Automatic provider selection with a fallback chain — backend/high
