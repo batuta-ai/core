@@ -2,17 +2,18 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:d8b592b68c43 -->
 
 **Goal:** Make the core read the research rows of `.batuta/routing.md` by lane, keep them in the table digest, and seat the loop's independent verifier on the research row of the task's lane instead of the implementation `low` row. Tables without research rows or without a `Lane` column keep today's behavior.
-**Created:** 2026-09-19 · **Status:** approved
+**Created:** 2026-09-19 · **Status:** done
 
 ## Tasks
-- [ ] 1. Parse research rows by lane into the routing table — backend/medium
+- [x] 1. Parse research rows by lane into the routing table — backend/medium
       Scope: routing/table.go, routing/table_test.go
       Accept: a Role table with a Lane column yields one research row per lane in RoutingTable.Research with the review role still parsed → go test ./routing -run 'TestParseRoutingTable'; a Role table without a Lane column parses its research row as low → go test ./routing -run TestParseRoutingTableResearchDefaultsToLow; a research row naming self, a placeholder or default model, or a duplicate lane fails with ErrRoutingTableInvalid → go test ./routing -run TestParseRoutingTableRejectsBrokenResearchRows; research rows change the digest → go test ./routing -run TestParseRoutingTableResearchDigest; ResearchRow returns the exact lane or the nearest lower seated lane and false when none → go test ./routing -run TestRoutingTableResearchRow; the package stays green → go test ./routing
-- [ ] 2. Seat the independent verifier on the research row of the task's lane — backend/high
+- [x] 2. Seat the independent verifier on the research row of the task's lane — backend/high
       Depends on: 1
       Scope: loop/attempt.go, loop/attempt_test.go, docs/loop.md
       Accept: with a research row for the task's lane whose executor differs from the writer and whose adapter loads, the verifier dispatch records that executor and model → go test ./loop -run TestVerifierUsesResearchRowOfTaskLane; without a usable research row the verifier falls back to the existing low-row-then-own-adapter rule → go test ./loop -run TestVerifierUsesIndependentBackend; a research row whose adapter is missing is skipped for the next lower research row before the legacy fallback → go test ./loop -run TestVerifierSkipsUnavailableResearchRow; the verifier round stays race-free → go test -race ./loop -run Verifier; docs/loop.md describes the verifier seat order → grep -q 'research row' docs/loop.md; the module builds and the suite passes → go build ./... && go test ./...
-- [ ] 3. Reseat this repository's research rows — docs/low
+- [x] 3. Reseat this repository's research rows — docs/low
+      Result: already satisfied on the base 66eb7eb56f31, no commit
       Depends on: 1
       Scope: .batuta/routing.md
       Accept: the Role table header carries the Lane column → grep -q '^| Role | Lane | Executor | Model |' .batuta/routing.md; research low and medium rows exist → grep -q '^| research | medium |' .batuta/routing.md; the table parses through ParseRoutingTable with two research rows and the review role unchanged

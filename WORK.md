@@ -197,6 +197,9 @@
 - [x] Carry explicit skills selection into required review → codex (gpt-5.6-sol), commit 2e65a00ac6ea (trail: .batuta/runs/2026-09-17-integrated-supervision-review-fixes-task-2.md, delivery integrated-supervision-review-fixes-20260917-013654, plan integrated-supervision-review-fixes, 2026-09-17)
 - [x] Serialize arbitrary writer output without unsafe interface equality → codex (gpt-6-astra), commit 5cf8eb965032 (trail: .batuta/runs/2026-09-17-integrated-supervision-review-fixes-task-3.md, delivery integrated-supervision-review-fixes-20260917-013654, plan integrated-supervision-review-fixes, 2026-09-17)
 - [x] Fix supervision cancellation and skills discovery boundaries → codex (gpt-6-astra), commit da889a07cd17 (trail: .batuta/runs/2026-09-17-supervision-boundary-fixes-task-1.md, delivery supervision-boundary-fixes-20260917-125426, plan supervision-boundary-fixes, 2026-09-17)
+- [x] Parse research rows by lane into the routing table → codex (gpt-5.6-sol), commit 66eb7eb56f31 (trail: .batuta/runs/2026-09-20-research-ladder-task-1.md, delivery research-ladder-20260920-001419, plan research-ladder, 2026-09-20)
+- [x] Seat the independent verifier on the research row of the task's lane → codex (gpt-6-astra), commit ca973df34153 (trail: .batuta/runs/2026-09-20-research-ladder-task-2.md, delivery research-ladder-20260920-001419, plan research-ladder, 2026-09-20)
+- [x] Reseat this repository's research rows → agy (gemini-3.8-flash-low), already satisfied on the base 66eb7eb56f31, no commit (trail: .batuta/runs/2026-09-20-research-ladder-task-3.md, delivery research-ladder-20260920-001419, plan research-ladder, 2026-09-20)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
