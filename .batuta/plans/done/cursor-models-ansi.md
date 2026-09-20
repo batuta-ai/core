@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Make the cursor-agent inventory adapter parse the model list the CLI actually prints, which wraps every slug and description in ANSI escape sequences even when piped, so cursor rows in a routing table stop being rejected as unlisted models.
-**Created:** 2026-09-20 · **Status:** approved
+**Created:** 2026-09-20 · **Status:** done
 
 ## Tasks
-- [ ] 1. Strip ANSI escapes before parsing cursor-agent model lines — backend/medium
+- [x] 1. Strip ANSI escapes before parsing cursor-agent model lines — backend/medium
       Scope: inventory/adapters/cursor.go, inventory/adapters/adapters_test.go, inventory/adapters/testdata/cursor.json, inventory/adapters/testdata/cursor-ansi.json
       Accept: a models probe output whose lines carry ANSI SGR sequences yields the plain slugs as cursor bindings → go test ./inventory/adapters -run TestCursorModelsParseThroughAnsi; the existing plain fixture keeps yielding the same bindings and evidence state → go test ./inventory/adapters -run 'TestCursor|TestModelBindingsBackDoctorCountsForEveryExecutor'; the models evidence is resolved and its raw payload is kept verbatim → go test ./inventory/adapters -run TestCursorModelsParseThroughAnsi; the package and the module stay green → go build ./... && go test ./inventory/... ./routing/...
 
