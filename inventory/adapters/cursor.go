@@ -1,10 +1,19 @@
 package adapters
 
 import (
+	"regexp"
 	"strings"
 
 	"github.com/batuta-ai/core/inventory"
 )
+
+// csiSequence matches ANSI CSI sequences: ESC, "[", zero or more parameter
+// (0x30-0x3F) and intermediate (0x20-0x2F) bytes, then a final byte (0x40-0x7E).
+var csiSequence = regexp.MustCompile(`\x1b\[[\x20-\x3f]*[\x40-\x7e]`)
+
+func stripAnsi(value string) string {
+	return csiSequence.ReplaceAllString(value, "")
+}
 
 func NewCursor(executable string) (Adapter, error) {
 	ids := map[string]inventory.ProbeID{"version": "cursor.version", "status": "cursor.status", "models": "cursor.models"}
@@ -22,7 +31,7 @@ func normalizeCursor(ids map[string]inventory.ProbeID, outputs map[inventory.Pro
 	modelRaw := outputs[ids["models"]]
 	models := make([]string, 0)
 	for _, line := range strings.Split(string(modelRaw), "\n") {
-		parts := strings.SplitN(strings.TrimSpace(line), " - ", 2)
+		parts := strings.SplitN(strings.TrimSpace(stripAnsi(line)), " - ", 2)
 		if len(parts) == 2 && safePublicIdentifier(parts[0]) {
 			models = append(models, "cursor/"+strings.TrimSpace(parts[0]))
 		}
