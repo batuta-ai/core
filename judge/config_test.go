@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -240,4 +241,187 @@ func TestConfigKeyFromEnv(t *testing.T) {
 
 	_, err = probe.Judge(testGetenv(nil))
 	requireUnavailable(t, err, ReasonKeyMissing)
+}
+
+func TestAutoBuildsChainFromPresentKeys(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), `{"provider":"auto"}`)
+	config, err := LoadConfig(root, testGetenv(nil))
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if config.Provider != ProviderAuto {
+		t.Fatalf("Provider = %q, want auto", config.Provider)
+	}
+	if config.Model != "" || config.KeyEnv != "" || config.BaseURL != "" {
+		t.Fatalf("auto config carries per-provider fields: %#v", config)
+	}
+
+	built, err := config.Judge(testGetenv(map[string]string{
+		"TYPESAFE_API_KEY":   "ts-key",
+		"AI_GATEWAY_API_KEY": "gw-key",
+		"OPENROUTER_API_KEY": "or-key",
+	}))
+	if err != nil {
+		t.Fatalf("Judge() error = %v", err)
+	}
+	chain, ok := built.(*Chain)
+	if !ok {
+		t.Fatalf("Judge() type = %T, want *Chain", built)
+	}
+	if len(chain.Judges) != 3 {
+		t.Fatalf("Judges = %#v, want 3", chain.Judges)
+	}
+	wantOrder := []Provider{ProviderTypesafe, ProviderVercel, ProviderOpenRouter}
+	for i, want := range wantOrder {
+		if chain.Judges[i].Provider != want {
+			t.Fatalf("Judges[%d].Provider = %q, want %q", i, chain.Judges[i].Provider, want)
+		}
+		if _, ok := chain.Judges[i].Judge.(*HTTPJudge); !ok {
+			t.Fatalf("Judges[%d].Judge type = %T, want *HTTPJudge", i, chain.Judges[i].Judge)
+		}
+	}
+
+	first := Response{Model: "typesafe-answer", Answers: map[string]Answer{"ok": {Type: QuestionNoul, Noul: 0.9}}}
+	chain.Judges[0].Judge = staticJudge{resp: first}
+	chain.Judges[1].Judge = staticJudge{resp: Response{Model: "vercel-should-not-run"}}
+	chain.Judges[2].Judge = staticJudge{resp: Response{Model: "openrouter-should-not-run"}}
+
+	resp, err := chain.Ask(context.Background(), Request{
+		State:     "state",
+		Questions: map[string]Question{"ok": {Type: QuestionNoul}},
+	})
+	if err != nil {
+		t.Fatalf("Ask() error = %v", err)
+	}
+	if resp.Model != "typesafe-answer" {
+		t.Fatalf("Ask() Model = %q, want typesafe-answer", resp.Model)
+	}
+}
+
+func TestAutoWithoutKeys(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), `{"provider":"auto"}`)
+	config, err := LoadConfig(root, testGetenv(nil))
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	built, err := config.Judge(testGetenv(map[string]string{"OPENROUTER_API_KEY": "or-key"}))
+	if err != nil {
+		t.Fatalf("Judge(openrouter only) error = %v", err)
+	}
+	chain, ok := built.(*Chain)
+	if !ok {
+		t.Fatalf("Judge() type = %T, want *Chain", built)
+	}
+	if len(chain.Judges) != 1 || chain.Judges[0].Provider != ProviderOpenRouter {
+		t.Fatalf("Judges = %#v, want a single openrouter entry", chain.Judges)
+	}
+
+	_, err = config.Judge(testGetenv(nil))
+	requireUnavailable(t, err, ReasonKeyMissing)
+	for _, name := range []string{"TYPESAFE_API_KEY", "AI_GATEWAY_API_KEY", "OPENROUTER_API_KEY"} {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("Judge() error = %v, want %s named", err, name)
+		}
+	}
+
+	for name, content := range map[string]string{
+		"model":    `{"provider":"auto","model":"jev-latest"}`,
+		"key_env":  `{"provider":"auto","key_env":"TYPESAFE_API_KEY"}`,
+		"base_url": `{"provider":"auto","base_url":"https://example.invalid"}`,
+	} {
+		name, content := name, content
+		t.Run("rejects "+name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			writeJudgeConfig(t, filepath.Join(dir, ".batuta", "judge.json"), content)
+			_, err := LoadConfig(dir, testGetenv(nil))
+			if err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("LoadConfig() error = %v, want containing %q", err, name)
+			}
+		})
+	}
+}
+
+func TestProvidersListOrder(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), `{"provider":"auto","providers":["openrouter","typesafe"]}`)
+	config, err := LoadConfig(root, testGetenv(nil))
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if !reflect.DeepEqual(config.Providers, []Provider{ProviderOpenRouter, ProviderTypesafe}) {
+		t.Fatalf("Providers = %#v", config.Providers)
+	}
+
+	built, err := config.Judge(testGetenv(map[string]string{
+		"TYPESAFE_API_KEY":   "ts-key",
+		"OPENROUTER_API_KEY": "or-key",
+	}))
+	if err != nil {
+		t.Fatalf("Judge() error = %v", err)
+	}
+	chain, ok := built.(*Chain)
+	if !ok {
+		t.Fatalf("Judge() type = %T, want *Chain", built)
+	}
+	if len(chain.Judges) != 2 || chain.Judges[0].Provider != ProviderOpenRouter || chain.Judges[1].Provider != ProviderTypesafe {
+		t.Fatalf("Judges = %#v, want openrouter then typesafe", chain.Judges)
+	}
+
+	cases := map[string]string{
+		"unknown":   `{"provider":"auto","providers":["typesafe","anthropic"]}`,
+		"duplicate": `{"provider":"auto","providers":["typesafe","vercel","typesafe"]}`,
+	}
+	for name, content := range cases {
+		name, content := name, content
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			writeJudgeConfig(t, filepath.Join(dir, ".batuta", "judge.json"), content)
+			_, err := LoadConfig(dir, testGetenv(nil))
+			if err == nil {
+				t.Fatal("LoadConfig() error = nil, want rejection")
+			}
+			if name == "unknown" && !strings.Contains(err.Error(), "anthropic") {
+				t.Fatalf("LoadConfig() error = %v, want unknown name", err)
+			}
+			if name == "duplicate" && !strings.Contains(err.Error(), "typesafe") {
+				t.Fatalf("LoadConfig() error = %v, want duplicate name", err)
+			}
+		})
+	}
+
+	writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), `{"provider":"auto","providers":["typesafe","vercel","openrouter"]}`)
+	config, err = LoadConfig(root, testGetenv(nil))
+	if err != nil {
+		t.Fatalf("LoadConfig(full list) error = %v", err)
+	}
+	built, err = config.Judge(testGetenv(map[string]string{"AI_GATEWAY_API_KEY": "gw-key"}))
+	if err != nil {
+		t.Fatalf("Judge(vercel only) error = %v", err)
+	}
+	chain, ok = built.(*Chain)
+	if !ok {
+		t.Fatalf("Judge() type = %T, want *Chain", built)
+	}
+	if len(chain.Judges) != 1 || chain.Judges[0].Provider != ProviderVercel {
+		t.Fatalf("Judges = %#v, want a single vercel entry", chain.Judges)
+	}
+	skipped := chain.LastAttempts()
+	wantSkipped := []ChainAttempt{
+		{Provider: ProviderTypesafe, Reason: ReasonKeyMissing},
+		{Provider: ProviderOpenRouter, Reason: ReasonKeyMissing},
+	}
+	if !reflect.DeepEqual(skipped, wantSkipped) {
+		t.Fatalf("LastAttempts() = %#v, want %#v", skipped, wantSkipped)
+	}
 }

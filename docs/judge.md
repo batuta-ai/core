@@ -31,14 +31,22 @@ is capped at 4 KiB and unknown fields are rejected:
 }
 ```
 
-`provider` is required: `typesafe`, `openrouter`, `vercel` or `off`. `model`
-is required; defaults per provider below. `base_url` overrides the provider
-endpoint. `key_env` names the environment variable that holds the API key
-(defaults per provider below). `timeout_ms` is bounded to 500–30 000.
-`max_state_bytes` bounds the serialized state to 1 000–204 800 bytes; a larger
-state is refused, not truncated. `decisions` names the mode (`off`, `shadow`,
-`enforce`) and confidence threshold (0–1) per decision point; an unconfigured
-decision is off.
+`provider` is required: `typesafe`, `openrouter`, `vercel`, `"auto"` or `off`.
+`model` is required except with `auto`; defaults per provider below.
+`base_url` overrides the provider endpoint. `key_env` names the environment
+variable that holds the API key (defaults per provider below). `timeout_ms` is
+bounded to 500–30 000. `max_state_bytes` bounds the serialized state to
+1 000–204 800 bytes; a larger state is refused, not truncated. `decisions`
+names the mode (`off`, `shadow`, `enforce`) and confidence threshold (0–1) per
+decision point; an unconfigured decision is off.
+
+With `"auto"`, `model`, `key_env` and `base_url` are rejected: each provider
+keeps its own defaults. An optional `providers` array names a subset and
+fixes the order (`["typesafe","vercel","openrouter"]`); each name at most
+once, only those three. Omitted, it is that default order — TypeSafe first
+as the origin, then Vercel because it keeps TypeSafe's shape, then
+OpenRouter. `auto` builds a chain from the providers whose key is present
+and walks it on every call.
 
 ## Environment variables
 
@@ -70,6 +78,17 @@ response shape plus a `provider_metadata.gateway` object, errors as
 `noul` and camelCase `usage`. The judge uses the TypeSafe-compatible route
 because it needs no second parser.
 
+`auto` returns the first answer in the chain. It continues to the next
+provider on `rate_limited`, `server_error`, `timeout`, `malformed_response`
+and `key_missing`. Any other error — including `state_too_large` and
+`answer_mismatch` — stops the chain at once. When every provider is
+unavailable the error is `all_unavailable` and wraps each attempt's provider
+and reason in order, reachable through `errors.As` as `ChainError`. With no
+key present at all, `Judge()` returns `key_missing` naming
+`TYPESAFE_API_KEY`, `AI_GATEWAY_API_KEY` and `OPENROUTER_API_KEY`. Trace
+`judge_result` records name the provider that answered and every provider
+that was skipped, with its reason.
+
 ## The CLI
 
 `ask` sends one request built from files and prints the `Response` as
@@ -91,8 +110,9 @@ configured provider endpoint.
 `probe` validates the configuration and sends a single `noul` question —
 `{"ok": {"type": "noul", "instructions": "The state says the connection
 works."}}` over the state `"connection check"` — printing the answer the same
-way. It is the cheapest way to confirm that a provider, model and key work
-before wiring a decision point.
+way. With `"auto"` it also prints the answering provider on the success line
+(`provider: typesafe`). It is the cheapest way to confirm that a provider,
+model and key work before wiring a decision point.
 
 Exit codes: `0` answered, `2` unavailable — the reason is printed on stderr —
 and `1` usage or config error. Exit `2` is a non-failure outcome: the caller

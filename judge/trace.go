@@ -45,6 +45,8 @@ type ResultRecord struct {
 	Usage             *Usage            `json:"usage,omitempty"`
 	Latency           time.Duration     `json:"latency_ns,omitempty"`
 	UnavailableReason string            `json:"unavailable_reason,omitempty"`
+	Provider          Provider          `json:"provider,omitempty"`
+	Skipped           []ChainAttempt    `json:"skipped,omitempty"`
 }
 
 func (t *Traced) Ask(ctx context.Context, req Request) (Response, error) {
@@ -77,6 +79,15 @@ func (t *Traced) Ask(ctx context.Context, req Request) (Response, error) {
 		result.Usage = &usage
 	} else {
 		result.UnavailableReason = unavailableReason(askErr)
+	}
+	if tracer, ok := t.Judge.(interface {
+		LastAttempts() []ChainAttempt
+		LastProvider() Provider
+	}); ok {
+		result.Provider = tracer.LastProvider()
+		if skipped := tracer.LastAttempts(); len(skipped) > 0 {
+			result.Skipped = skipped
+		}
 	}
 	resultErr := t.emit(KindResult, result)
 

@@ -102,6 +102,11 @@ func runJudgeProbe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return judgeFailure(stderr, err)
 	}
+	if provider, ok := j.(interface{ LastProvider() judge.Provider }); ok {
+		if name := provider.LastProvider(); name != "" {
+			fmt.Fprintf(stdout, "provider: %s\n", name)
+		}
+	}
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(response)

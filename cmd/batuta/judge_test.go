@@ -179,6 +179,21 @@ func TestJudgeProbeCommand(t *testing.T) {
 			t.Fatalf("probe question = %#v", question)
 		}
 	})
+	t.Run("auto reports provider", func(t *testing.T) {
+		server, _ := judgeTestServer(t, http.StatusOK, judgeTestAnswer)
+		root := judgeTestWorkspace(t, `{"provider":"auto"}`)
+		t.Setenv("TYPESAFE_API_KEY", "ts-key")
+		t.Setenv("AI_GATEWAY_API_KEY", "gw-key")
+		t.Setenv("OPENROUTER_API_KEY", "or-key")
+		var stdout, stderr strings.Builder
+		err := run([]string{"judge", "probe", "--workspace", root, "--base-url", server.URL}, &stdout, &stderr)
+		if err != nil {
+			t.Fatalf("judge probe = %v\nstderr: %s", err, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), "provider: typesafe") {
+			t.Fatalf("stdout = %q, want answering provider typesafe", stdout.String())
+		}
+	})
 	t.Run("unavailable", func(t *testing.T) {
 		server, _ := judgeTestServer(t, http.StatusInternalServerError, `{"error":"no"}`)
 		root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)

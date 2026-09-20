@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 )
@@ -47,6 +48,7 @@ type DecisionConfig struct {
 // that holds the API key and never carries the key itself.
 type Config struct {
 	Provider      Provider                  `json:"provider"`
+	Providers     []Provider                `json:"providers,omitempty"`
 	Model         string                    `json:"model"`
 	BaseURL       string                    `json:"base_url"`
 	KeyEnv        string                    `json:"key_env"`
@@ -115,6 +117,9 @@ func (c Config) Judge(getenv func(string) string) (Judge, error) {
 	if c.Provider == ProviderOff || c.Provider == "" {
 		return nil, unavailable(ReasonJudgeOff, nil)
 	}
+	if c.Provider == ProviderAuto {
+		return c.autoJudge(getenv)
+	}
 	var key string
 	if getenv != nil {
 		key = getenv(c.KeyEnv)
@@ -132,18 +137,69 @@ func (c Config) Judge(getenv func(string) string) (Judge, error) {
 	}), nil
 }
 
+func (c Config) autoJudge(getenv func(string) string) (Judge, error) {
+	order := c.Providers
+	if len(order) == 0 {
+		order = defaultAutoProviders
+	}
+	chain := &Chain{order: slices.Clone(order)}
+	for _, provider := range order {
+		var key string
+		if getenv != nil {
+			key = getenv(providerKeyEnv(provider))
+		}
+		if key == "" {
+			chain.last = append(chain.last, ChainAttempt{Provider: provider, Reason: ReasonKeyMissing})
+			continue
+		}
+		chain.Judges = append(chain.Judges, Named{
+			Provider: provider,
+			Judge: NewHTTPJudge(Options{
+				Provider:      provider,
+				BaseURL:       c.BaseURL,
+				Key:           key,
+				Timeout:       time.Duration(c.TimeoutMS) * time.Millisecond,
+				MaxStateBytes: c.MaxStateBytes,
+			}),
+		})
+	}
+	if len(chain.Judges) == 0 {
+		return nil, unavailable(ReasonKeyMissing, errors.New("TYPESAFE_API_KEY, AI_GATEWAY_API_KEY, OPENROUTER_API_KEY"))
+	}
+	return chain, nil
+}
+
 func (c Config) validate() error {
 	switch c.Provider {
 	case ProviderOff:
+		if len(c.Providers) > 0 {
+			return errors.New("judge: config providers is only valid with provider auto")
+		}
 		return nil
+	case ProviderAuto:
+		if c.Model != "" {
+			return errors.New("judge: config model is not allowed with provider auto")
+		}
+		if c.KeyEnv != "" {
+			return errors.New("judge: config key_env is not allowed with provider auto")
+		}
+		if strings.TrimSpace(c.BaseURL) != "" {
+			return errors.New("judge: config base_url is not allowed with provider auto")
+		}
+		if err := validateAutoProviders(c.Providers); err != nil {
+			return err
+		}
 	case ProviderTypesafe, ProviderOpenRouter, ProviderVercel:
+		if len(c.Providers) > 0 {
+			return errors.New("judge: config providers is only valid with provider auto")
+		}
 	default:
 		if c.Provider == "" {
 			return errors.New("judge: config provider is required")
 		}
 		return fmt.Errorf("judge: config provider %q is unknown", c.Provider)
 	}
-	if c.Model == "" {
+	if c.Provider != ProviderAuto && c.Model == "" {
 		return errors.New("judge: config model is required")
 	}
 	if c.KeyEnv != "" && !keyEnvPattern.MatchString(c.KeyEnv) {
@@ -168,16 +224,36 @@ func (c Config) validate() error {
 	return nil
 }
 
-func (c *Config) applyDefaults() {
-	if c.KeyEnv == "" {
-		switch c.Provider {
-		case ProviderOpenRouter:
-			c.KeyEnv = "OPENROUTER_API_KEY"
-		case ProviderVercel:
-			c.KeyEnv = "AI_GATEWAY_API_KEY"
+func validateAutoProviders(providers []Provider) error {
+	seen := make(map[Provider]struct{}, len(providers))
+	for _, provider := range providers {
+		switch provider {
+		case ProviderTypesafe, ProviderOpenRouter, ProviderVercel:
 		default:
-			c.KeyEnv = "TYPESAFE_API_KEY"
+			return fmt.Errorf("judge: config providers %q is unknown", provider)
 		}
+		if _, ok := seen[provider]; ok {
+			return fmt.Errorf("judge: config providers %q is duplicated", provider)
+		}
+		seen[provider] = struct{}{}
+	}
+	return nil
+}
+
+func providerKeyEnv(provider Provider) string {
+	switch provider {
+	case ProviderOpenRouter:
+		return "OPENROUTER_API_KEY"
+	case ProviderVercel:
+		return "AI_GATEWAY_API_KEY"
+	default:
+		return "TYPESAFE_API_KEY"
+	}
+}
+
+func (c *Config) applyDefaults() {
+	if c.KeyEnv == "" && c.Provider != ProviderAuto {
+		c.KeyEnv = providerKeyEnv(c.Provider)
 	}
 	if c.TimeoutMS == 0 {
 		c.TimeoutMS = defaultTimeoutMS

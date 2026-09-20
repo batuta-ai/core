@@ -290,3 +290,78 @@ func TestTracedSinkError(t *testing.T) {
 		}
 	})
 }
+
+func TestTracedRecordsProvider(t *testing.T) {
+	t.Parallel()
+
+	t.Run("chain names provider and skipped", func(t *testing.T) {
+		t.Parallel()
+
+		var sequence []string
+		sink := &recordingSink{sequence: &sequence}
+		chain := &Chain{Judges: []Named{
+			{Provider: ProviderTypesafe, Judge: staticJudge{err: &UnavailableError{Reason: ReasonRateLimited}}},
+			{Provider: ProviderVercel, Judge: staticJudge{resp: Response{
+				Model:   "jev-1.13.0",
+				Answers: map[string]Answer{"ok": {Type: QuestionNoul, Noul: 0.91}},
+			}}},
+		}}
+		traced := &Traced{Judge: chain, Sink: sink.sink}
+
+		resp, err := traced.Ask(context.Background(), Request{
+			Decision:  "claim_evidence",
+			State:     "bounded evidence",
+			Questions: map[string]Question{"ok": {Type: QuestionNoul}},
+		})
+		if err != nil {
+			t.Fatalf("Ask() error = %v", err)
+		}
+		if resp.Model != "jev-1.13.0" {
+			t.Fatalf("Ask() Model = %q", resp.Model)
+		}
+		if len(sink.records) != 2 {
+			t.Fatalf("sink calls = %d, want 2", len(sink.records))
+		}
+		result, ok := sink.records[1].(ResultRecord)
+		if !ok {
+			t.Fatalf("result record type = %T", sink.records[1])
+		}
+		if result.Provider != ProviderVercel {
+			t.Fatalf("result provider = %q, want vercel", result.Provider)
+		}
+		wantSkipped := []ChainAttempt{{Provider: ProviderTypesafe, Reason: ReasonRateLimited}}
+		if !reflect.DeepEqual(result.Skipped, wantSkipped) {
+			t.Fatalf("result skipped = %#v, want %#v", result.Skipped, wantSkipped)
+		}
+	})
+
+	t.Run("plain judge leaves provider empty", func(t *testing.T) {
+		t.Parallel()
+
+		var sequence []string
+		sink := &recordingSink{sequence: &sequence}
+		traced := &Traced{
+			Judge: &fakeJudge{
+				sequence: &sequence,
+				resp:     Response{Model: "jev-1.13.0", Answers: map[string]Answer{"ok": {Type: QuestionNoul, Noul: 0.5}}},
+			},
+			Sink: sink.sink,
+		}
+
+		_, err := traced.Ask(context.Background(), Request{
+			Decision:  "claim_evidence",
+			State:     "bounded evidence",
+			Questions: map[string]Question{"ok": {Type: QuestionNoul}},
+		})
+		if err != nil {
+			t.Fatalf("Ask() error = %v", err)
+		}
+		result, ok := sink.records[1].(ResultRecord)
+		if !ok {
+			t.Fatalf("result record type = %T", sink.records[1])
+		}
+		if result.Provider != "" || result.Skipped != nil {
+			t.Fatalf("plain judge result provider = %#v skipped = %#v, want empty", result.Provider, result.Skipped)
+		}
+	})
+}
