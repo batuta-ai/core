@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:d8b592b68c43 -->
 
 **Goal:** Stop the loop from declaring a silent attempt "already satisfied on the base" when the task's proof commands do not all pass on that base. Today the silent path skips the proofs and trusts the read-only verifier alone, which let an executor that wrote nothing and a cheap verifier that answered DONE close two tasks whose proofs would have failed.
-**Created:** 2026-09-20 · **Status:** approved
+**Created:** 2026-09-20 · **Status:** done
 
 ## Tasks
-- [ ] 1. Run the proofs on the base before accepting a silent attempt as satisfied — backend/medium
+- [x] 1. Run the proofs on the base before accepting a silent attempt as satisfied — backend/medium
       Scope: loop/attempt.go, loop/loop_test.go, docs/loop.md
       Accept: a silent attempt whose proof command fails on the base is never recorded as already satisfied even when the verifier and the tests pass → go test ./loop -run TestLoopSilentAttemptRequiresProofsOnBase; a silent attempt whose proofs, tests and verifier all pass on the base is still recorded as already satisfied → go test ./loop -run TestLoopAlreadySatisfiedOnlyWhenWorktreeEqualsBase; the gates record of a silent attempt carries the proof verdicts → go test ./loop -run TestLoopSilentAttemptRequiresProofsOnBase; the verifier of a silent attempt receives the executed proof verdicts, not an empty list → go test ./loop -run TestLoopSilentAttemptRequiresProofsOnBase; the loop package stays green including the race detector on the silent scenarios → go test -race ./loop -run 'AlreadySatisfied|SilentAttempt'; docs/loop.md states that a silent attempt must pass tests, proofs and verifier on the base → grep -q 'proofs' docs/loop.md; the module builds and the suite passes → go build ./... && go test ./...
 
