@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0-beta.26](https://github.com/batuta-ai/core/compare/v1.1.0-beta.25...v1.1.0-beta.26) (2026-09-20)
+
+
+### Features
+
+* parse research rows by lane into the routing table ([66eb7eb](https://github.com/batuta-ai/core/commit/66eb7eb56f317296de914e2c5e3799f401cc4d2a))
+* **routing:** research lane ladder — parser, verifier seat, project rows ([8e912f6](https://github.com/batuta-ai/core/commit/8e912f673feb00d9ac74358d7d55040e1fd9590f))
+* seat the independent verifier on the research row of the task's lane ([ca973df](https://github.com/batuta-ai/core/commit/ca973df34153d7fe9559766f3b22f54383c6a48a))
+
 ## [1.1.0-beta.25](https://github.com/batuta-ai/core/compare/v1.1.0-beta.24...v1.1.0-beta.25) (2026-09-19)
 
 
