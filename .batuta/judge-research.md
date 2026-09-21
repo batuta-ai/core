@@ -136,3 +136,10 @@ What batuta should take from it:
 3. Record cost per judgment in the journal (already done: `usage`, `latency_ns`, `provider`) and print unknown when a receipt is missing, never a guess.
 4. Report the benchmark the way they do: per delivery, one trial per arm, negative headline if the data is negative.
 5. Privacy note for the article and the docs: Jev-enabled judgments send executor output to TypeSafe (directly or through a gateway); our state builder already redacts paths and env-shaped lines, and the docs must say what leaves the machine, as yoshi's README does.
+
+### 8.1 What yoshi's source adds (read 2026-09-21, `src/judge.ts`, `src/semantic.ts`)
+
+- The state carries a `note` telling the model that candidate text is untrusted data, not instructions, and that absence from a preview is not proof of absence. Our state builder will carry the same note about the executor report.
+- Questions point at state keys (`candidates.c1`, `` `request` ``, `` `retained_notes` ``) instead of restating content; several questions share one structured state.
+- Acting requires positive evidence, asked as such ("Is there positive evidence that…"), and the criteria list what does not count as evidence ("Being old, long or cheap to reread is NOT evidence"). Two answers gate the action: `needed <= 0.2` and `safe >= 0.95` (legacy), or `conflict <= 0.2` with `covered >= 0.95` (atomic).
+- Usage and gateway cost are collected per call; a missing usage is counted, never estimated; provider error messages are not logged because they may embed request content.
