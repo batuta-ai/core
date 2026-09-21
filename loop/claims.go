@@ -65,12 +65,13 @@ type Claim struct {
 
 // ClaimEvidence is the mechanical evidence code can compare claims against.
 type ClaimEvidence struct {
-	ChangedPaths  []string
-	TreeChanged   bool
-	Proofs        []gates.Verdict
-	VerifierLines map[int]string
-	TestsPass     bool
-	Diff          string
+	ChangedPaths    []string
+	TreeChanged     bool
+	Proofs          []gates.Verdict
+	VerifierLines   map[int]string
+	TestsPass       bool
+	Diff            string
+	DiffUnavailable bool
 }
 
 var (
@@ -659,6 +660,9 @@ func settleChangeClaim(claim Claim, ev ClaimEvidence) Claim {
 }
 
 func settleIdentifierClaim(claim Claim, ev ClaimEvidence) Claim {
+	if ev.DiffUnavailable {
+		return claim
+	}
 	ident := claim.Identifier
 	if ident == "" {
 		ident = claim.Text
@@ -682,6 +686,9 @@ func settleIdentifierClaim(claim Claim, ev ClaimEvidence) Claim {
 }
 
 func settleCountClaim(claim Claim, ev ClaimEvidence) Claim {
+	if ev.DiffUnavailable {
+		return claim
+	}
 	got := countAddedTestFuncs(ev.Diff)
 	claim.Source = ClaimSourceCode
 	if claim.Count == got {

@@ -692,6 +692,41 @@ func TestSettleCountClaims(t *testing.T) {
 	}
 }
 
+func TestSettleClaimsDiffUnavailable(t *testing.T) {
+	t.Parallel()
+
+	ident := Claim{
+		Kind: ClaimKindChange, Change: ChangeKindIdentifier,
+		Text: "FabricatedIdent", Identifier: "FabricatedIdent",
+		Creating: true, Status: ClaimStatusUnsettled,
+	}
+	count := Claim{
+		Kind: ClaimKindChange, Change: ChangeKindCount,
+		Text: "5", Count: 5, Status: ClaimStatusUnsettled,
+	}
+
+	unavailable := SettleClaims([]Claim{ident, count}, ClaimEvidence{DiffUnavailable: true})
+	if len(unavailable) != 2 {
+		t.Fatalf("unavailable = %#v", unavailable)
+	}
+	for _, claim := range unavailable {
+		if claim.Status != ClaimStatusUnsettled || claim.Source != "" {
+			t.Fatalf("unavailable diff settled %q: %#v", claim.Text, claim)
+		}
+	}
+
+	empty := SettleClaims([]Claim{ident, count}, ClaimEvidence{})
+	if len(empty) != 2 {
+		t.Fatalf("empty available = %#v", empty)
+	}
+	if empty[0].Status != ClaimStatusContradicted || empty[0].Source != ClaimSourceCode {
+		t.Fatalf("empty available identifier = %#v, want contradicted", empty[0])
+	}
+	if empty[1].Status != ClaimStatusContradicted || empty[1].Source != ClaimSourceCode {
+		t.Fatalf("empty available count = %#v, want contradicted", empty[1])
+	}
+}
+
 func pathClaims(claims []Claim) []Claim {
 	var out []Claim
 	for _, claim := range claims {

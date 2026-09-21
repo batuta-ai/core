@@ -102,16 +102,17 @@ var (
 
 // ClaimEvidenceInput is the bounded evidence for the claim_evidence decision.
 type ClaimEvidenceInput struct {
-	Workspace    string
-	Task         routing.PlanTask
-	Criteria     []gates.Criterion
-	Report       gates.Report
-	OutputTail   string
-	Progress     []executor.ProgressEvent
-	ChangedPaths []string
-	TreeChanged  bool
-	TreeFiles    []string
-	Diff         string
+	Workspace       string
+	Task            routing.PlanTask
+	Criteria        []gates.Criterion
+	Report          gates.Report
+	OutputTail      string
+	Progress        []executor.ProgressEvent
+	ChangedPaths    []string
+	TreeChanged     bool
+	TreeFiles       []string
+	Diff            string
+	DiffUnavailable bool
 }
 
 type claimEvidenceState struct {
@@ -444,11 +445,12 @@ func claimsFromInput(input ClaimEvidenceInput) []Claim {
 	known := knownClaimPath(redactPaths(input.TreeFiles, input.Workspace), changed, redactPaths(input.Task.Scope, input.Workspace))
 	extracted := ExtractClaims(boundExecutorReport(input.OutputTail, input.Workspace), input.Criteria, known)
 	ev := ClaimEvidence{
-		ChangedPaths: changed,
-		TreeChanged:  input.TreeChanged,
-		Proofs:       input.Report.Proofs,
-		TestsPass:    input.Report.Tests.Pass,
-		Diff:         input.Diff,
+		ChangedPaths:    changed,
+		TreeChanged:     input.TreeChanged,
+		Proofs:          input.Report.Proofs,
+		TestsPass:       input.Report.Tests.Pass,
+		Diff:            input.Diff,
+		DiffUnavailable: input.DiffUnavailable,
 	}
 	if input.Report.Verifier != nil {
 		ev.VerifierLines = ParseVerifierLines(input.Report.Verifier.Detail)
@@ -941,23 +943,53 @@ func (r *Runner) listClaimTreeFiles(ctx context.Context) []string {
 	return files
 }
 
+const claimAttemptDiffLimit int64 = 16 << 20
+
 // claimAttemptDiff returns the unified diff of the attempt worktree against
-// its base, the way listClaimTreeFiles reads the tree: empty on any git
-// failure, since an unavailable diff must not change the verdict.
-func (r *Runner) claimAttemptDiff(ctx context.Context, ac attemptContext) string {
+// its base, including untracked files as new-file hunks, without touching
+// the index. The second result is true when git failed or its output was
+// truncated, so settlement must not treat the missing diff as empty.
+func (r *Runner) claimAttemptDiff(ctx context.Context, ac attemptContext) (string, bool) {
 	if r.git.Runner == nil || r.git.Git == "" || ac.base == "" || ac.worktree.Root == "" {
-		return ""
+		return "", true
 	}
-	result, err := r.git.Runner.Run(ctx, publication.Command{
-		Executable:  r.git.Git,
-		Directory:   ac.worktree.Root,
-		Args:        []string{"diff", "--no-color", ac.base, "--", "."},
-		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
-	})
-	if err != nil || result.ExitCode != 0 || result.StdoutTruncated {
-		return ""
+	run := func(args []string) (publication.CommandResult, error) {
+		return r.git.Runner.Run(ctx, publication.Command{
+			Executable:  r.git.Git,
+			Directory:   ac.worktree.Root,
+			Args:        args,
+			Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+			StdoutLimit: claimAttemptDiffLimit,
+		})
 	}
-	return string(result.Stdout)
+	result, err := run([]string{"diff", "--no-color", "--no-ext-diff", ac.base, "--", ".", ":(top,exclude).batuta"})
+	if result.StdoutTruncated || err != nil || result.ExitCode != 0 {
+		return "", true
+	}
+	var b strings.Builder
+	b.Write(result.Stdout)
+	untracked, err := run([]string{"ls-files", "--others", "--exclude-standard", "-z", "--", ".", ":(top,exclude).batuta"})
+	if err != nil || untracked.ExitCode != 0 || untracked.StdoutTruncated {
+		return "", true
+	}
+	for _, name := range bytes.Split(untracked.Stdout, []byte{0}) {
+		path := filepath.ToSlash(strings.TrimSpace(string(name)))
+		if path == "" {
+			continue
+		}
+		fileDiff, fileErr := run([]string{"diff", "--no-color", "--no-ext-diff", "--no-index", "--", "/dev/null", path})
+		if fileDiff.StdoutTruncated || (fileDiff.ExitCode != 0 && fileDiff.ExitCode != 1) {
+			return "", true
+		}
+		if fileErr != nil && fileDiff.ExitCode != 1 {
+			return "", true
+		}
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteByte('\n')
+		}
+		b.Write(fileDiff.Stdout)
+	}
+	return b.String(), false
 }
 
 func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, report *gates.Report, result executor.Result, treeChanged bool, changedPaths []string) (judgment, error) {
@@ -983,8 +1015,8 @@ func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, repo
 		ChangedPaths: changedPaths,
 		TreeChanged:  treeChanged,
 		TreeFiles:    r.listClaimTreeFiles(ctx),
-		Diff:         r.claimAttemptDiff(ctx, ac),
 	}
+	input.Diff, input.DiffUnavailable = r.claimAttemptDiff(ctx, ac)
 	claims := claimsFromInput(input)
 	req := BuildClaimEvidenceRequest(input, claims)
 	out := judgment{}
