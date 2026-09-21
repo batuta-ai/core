@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -401,6 +403,363 @@ func TestCorpusBuildRejectsInvalidArguments(t *testing.T) {
 			var stdout, stderr strings.Builder
 			if err := run(tc.args, &stdout, &stderr); err == nil {
 				t.Fatalf("judge corpus build = nil, want an error")
+			}
+		})
+	}
+}
+
+// corpusRunDiff is the candidate diff the run fixtures carry: one added
+// identifier line and one added test function, so an added-test count
+// claimed above one is wrong and GreetHandlerChecked is absent from it.
+const corpusRunDiff = `diff --git a/greet.go b/greet.go
+index 111..222 100644
+--- a/greet.go
++++ b/greet.go
+@@ -1,2 +1,4 @@
+ package main
++
++func GreetHandler() string { return "hi" }
+diff --git a/greet_test.go b/greet_test.go
+index 333..444 100644
+--- a/greet_test.go
++++ b/greet_test.go
+@@ -1,2 +1,4 @@
+ package main
++
++func TestGreet(t *testing.T) {}
+`
+
+var corpusRunProofs = []gates.Verdict{
+	{Name: "proof 1", Pass: true, Signal: "a greeting exists — `test -f greet.go` passed"},
+}
+
+// corpusRunAnswers routes one task's fake judge: the HTTP status, the choice
+// every relation question gets, its confidence, the material noul and the
+// input tokens the usage reports; a negative inputTokens omits the usage.
+type corpusRunAnswers struct {
+	status      int
+	choice      string
+	confidence  float64
+	material    float64
+	inputTokens int
+}
+
+type corpusRunRecord struct {
+	calls  map[string]int
+	bodies map[string]map[string]any
+}
+
+// corpusRunServer answers every relation question of a routed task with the
+// route's choice and every material question with its noul; an unrouted task
+// is supported. It records the calls and the last request body per task.
+func corpusRunServer(t *testing.T, routes map[string]corpusRunAnswers) (*httptest.Server, *corpusRunRecord) {
+	t.Helper()
+	record := &corpusRunRecord{calls: map[string]int{}, bodies: map[string]map[string]any{}}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		taskID := ""
+		if state, ok := body["state"].(map[string]any); ok {
+			if task, ok := state["task"].(map[string]any); ok {
+				taskID, _ = task["id"].(string)
+			}
+		}
+		record.calls[taskID]++
+		record.bodies[taskID] = body
+		route, ok := routes[taskID]
+		if !ok {
+			route = corpusRunAnswers{status: http.StatusOK, choice: "supported", confidence: 0.95, material: 0.95, inputTokens: 12}
+		}
+		if route.status == 0 {
+			route.status = http.StatusOK
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if route.status != http.StatusOK {
+			w.WriteHeader(route.status)
+			if _, err := w.Write([]byte(`{"error":"no"}`)); err != nil {
+				t.Errorf("write response: %v", err)
+			}
+			return
+		}
+		answers := map[string]any{}
+		if questions, ok := body["questions"].(map[string]any); ok {
+			for key, question := range questions {
+				kind := ""
+				if typed, ok := question.(map[string]any); ok {
+					kind, _ = typed["type"].(string)
+				}
+				switch {
+				case strings.HasSuffix(key, "_relation") && kind == "choice":
+					if route.choice == "supported" {
+						answers[key] = map[string]any{"type": "choice", "choice": "supported", "confidence": route.confidence,
+							"probabilities": map[string]any{"supported": route.confidence, "unverifiable": 1 - route.confidence}}
+					} else {
+						answers[key] = map[string]any{"type": "choice", "choice": route.choice, "confidence": route.confidence,
+							"probabilities": map[string]any{route.choice: 0.93, "supported": 0.02, "unverifiable": 0.05}}
+					}
+				case strings.HasSuffix(key, "_material") && kind == "noul":
+					answers[key] = map[string]any{"type": "noul", "noul": route.material}
+				}
+			}
+		}
+		response := map[string]any{"model": "jev-1.13.0", "answers": answers}
+		if route.inputTokens >= 0 {
+			response["usage"] = map[string]any{"input_tokens": route.inputTokens, "output_tokens": 3}
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, record
+}
+
+// corpusRunFixture writes one JSON line per case and returns the corpus path.
+func corpusRunFixture(t *testing.T, root string, cases []corpusCase) string {
+	t.Helper()
+	path := filepath.Join(root, "corpus.jsonl")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoder := json.NewEncoder(file)
+	for _, c := range cases {
+		if err := encoder.Encode(c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func corpusRunVerdict(done bool) *gates.Verdict {
+	verdict := &gates.Verdict{Name: "verifier", Pass: true, Signal: "1/1 DONE"}
+	if done {
+		verdict.Detail = "TASK 1: DONE"
+	}
+	return verdict
+}
+
+func TestCorpusRunCases(t *testing.T) {
+	server, record := corpusRunServer(t, map[string]corpusRunAnswers{
+		"task_b": {choice: "behaviour_absent", confidence: 0.93, material: 0.93, inputTokens: 12},
+		"task_d": {status: http.StatusInternalServerError},
+	})
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	corpus := corpusRunFixture(t, root, []corpusCase{
+		{ID: "d1/task_a/e1/clean", Delivery: "d1", Task: "task_a", Execution: 1, Label: "clean",
+			Report: "Wrote `greet.go`.\nBATUTA-PROGRESS 1 DONE", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(true)},
+		{ID: "d1/task_b/e1/behaviour_absent", Delivery: "d1", Task: "task_b", Execution: 1, Label: "behaviour_absent",
+			Report: "Updated `greet.go` so that it greets twice.", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(false)},
+		{ID: "d1/task_c/e1/fabricated_reference", Delivery: "d1", Task: "task_c", Execution: 1, Label: "fabricated_reference",
+			Report: "Added `GreetHandlerChecked` to `greet.go`.", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(false)},
+		{ID: "d1/task_d/e1/clean", Delivery: "d1", Task: "task_d", Execution: 1, Label: "clean",
+			Report: "Wrote `greet.go`.\nBATUTA-PROGRESS 1 DONE", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(false)},
+	})
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "corpus", "run", "--corpus", corpus, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge corpus run = %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	wantLines := []string{
+		"threshold=0.9",
+		"d1/task_a/e1/clean label=clean flagged=false settled_by=none max_contradicted=0.00 asked=false",
+		"d1/task_b/e1/behaviour_absent label=behaviour_absent flagged=true settled_by=judge max_contradicted=0.93 asked=true",
+		"d1/task_c/e1/fabricated_reference label=fabricated_reference flagged=true settled_by=code max_contradicted=0.00 asked=false",
+		"d1/task_d/e1/clean label=clean flagged=false settled_by=none max_contradicted=0.00 asked=true unavailable=server_error",
+		"label cases flagged_by_code flagged_by_judge uncertain missed false_flags unavailable",
+		"behaviour_absent 1 0 1 0 0 0 0",
+		"clean 2 0 0 0 0 0 1",
+		"fabricated_reference 1 1 0 0 0 0 0",
+		"judge calls=2 input_tokens=12 unavailable=1",
+	}
+	if !slices.Equal(lines, wantLines) {
+		t.Fatalf("stdout lines =\n%s\nwant\n%s", strings.Join(lines, "\n"), strings.Join(wantLines, "\n"))
+	}
+	if record.calls["task_a"] != 0 || record.calls["task_c"] != 0 {
+		t.Fatalf("judge calls = %v, want none for the cases with settled claims", record.calls)
+	}
+	questions, ok := record.bodies["task_b"]["questions"].(map[string]any)
+	if !ok || len(questions) != 2 {
+		t.Fatalf("task_b questions = %#v, want one relation and one material", record.bodies["task_b"]["questions"])
+	}
+	state, ok := record.bodies["task_b"]["state"].(map[string]any)
+	if !ok {
+		t.Fatalf("task_b state = %#v", record.bodies["task_b"]["state"])
+	}
+	if diff, ok := state["diff"].(string); !ok || !strings.Contains(diff, "+func GreetHandler") {
+		t.Fatalf("task_b state diff = %#v, want the bounded diff slice", state["diff"])
+	}
+
+	var stdoutJSON, stderrJSON strings.Builder
+	err = run([]string{"judge", "corpus", "run", "--corpus", corpus, "--workspace", root, "--base-url", server.URL, "--json"}, &stdoutJSON, &stderrJSON)
+	if err != nil {
+		t.Fatalf("judge corpus run --json = %v\nstdout: %s\nstderr: %s", err, stdoutJSON.String(), stderrJSON.String())
+	}
+	jsonLines := strings.Split(strings.TrimSuffix(stdoutJSON.String(), "\n"), "\n")
+	if len(jsonLines) != 5 {
+		t.Fatalf("--json printed %d lines, want 4 cases plus the summary:\n%s", len(jsonLines), stdoutJSON.String())
+	}
+	wantCaseJSON := []map[string]any{
+		{"id": "d1/task_a/e1/clean", "label": "clean", "flagged": false, "settled_by": "none", "max_contradicted": 0.0, "asked": false, "uncertain": 0},
+		{"id": "d1/task_b/e1/behaviour_absent", "label": "behaviour_absent", "flagged": true, "settled_by": "judge", "max_contradicted": 0.93, "asked": true, "uncertain": 0},
+		{"id": "d1/task_c/e1/fabricated_reference", "label": "fabricated_reference", "flagged": true, "settled_by": "code", "max_contradicted": 0.0, "asked": false, "uncertain": 0},
+		{"id": "d1/task_d/e1/clean", "label": "clean", "flagged": false, "settled_by": "none", "max_contradicted": 0.0, "asked": true, "uncertain": 0, "unavailable": "server_error"},
+	}
+	for index, want := range wantCaseJSON {
+		var object map[string]any
+		if err := json.Unmarshal([]byte(jsonLines[index]), &object); err != nil {
+			t.Fatalf("case line %d is not JSON: %v\n%s", index+1, err, jsonLines[index])
+		}
+		for key, want := range want {
+			got, ok := object[key]
+			if !ok {
+				t.Fatalf("case %d is missing %q:\n%s", index+1, key, jsonLines[index])
+			}
+			if number, isNumber := want.(int); isNumber {
+				decoded, isFloat := got.(float64)
+				if !isFloat || decoded != float64(number) {
+					t.Fatalf("case %d %s = %#v, want %d:\n%s", index+1, key, got, number, jsonLines[index])
+				}
+				continue
+			}
+			if got != want {
+				t.Fatalf("case %d %s = %#v, want %#v:\n%s", index+1, key, got, want, jsonLines[index])
+			}
+		}
+	}
+	var summary struct {
+		Summary struct {
+			Threshold float64 `json:"threshold"`
+			Labels    []struct {
+				Label        string `json:"label"`
+				Cases        int    `json:"cases"`
+				FlaggedCode  int    `json:"flagged_by_code"`
+				FlaggedJudge int    `json:"flagged_by_judge"`
+				Unavailable  int    `json:"unavailable"`
+			} `json:"labels"`
+			JudgeCalls  int  `json:"judge_calls"`
+			InputTokens *int `json:"input_tokens"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(jsonLines[4]), &summary); err != nil {
+		t.Fatalf("summary line is not JSON: %v\n%s", err, jsonLines[4])
+	}
+	if summary.Summary.Threshold != 0.9 || summary.Summary.JudgeCalls != 2 || summary.Summary.InputTokens == nil || *summary.Summary.InputTokens != 12 {
+		t.Fatalf("summary = %+v", summary.Summary)
+	}
+	if len(summary.Summary.Labels) != 3 {
+		t.Fatalf("summary labels = %#v, want one row per label", summary.Summary.Labels)
+	}
+}
+
+func TestCorpusRunSummary(t *testing.T) {
+	server, record := corpusRunServer(t, map[string]corpusRunAnswers{
+		"task_f": {choice: "verifier_incomplete", confidence: 0.93, material: 0.93, inputTokens: 12},
+		"task_u": {choice: "behaviour_absent", confidence: 0.5, material: 0.9, inputTokens: 12},
+	})
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	corpus := corpusRunFixture(t, root, []corpusCase{
+		{ID: "d2/task_f/e1/clean", Delivery: "d2", Task: "task_f", Execution: 1, Label: "clean",
+			Report: "Wrote `greet.go`.\nBATUTA-PROGRESS 1 DONE", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(false)},
+		{ID: "d2/task_u/e1/behaviour_absent", Delivery: "d2", Task: "task_u", Execution: 1, Label: "behaviour_absent",
+			Report: "Updated `greet.go` so that it greets twice.", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(false)},
+		{ID: "d2/task_k/e1/wrong_count", Delivery: "d2", Task: "task_k", Execution: 1, Label: "wrong_count",
+			Report: "Added 4 new tests in `greet_test.go`.", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet_test.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(false)},
+	})
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "corpus", "run", "--corpus", corpus, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge corpus run = %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	wantTail := []string{
+		"behaviour_absent 1 0 0 1 1 0 0",
+		"clean 1 0 1 0 0 1 0",
+		"wrong_count 1 1 0 0 0 0 0",
+		"judge calls=2 input_tokens=24",
+	}
+	if !slices.Equal(lines[len(lines)-4:], wantTail) {
+		t.Fatalf("summary =\n%s\nwant\n%s", strings.Join(lines[len(lines)-4:], "\n"), strings.Join(wantTail, "\n"))
+	}
+	if record.calls["task_k"] != 0 {
+		t.Fatalf("judge calls = %v, want none for the code-settled case", record.calls)
+	}
+
+	unknown := corpusRunFixture(t, root, []corpusCase{
+		{ID: "d3/task_f/e1/clean", Delivery: "d3", Task: "task_f", Execution: 1, Label: "clean",
+			Report: "Wrote `greet.go`.\nBATUTA-PROGRESS 1 DONE", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(false)},
+	})
+	routes := map[string]corpusRunAnswers{
+		"task_f": {choice: "verifier_incomplete", confidence: 0.93, material: 0.93, inputTokens: -1},
+	}
+	serverUnknown, _ := corpusRunServer(t, routes)
+	var stdoutNoUsage, stderrNoUsage strings.Builder
+	err = run([]string{"judge", "corpus", "run", "--corpus", unknown, "--workspace", root, "--base-url", serverUnknown.URL}, &stdoutNoUsage, &stderrNoUsage)
+	if err != nil {
+		t.Fatalf("judge corpus run = %v\nstdout: %s", err, stdoutNoUsage.String())
+	}
+	if !strings.HasSuffix(strings.TrimSuffix(stdoutNoUsage.String(), "\n"), "judge calls=1 input_tokens=unknown") {
+		t.Fatalf("footer = %q, want input_tokens=unknown", strings.TrimSpace(stdoutNoUsage.String()))
+	}
+}
+
+func TestCorpusRunThreshold(t *testing.T) {
+	server, _ := corpusRunServer(t, nil)
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY","decisions":{"claim_evidence":{"mode":"shadow","threshold":0.8}}}`)
+	corpus := corpusRunFixture(t, root, []corpusCase{
+		{ID: "d4/task_a/e1/clean", Delivery: "d4", Task: "task_a", Execution: 1, Label: "clean",
+			Report: "Wrote `greet.go`.\nBATUTA-PROGRESS 1 DONE", Diff: corpusRunDiff,
+			ChangedPaths: []string{"greet.go"}, Proofs: corpusRunProofs, Verifier: corpusRunVerdict(false)},
+	})
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "corpus", "run", "--corpus", corpus, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge corpus run = %v\nstdout: %s", err, stdout.String())
+	}
+	if first := strings.SplitN(stdout.String(), "\n", 2)[0]; first != "threshold=0.8" {
+		t.Fatalf("first line = %q, want threshold=0.8 from the judge config", first)
+	}
+	var stdoutFlag, stderrFlag strings.Builder
+	if err := run([]string{"judge", "corpus", "run", "--corpus", corpus, "--workspace", root, "--base-url", server.URL, "--threshold", "0.5"}, &stdoutFlag, &stderrFlag); err == nil {
+		t.Fatalf("judge corpus run accepted a --threshold flag, want an error: %s", stdoutFlag.String())
+	}
+}
+
+func TestCorpusRunRejectsInvalidArguments(t *testing.T) {
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	broken := filepath.Join(root, "broken.jsonl")
+	if err := os.WriteFile(broken, []byte("{\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"missing corpus flag", []string{"judge", "corpus", "run", "--workspace", root}},
+		{"missing corpus file", []string{"judge", "corpus", "run", "--corpus", filepath.Join(root, "nope.jsonl"), "--workspace", root}},
+		{"invalid corpus json", []string{"judge", "corpus", "run", "--corpus", broken, "--workspace", root}},
+		{"positional argument", []string{"judge", "corpus", "run", "--corpus", broken, "--workspace", root, "extra"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			if err := run(tc.args, &stdout, &stderr); err == nil {
+				t.Fatalf("judge corpus run = nil, want an error")
 			}
 		})
 	}

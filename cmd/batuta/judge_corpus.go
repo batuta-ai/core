@@ -19,7 +19,9 @@ import (
 	"unicode/utf8"
 
 	"github.com/batuta-ai/core/gates"
+	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/loop"
+	"github.com/batuta-ai/core/routing"
 )
 
 // Corpus case labels: the clean case plus the report-only defect variants
@@ -84,13 +86,15 @@ func (j *corpusJournals) Set(value string) error {
 
 func runJudgeCorpus(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("a corpus form is required; available forms: build")
+		return errors.New("a corpus form is required; available forms: build, run")
 	}
 	switch args[0] {
 	case "build":
 		return runJudgeCorpusBuild(args[1:], stdout, stderr)
+	case "run":
+		return runJudgeCorpusRun(args[1:], stdout, stderr)
 	default:
-		return fmt.Errorf("unknown corpus form %q; available forms: build", args[0])
+		return fmt.Errorf("unknown corpus form %q; available forms: build, run", args[0])
 	}
 }
 
@@ -393,4 +397,333 @@ func writeCorpusCases(out string, cases []corpusCase) error {
 		}
 	}
 	return file.Close()
+}
+
+// corpusRunDecision is the decision point the run scores. Its threshold is
+// the configured one, never a flag.
+const corpusRunDecision = "claim_evidence"
+
+// corpusRunCase is one scored case: the aggregate over its settled claims,
+// whether the judge was asked, the unavailability reason when it was asked
+// and failed, and the source of the first contradicted claim.
+type corpusRunCase struct {
+	item        corpusCase
+	asked       bool
+	unavailable string
+	judgment    replayJudgment
+	settledBy   string
+}
+
+// corpusRunTotals counts the judge calls and sums the input tokens the
+// responses reported; usage is missing when no response carried any.
+type corpusRunTotals struct {
+	calls       int
+	inputTokens int
+	sawUsage    bool
+}
+
+func runJudgeCorpusRun(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("judge corpus run", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	corpusPath := flags.String("corpus", "", "JSONL corpus file built by judge corpus build")
+	configPath := flags.String("config", "", "judge config path (default: .batuta/judge.json under --workspace)")
+	workspace := flags.String("workspace", "", "workspace directory (default: current directory)")
+	baseURL := flags.String("base-url", "", "override the configured provider base URL")
+	asJSON := flags.Bool("json", false, "print one JSON object per case with a final summary object")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *corpusPath == "" {
+		return errors.New("usage: batuta judge corpus run --corpus <file> [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]")
+	}
+	cases, err := readCorpusRunCases(*corpusPath)
+	if err != nil {
+		return err
+	}
+	config, err := loadJudgeConfig(*configPath, *workspace)
+	if err != nil {
+		return err
+	}
+	if *baseURL != "" {
+		config.BaseURL = *baseURL
+	}
+	j, buildReason, err := corpusRunJudge(config)
+	if err != nil {
+		return err
+	}
+	threshold := config.Decision(corpusRunDecision).Threshold
+	if threshold == 0 {
+		threshold = replayDefaultThreshold
+	}
+	outcomes, totals := corpusRunCases(context.Background(), j, buildReason, threshold, cases)
+	if *asJSON {
+		return printCorpusRunJSON(stdout, threshold, outcomes, totals)
+	}
+	return printCorpusRunText(stdout, threshold, outcomes, totals)
+}
+
+// corpusRunJudge builds the judge, keeping the typed unavailable reason: an
+// off judge or a missing key makes every asked case unavailable instead of
+// failing the run. A config error is returned.
+func corpusRunJudge(config judge.Config) (judge.Judge, string, error) {
+	j, err := config.Judge(os.Getenv)
+	if err != nil {
+		var unavail *judge.UnavailableError
+		if !errors.As(err, &unavail) {
+			return nil, "", err
+		}
+		return nil, unavail.Reason, nil
+	}
+	return j, "", nil
+}
+
+// readCorpusRunCases reads one JSON line per case, as judge corpus build
+// wrote them.
+func readCorpusRunCases(path string) ([]corpusCase, error) {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var cases []corpusCase
+	text := strings.TrimSuffix(string(content), "\n")
+	if strings.TrimSpace(text) == "" {
+		return cases, nil
+	}
+	for index, line := range strings.Split(text, "\n") {
+		var c corpusCase
+		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			return nil, fmt.Errorf("judge corpus run: %s line %d: %w", path, index+1, err)
+		}
+		cases = append(cases, c)
+	}
+	return cases, nil
+}
+
+// corpusClaimEvidenceRequest builds a case's claim_evidence request the way
+// the live loop builds it: code extracts the atomic claims from the bounded
+// report the case carries, settles them against the changed paths, the proof
+// verdicts, the verifier lines and the diff, and the request asks one
+// relation choice and one material noul per unsettled claim over a bounded
+// diff slice. Every corpus case is a candidate attempt, which passed the
+// tests gate.
+func corpusClaimEvidenceRequest(c corpusCase) (judge.Request, []loop.Claim) {
+	input := loop.ClaimEvidenceInput{
+		Task:         routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: c.Task}},
+		Criteria:     loop.CriteriaFromProofs(c.Proofs),
+		Report:       gates.Report{Proofs: c.Proofs, Verifier: c.Verifier},
+		ChangedPaths: c.ChangedPaths,
+		TreeChanged:  len(c.ChangedPaths) > 0,
+		Diff:         c.Diff,
+	}
+	evidence := loop.ClaimEvidence{
+		ChangedPaths: c.ChangedPaths,
+		TreeChanged:  input.TreeChanged,
+		Proofs:       c.Proofs,
+		TestsPass:    true,
+		Diff:         c.Diff,
+	}
+	if c.Verifier != nil {
+		evidence.VerifierLines = loop.ParseVerifierLines(c.Verifier.Detail)
+	}
+	claims := loop.SettleClaims(loop.ExtractClaims(c.Report, input.Criteria), evidence)
+	return loop.BuildClaimEvidenceRequest(input, claims), claims
+}
+
+// corpusRunCases scores every case: claim extraction and code settlement
+// first, then one judge call for a case with unsettled claims. An
+// unavailable judge changes nothing: the case keeps its code-only verdict
+// and is reported unavailable.
+func corpusRunCases(ctx context.Context, j judge.Judge, buildReason string, threshold float64, cases []corpusCase) ([]corpusRunCase, corpusRunTotals) {
+	outcomes := make([]corpusRunCase, 0, len(cases))
+	var totals corpusRunTotals
+	for _, item := range cases {
+		request, claims := corpusClaimEvidenceRequest(item)
+		outcome := corpusRunCase{item: item, judgment: aggregateReplayClaims(claims, nil, threshold)}
+		if len(request.Questions) > 0 {
+			outcome.asked = true
+			switch {
+			case j == nil:
+				outcome.unavailable = buildReason
+			default:
+				response, err := j.Ask(ctx, request)
+				totals.calls++
+				if err != nil {
+					outcome.unavailable = judgeReplayReason(err)
+				} else {
+					if response.Usage.InputTokens != 0 || response.Usage.OutputTokens != 0 {
+						totals.sawUsage = true
+					}
+					totals.inputTokens += response.Usage.InputTokens
+					outcome.judgment = aggregateReplayClaims(claims, response.Answers, threshold)
+				}
+			}
+		}
+		outcome.settledBy = corpusSettledBy(outcome.judgment)
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes, totals
+}
+
+// corpusSettledBy names the source of the first contradicted claim — code,
+// judge or none. An uncertain judge answer never settles a claim.
+func corpusSettledBy(judgment replayJudgment) string {
+	uncertain := make(map[string]bool, len(judgment.Uncertain))
+	for _, item := range judgment.Uncertain {
+		uncertain[item.Key] = true
+	}
+	for index, record := range judgment.Claims {
+		if record.Choice != replayChoiceContradicted {
+			continue
+		}
+		if record.Source == string(loop.ClaimSourceJudge) && uncertain[fmt.Sprintf("c%d_relation", index+1)] {
+			continue
+		}
+		return record.Source
+	}
+	return "none"
+}
+
+// corpusLabelSummary is one label's row of the summary table: independent
+// case counts, where a missed defect case is one the aggregate did not flag
+// and a clean false flag is one it did.
+type corpusLabelSummary struct {
+	Label        string `json:"label"`
+	Cases        int    `json:"cases"`
+	FlaggedCode  int    `json:"flagged_by_code"`
+	FlaggedJudge int    `json:"flagged_by_judge"`
+	Uncertain    int    `json:"uncertain"`
+	Missed       int    `json:"missed"`
+	FalseFlags   int    `json:"false_flags"`
+	Unavailable  int    `json:"unavailable"`
+}
+
+var corpusDefectLabels = map[string]bool{
+	corpusLabelFabricatedReference: true,
+	corpusLabelWrongCount:          true,
+	corpusLabelBehaviourAbsent:     true,
+}
+
+// corpusSummaries folds the scored cases into one row per label, sorted by
+// label, with the unavailable total.
+func corpusSummaries(outcomes []corpusRunCase) ([]corpusLabelSummary, int) {
+	byLabel := map[string]*corpusLabelSummary{}
+	unavailable := 0
+	for _, outcome := range outcomes {
+		row := byLabel[outcome.item.Label]
+		if row == nil {
+			row = &corpusLabelSummary{Label: outcome.item.Label}
+			byLabel[outcome.item.Label] = row
+		}
+		row.Cases++
+		switch outcome.settledBy {
+		case string(loop.ClaimSourceCode):
+			row.FlaggedCode++
+		case string(loop.ClaimSourceJudge):
+			row.FlaggedJudge++
+		}
+		if len(outcome.judgment.Uncertain) > 0 {
+			row.Uncertain++
+		}
+		if outcome.unavailable != "" {
+			row.Unavailable++
+			unavailable++
+		}
+		switch {
+		case outcome.item.Label == corpusLabelClean:
+			if outcome.judgment.Flagged {
+				row.FalseFlags++
+			}
+		case corpusDefectLabels[outcome.item.Label]:
+			if !outcome.judgment.Flagged && outcome.unavailable == "" {
+				row.Missed++
+			}
+		}
+	}
+	labels := make([]string, 0, len(byLabel))
+	for label := range byLabel {
+		labels = append(labels, label)
+	}
+	slices.Sort(labels)
+	rows := make([]corpusLabelSummary, 0, len(labels))
+	for _, label := range labels {
+		rows = append(rows, *byLabel[label])
+	}
+	return rows, unavailable
+}
+
+func printCorpusRunText(stdout io.Writer, threshold float64, outcomes []corpusRunCase, totals corpusRunTotals) error {
+	fmt.Fprintf(stdout, "threshold=%s\n", corpusThresholdLabel(threshold))
+	for _, outcome := range outcomes {
+		line := fmt.Sprintf("%s label=%s flagged=%t settled_by=%s max_contradicted=%.2f asked=%t",
+			outcome.item.ID, outcome.item.Label, outcome.judgment.Flagged, outcome.settledBy,
+			outcome.judgment.MaxContradicted, outcome.asked)
+		if outcome.unavailable != "" {
+			line += " unavailable=" + outcome.unavailable
+		}
+		fmt.Fprintln(stdout, line)
+	}
+	rows, unavailable := corpusSummaries(outcomes)
+	fmt.Fprintln(stdout, "label cases flagged_by_code flagged_by_judge uncertain missed false_flags unavailable")
+	for _, row := range rows {
+		fmt.Fprintf(stdout, "%s %d %d %d %d %d %d %d\n",
+			row.Label, row.Cases, row.FlaggedCode, row.FlaggedJudge, row.Uncertain, row.Missed, row.FalseFlags, row.Unavailable)
+	}
+	tokens := "unknown"
+	if totals.sawUsage {
+		tokens = strconv.Itoa(totals.inputTokens)
+	}
+	footer := fmt.Sprintf("judge calls=%d input_tokens=%s", totals.calls, tokens)
+	if unavailable > 0 {
+		footer += fmt.Sprintf(" unavailable=%d", unavailable)
+	}
+	fmt.Fprintln(stdout, footer)
+	return nil
+}
+
+type corpusRunCaseJSON struct {
+	ID              string  `json:"id"`
+	Label           string  `json:"label"`
+	Flagged         bool    `json:"flagged"`
+	SettledBy       string  `json:"settled_by"`
+	MaxContradicted float64 `json:"max_contradicted"`
+	Asked           bool    `json:"asked"`
+	Uncertain       int     `json:"uncertain"`
+	Unavailable     string  `json:"unavailable,omitempty"`
+}
+
+type corpusRunSummaryJSON struct {
+	Threshold   float64              `json:"threshold"`
+	Labels      []corpusLabelSummary `json:"labels"`
+	JudgeCalls  int                  `json:"judge_calls"`
+	InputTokens *int                 `json:"input_tokens"`
+	Unavailable int                  `json:"unavailable"`
+}
+
+func printCorpusRunJSON(stdout io.Writer, threshold float64, outcomes []corpusRunCase, totals corpusRunTotals) error {
+	rows, unavailable := corpusSummaries(outcomes)
+	encoder := json.NewEncoder(stdout)
+	for _, outcome := range outcomes {
+		record := corpusRunCaseJSON{
+			ID: outcome.item.ID, Label: outcome.item.Label, Flagged: outcome.judgment.Flagged,
+			SettledBy: outcome.settledBy, MaxContradicted: outcome.judgment.MaxContradicted,
+			Asked: outcome.asked, Uncertain: len(outcome.judgment.Uncertain), Unavailable: outcome.unavailable,
+		}
+		if err := encoder.Encode(record); err != nil {
+			return err
+		}
+	}
+	var tokens *int
+	if totals.sawUsage {
+		tokens = &totals.inputTokens
+	}
+	return encoder.Encode(map[string]corpusRunSummaryJSON{
+		"summary": {
+			Threshold: threshold, Labels: rows, JudgeCalls: totals.calls,
+			InputTokens: tokens, Unavailable: unavailable,
+		},
+	})
+}
+
+func corpusThresholdLabel(threshold float64) string {
+	return strconv.FormatFloat(threshold, 'g', -1, 64)
 }

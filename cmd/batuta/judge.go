@@ -703,7 +703,8 @@ func replayMappedChoice(choice string) string {
 
 func replayDefectChoice(choice string) bool {
 	switch choice {
-	case replayChoiceContradicted, "path_not_changed", "proof_failed", "verifier_incomplete", "tests_gate_failed", "count_mismatch":
+	case replayChoiceContradicted, "path_not_changed", "proof_failed", "verifier_incomplete", "tests_gate_failed", "count_mismatch",
+		"fabricated_reference", "wrong_count", "behaviour_absent":
 		return true
 	}
 	return false
