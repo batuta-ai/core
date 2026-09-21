@@ -212,6 +212,9 @@
 - [x] Judgment state, questions and journal records → cursor-agent (cursor-grok-4.6-high), commit ce72d29eac2c (trail: .batuta/runs/2026-09-20-judge-claim-evidence-task-1.md, delivery judge-claim-evidence-20260920-235929, plan judge-claim-evidence, 2026-09-21)
 - [x] Shadow and enforce in runAttempt → cursor-agent (cursor-grok-4.6-high), commit 1f9b86cbcd8e (trail: .batuta/runs/2026-09-20-judge-claim-evidence-task-2.md, delivery judge-claim-evidence-20260920-235929, plan judge-claim-evidence, 2026-09-21)
 - [x] batuta judge replay over a delivery journal → opencode (opencode/glm-5.3-flash), commit 366c681970d6 (trail: .batuta/runs/2026-09-20-judge-claim-evidence-task-3.md, delivery judge-claim-evidence-20260920-235929, plan judge-claim-evidence, 2026-09-21)
+- [x] Claim extraction and code settlement → cursor-agent (cursor-grok-4.6-high), commit f3dd121cb3cf (trail: .batuta/runs/2026-09-21-judge-claims-v2-task-1.md, delivery judge-claims-v2-20260921-094157, plan judge-claims-v2, 2026-09-21)
+- [x] One choice per unsettled claim with structured instructions → cursor-agent (cursor-grok-4.6-high), commit 5a332016bc14 (trail: .batuta/runs/2026-09-21-judge-claims-v2-task-2.md, delivery judge-claims-v2-20260921-094157, plan judge-claims-v2, 2026-09-21)
+- [x] Replay prints the v2 breakdown → opencode (opencode/glm-5.3-flash), 1 retry, commit 844d619901b1 (trail: .batuta/runs/2026-09-21-judge-claims-v2-task-3.md, delivery judge-claims-v2-20260921-094157, plan judge-claims-v2, 2026-09-21)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
