@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
@@ -334,6 +336,117 @@ func relativePath(path, workspace string) string {
 		return filepath.ToSlash(filepath.Base(path))
 	}
 	return filepath.ToSlash(path)
+}
+
+// ReplayClaimEvidenceInput carries what a delivery journal holds about one
+// recorded attempt: the gates_reported detail, the tree_changed flag of the
+// matching executor_finished detail, and the attempt's run log content.
+type ReplayClaimEvidenceInput struct {
+	Workspace   string
+	TaskID      string
+	TaskTitle   string
+	Report      gates.Report
+	TreeChanged bool
+	RunLog      string
+}
+
+// ReplayClaimEvidenceState rebuilds the bounded claim_evidence state of a
+// recorded attempt from its journal details and run log, so `judge replay`
+// asks the same decision over the same evidence. The plan file is not part
+// of the journal: the criteria come from the recorded proof signals, and the
+// changed paths only from a failed scope verdict, so both are reconstructions
+// and the progress events carry no timestamps.
+func ReplayClaimEvidenceState(input ReplayClaimEvidenceInput, maxBytes int) (any, error) {
+	tail, progress := ParseRunLog(input.RunLog)
+	var changedPaths []string
+	if !input.Report.Scope.Pass && input.Report.Scope.Detail != "" {
+		changedPaths = splitReportLines(input.Report.Scope.Detail)
+	}
+	return BuildClaimEvidenceState(ClaimEvidenceInput{
+		Workspace: input.Workspace,
+		Task: routing.PlanTask{
+			TaskArtifact: routing.TaskArtifact{ID: input.TaskID, Title: input.TaskTitle},
+		},
+		Criteria:     CriteriaFromProofs(input.Report.Proofs),
+		Report:       input.Report,
+		OutputTail:   tail,
+		Progress:     progress,
+		ChangedPaths: changedPaths,
+		TreeChanged:  input.TreeChanged,
+	}, maxBytes)
+}
+
+// CriteriaFromProofs recovers the acceptance criteria a recorded report's
+// proof verdicts were run against. It inverts the signals gates.Proofs
+// writes: `<text> — `<proof>` …`, `<text> — no proof command…`; a signal it
+// cannot parse stays the criterion's whole text.
+func CriteriaFromProofs(proofs []gates.Verdict) []gates.Criterion {
+	criteria := make([]gates.Criterion, 0, len(proofs))
+	for _, proof := range proofs {
+		text, command := criterionFromSignal(proof.Signal)
+		criteria = append(criteria, gates.Criterion{Text: text, Proof: command})
+	}
+	return criteria
+}
+
+const criterionNoProofSignal = " — no proof command; left to the verifier"
+
+func criterionFromSignal(signal string) (text, proof string) {
+	if strings.HasSuffix(signal, criterionNoProofSignal) {
+		return strings.TrimSuffix(signal, criterionNoProofSignal), ""
+	}
+	if start := strings.Index(signal, " — "); start >= 0 {
+		rest := strings.TrimPrefix(signal[start+len(" — "):], "could not run ")
+		if strings.HasPrefix(rest, "`") {
+			if end := strings.Index(rest[1:], "`"); end >= 0 {
+				return signal[:start], rest[1 : 1+end]
+			}
+		}
+	}
+	return signal, ""
+}
+
+// ParseRunLog splits a run log written for an attempt back into the output
+// tail and the progress events the claim_evidence state carries: the text
+// between the stdout and stderr sections joined by a newline, and every
+// BATUTA-PROGRESS line of both. Content with neither section is taken whole.
+func ParseRunLog(content string) (tail string, progress []executor.ProgressEvent) {
+	stdout, stderr := content, ""
+	if _, rest, found := strings.Cut(content, "## stdout\n\n"); found {
+		stdout, stderr, _ = strings.Cut(rest, "\n\n## stderr\n\n")
+	}
+	switch {
+	case stdout == "" && stderr == "":
+	case stderr == "":
+		tail = stdout
+	case stdout == "":
+		tail = stderr
+	default:
+		tail = stdout + "\n" + stderr
+	}
+	for _, line := range strings.Split(tail, "\n") {
+		if criterion, state, ok := executor.ParseProgress(line); ok {
+			progress = append(progress, executor.ProgressEvent{Criterion: criterion, State: state})
+		}
+	}
+	return tail, progress
+}
+
+// ReplayRunLogName is the run log file name the loop wrote for a recorded
+// attempt: <date>-<slug>-<task>-e<n>.out.log under .batuta/runs. The date
+// comes from the delivery identifier's stamp, falling back to the record
+// time; the task id keeps its trail spelling (underscores as dashes).
+func ReplayRunLogName(deliveryID, slug, taskID string, at time.Time, execution int) string {
+	date := ""
+	if parts := strings.Split(deliveryID, "-"); len(parts) >= 2 {
+		if stamp := parts[len(parts)-2]; len(stamp) == 8 {
+			date = stamp[:4] + "-" + stamp[4:6] + "-" + stamp[6:]
+		}
+	}
+	if date == "" {
+		date = at.UTC().Format("2006-01-02")
+	}
+	return date + "-" + slug + "-" + strings.ReplaceAll(taskID, "_", "-") + "-e" + strconv.Itoa(execution) + ".out.log"
 }
 
 func failingGateNames(report gates.Report) []string {

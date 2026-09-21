@@ -114,6 +114,38 @@ way. With `"auto"` it also prints the answering provider on the success line
 (`provider: typesafe`). It is the cheapest way to confirm that a provider,
 model and key work before wiring a decision point.
 
+`replay` judges a past delivery after the fact:
+
+```text
+batuta judge replay --journal <path> [--runs <dir>] [--config <path>]
+                    [--decision <name>] [--workspace <dir>] [--base-url <url>]
+```
+
+`--journal` is a delivery journal (`.batuta/journal/<delivery>.jsonl`). For
+each `gates_reported` record with a matching `executor_finished` record,
+replay locates the attempt's run log `<runs>/<date>-<slug>-<task>-e<n>.out.log`
+(`--runs` defaults to `<workspace>/.batuta/runs`; a relative `--runs` is
+workspace-relative), rebuilds the claim_evidence state from the journal
+detail and the log, and asks the configured judge. One line per attempt:
+
+```text
+task_1 e1 outcome=already_satisfied claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe
+```
+
+The outcome is the recorded verdict of the attempt: the `blocker` of the
+following `failure_recorded` record (for example `already_satisfied`),
+`candidate` for `candidate_recorded` or `question` for `question_recorded`.
+The run log is not journaled, so an attempt whose log is missing is reported
+as `task_1 e1 skipped <expected path>` — replay state is built from the
+journal and the log only, so the plan's scope is empty, the criteria are
+recovered from the recorded proof signals, the changed paths only from a
+failed scope verdict, and the progress events carry no timestamps. Replay is
+read-only: the journal and the run logs are opened for reading and never
+through the journal's append paths. Exit `0` even when attempts are skipped
+or a later ask fails (`unavailable=<reason>` on that line); exit `2` when the
+judge is unavailable before the first question is answered, and `1` for
+usage, config or journal errors.
+
 Exit codes: `0` answered, `2` unavailable — the reason is printed on stderr —
 and `1` usage or config error. Exit `2` is a non-failure outcome: the caller
 keeps the deterministic rule.

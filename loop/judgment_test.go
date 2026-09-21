@@ -2,6 +2,7 @@ package loop
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -347,6 +348,288 @@ func TestClaimEvidenceQuestions(t *testing.T) {
 	if again["claim_unsupported"].Instructions != unsupported.Instructions || again["verifier_contradicted"].Instructions != contradicted.Instructions {
 		t.Fatal("ClaimEvidenceQuestions() instructions were not stable across calls")
 	}
+}
+
+func TestParseRunLog(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		log       string
+		wantTail  string
+		wantEvent []executor.ProgressEvent
+	}{
+		{
+			name:     "both sections",
+			log:      "## stdout\n\nline one\nBATUTA-PROGRESS 1 START\nBATUTA-PROGRESS 2 DONE\n\n## stderr\n\nwarned\n",
+			wantTail: "line one\nBATUTA-PROGRESS 1 START\nBATUTA-PROGRESS 2 DONE\nwarned\n",
+			wantEvent: []executor.ProgressEvent{
+				{Criterion: 1, State: "START"},
+				{Criterion: 2, State: "DONE"},
+			},
+		},
+		{
+			name:     "trailing newline on stdout is not doubled",
+			log:      "## stdout\n\nhello\n\n\n## stderr\n\n",
+			wantTail: "hello\n",
+		},
+		{
+			name:     "empty stdout keeps stderr",
+			log:      "## stdout\n\n\n\n## stderr\n\nhit a limit\n",
+			wantTail: "hit a limit\n",
+		},
+		{
+			name:     "both empty",
+			log:      "## stdout\n\n\n\n## stderr\n\n",
+			wantTail: "",
+		},
+		{
+			name:      "not a run log falls back to the whole content",
+			log:       "BATUTA-PROGRESS 1 DONE\n",
+			wantTail:  "BATUTA-PROGRESS 1 DONE\n",
+			wantEvent: []executor.ProgressEvent{{Criterion: 1, State: "DONE"}},
+		},
+		{
+			name:     "progress lines from both streams in order",
+			log:      "## stdout\n\nBATUTA-PROGRESS 1 START\n\n## stderr\n\nBATUTA-PROGRESS 1 DONE\n",
+			wantTail: "BATUTA-PROGRESS 1 START\nBATUTA-PROGRESS 1 DONE\n",
+			wantEvent: []executor.ProgressEvent{
+				{Criterion: 1, State: "START"},
+				{Criterion: 1, State: "DONE"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tail, progress := ParseRunLog(tc.log)
+			if tail != tc.wantTail {
+				t.Fatalf("tail = %q, want %q", tail, tc.wantTail)
+			}
+			if len(progress) != len(tc.wantEvent) {
+				t.Fatalf("progress = %#v, want %#v", progress, tc.wantEvent)
+			}
+			for index, event := range progress {
+				if event.Criterion != tc.wantEvent[index].Criterion || event.State != tc.wantEvent[index].State {
+					t.Fatalf("progress[%d] = %#v, want %#v", index, event, tc.wantEvent[index])
+				}
+				if !event.At.IsZero() {
+					t.Fatalf("progress[%d].At = %v, want zero: replay cannot recover timestamps", index, event.At)
+				}
+			}
+		})
+	}
+
+	t.Run("empty log", func(t *testing.T) {
+		tail, progress := ParseRunLog("")
+		if tail != "" || len(progress) != 0 {
+			t.Fatalf("ParseRunLog(\"\") = %q, %#v", tail, progress)
+		}
+	})
+}
+
+func TestCriteriaFromProofs(t *testing.T) {
+	t.Parallel()
+
+	criteria := CriteriaFromProofs([]gates.Verdict{
+		{Name: "proof 1", Pass: true, Signal: "state is bounded — `go test ./loop` passed"},
+		{Name: "proof 2", Pass: false, Signal: "questions are noul — `go vet ./loop` exited 3"},
+		{Name: "proof 3", Pass: true, Signal: "verifier asked — no proof command; left to the verifier"},
+		{Name: "proof 4", Pass: false, Signal: "wrote the file — could not run `test -f out/1.txt`: no shell"},
+		{Name: "proof 5", Pass: false},
+	})
+	want := []gates.Criterion{
+		{Text: "state is bounded", Proof: "go test ./loop"},
+		{Text: "questions are noul", Proof: "go vet ./loop"},
+		{Text: "verifier asked"},
+		{Text: "wrote the file", Proof: "test -f out/1.txt"},
+		{Text: ""},
+	}
+	if len(criteria) != len(want) {
+		t.Fatalf("criteria = %#v, want %#v", criteria, want)
+	}
+	for index, criterion := range want {
+		if criteria[index] != criterion {
+			t.Fatalf("criteria[%d] = %#v, want %#v", index, criteria[index], criterion)
+		}
+	}
+
+	if got := CriteriaFromProofs(nil); len(got) != 0 {
+		t.Fatalf("CriteriaFromProofs(nil) = %#v, want empty", got)
+	}
+}
+
+func TestReplayRunLogName(t *testing.T) {
+	t.Parallel()
+
+	name := ReplayRunLogName("greetings-20260906-040001", "greetings", "task_1", time.Time{}, 1)
+	if want := "2026-09-06-greetings-task-1-e1.out.log"; name != want {
+		t.Fatalf("name = %q, want %q", name, want)
+	}
+
+	fallback := ReplayRunLogName("satisfied", "satisfied", "task_2", time.Date(2026, 9, 20, 4, 0, 1, 0, time.UTC), 3)
+	if want := "2026-09-20-satisfied-task-2-e3.out.log"; fallback != want {
+		t.Fatalf("fallback name = %q, want %q", fallback, want)
+	}
+}
+
+func TestReplayClaimEvidenceState(t *testing.T) {
+	t.Parallel()
+
+	log := fmt.Sprintf("# exit 0 · finished true · timed out false · rate limited false · %s\n\n## stdout\n\n%s\n\n## stderr\n\n%s",
+		(3 * time.Second).Round(time.Second),
+		strings.Join([]string{
+			"edited loop/judgment.go",
+			"BATUTA-PROGRESS 1 START",
+			"BATUTA-PROGRESS 1 DONE",
+		}, "\n"),
+		"TASK 2: INCOMPLETE — still writing questions",
+	)
+	report := gates.Report{
+		TaskID:    "task_1",
+		Execution: 1,
+		Finished:  gates.Verdict{Name: "finished", Pass: true, Signal: "exit 0"},
+		Tree:      gates.Verdict{Name: "tree", Pass: true, Signal: "the worktree differs from the attempt's base"},
+		Tests:     gates.Verdict{Name: "tests", Pass: true, Signal: "`go test ./...` passed"},
+		Scope:     gates.Verdict{Name: "scope", Pass: false, Signal: "1 path(s) outside Scope", Detail: "docs/judge.md\nscratch.txt"},
+		Proofs: []gates.Verdict{
+			{Name: "proof 1", Pass: true, Signal: "state is bounded — `go test ./loop` passed"},
+			{Name: "proof 2", Pass: false, Signal: "questions are noul — no proof command; left to the verifier"},
+		},
+		Verifier: &gates.Verdict{Name: "verifier", Pass: false, Signal: "1 criterion(s) INCOMPLETE", Detail: "TASK 2: INCOMPLETE — questions missing"},
+		Passed:   false,
+	}
+
+	state, err := ReplayClaimEvidenceState(ReplayClaimEvidenceInput{
+		Workspace:   "/work/core",
+		TaskID:      "task_1",
+		TaskTitle:   "Wire the claim check",
+		Report:      report,
+		TreeChanged: true,
+		RunLog:      log,
+	}, 16<<10)
+	if err != nil {
+		t.Fatalf("ReplayClaimEvidenceState() error = %v", err)
+	}
+	body := marshalState(t, state)
+
+	task, _ := body["task"].(map[string]any)
+	if task["id"] != "task_1" || task["title"] != "Wire the claim check" {
+		t.Fatalf("task = %#v", task)
+	}
+
+	criteria, _ := body["criteria"].([]any)
+	if len(criteria) != 2 {
+		t.Fatalf("criteria = %#v", body["criteria"])
+	}
+	first, _ := criteria[0].(map[string]any)
+	if first["text"] != "state is bounded" || first["proof"] != "go test ./loop" || first["pass"] != true {
+		t.Fatalf("criteria[0] = %#v", first)
+	}
+	second, _ := criteria[1].(map[string]any)
+	if second["text"] != "questions are noul" || second["pass"] != false {
+		t.Fatalf("criteria[1] = %#v", second)
+	}
+
+	report_, _ := body["executor_report"].(string)
+	for _, want := range []string{"edited loop/judgment.go", "BATUTA-PROGRESS 1 START", "BATUTA-PROGRESS 1 DONE", "TASK 2: INCOMPLETE"} {
+		if !strings.Contains(report_, want) {
+			t.Fatalf("executor_report missing %q:\n%s", want, report_)
+		}
+	}
+
+	progress, _ := body["progress"].([]any)
+	if len(progress) != 2 {
+		t.Fatalf("progress = %#v, want two events from the run log", body["progress"])
+	}
+
+	tree, _ := body["tree"].(map[string]any)
+	if tree["changed"] != true {
+		t.Fatalf("tree = %#v, want changed", tree)
+	}
+	paths, _ := tree["changed_paths"].([]any)
+	if len(paths) != 2 || paths[0] != "docs/judge.md" || paths[1] != "scratch.txt" {
+		t.Fatalf("changed_paths = %#v, want the failed scope verdict's paths", tree["changed_paths"])
+	}
+
+	verifier, _ := body["verifier"].(map[string]any)
+	if verifier == nil || verifier["signal"] != "1 criterion(s) INCOMPLETE" {
+		t.Fatalf("verifier = %#v", body["verifier"])
+	}
+
+	outcome, _ := body["outcome"].(map[string]any)
+	if outcome["passed"] != false {
+		t.Fatalf("outcome = %#v", body["outcome"])
+	}
+
+	t.Run("the live and replayed states agree on the shared evidence", func(t *testing.T) {
+		live, err := BuildClaimEvidenceState(ClaimEvidenceInput{
+			Workspace: "/work/core",
+			Task: routing.PlanTask{
+				TaskArtifact: routing.TaskArtifact{ID: "task_1", Title: "Wire the claim check"},
+			},
+			Criteria: []gates.Criterion{
+				{Text: "state is bounded", Proof: "go test ./loop"},
+				{Text: "questions are noul"},
+			},
+			Report: report,
+			OutputTail: strings.Join([]string{
+				"edited loop/judgment.go",
+				"BATUTA-PROGRESS 1 START",
+				"BATUTA-PROGRESS 1 DONE",
+			}, "\n") + "\nTASK 2: INCOMPLETE — still writing questions",
+			Progress: []executor.ProgressEvent{
+				{Criterion: 1, State: "START", At: time.Date(2026, 9, 20, 4, 0, 1, 0, time.UTC)},
+				{Criterion: 1, State: "DONE", At: time.Date(2026, 9, 20, 4, 0, 2, 0, time.UTC)},
+			},
+			ChangedPaths: []string{"docs/judge.md", "scratch.txt"},
+			TreeChanged:  true,
+		}, 16<<10)
+		if err != nil {
+			t.Fatalf("BuildClaimEvidenceState() error = %v", err)
+		}
+		liveBody := marshalState(t, live)
+		for _, key := range []string{"task", "criteria", "executor_report", "tree", "verifier", "outcome"} {
+			liveJSON, _ := json.Marshal(liveBody[key])
+			replayJSON, _ := json.Marshal(body[key])
+			if string(liveJSON) != string(replayJSON) {
+				t.Fatalf("%s differs between live and replayed states:\nlive:    %s\nreplayed: %s", key, liveJSON, replayJSON)
+			}
+		}
+		// Progress agrees on every pair the journal can carry; the live
+		// events also carry the timestamps, which replay cannot recover.
+		pairs := func(events []any) []string {
+			out := make([]string, 0, len(events))
+			for _, event := range events {
+				body, _ := event.(map[string]any)
+				out = append(out, fmt.Sprintf("%v %v", body["criterion"], body["state"]))
+			}
+			return out
+		}
+		liveProgress, _ := liveBody["progress"].([]any)
+		replayProgress, _ := body["progress"].([]any)
+		if fmt.Sprint(pairs(liveProgress)) != fmt.Sprint(pairs(replayProgress)) || len(replayProgress) == 0 {
+			t.Fatalf("progress differs between live and replayed states:\nlive:    %#v\nreplayed: %#v", liveProgress, replayProgress)
+		}
+	})
+
+	t.Run("equal tree and missing log leave the state honest", func(t *testing.T) {
+		state, err := ReplayClaimEvidenceState(ReplayClaimEvidenceInput{
+			TaskID: "task_2",
+			Report: gates.Report{Passed: true, Scope: gates.Verdict{Name: "scope", Pass: true, Signal: "within Scope"}},
+		}, 16<<10)
+		if err != nil {
+			t.Fatalf("ReplayClaimEvidenceState() error = %v", err)
+		}
+		body := marshalState(t, state)
+		tree, _ := body["tree"].(map[string]any)
+		if tree["changed"] != false || len(tree["changed_paths"].([]any)) != 0 {
+			t.Fatalf("tree = %#v, want equal to base without paths", tree)
+		}
+		report_, _ := body["executor_report"].(string)
+		if report_ != "" {
+			t.Fatalf("executor_report = %q, want empty without a run log", report_)
+		}
+	})
 }
 
 func TestJudgeRecordKinds(t *testing.T) {
