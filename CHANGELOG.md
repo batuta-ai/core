@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0-beta.31](https://github.com/batuta-ai/core/compare/v1.1.0-beta.30...v1.1.0-beta.31) (2026-09-21)
+
+
+### Features
+
+* changed paths recorded live and recovered in replay ([d2f1fb9](https://github.com/batuta-ai/core/commit/d2f1fb93d1b64be043971041a51b7c71d2e5c6dc))
+* claim extraction and code settlement ([f3dd121](https://github.com/batuta-ai/core/commit/f3dd121cb3cf33849bd254d8ea651daaca31e522))
+* **loop:** claim_evidence v2/v2.1 — atomic claims settled by code, one choice per claim, replay with real changed paths ([4883203](https://github.com/batuta-ai/core/commit/488320311690c2b369a27ac6fda1f06be83f19c9))
+* one choice per unsettled claim with structured instructions ([5a33201](https://github.com/batuta-ai/core/commit/5a332016bc1431341237ecaa883ce3e926c5748a))
+* path claims only for repository paths, criterion claims with their ([f9454c0](https://github.com/batuta-ai/core/commit/f9454c0064677da821826f973fe616e669e8df75))
+* replay prints the v2 breakdown ([844d619](https://github.com/batuta-ai/core/commit/844d619901b190beb417afd314746fd485dbe254))
+
 ## [1.1.0-beta.30](https://github.com/batuta-ai/core/compare/v1.1.0-beta.29...v1.1.0-beta.30) (2026-09-21)
 
 
