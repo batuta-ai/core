@@ -88,3 +88,20 @@ What did not change: 7 legitimate candidates are still flagged by code. The `--j
 What the judge did: asked 17 times with evidence attached, it never answered `contradicted` above 0.33 on any claim; 35 answers landed in the uncertain bucket. On this corpus there is no case where the judge found a contradiction that code had not already settled.
 
 Decision rule stated before the run (research note, section 7): keep `enforce` only if both false closures are flagged and no legitimate candidate is flagged. Result: the first half holds through code, the second does not because of the extractor. Version 2.2 must restrict path claims to explicit edit statements before the rule can be evaluated; the judge's own contribution so far is zero contradictions.
+
+## Version 2.2 replay (2026-09-21)
+
+Binary built from `1fdb0ca` (plan `judge-claims-v22`: edit-statement path claims, untrusted-data note, key-pointing questions, positive-evidence criteria with concrete defect labels, `material` question). Same command over 12 journals (10 core, 2 skills), judge TypeSafe direct. Raw output verbatim in `.batuta/judge-replay-v22-raw.txt`; counts computed from that file.
+
+| measure | v2.1 | v2.2 |
+|---|---|---|
+| finished attempts replayed | 33 | 36 |
+| legitimate candidates flagged | 7 of 24 | **0 of 26** |
+| known false closures flagged | 2 of 2 (code) | **0 of 2** |
+| attempts where the judge was asked | 17 | 17 |
+| claims / code contradicted / judge contradicted / uncertain | 403 / 43 / 0 / 35 | 392 / 35 / 0 / 31 |
+| highest judge "contradicted" probability | 0.33 | 0.05 |
+| highest `material` probability | — | 0.82 |
+| gate-failed attempts flagged | 2 of 7 | 2 of 8 |
+
+Precision is fixed: no legitimate candidate is flagged any more, and the judge's contradiction probability collapsed to at most 0.05 with the positive-evidence criteria. Recall broke: the two false closures lost their path claim. Their reports (agy) write the touched file as `### Paths touched` followed by `- [.batuta/routing.md](file:///…/.batuta/routing.md)` (skills task_4) and as `Touched path:` followed by `- [` `.batuta/routing.md` `](file:///…)` (core task_3). The v2.2 extractor accepts only the heading order `(paths|files) (touched|changed|modified|edited)` and does not read a Markdown link as a path, so `claims=1` there is not the path and nothing contradicts. Version 2.3 fixes recall in the extractor only (heading in either order, singular or plural; Markdown link text or `file://` target relative to the worktree; a few more edit verbs) and reruns this replay. The judge itself was asked 17 times and again contradicted nothing; `material` reached 0.82 on one claim.
