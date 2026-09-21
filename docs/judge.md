@@ -211,8 +211,8 @@ The run reuses the live loop's claim extraction, code settlement, request
 building and aggregation — no scoring logic lives in the command. Code
 settles what it can settle exactly against the case's changed paths, proof
 verdicts and verifier lines; a case with unsettled claims gets exactly one
-judge call whose state carries the bounded report, the claims with their
-evidence and a bounded diff slice. The threshold is the `claim_evidence`
+judge call whose state carries the claims with their evidence and a bounded
+diff slice. The threshold is the `claim_evidence`
 decision's configured threshold (default 0.9) and is printed; there is no
 threshold flag. One line per case:
 
@@ -245,11 +245,10 @@ judge calls=2 input_tokens=12 unavailable=1
 ```
 
 What leaves the machine is what the live `claim_evidence` decision sends:
-per asked case, the task id, the bounded and redacted executor report, the
-claims with their evidence, and a bounded diff slice — never the corpus
-file's other cases, never a key (the API key lives in the environment
-variable `key_env` names). The run is read-only: it touches the corpus file
-and the judge endpoint, and writes nothing.
+per asked case, the task id, the unsettled claims with their evidence, and a
+bounded diff slice — never the corpus file's other cases, never a key (the API
+key lives in the environment variable `key_env` names). The run is read-only:
+it touches the corpus file and the judge endpoint, and writes nothing.
 
 Every question is also recorded as a `judge_intent` record before the call and
 a `judge_result` record after it, carrying the decision name, the question
