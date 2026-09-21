@@ -770,6 +770,26 @@ func TestLoopResumesAfterAStopBetweenWaves(t *testing.T) {
 	if counts := kinds(records); counts[KindInterrupted] != 1 || counts[KindTerminal] != 1 || counts[KindOpened] != 1 {
 		t.Fatalf("journal kinds = %v", counts)
 	}
+	var gatedPaths bool
+	for _, record := range records {
+		if record.Kind != KindGates {
+			continue
+		}
+		var report gates.Report
+		if err := json.Unmarshal(record.Detail, &report); err != nil {
+			t.Fatalf("gates_reported: %v", err)
+		}
+		if len(report.Scope.Paths) == 0 {
+			continue
+		}
+		gatedPaths = true
+		if !strings.Contains(strings.Join(report.Scope.Paths, "\n"), "out/") {
+			t.Fatalf("scope.paths = %q, want the changed greeting files", report.Scope.Paths)
+		}
+	}
+	if !gatedPaths {
+		t.Fatal("gates_reported did not carry scope.paths")
+	}
 }
 
 // The engine holds task two through cancellation so the test can prove that

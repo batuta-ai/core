@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/loop"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
 
@@ -174,8 +177,9 @@ type replayTaskSummary struct {
 }
 
 type replayFinishedDetail struct {
-	Execution   int  `json:"execution"`
-	TreeChanged bool `json:"tree_changed"`
+	Execution   int    `json:"execution"`
+	TreeChanged bool   `json:"tree_changed"`
+	BaseHeadSHA string `json:"base_head_sha"`
 }
 
 type replayFailureDetail struct {
@@ -187,18 +191,35 @@ type replayExecutionDetail struct {
 	Execution int `json:"execution"`
 }
 
+type replayCandidateDetail struct {
+	Execution int    `json:"execution"`
+	Commit    string `json:"commit"`
+	Evidence  struct {
+		BaseSHA string `json:"base_sha"`
+	} `json:"evidence"`
+}
+
+type replaySnapshotDetail struct {
+	Execution int    `json:"execution"`
+	SHA       string `json:"sha"`
+}
+
 type replayAttemptKey struct {
 	taskID    string
 	execution int
 }
 
 type replayAttempt struct {
-	taskID      string
-	execution   int
-	treeChanged bool
-	report      gates.Report
-	outcome     string
-	at          time.Time
+	taskID          string
+	execution       int
+	treeChanged     bool
+	baseSHA         string
+	candidateCommit string
+	candidateBase   string
+	snapshotSHA     string
+	report          gates.Report
+	outcome         string
+	at              time.Time
 }
 
 // replayAttempts pairs every gates_reported record with its matching
@@ -212,6 +233,8 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 	}
 	finished := map[finishedKey]journal.Record{}
 	outcomes := map[replayAttemptKey]string{}
+	candidates := map[replayAttemptKey]replayCandidateDetail{}
+	snapshots := map[replayAttemptKey]replaySnapshotDetail{}
 	titles = map[string]string{}
 	for _, record := range records {
 		switch record.Kind {
@@ -229,12 +252,18 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 				finished[finishedKey{record.TaskID, detail.Execution}] = record
 			}
 		case loop.KindCandidate:
-			var detail replayExecutionDetail
+			var detail replayCandidateDetail
 			if json.Unmarshal(record.Detail, &detail) == nil {
 				key := replayAttemptKey{record.TaskID, detail.Execution}
 				if _, seen := outcomes[key]; !seen {
 					outcomes[key] = "candidate"
 				}
+				candidates[key] = detail
+			}
+		case loop.KindSnapshot:
+			var detail replaySnapshotDetail
+			if json.Unmarshal(record.Detail, &detail) == nil {
+				snapshots[replayAttemptKey{record.TaskID, detail.Execution}] = detail
 			}
 		case loop.KindQuestion:
 			var detail replayExecutionDetail
@@ -273,13 +302,18 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 		}
 		seen[key] = true
 		treeChanged := false
+		baseSHA := ""
 		var finishedDetail replayFinishedDetail
 		if json.Unmarshal(finishedRecord.Detail, &finishedDetail) == nil {
 			treeChanged = finishedDetail.TreeChanged
+			baseSHA = finishedDetail.BaseHeadSHA
 		}
+		candidate := candidates[key]
+		snapshot := snapshots[key]
 		attempts = append(attempts, replayAttempt{
 			taskID: record.TaskID, execution: report.Execution, treeChanged: treeChanged,
-			report: report, outcome: outcomes[key], at: record.At,
+			baseSHA: baseSHA, candidateCommit: candidate.Commit, candidateBase: candidate.Evidence.BaseSHA,
+			snapshotSHA: snapshot.SHA, report: report, outcome: outcomes[key], at: record.At,
 		})
 	}
 	return attempts, titles, slug
@@ -348,12 +382,13 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 			}
 			continue
 		}
-		input := replayEvidenceInput(root, attempt, titles[attempt.taskID], string(log))
+		paths, known := resolveReplayChangedPaths(context.Background(), root, attempt)
+		input := replayEvidenceInput(root, attempt, titles[attempt.taskID], string(log), paths)
 		state, err := loop.BuildClaimEvidenceState(input, maxBytes)
 		if err != nil {
 			return fmt.Errorf("judge replay: %s e%d: %w", attempt.taskID, attempt.execution, err)
 		}
-		request, claims, err := replayClaimEvidenceRequest(input, state)
+		request, claims, err := replayClaimEvidenceRequest(input, state, known)
 		if err != nil {
 			return fmt.Errorf("judge replay: %s e%d: %w", attempt.taskID, attempt.execution, err)
 		}
@@ -386,9 +421,9 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 			}
 			continue
 		}
-		line := fmt.Sprintf("%s e%d outcome=%s asked=%t claims=%d code_contradicted=%d judge_contradicted=%d uncertain=%d max_contradicted=%.2f flagged=%t",
+		line := fmt.Sprintf("%s e%d outcome=%s asked=%t claims=%d changed_paths=%s code_contradicted=%d judge_contradicted=%d uncertain=%d max_contradicted=%.2f flagged=%t",
 			attempt.taskID, attempt.execution, attempt.outcome, asked,
-			len(judgment.Claims), judgment.CodeContradicted, judgment.JudgeContradicted,
+			len(judgment.Claims), replayChangedPathsCount(paths, known), judgment.CodeContradicted, judgment.JudgeContradicted,
 			len(judgment.Uncertain), judgment.MaxContradicted, judgment.Flagged)
 		if unavailable != "" {
 			line += " unavailable=" + unavailable
@@ -403,7 +438,7 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 // the v1 state builder produces, settles what it can settle exactly against
 // the redacted changed paths, the proof verdicts, the verifier lines and the
 // tests gate, and asks one choice question per unsettled claim.
-func replayClaimEvidenceRequest(input loop.ClaimEvidenceInput, state any) (judge.Request, []loop.Claim, error) {
+func replayClaimEvidenceRequest(input loop.ClaimEvidenceInput, state any, pathsKnown bool) (judge.Request, []loop.Claim, error) {
 	payload, err := json.Marshal(state)
 	if err != nil {
 		return judge.Request{}, nil, err
@@ -422,6 +457,16 @@ func replayClaimEvidenceRequest(input loop.ClaimEvidenceInput, state any) (judge
 		evidence.VerifierLines = loop.ParseVerifierLines(input.Report.Verifier.Detail)
 	}
 	claims := loop.SettleClaims(loop.ExtractClaims(bounded.ExecutorReport, input.Criteria), evidence)
+	if !pathsKnown {
+		for i := range claims {
+			if claims[i].Kind != loop.ClaimKindPath {
+				continue
+			}
+			claims[i].Status = loop.ClaimStatus(replayChoiceUnverifiable)
+			claims[i].Source = loop.ClaimSourceCode
+			claims[i].Evidence = "changed_paths unknown"
+		}
+	}
 	return loop.BuildClaimEvidenceRequest(input, claims), claims, nil
 }
 
@@ -438,14 +483,9 @@ type replayBoundedState struct {
 // replayEvidenceInput reconstructs the bounded claim_evidence input of a
 // recorded attempt from its journal report and run log. The plan file is not
 // part of the journal: the criteria come from the recorded proof signals, and
-// the changed paths only from a failed scope verdict, so both are
-// reconstructions and the progress events carry no timestamps.
-func replayEvidenceInput(workspace string, attempt replayAttempt, title, runLog string) loop.ClaimEvidenceInput {
+// the progress events carry no timestamps.
+func replayEvidenceInput(workspace string, attempt replayAttempt, title, runLog string, changedPaths []string) loop.ClaimEvidenceInput {
 	tail, progress := loop.ParseRunLog(runLog)
-	var changedPaths []string
-	if !attempt.report.Scope.Pass && attempt.report.Scope.Detail != "" {
-		changedPaths = strings.Split(strings.TrimRight(attempt.report.Scope.Detail, "\n"), "\n")
-	}
 	return loop.ClaimEvidenceInput{
 		Workspace:    workspace,
 		Task:         routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: attempt.taskID, Title: title}},
@@ -458,9 +498,64 @@ func replayEvidenceInput(workspace string, attempt replayAttempt, title, runLog 
 	}
 }
 
+func resolveReplayChangedPaths(ctx context.Context, workspace string, attempt replayAttempt) ([]string, bool) {
+	if len(attempt.report.Scope.Paths) > 0 {
+		return attempt.report.Scope.Paths, true
+	}
+	if paths, ok := replayGitNameOnly(ctx, workspace, attempt.candidateBase, attempt.candidateCommit); ok {
+		return paths, true
+	}
+	if paths, ok := replayGitNameOnly(ctx, workspace, attempt.baseSHA, attempt.snapshotSHA); ok {
+		return paths, true
+	}
+	if !attempt.treeChanged {
+		return []string{}, true
+	}
+	return nil, false
+}
+
+func replayGitNameOnly(ctx context.Context, workspace, base, commit string) ([]string, bool) {
+	if base == "" || commit == "" {
+		return nil, false
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return nil, false
+	}
+	result, err := publication.ExecRunner{}.Run(ctx, publication.Command{
+		Executable: git,
+		Args:       []string{"diff", "--name-only", base, commit},
+		Directory:  workspace,
+	})
+	if err != nil {
+		return nil, false
+	}
+	return parseGitNameOnly(result.Stdout), true
+}
+
+func parseGitNameOnly(stdout []byte) []string {
+	var paths []string
+	for _, line := range strings.Split(string(stdout), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		paths = append(paths, filepath.ToSlash(line))
+	}
+	return paths
+}
+
+func replayChangedPathsCount(paths []string, known bool) string {
+	if !known {
+		return "unknown"
+	}
+	return strconv.Itoa(len(paths))
+}
+
 const (
 	replayDefaultThreshold   = 0.9
 	replayChoiceContradicted = "contradicted"
+	replayChoiceUnverifiable = "unverifiable"
 	replayUncertainLow       = 0.30
 	replayUncertainHigh      = 0.70
 )

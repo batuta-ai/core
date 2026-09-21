@@ -21,15 +21,23 @@ func TestScopeMatchesPathsPrefixesAndGlobs(t *testing.T) {
 			t.Fatalf("ValidScope(%v) should fail", bad)
 		}
 	}
-	verdict := Scope([]string{"src/checkout/payment.ts", "tests/checkout/a.test.ts", "docs/guide/retry.md", "lib/x.go", "WORK.md", ".batuta/runs/x.md"}, scope)
+	inScope := []string{"src/checkout/payment.ts", "tests/checkout/a.test.ts", "docs/guide/retry.md", "lib/x.go", "WORK.md", ".batuta/runs/x.md"}
+	verdict := Scope(inScope, scope)
 	if !verdict.Pass || !strings.Contains(verdict.Signal, "managed state also touched") {
 		t.Fatalf("in-scope verdict = %#v", verdict)
 	}
-	verdict = Scope([]string{"src/checkout/payment.ts", "src/other.ts", "lib/nested/x.go"}, scope)
+	if strings.Join(verdict.Paths, ",") != strings.Join(inScope, ",") {
+		t.Fatalf("in-scope paths = %#v, want every changed path including managed", verdict.Paths)
+	}
+	outOfScope := []string{"src/checkout/payment.ts", "src/other.ts", "lib/nested/x.go"}
+	verdict = Scope(outOfScope, scope)
 	if verdict.Pass || verdict.Detail != "lib/nested/x.go\nsrc/other.ts" && verdict.Detail != "src/other.ts\nlib/nested/x.go" {
 		t.Fatalf("out-of-scope verdict = %#v", verdict)
 	}
-	if verdict := Scope([]string{"anything"}, nil); !verdict.Pass || !strings.Contains(verdict.Signal, "no Scope") {
+	if strings.Join(verdict.Paths, ",") != strings.Join(outOfScope, ",") {
+		t.Fatalf("out-of-scope paths = %#v, want every changed path not only those in Detail", verdict.Paths)
+	}
+	if verdict := Scope([]string{"anything"}, nil); !verdict.Pass || !strings.Contains(verdict.Signal, "no Scope") || strings.Join(verdict.Paths, ",") != "anything" {
 		t.Fatalf("no-scope verdict = %#v", verdict)
 	}
 }

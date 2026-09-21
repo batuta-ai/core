@@ -39,10 +39,11 @@ const (
 
 // Verdict is one gate's answer.
 type Verdict struct {
-	Name   string `json:"name"`
-	Pass   bool   `json:"pass"`
-	Signal string `json:"signal,omitempty"` // one line: what was observed
-	Detail string `json:"detail,omitempty"` // bounded evidence (command output tail, paths)
+	Name   string   `json:"name"`
+	Pass   bool     `json:"pass"`
+	Signal string   `json:"signal,omitempty"` // one line: what was observed
+	Detail string   `json:"detail,omitempty"` // bounded evidence (command output tail, paths)
+	Paths  []string `json:"paths,omitempty"`  // every changed path the scope gate saw
 }
 
 // Report gathers the gates of one attempt. It is the verification payload
@@ -248,7 +249,10 @@ func ValidScope(entries []string) error {
 // Managed state is reported, never failed on. An empty Scope means the
 // plan declared none: the check passes with a signal.
 func Scope(changed, scope []string) Verdict {
-	verdict := Verdict{Name: "scope", Pass: true}
+	verdict := Verdict{Name: "scope", Pass: true, Paths: make([]string, len(changed))}
+	for i, changedPath := range changed {
+		verdict.Paths[i] = filepath.ToSlash(changedPath)
+	}
 	if len(scope) == 0 {
 		verdict.Signal = "no Scope declared; every change accepted"
 		return verdict
