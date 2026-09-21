@@ -96,10 +96,18 @@ func runJudgeProbe(args []string, stdout, stderr io.Writer) error {
 		return errors.New("usage: batuta judge probe [--config <path>] [--workspace <dir>] [--base-url <url>]")
 	}
 
-	j, err := buildJudge(*configPath, *workspace, *baseURL)
+	config, err := loadJudgeConfig(*configPath, *workspace)
+	if err != nil {
+		return err
+	}
+	if *baseURL != "" {
+		config.BaseURL = *baseURL
+	}
+	j, err := config.Judge(os.Getenv)
 	if err != nil {
 		return judgeFailure(stderr, err)
 	}
+	start := time.Now()
 	response, err := j.Ask(context.Background(), judge.Request{
 		Decision: "probe",
 		State:    "connection check",
@@ -110,14 +118,10 @@ func runJudgeProbe(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return judgeFailure(stderr, err)
 	}
-	if provider, ok := j.(interface{ LastProvider() judge.Provider }); ok {
-		if name := provider.LastProvider(); name != "" {
-			fmt.Fprintf(stdout, "provider: %s\n", name)
-		}
-	}
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(response)
+	fmt.Fprintf(stdout, "provider=%s model=%s ms=%d tokens=%d/%d\n",
+		judgeProviderName(j, config), response.Model, time.Since(start).Milliseconds(),
+		response.Usage.InputTokens, response.Usage.OutputTokens)
+	return nil
 }
 
 // loadJudgeConfig resolves the config: an explicit --config path wins over
@@ -284,6 +288,32 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 	return attempts, titles, slug
 }
 
+// replayJSONAttempt is one --json line: a judged attempt carries the answers,
+// the answering provider and model and the usage; a skipped attempt names the
+// missing run log; an unavailable attempt names the failure reason.
+type replayJSONAttempt struct {
+	TaskID       string                  `json:"task_id"`
+	Execution    int                     `json:"execution"`
+	Outcome      string                  `json:"outcome"`
+	Answers      map[string]judge.Answer `json:"answers,omitempty"`
+	Provider     string                  `json:"provider,omitempty"`
+	Model        string                  `json:"model,omitempty"`
+	InputTokens  int                     `json:"input_tokens,omitempty"`
+	OutputTokens int                     `json:"output_tokens,omitempty"`
+	LatencyMS    *int64                  `json:"latency_ms,omitempty"`
+	Skipped      string                  `json:"skipped,omitempty"`
+	Unavailable  string                  `json:"unavailable,omitempty"`
+}
+
+// replayJSONTotals is the final --json object, mirroring the totals line.
+type replayJSONTotals struct {
+	Attempts     int `json:"attempts"`
+	Asked        int `json:"asked"`
+	Skipped      int `json:"skipped"`
+	InputTokens  int `json:"input_tokens"`
+	OutputTokens int `json:"output_tokens"`
+}
+
 func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("judge replay", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -291,6 +321,7 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 	runs := flags.String("runs", "", "run-log directory (default: <workspace>/.batuta/runs)")
 	configPath := flags.String("config", "", "judge config path (default: .batuta/judge.json under --workspace)")
 	decision := flags.String("decision", "claim_evidence", "decision name asked and printed")
+	asJSON := flags.Bool("json", false, "print one JSON object per attempt and a final totals object")
 	workspace := flags.String("workspace", "", "workspace directory (default: current directory)")
 	baseURL := flags.String("base-url", "", "override the configured provider base URL")
 	if err := flags.Parse(args); err != nil {
@@ -327,12 +358,22 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 	if maxBytes <= 0 {
 		maxBytes = 100000
 	}
-	answered := 0
+	attemptCount, asked, skipped := 0, 0, 0
+	var inputTokens, outputTokens int
+	encoder := json.NewEncoder(stdout)
 	for _, attempt := range attempts {
+		attemptCount++
 		logPath := attempt.runLogPath(root, *runs, delivery, slug)
 		log, err := os.ReadFile(logPath)
 		if err != nil {
-			fmt.Fprintf(stdout, "%s e%d skipped %s\n", attempt.taskID, attempt.execution, logPath)
+			skipped++
+			if *asJSON {
+				if err := encoder.Encode(replayJSONAttempt{TaskID: attempt.taskID, Execution: attempt.execution, Outcome: "skipped", Skipped: logPath}); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(stdout, "%s e%d skipped %s\n", attempt.taskID, attempt.execution, logPath)
+			}
 			continue
 		}
 		state, err := loop.ReplayClaimEvidenceState(loop.ReplayClaimEvidenceInput{
@@ -342,22 +383,57 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return fmt.Errorf("judge replay: %s e%d: %w", attempt.taskID, attempt.execution, err)
 		}
+		start := time.Now()
 		response, err := j.Ask(context.Background(), judge.Request{
 			Decision: *decision, State: state, Questions: loop.ClaimEvidenceQuestions(),
 		})
+		latencyMS := time.Since(start).Milliseconds()
 		if err != nil {
-			if answered == 0 {
+			if asked == 0 {
 				return judgeFailure(stderr, err)
 			}
-			fmt.Fprintf(stdout, "%s e%d outcome=%s unavailable=%s\n", attempt.taskID, attempt.execution, attempt.outcome, judgeReplayReason(err))
+			if *asJSON {
+				if err := encoder.Encode(replayJSONAttempt{TaskID: attempt.taskID, Execution: attempt.execution, Outcome: attempt.outcome, Unavailable: judgeReplayReason(err)}); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(stdout, "%s e%d outcome=%s unavailable=%s\n", attempt.taskID, attempt.execution, attempt.outcome, judgeReplayReason(err))
+			}
 			continue
 		}
-		answered++
+		asked++
+		inputTokens += response.Usage.InputTokens
+		outputTokens += response.Usage.OutputTokens
 		provider = judgeProviderName(j, config)
-		fmt.Fprintf(stdout, "%s e%d outcome=%s claim_unsupported=%.2f verifier_contradicted=%.2f provider=%s\n",
-			attempt.taskID, attempt.execution, attempt.outcome,
-			response.Answers["claim_unsupported"].Noul, response.Answers["verifier_contradicted"].Noul, provider)
+		if *asJSON {
+			if err := encoder.Encode(replayJSONAttempt{
+				TaskID: attempt.taskID, Execution: attempt.execution, Outcome: attempt.outcome,
+				Answers: response.Answers, Provider: provider, Model: response.Model,
+				InputTokens: response.Usage.InputTokens, OutputTokens: response.Usage.OutputTokens,
+				LatencyMS: &latencyMS,
+			}); err != nil {
+				return err
+			}
+		} else {
+			fmt.Fprintf(stdout, "%s e%d outcome=%s claim_unsupported=%.2f verifier_contradicted=%.2f provider=%s tokens=%d/%d ms=%d\n",
+				attempt.taskID, attempt.execution, attempt.outcome,
+				response.Answers["claim_unsupported"].Noul, response.Answers["verifier_contradicted"].Noul, provider,
+				response.Usage.InputTokens, response.Usage.OutputTokens, latencyMS)
+		}
 	}
+	if *asJSON {
+		if err := encoder.Encode(struct {
+			Totals replayJSONTotals `json:"totals"`
+		}{replayJSONTotals{
+			Attempts: attemptCount, Asked: asked, Skipped: skipped,
+			InputTokens: inputTokens, OutputTokens: outputTokens,
+		}}); err != nil {
+			return err
+		}
+		return nil
+	}
+	fmt.Fprintf(stdout, "attempts=%d asked=%d skipped=%d input_tokens=%d output_tokens=%d\n",
+		attemptCount, asked, skipped, inputTokens, outputTokens)
 	return nil
 }
 

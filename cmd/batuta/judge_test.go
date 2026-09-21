@@ -9,7 +9,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -174,9 +176,16 @@ func TestJudgeProbeCommand(t *testing.T) {
 		if err != nil {
 			t.Fatalf("judge probe = %v\nstderr: %s", err, stderr.String())
 		}
-		var response judge.Response
-		if err := json.Unmarshal([]byte(stdout.String()), &response); err != nil {
-			t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+		lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("stdout = %q, want one success line", stdout.String())
+		}
+		fields := strings.Fields(lines[0])
+		if len(fields) != 4 || fields[0] != "provider=typesafe" || fields[1] != "model=jev-1.13.0" || fields[3] != "tokens=12/3" {
+			t.Fatalf("probe line = %q, want provider, model, latency and tokens", lines[0])
+		}
+		if _, err := strconv.Atoi(strings.TrimPrefix(fields[2], "ms=")); err != nil {
+			t.Fatalf("probe latency %q is not milliseconds: %v", fields[2], err)
 		}
 		if state, ok := call.body["state"].(string); !ok || state != "connection check" {
 			t.Fatalf("request state = %#v", call.body["state"])
@@ -201,8 +210,9 @@ func TestJudgeProbeCommand(t *testing.T) {
 		if err != nil {
 			t.Fatalf("judge probe = %v\nstderr: %s", err, stderr.String())
 		}
-		if !strings.Contains(stdout.String(), "provider: typesafe") {
-			t.Fatalf("stdout = %q, want answering provider typesafe", stdout.String())
+		line := strings.TrimSuffix(stdout.String(), "\n")
+		if !strings.HasPrefix(line, "provider=typesafe model=jev-1.13.0 ms=") || !strings.HasSuffix(line, " tokens=12/3") {
+			t.Fatalf("stdout = %q, want the success line naming the answering provider", stdout.String())
 		}
 	})
 	t.Run("unavailable", func(t *testing.T) {
@@ -363,6 +373,17 @@ func judgeReplayRun(t *testing.T, args ...string) (string, string, error) {
 	return stdout.String(), stderr.String(), err
 }
 
+// judgeLatencyMS asserts the remainder of line after prefix is a millisecond
+// count and returns it.
+func judgeLatencyMS(t *testing.T, line, prefix string) int {
+	t.Helper()
+	ms, err := strconv.Atoi(strings.TrimPrefix(line, prefix))
+	if err != nil {
+		t.Fatalf("latency in %q is not milliseconds: %v", line, err)
+	}
+	return ms
+}
+
 func TestJudgeReplayCommand(t *testing.T) {
 	server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
 	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
@@ -380,14 +401,21 @@ func TestJudgeReplayCommand(t *testing.T) {
 		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
-	if len(lines) != 2 {
-		t.Fatalf("stdout = %q, want one line per attempt", stdout)
+	if len(lines) != 3 {
+		t.Fatalf("stdout = %q, want one line per attempt and a totals line", stdout)
 	}
-	if want := "task_1 e1 outcome=already_satisfied claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe"; lines[0] != want {
-		t.Fatalf("first line = %q, want %q", lines[0], want)
+	prefix0 := "task_1 e1 outcome=already_satisfied claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe tokens=12/3 ms="
+	if !strings.HasPrefix(lines[0], prefix0) {
+		t.Fatalf("first line = %q, want %q<latency>", lines[0], prefix0)
 	}
-	if want := "task_1 e2 outcome=candidate claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe"; lines[1] != want {
-		t.Fatalf("second line = %q, want %q", lines[1], want)
+	judgeLatencyMS(t, lines[0], prefix0)
+	prefix1 := "task_1 e2 outcome=candidate claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe tokens=12/3 ms="
+	if !strings.HasPrefix(lines[1], prefix1) {
+		t.Fatalf("second line = %q, want %q<latency>", lines[1], prefix1)
+	}
+	judgeLatencyMS(t, lines[1], prefix1)
+	if want := "attempts=2 asked=2 skipped=0 input_tokens=24 output_tokens=6"; lines[2] != want {
+		t.Fatalf("totals line = %q, want %q", lines[2], want)
 	}
 	if call.method != http.MethodPost || call.path != "/v1/systemone" {
 		t.Fatalf("request = %s %s, want POST /v1/systemone", call.method, call.path)
@@ -429,12 +457,86 @@ func TestJudgeReplayMissingLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
 	}
-	want := fmt.Sprintf("task_1 e1 skipped %s\n", filepath.Join(runs, "2026-09-06-greetings-task-1-e1.out.log"))
+	want := fmt.Sprintf("task_1 e1 skipped %s\nattempts=1 asked=0 skipped=1 input_tokens=0 output_tokens=0\n", filepath.Join(runs, "2026-09-06-greetings-task-1-e1.out.log"))
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 	if call.method != "" {
 		t.Fatalf("the judge was called (%s %s) for a skipped attempt", call.method, call.path)
+	}
+}
+
+func TestJudgeReplayJSON(t *testing.T) {
+	server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+		{"execution": 1, "tree_changed": false, "kind": loop.KindFailure,
+			"outcome": map[string]any{"execution": 1, "blocker": "already_satisfied", "blocked": true},
+			"log":     "wrote nothing\nTASK 1: DONE"},
+		{"execution": 2, "tree_changed": true, "kind": loop.KindCandidate,
+			"outcome": map[string]any{"execution": 2, "commit": "sha"},
+			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 DONE"},
+	}, 2)
+
+	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL, "--json")
+	if err != nil {
+		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("stdout = %q, want one object per attempt and the totals object", stdout)
+	}
+	var attempt map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &attempt); err != nil {
+		t.Fatalf("first line is not JSON: %v\n%s", err, lines[0])
+	}
+	for _, key := range []string{"task_id", "execution", "outcome", "answers", "provider", "model", "input_tokens", "output_tokens", "latency_ms"} {
+		if _, ok := attempt[key]; !ok {
+			t.Fatalf("first attempt misses %q: %s", key, lines[0])
+		}
+	}
+	if attempt["task_id"] != "task_1" || attempt["outcome"] != "already_satisfied" ||
+		attempt["provider"] != "typesafe" || attempt["model"] != "jev-1.13.0" {
+		t.Fatalf("first attempt = %#v", attempt)
+	}
+	answers, ok := attempt["answers"].(map[string]any)
+	if !ok || answers["claim_unsupported"].(map[string]any)["noul"] != 0.93 {
+		t.Fatalf("first attempt answers = %#v", attempt["answers"])
+	}
+	if attempt["input_tokens"].(float64) != 12 || attempt["output_tokens"].(float64) != 3 {
+		t.Fatalf("first attempt usage = %#v", attempt)
+	}
+	var skipped map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &skipped); err != nil {
+		t.Fatalf("second line is not JSON: %v\n%s", err, lines[1])
+	}
+	want := map[string]any{"task_id": "task_1", "execution": float64(2), "outcome": "skipped", "skipped": filepath.Join(runs, "2026-09-06-greetings-task-1-e2.out.log")}
+	if !reflect.DeepEqual(skipped, want) {
+		t.Fatalf("skipped attempt = %#v, want %#v", skipped, want)
+	}
+	var totals struct {
+		Totals struct {
+			Attempts     int `json:"attempts"`
+			Asked        int `json:"asked"`
+			Skipped      int `json:"skipped"`
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"totals"`
+	}
+	if err := json.Unmarshal([]byte(lines[2]), &totals); err != nil {
+		t.Fatalf("last line is not the totals object: %v\n%s", err, lines[2])
+	}
+	if totals.Totals != (struct {
+		Attempts     int `json:"attempts"`
+		Asked        int `json:"asked"`
+		Skipped      int `json:"skipped"`
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+	}{2, 1, 1, 12, 3}) {
+		t.Fatalf("totals = %+v, want attempts=2 asked=1 skipped=1 input_tokens=12 output_tokens=3", totals.Totals)
+	}
+	if call.method != http.MethodPost {
+		t.Fatalf("request = %s %s, want POST for the judged attempt", call.method, call.path)
 	}
 }
 
