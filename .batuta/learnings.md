@@ -32,3 +32,8 @@
 - 2026-09-18 ACP review: do not accept unresolved shutdown as a passing native integration outcome or remove cooperative-exit assertions to hide timing failures. Investigate the lifecycle cause; tuning sampling/grace periods must account for escape-observation coverage and total shutdown bounds.
 
 - 2026-09-20 judge-vercel-auto: two scope violations in one plan, both mine. A task's Scope must list every file that holds a symbol the criteria touch (the reasons list lived in `judge/judge.go`, the probe output in `cmd/batuta/judge.go`); grep the symbols before writing Scope instead of naming files from memory. The loop never widens a Scope, so the only recovery is abandon, fix the plan, relaunch.
+
+## 2026-09-21 — claim_evidence v2.2/v2.3
+
+- A task that changes an extractor must list in Scope every test file that uses its fixtures: grep the function name in `*_test.go` before writing Scope.
+- Worktree executors cannot read `.batuta/journal/` or `.batuta/runs/`, so replay and benchmark steps belong to the conductor, never to a loop task.
