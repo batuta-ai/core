@@ -217,6 +217,8 @@
 - [x] Replay prints the v2 breakdown → opencode (opencode/glm-5.3-flash), 1 retry, commit 844d619901b1 (trail: .batuta/runs/2026-09-21-judge-claims-v2-task-3.md, delivery judge-claims-v2-20260921-094157, plan judge-claims-v2, 2026-09-21)
 - [x] Changed paths recorded live and recovered in replay → cursor-agent (cursor-grok-4.6-high), commit d2f1fb93d1b6 (trail: .batuta/runs/2026-09-21-judge-claims-v21-task-1.md, delivery judge-claims-v21-20260921-111251, plan judge-claims-v21, 2026-09-21)
 - [x] Path claims only for repository paths, criterion claims with their index and evidence → cursor-agent (cursor-grok-4.6-high), commit f9454c006467 (trail: .batuta/runs/2026-09-21-judge-claims-v21-task-2.md, delivery judge-claims-v21-20260921-111251, plan judge-claims-v21, 2026-09-21)
+- [x] Path claims only from edit statements about existing files → cursor-agent (cursor-grok-4.6-high), commit 862bde1941f8 (trail: .batuta/runs/2026-09-21-judge-claims-v22-task-1.md, delivery judge-claims-v22-20260921-140512, plan judge-claims-v22, 2026-09-21)
+- [x] Untrusted-data note, key-pointing questions, positive-evidence criteria and the material question → cursor-agent (cursor-grok-4.6-high), commit 1fdb0ca8b334 (trail: .batuta/runs/2026-09-21-judge-claims-v22-task-2.md, delivery judge-claims-v22-20260921-140512, plan judge-claims-v22, 2026-09-21)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
