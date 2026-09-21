@@ -389,7 +389,7 @@ func TestJudgeReplayCommand(t *testing.T) {
 			"log":     "wrote nothing\nTASK 1: DONE"},
 		{"execution": 2, "tree_changed": true, "kind": loop.KindCandidate,
 			"outcome": map[string]any{"execution": 2, "commit": "sha"},
-			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 START\nBATUTA-PROGRESS 1 DONE"},
+			"log":     "BATUTA-PROGRESS 1 START\nBATUTA-PROGRESS 1 DONE"},
 	})
 
 	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
@@ -445,7 +445,7 @@ func TestJudgeReplayJSON(t *testing.T) {
 			"log":     "wrote `out/1.txt`"},
 		{"execution": 2, "tree_changed": true, "kind": loop.KindCandidate,
 			"outcome": map[string]any{"execution": 2, "commit": "sha"},
-			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 DONE"},
+			"log":     "BATUTA-PROGRESS 1 DONE"},
 	})
 
 	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL, "--json")
@@ -551,7 +551,7 @@ func TestJudgeReplayReadOnly(t *testing.T) {
 	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
 		{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
 			"outcome": map[string]any{"execution": 1, "commit": "sha"},
-			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 DONE"},
+			"log":     "BATUTA-PROGRESS 1 DONE"},
 	})
 	logPath := filepath.Join(runs, "2026-09-06-greetings-task-1-e1.out.log")
 	before := map[string]string{}

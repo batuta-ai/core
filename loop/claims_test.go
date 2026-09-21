@@ -118,6 +118,97 @@ func TestExtractClaims(t *testing.T) {
 	}
 }
 
+func TestExtractClaimsEditStatements(t *testing.T) {
+	t.Parallel()
+
+	t.Run("paths touched list items", func(t *testing.T) {
+		t.Parallel()
+		report := strings.Join([]string{
+			"Paths touched:",
+			"- loop/claims.go",
+			"- `loop/claims_test.go`",
+			"",
+			"mentioned `loop/secret.go` later",
+		}, "\n")
+		got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+		want := []string{"loop/claims.go", "loop/claims_test.go"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("path claims = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("files changed list items stop at the next heading", func(t *testing.T) {
+		t.Parallel()
+		report := strings.Join([]string{
+			"Files changed:",
+			"- cmd/batuta/judge.go",
+			"# Next section",
+			"- loop/secret.go",
+		}, "\n")
+		got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+		if strings.Join(got, ",") != "cmd/batuta/judge.go" {
+			t.Fatalf("path claims = %v, want [cmd/batuta/judge.go]", got)
+		}
+	})
+
+	t.Run("files modified and paths edited headings", func(t *testing.T) {
+		t.Parallel()
+		report := strings.Join([]string{
+			"Files modified: loop/judgment.go",
+			"Paths edited:",
+			"* cmd/batuta/judge_test.go",
+		}, "\n")
+		got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+		want := []string{"loop/judgment.go", "cmd/batuta/judge_test.go"}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("path claims = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("edit verb sentences", func(t *testing.T) {
+		t.Parallel()
+		verbs := []string{
+			"created", "added", "edited", "modified", "updated",
+			"rewrote", "wrote", "removed", "deleted", "renamed", "moved",
+		}
+		var lines []string
+		var want []string
+		for _, verb := range verbs {
+			path := "loop/" + verb + ".go"
+			lines = append(lines, verb+" `"+path+"`")
+			want = append(want, path)
+		}
+		lines = append(lines, "also created loop/bare.go")
+		want = append(want, "loop/bare.go")
+		got := pathClaimPaths(ExtractClaims(strings.Join(lines, "\n"), nil, anyKnownPath))
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("path claims = %v, want %v", got, want)
+		}
+	})
+}
+
+func TestExtractClaimsRejectsMentions(t *testing.T) {
+	t.Parallel()
+
+	report := strings.Join([]string{
+		"Paths touched: encoding/json, github.com/batuta-ai/core/judge, typesafe/jev-1.13, batuta/judge-package/task-1-e1, net/http, os/exec",
+		"edited golang.org/x/mod and refs/heads/main and https://example.com/x.go and `.go` and `.md`",
+		"I edited encoding/json",
+		"I read loop/claims.go",
+		"I referenced loop/claims_test.go",
+		"I edited README.md which is frozen",
+		"I updated cmd/batuta/judge.go and left it unchanged",
+		"I edited `.batuta/judge.json` which is out of scope",
+		"I created `.batuta/judge.json` fora do escopo",
+		"I added docs/missing.md for example",
+		"I modified the example `docs/missing.md`",
+	}, "\n")
+	got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+	if len(got) != 0 {
+		t.Fatalf("path claims = %v, want none", got)
+	}
+}
+
 func TestExtractClaimsPathPrecision(t *testing.T) {
 	t.Parallel()
 
@@ -129,19 +220,43 @@ func TestExtractClaimsPathPrecision(t *testing.T) {
 	report := strings.Join([]string{
 		"Paths touched: loop/claims.go, encoding/json, github.com/batuta-ai/core/judge, typesafe/jev-1.13",
 		"edited `cmd/batuta/judge.go` and `feat/judge-claims` and `https://example.com/x.go`",
-		"also `docs/judge.md` and `out/1.txt` and `README.md` and `loop/claims_test.go`",
+		"updated `docs/judge.md` and `out/1.txt` and `README.md` and `loop/claims_test.go`",
+		"created `mystery.go`",
 	}, "\n")
 
-	var got []string
-	for _, claim := range ExtractClaims(report, nil, known) {
-		if claim.Kind != ClaimKindPath {
-			continue
-		}
-		got = append(got, claim.Path)
-	}
+	got := pathClaimPaths(ExtractClaims(report, nil, known))
 	want := []string{"loop/claims.go", "cmd/batuta/judge.go", "docs/judge.md", "out/1.txt", "README.md", "loop/claims_test.go"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("path claims = %v, want %v", got, want)
+	}
+}
+
+func TestExtractClaimsBenchmarkFalsePositives(t *testing.T) {
+	t.Parallel()
+
+	// Lines quoted from the Version 2.1 replay false positives in
+	// .batuta/judge-benchmark.md: tokens the extractor accepted although
+	// the report only mentioned them.
+	cases := []struct {
+		name string
+		line string
+	}{
+		{"encoding/json", "The HTTP tests marshal fixtures with `encoding/json`."},
+		{"github.com/batuta-ai/core/judge", "Package `github.com/batuta-ai/core/judge` is the decision client."},
+		{"typesafe/jev-1.13", "Judge: provider auto → TypeSafe direct (`typesafe/jev-1.13`)."},
+		{"batuta/judge-package/task-1-e1", "Worktree branch `batuta/judge-package/task-1-e1`."},
+		{"fora do escopo", "`.batuta/judge.json` is fora do escopo."},
+		{"bare extensions", "Touched source `.go` and docs `.md`."},
+		{"docs/missing.md", "for example `docs/missing.md` is named only as an example."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := pathClaimPaths(ExtractClaims(tc.line, nil, anyKnownPath))
+			if len(got) != 0 {
+				t.Fatalf("line %q produced path claims %#v, want none", tc.line, got)
+			}
+		})
 	}
 }
 
@@ -314,6 +429,14 @@ func pathClaims(claims []Claim) []Claim {
 		if claim.Kind == ClaimKindPath {
 			out = append(out, claim)
 		}
+	}
+	return out
+}
+
+func pathClaimPaths(claims []Claim) []string {
+	var out []string
+	for _, claim := range pathClaims(claims) {
+		out = append(out, claim.Path)
 	}
 	return out
 }

@@ -130,7 +130,7 @@ case "${FAKE_SCENARIO:-default}" in
     if [ "$n" = 1 ]; then
       echo "BATUTA-PROGRESS 1 START"
       echo "BATUTA-PROGRESS 1 DONE"
-      echo "Paths touched: docs/missing.md"
+      echo "Paths touched: shared.txt"
       echo "ok" > out/1.txt
       exit 0
     fi
@@ -3610,7 +3610,7 @@ func TestJudgeEnforceBlocksUnsupportedClaim(t *testing.T) {
 		t.Fatalf("first task_1 blocker = %q, want %s\n%s", first.Blocker, blockerClaimUnsupported, out.String())
 	}
 	joined := strings.Join(first.Feedback, "\n")
-	if !strings.Contains(joined, "Paths touched: docs/missing.md") || !strings.Contains(joined, "docs/missing.md") {
+	if !strings.Contains(joined, "Paths touched: shared.txt") || !strings.Contains(joined, "shared.txt") {
 		t.Fatalf("retry feedback does not quote the contradicted claim and report line:\n%s", joined)
 	}
 	if !strings.Contains(joined, "claim_evidence: claim_unsupported") {

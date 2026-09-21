@@ -59,21 +59,27 @@ type ClaimEvidence struct {
 }
 
 var (
-	claimBacktick      = regexp.MustCompile("`([^`]+)`")
-	claimPathsTouched  = regexp.MustCompile(`(?i)^\s*paths\s+touched\s*:?\s*(.*)$`)
-	claimListItem      = regexp.MustCompile(`^\s*[-*]\s+(.*)$`)
-	claimProgressDone  = regexp.MustCompile(`^BATUTA-PROGRESS\s+([0-9]+)\s+DONE$`)
-	claimTaskDone      = regexp.MustCompile(`(?i)^\s*TASK\s+([0-9]+)\s*:\s*DONE\b`)
-	claimCriterionDone = regexp.MustCompile(`(?i)criterion\s+([0-9]+)\s*[:.]?\s*(?:passed|done)\b`)
-	claimDoneCriterion = regexp.MustCompile(`(?i)\b(?:passed|done)\s+criterion\s+([0-9]+)\b`)
-	claimSuitePassed   = regexp.MustCompile(`(?i)\bsuite passed\b`)
-	claimGoTestOKLine  = regexp.MustCompile(`(?i)^\s*ok\s+\S+`)
-	claimGoTestPassed  = regexp.MustCompile(`(?i)\bgo test\b.*\b(ok|passed)\b`)
-	claimCommitted     = regexp.MustCompile(`(?i)\bcommitted\b`)
-	claimGitCommit     = regexp.MustCompile(`(?i)\bgit commit\b`)
-	claimCommitHash    = regexp.MustCompile(`(?i)\bcommit\s+[0-9a-f]{7,40}\b`)
-	claimVerifierLine  = regexp.MustCompile(`(?m)^\s*TASK\s+([0-9]+)\s*:\s*(DONE|INCOMPLETE)\b\s*(?:[—:-]+\s*(.*))?$`)
+	claimBacktick       = regexp.MustCompile("`([^`]+)`")
+	claimFilesHeading   = regexp.MustCompile(`(?i)^(?:#{1,6}\s+)?(?:paths|files)\s+(?:touched|changed|modified|edited)\b\s*:?\s*(.*)$`)
+	claimListItem       = regexp.MustCompile(`^\s*[-*]\s+(.*)$`)
+	claimEditVerb       = regexp.MustCompile(`(?i)\b(?:created|added|edited|modified|updated|rewrote|wrote|removed|deleted|renamed|moved)\b`)
+	claimPathDisqualify = regexp.MustCompile(`(?i)(?:\b(?:read|referenced|frozen|unchanged)\b|out of scope|fora do escopo|for example)`)
+	claimProgressDone   = regexp.MustCompile(`^BATUTA-PROGRESS\s+([0-9]+)\s+DONE$`)
+	claimTaskDone       = regexp.MustCompile(`(?i)^\s*TASK\s+([0-9]+)\s*:\s*DONE\b`)
+	claimCriterionDone  = regexp.MustCompile(`(?i)criterion\s+([0-9]+)\s*[:.]?\s*(?:passed|done)\b`)
+	claimDoneCriterion  = regexp.MustCompile(`(?i)\b(?:passed|done)\s+criterion\s+([0-9]+)\b`)
+	claimSuitePassed    = regexp.MustCompile(`(?i)\bsuite passed\b`)
+	claimGoTestOKLine   = regexp.MustCompile(`(?i)^\s*ok\s+\S+`)
+	claimGoTestPassed   = regexp.MustCompile(`(?i)\bgo test\b.*\b(ok|passed)\b`)
+	claimCommitted      = regexp.MustCompile(`(?i)\bcommitted\b`)
+	claimGitCommit      = regexp.MustCompile(`(?i)\bgit commit\b`)
+	claimCommitHash     = regexp.MustCompile(`(?i)\bcommit\s+[0-9a-f]{7,40}\b`)
+	claimVerifierLine   = regexp.MustCompile(`(?m)^\s*TASK\s+([0-9]+)\s*:\s*(DONE|INCOMPLETE)\b\s*(?:[—:-]+\s*(.*))?$`)
 )
+
+var pathTokenPrefixes = []string{
+	"http", "github.com", "golang.org", "encoding/", "net/", "os/", "refs/", "batuta/",
+}
 
 var knownPathExt = map[string]bool{
 	".go": true, ".md": true, ".json": true, ".yml": true, ".yaml": true,
@@ -102,26 +108,25 @@ func ExtractClaims(report string, criteria []gates.Criterion, known ...func(path
 		}
 		trimmed := strings.TrimSpace(line)
 		if collectingPaths {
-			if trimmed == "" {
+			if trimmed == "" || isSectionHeading(trimmed) {
 				collectingPaths = false
+			} else if sentenceDisqualified(trimmed) {
+				continue
 			} else if item := listItemPath(trimmed); item != "" {
 				claims = appendPathClaim(claims, seenPath, item, line, check)
-				continue
-			} else if rest, ok := pathsTouchedRest(trimmed); ok {
-				claims = appendPathTokens(claims, seenPath, rest, line, check)
-				collectingPaths = rest == ""
 				continue
 			} else {
 				collectingPaths = false
 			}
 		}
-		if rest, ok := pathsTouchedRest(trimmed); ok {
-			claims = appendPathTokens(claims, seenPath, rest, line, check)
-			collectingPaths = rest == ""
-		}
-		for _, raw := range claimBacktick.FindAllStringSubmatch(line, -1) {
-			if path, ok := pathToken(raw[1]); ok {
-				claims = appendPathClaim(claims, seenPath, path, line, check)
+		if rest, ok := filesHeadingRest(trimmed); ok {
+			if !sentenceDisqualified(trimmed) {
+				claims = appendPathTokens(claims, seenPath, rest, line, check)
+			}
+			collectingPaths = true
+		} else {
+			for _, sentence := range splitSentences(trimmed) {
+				claims = appendEditPathClaims(claims, seenPath, sentence, line, check)
 			}
 		}
 		claims = append(claims, criterionClaims(trimmed, line, criteria)...)
@@ -136,7 +141,7 @@ func ExtractClaims(report string, criteria []gates.Criterion, known ...func(path
 }
 
 // knownClaimPath is true for paths in the tree listing, changed_paths,
-// Scope globs, or with a known source-file extension.
+// or Scope globs. It does not accept a token by extension alone.
 func knownClaimPath(tree, changed, scope []string) func(string) bool {
 	listed := make(map[string]bool, len(tree)+len(changed))
 	add := func(paths []string) {
@@ -153,10 +158,7 @@ func knownClaimPath(tree, changed, scope []string) func(string) bool {
 		if listed[path] {
 			return true
 		}
-		if len(scope) > 0 && gates.InScope(path, scope) {
-			return true
-		}
-		return knownPathExt[strings.ToLower(filepath.Ext(path))]
+		return len(scope) > 0 && gates.InScope(path, scope)
 	}
 }
 
@@ -168,12 +170,99 @@ func boundClaimReportLines(report string) []string {
 	return lines
 }
 
-func pathsTouchedRest(trimmed string) (string, bool) {
-	match := claimPathsTouched.FindStringSubmatch(trimmed)
+func filesHeadingRest(trimmed string) (string, bool) {
+	match := claimFilesHeading.FindStringSubmatch(trimmed)
 	if match == nil {
 		return "", false
 	}
 	return strings.TrimSpace(match[1]), true
+}
+
+func isSectionHeading(trimmed string) bool {
+	if strings.HasPrefix(trimmed, "#") {
+		return true
+	}
+	_, ok := filesHeadingRest(trimmed)
+	return ok
+}
+
+func sentenceDisqualified(sentence string) bool {
+	return claimPathDisqualify.MatchString(sentence) || hasStandaloneExample(sentence)
+}
+
+func hasStandaloneExample(s string) bool {
+	lower := strings.ToLower(s)
+	for i := 0; i < len(lower); {
+		j := strings.Index(lower[i:], "example")
+		if j < 0 {
+			return false
+		}
+		j += i
+		end := j + len("example")
+		if j > 0 && isWordByte(lower[j-1]) {
+			i = end
+			continue
+		}
+		if end < len(lower) && isWordByte(lower[end]) {
+			i = end
+			continue
+		}
+		if end < len(lower) && lower[end] == '.' && end+1 < len(lower) && isWordByte(lower[end+1]) {
+			i = end
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z'
+}
+
+func splitSentences(line string) []string {
+	if line == "" {
+		return nil
+	}
+	replaced := strings.NewReplacer(". ", ".\n", "! ", "!\n", "? ", "?\n").Replace(line)
+	return strings.Split(replaced, "\n")
+}
+
+func appendEditPathClaims(claims []Claim, seen map[string]bool, sentence, line string, known func(string) bool) []Claim {
+	if sentenceDisqualified(sentence) {
+		return claims
+	}
+	loc := claimEditVerb.FindStringIndex(sentence)
+	if loc == nil {
+		return claims
+	}
+	for _, path := range pathsInText(sentence[loc[1]:]) {
+		claims = appendPathClaim(claims, seen, path, line, known)
+	}
+	return claims
+}
+
+func pathsInText(s string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(raw string) {
+		path, ok := pathToken(raw)
+		if !ok || seen[path] {
+			return
+		}
+		seen[path] = true
+		out = append(out, path)
+	}
+	for _, raw := range claimBacktick.FindAllStringSubmatch(s, -1) {
+		add(raw[1])
+	}
+	for _, field := range strings.Fields(s) {
+		if strings.Contains(field, "`") {
+			continue
+		}
+		add(field)
+	}
+	return out
 }
 
 func listItemPath(trimmed string) string {
@@ -241,7 +330,20 @@ func pathToken(raw string) (string, bool) {
 	if slash == "" || slash == "." || slash == ".." {
 		return "", false
 	}
-	if !strings.Contains(slash, "/") && !knownPathExt[strings.ToLower(filepath.Ext(slash))] {
+	lower := strings.ToLower(slash)
+	for _, prefix := range pathTokenPrefixes {
+		if strings.HasPrefix(lower, prefix) {
+			return "", false
+		}
+	}
+	ext := strings.ToLower(filepath.Ext(slash))
+	if knownPathExt[lower] {
+		return "", false
+	}
+	if !strings.Contains(slash, "/") && ext == "" {
+		return "", false
+	}
+	if !knownPathExt[ext] {
 		return "", false
 	}
 	return slash, true
