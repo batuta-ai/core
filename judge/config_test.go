@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -121,7 +122,6 @@ func TestLoadConfigRejects(t *testing.T) {
 		"over 4 KiB":            {content: full + `,"pad":"` + strings.Repeat("a", 5000) + `"}`, wantErr: "exceeds 4096"},
 		"unknown provider":      {content: `{"provider":"anthropic","model":"m"}`, wantErr: "provider"},
 		"empty provider":        {content: `{}`, wantErr: "provider"},
-		"empty model":           {content: `{"provider":"typesafe"}`, wantErr: "model"},
 		"invalid key_env":       {content: `{"provider":"typesafe","model":"m","key_env":"typesafe-key"}`, wantErr: "key_env"},
 		"timeout below range":   {content: full + `,"timeout_ms":499}`, wantErr: "timeout_ms"},
 		"timeout above range":   {content: full + `,"timeout_ms":30001}`, wantErr: "timeout_ms"},
@@ -173,7 +173,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if config.KeyEnv != "TYPESAFE_API_KEY" || config.TimeoutMS != 3000 || config.MaxStateBytes != 100000 {
+	if config.KeyEnv != "TYPESAFE_API_KEY" || config.TimeoutMS != 10000 || config.MaxStateBytes != 100000 {
 		t.Fatalf("defaults not applied: %#v", config)
 	}
 
@@ -184,6 +184,40 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if config.KeyEnv != "OPENROUTER_API_KEY" {
 		t.Fatalf("KeyEnv = %q, want OPENROUTER_API_KEY", config.KeyEnv)
+	}
+}
+
+func TestLoadConfigModelDefaults(t *testing.T) {
+	t.Parallel()
+
+	defaults := map[Provider]string{
+		ProviderTypesafe:   "jev-latest",
+		ProviderVercel:     "typesafe-ai/jev",
+		ProviderOpenRouter: "typesafe/jev-1.13",
+	}
+	for provider, want := range defaults {
+		provider, want := provider, want
+		t.Run(string(provider), func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), fmt.Sprintf(`{"provider":%q}`, provider))
+			config, err := LoadConfig(root, testGetenv(nil))
+			if err != nil {
+				t.Fatalf("LoadConfig() error = %v", err)
+			}
+			if config.Model != want {
+				t.Fatalf("Model = %q, want %q", config.Model, want)
+			}
+
+			writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), fmt.Sprintf(`{"provider":%q,"model":"custom"}`, provider))
+			config, err = LoadConfig(root, testGetenv(nil))
+			if err != nil {
+				t.Fatalf("LoadConfig(explicit model) error = %v", err)
+			}
+			if config.Model != "custom" {
+				t.Fatalf("explicit Model = %q, want custom", config.Model)
+			}
+		})
 	}
 }
 

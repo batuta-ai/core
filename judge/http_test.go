@@ -73,6 +73,81 @@ func TestHTTPJudgeAnswers(t *testing.T) {
 	}
 }
 
+func TestResponseJSON(t *testing.T) {
+	t.Parallel()
+
+	response := Response{
+		Model: "jev-1.13.0",
+		Answers: map[string]Answer{
+			"supported": {Type: QuestionNoul, Noul: 0.93},
+			"zero":      {Type: QuestionNoul},
+			"choice":    {Type: QuestionChoice, Choice: "k", Confidence: 0.78, Probabilities: map[string]float64{"k": 0.78, "other": 0.22}},
+			"score":     {Type: QuestionScore, Score: 1},
+		},
+		Usage: Usage{InputTokens: 12, OutputTokens: 3},
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := generic["model"]; !ok {
+		t.Fatalf("missing key model: %s", encoded)
+	}
+	if _, ok := generic["answers"]; !ok {
+		t.Fatalf("missing key answers: %s", encoded)
+	}
+	usage, ok := generic["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("usage = %#v, want an object", generic["usage"])
+	}
+	if _, ok := usage["input_tokens"]; !ok {
+		t.Fatalf("missing key input_tokens: %s", encoded)
+	}
+	if _, ok := usage["output_tokens"]; !ok {
+		t.Fatalf("missing key output_tokens: %s", encoded)
+	}
+
+	answers, ok := generic["answers"].(map[string]any)
+	if !ok {
+		t.Fatalf("answers = %#v, want an object", generic["answers"])
+	}
+	cases := []struct {
+		name   string
+		want   map[string]any
+		absent []string
+	}{
+		{"supported", map[string]any{"type": "noul", "noul": 0.93}, []string{"choice", "score", "confidence", "probabilities"}},
+		{"zero", map[string]any{"type": "noul", "noul": float64(0)}, []string{"choice", "score", "confidence", "probabilities"}},
+		{"choice", map[string]any{"type": "choice", "choice": "k", "confidence": 0.78}, []string{"noul", "score"}},
+		{"score", map[string]any{"type": "score", "score": float64(1)}, []string{"noul", "choice", "confidence"}},
+	}
+	for _, tc := range cases {
+		answer, ok := answers[tc.name].(map[string]any)
+		if !ok {
+			t.Fatalf("answer %s = %#v, want an object", tc.name, answers[tc.name])
+		}
+		for key, want := range tc.want {
+			if answer[key] != want {
+				t.Fatalf("answer %s[%q] = %#v, want %#v: %s", tc.name, key, answer[key], want, encoded)
+			}
+		}
+		for _, key := range tc.absent {
+			if _, present := answer[key]; present {
+				t.Fatalf("answer %s carries optional %q: %s", tc.name, key, encoded)
+			}
+		}
+	}
+
+	probabilities := answers["choice"].(map[string]any)["probabilities"].(map[string]any)
+	if len(probabilities) != 2 || probabilities["k"] != 0.78 || probabilities["other"] != 0.22 {
+		t.Fatalf("probabilities = %#v", probabilities)
+	}
+}
+
 func TestHTTPJudgeRequestShape(t *testing.T) {
 	t.Parallel()
 

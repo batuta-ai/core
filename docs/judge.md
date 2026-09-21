@@ -23,7 +23,7 @@ is capped at 4 KiB and unknown fields are rejected:
   "model": "jev-latest",
   "base_url": "",
   "key_env": "TYPESAFE_API_KEY",
-  "timeout_ms": 3000,
+  "timeout_ms": 10000,
   "max_state_bytes": 100000,
   "decisions": {
     "claim_evidence": {"mode": "shadow", "threshold": 0.9}
@@ -32,13 +32,15 @@ is capped at 4 KiB and unknown fields are rejected:
 ```
 
 `provider` is required: `typesafe`, `openrouter`, `vercel`, `"auto"` or `off`.
-`model` is required except with `auto`; defaults per provider below.
-`base_url` overrides the provider endpoint. `key_env` names the environment
-variable that holds the API key (defaults per provider below). `timeout_ms` is
-bounded to 500–30 000. `max_state_bytes` bounds the serialized state to
-1 000–204 800 bytes; a larger state is refused, not truncated. `decisions`
-names the mode (`off`, `shadow`, `enforce`) and confidence threshold (0–1) per
-decision point; an unconfigured decision is off.
+`model` is optional for a single provider — each has a documented default (the
+providers table below) — and still rejected with `auto`; an explicit `model`
+always wins. `base_url` overrides the provider endpoint. `key_env` names the
+environment variable that holds the API key (defaults per provider below).
+`timeout_ms` defaults to 10000 and is bounded to 500–30 000; real providers
+need the room on a cold connection. `max_state_bytes` bounds the serialized
+state to 1 000–204 800 bytes; a larger state is refused, not truncated.
+`decisions` names the mode (`off`, `shadow`, `enforce`) and confidence
+threshold (0–1) per decision point; an unconfigured decision is off.
 
 With `"auto"`, `model`, `key_env` and `base_url` are rejected: each provider
 keeps its own defaults. An optional `providers` array names a subset and
@@ -60,11 +62,16 @@ and walks it on every call.
 
 ## Providers
 
-| Route | Model id | Endpoint | Key |
+| Route | Default model | Endpoint | Key |
 |---|---|---|---|
 | `typesafe` | `jev-latest` | `POST https://api.typesafe.ai/v1/systemone` | `TYPESAFE_API_KEY` |
 | `openrouter` | `typesafe/jev-1.13` | `POST https://openrouter.ai/api/alpha/decisions` | `OPENROUTER_API_KEY` |
 | `vercel` | `typesafe-ai/jev` | `POST https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `AI_GATEWAY_API_KEY` |
+
+The model id in the table is the default a single-provider config gets when
+`model` is omitted (and the model the HTTP judge falls back to); an explicit
+`model` overrides it. With `auto`, each provider keeps the default from this
+table.
 
 The native shape posts `{state, model, questions}` and receives
 `{model, answers, usage}`; every question in one call is evaluated against the
@@ -92,7 +99,8 @@ that was skipped, with its reason.
 ## The CLI
 
 `ask` sends one request built from files and prints the `Response` as
-indented JSON on stdout:
+indented JSON on stdout, with the same snake_case keys the API answers in:
+`model`, `answers`, `usage`, `input_tokens`, `output_tokens`.
 
 ```text
 batuta judge ask --state-file <path> --questions-file <path>

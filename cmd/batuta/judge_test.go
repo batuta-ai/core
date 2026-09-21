@@ -92,6 +92,11 @@ func TestJudgeAskCommand(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout.String()), &response); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
 	}
+	for _, key := range []string{`"model"`, `"answers"`, `"usage"`, `"input_tokens"`, `"output_tokens"`, `"type"`, `"noul"`} {
+		if !strings.Contains(stdout.String(), key) {
+			t.Fatalf("stdout misses %s: %s", key, stdout.String())
+		}
+	}
 	if response.Model != "jev-1.13.0" {
 		t.Fatalf("model = %q, want jev-1.13.0", response.Model)
 	}
