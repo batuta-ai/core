@@ -6,7 +6,7 @@
 
 ## Tasks
 - [ ] 1. Path claims only from edit statements about existing files — backend/high
-      Scope: loop/claims.go, loop/claims_test.go, loop/loop_test.go, loop/judgment_test.go
+      Scope: loop/claims.go, loop/claims_test.go, loop/loop_test.go, loop/judgment_test.go, cmd/batuta/judge_test.go
       Accept: a path claim is extracted only from a Paths touched or Files changed list item or from a sentence whose verb is one of created, added, edited, modified, updated, rewrote, wrote, removed, deleted, renamed, moved and whose object is the path → go test ./loop -run TestExtractClaimsEditStatements; tokens that are Go import paths, URLs, model ids, branch names, bare extensions, package directories without a file, or paths only mentioned as read, referenced, frozen, out of scope or example are never path claims → go test ./loop -run TestExtractClaimsRejectsMentions; the path must exist in the attempt tree, in changed_paths or match the Scope, and known no longer accepts a token by extension alone → go test ./loop -run TestExtractClaimsPathPrecision; the v2.1 false-positive lines quoted in .batuta/judge-benchmark.md are covered by a table test and produce zero path claims → go test ./loop -run TestExtractClaimsBenchmarkFalsePositives; the package stays green → go test ./loop
 - [ ] 2. Untrusted-data note, key-pointing questions, positive-evidence criteria and the material question — backend/high
       Depends on: 1
