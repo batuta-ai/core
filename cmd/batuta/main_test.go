@@ -871,6 +871,55 @@ func TestVersionPrefersTheBuildVersion(t *testing.T) {
 	}
 }
 
+func TestLoopDryRunReportsJudge(t *testing.T) {
+	writeJudgeConfig := func(t *testing.T, root, config string) {
+		t.Helper()
+		if config == "" {
+			return
+		}
+		if err := os.MkdirAll(filepath.Join(root, ".batuta"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(root, ".batuta", "judge.json"), []byte(config), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, tc := range []struct {
+		name   string
+		config string
+		envOff bool
+		want   string
+	}{
+		{name: "off by default", want: "judge     judge_off"},
+		{name: "typesafe", config: `{"provider":"typesafe","model":"jev-latest","key_env":"JUDGE_TEST_KEY"}`, want: "judge     typesafe"},
+		{name: "auto chain", config: `{"provider":"auto"}`, want: "judge     typesafe,vercel,openrouter"},
+		{name: "env off", config: `{"provider":"typesafe","model":"jev-latest","key_env":"JUDGE_TEST_KEY"}`, envOff: true, want: "judge     judge_off"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeJudgeConfig(t, root, tc.config)
+			if tc.envOff {
+				t.Setenv("BATUTA_JUDGE", "off")
+			} else {
+				t.Setenv("BATUTA_JUDGE", "")
+			}
+			t.Setenv("JUDGE_TEST_KEY", "")
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"loop", "--workspace", root, "--dry-run"}, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), "not a git repository") {
+				t.Fatalf("dry-run error = %v\n%s", err, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), tc.want) {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), tc.want)
+			}
+			if strings.Contains(stdout.String(), "JUDGE_TEST_KEY=") || strings.Contains(stderr.String(), "JUDGE_TEST_KEY=") {
+				t.Fatalf("judge dry-run leaked a key env assignment:\nstdout=%s\nstderr=%s", stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
 func TestLoopSubcommandRefusesToRunOutsideAPreparedWorkspace(t *testing.T) {
 	root := t.TempDir()
 	var stdout, stderr bytes.Buffer
