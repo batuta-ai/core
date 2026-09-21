@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.0-beta.32](https://github.com/batuta-ai/core/compare/v1.1.0-beta.31...v1.1.0-beta.32) (2026-09-21)
+
+
+### Features
+
+* **loop:** claim_evidence v2.2/v2.3 — precise edit-statement claims, concrete-defect choices, material gate; Tempo retrospective and Jev survey ([ea424a6](https://github.com/batuta-ai/core/commit/ea424a6ae891e5bef890d115a5cdc26ac16b3a82))
+* path claims only from edit statements about existing files ([862bde1](https://github.com/batuta-ai/core/commit/862bde1941f8505783b64c54933b34639ba654ee))
+* touched-file headings in either order and Markdown-link items ([de604eb](https://github.com/batuta-ai/core/commit/de604eb0115df762470c61c8aadda26773331759))
+* untrusted-data note, key-pointing questions, positive-evidence ([1fdb0ca](https://github.com/batuta-ai/core/commit/1fdb0ca8b334521439acd30c6ba38bae2875a1ff))
+
 ## [1.1.0-beta.31](https://github.com/batuta-ai/core/compare/v1.1.0-beta.30...v1.1.0-beta.31) (2026-09-21)
 
 
