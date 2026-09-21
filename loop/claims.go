@@ -17,6 +17,16 @@ const (
 	ClaimKindCriterion ClaimKind = "criterion"
 	ClaimKindTests     ClaimKind = "tests"
 	ClaimKindCommit    ClaimKind = "commit"
+	ClaimKindChange    ClaimKind = "change"
+)
+
+// ChangeKind is the sub-kind of a ClaimKindChange claim.
+type ChangeKind string
+
+const (
+	ChangeKindIdentifier ChangeKind = "identifier"
+	ChangeKindCount      ChangeKind = "count"
+	ChangeKindBehaviour  ChangeKind = "behaviour"
 )
 
 // ClaimStatus is how code or the judge settled a claim.
@@ -39,14 +49,18 @@ const (
 
 // Claim is one atomic claim the executor made in its report.
 type Claim struct {
-	Kind      ClaimKind
-	Text      string
-	Line      string
-	Path      string
-	Criterion int
-	Status    ClaimStatus
-	Source    ClaimSource
-	Evidence  string
+	Kind       ClaimKind
+	Text       string
+	Line       string
+	Path       string
+	Criterion  int
+	Change     ChangeKind
+	Identifier string
+	Count      int
+	Creating   bool
+	Status     ClaimStatus
+	Source     ClaimSource
+	Evidence   string
 }
 
 // ClaimEvidence is the mechanical evidence code can compare claims against.
@@ -56,6 +70,7 @@ type ClaimEvidence struct {
 	Proofs        []gates.Verdict
 	VerifierLines map[int]string
 	TestsPass     bool
+	Diff          string
 }
 
 var (
@@ -63,7 +78,10 @@ var (
 	claimFilesHeading   = regexp.MustCompile(`(?i)^(?:#{1,6}\s+)?(?:(?:paths?|files?)\s+(?:touched|changed|modified|edited)|(?:touched|changed|modified|edited)\s+(?:paths?|files?))\b\s*:?\s*(.*)$`)
 	claimListItem       = regexp.MustCompile(`^\s*[-*]\s+(.*)$`)
 	claimMarkdownLink   = regexp.MustCompile(`\[([^\[\]]*)\]\(([^()]*)\)`)
-	claimEditVerb       = regexp.MustCompile(`(?i)\b(?:created|added|edited|modified|updated|rewrote|wrote|removed|deleted|renamed|moved|refreshed|reseated|replaced|patched|reworked|adjusted|touched|changed)\b`)
+	claimEditVerb       = regexp.MustCompile(`(?i)\b(?:created|added|edited|modified|updated|rewrote|wrote|removed|deleted|renamed|moved|refreshed|reseated|replaced|patched|reworked|adjusted|touched|changed|introduced|implemented)\b`)
+	claimCreatingVerb   = regexp.MustCompile(`(?i)\b(?:added|created|wrote|introduced|implemented)\b`)
+	claimCountTests     = regexp.MustCompile(`(?i)\b(?:added|created|wrote|introduced|implemented)\s+(\d+)\s+new\s+tests\b`)
+	claimIdentifierName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 	claimPathDisqualify = regexp.MustCompile(`(?i)(?:\b(?:read|referenced|frozen|unchanged)\b|out of scope|fora do escopo|for example)`)
 	claimProgressDone   = regexp.MustCompile(`^BATUTA-PROGRESS\s+([0-9]+)\s+DONE$`)
 	claimTaskDone       = regexp.MustCompile(`(?i)^\s*TASK\s+([0-9]+)\s*:\s*DONE\b`)
@@ -101,6 +119,7 @@ func ExtractClaims(report string, criteria []gates.Criterion, known ...func(path
 	lines := boundClaimReportLines(report)
 	var claims []Claim
 	seenPath := map[string]bool{}
+	seenIdent := map[string]bool{}
 	collectingPaths := false
 	for _, line := range lines {
 		if strings.IndexByte(line, 0) >= 0 {
@@ -128,6 +147,7 @@ func ExtractClaims(report string, criteria []gates.Criterion, known ...func(path
 		} else {
 			for _, sentence := range splitSentences(trimmed) {
 				claims = appendEditPathClaims(claims, seenPath, sentence, line, check)
+				claims = appendChangeClaims(claims, seenIdent, sentence, line)
 			}
 		}
 		claims = append(claims, criterionClaims(trimmed, line, criteria)...)
@@ -241,6 +261,88 @@ func appendEditPathClaims(claims []Claim, seen map[string]bool, sentence, line s
 		claims = appendPathClaim(claims, seen, path, line, known)
 	}
 	return claims
+}
+
+func appendChangeClaims(claims []Claim, seenIdent map[string]bool, sentence, line string) []Claim {
+	if sentenceDisqualified(sentence) {
+		return claims
+	}
+	loc := claimEditVerb.FindStringIndex(sentence)
+	if loc == nil {
+		return claims
+	}
+	verb := sentence[loc[0]:loc[1]]
+	creating := claimCreatingVerb.MatchString(verb)
+	hadCount := false
+	hadIdent := false
+	if match := claimCountTests.FindStringSubmatch(sentence); match != nil {
+		n, err := strconv.Atoi(match[1])
+		if err == nil {
+			hadCount = true
+			claims = append(claims, Claim{
+				Kind:   ClaimKindChange,
+				Change: ChangeKindCount,
+				Text:   match[1],
+				Line:   line,
+				Count:  n,
+				Status: ClaimStatusUnsettled,
+			})
+		}
+	}
+	for _, raw := range claimBacktick.FindAllStringSubmatch(sentence[loc[1]:], -1) {
+		token := raw[1]
+		if _, isPath := pathToken(token); isPath {
+			continue
+		}
+		if !claimIdentifierName.MatchString(token) {
+			continue
+		}
+		hadIdent = true
+		if seenIdent[token] {
+			continue
+		}
+		seenIdent[token] = true
+		claims = append(claims, Claim{
+			Kind:       ClaimKindChange,
+			Change:     ChangeKindIdentifier,
+			Text:       token,
+			Line:       line,
+			Identifier: token,
+			Creating:   creating,
+			Status:     ClaimStatusUnsettled,
+		})
+	}
+	if !hadCount && !hadIdent && len(pathsInText(sentence[loc[1]:])) > 0 && editSentenceHasBehaviour(sentence[loc[1]:]) {
+		claims = append(claims, Claim{
+			Kind:   ClaimKindChange,
+			Change: ChangeKindBehaviour,
+			Text:   sentence,
+			Line:   line,
+			Status: ClaimStatusUnsettled,
+		})
+	}
+	return claims
+}
+
+func editSentenceHasBehaviour(afterVerb string) bool {
+	stripped := claimBacktick.ReplaceAllString(afterVerb, " ")
+	for _, field := range strings.Fields(stripped) {
+		token := strings.Trim(field, "`'\".,;:)")
+		if _, isPath := pathToken(token); isPath {
+			continue
+		}
+		letters := 0
+		for i := 0; i < len(token); i++ {
+			c := token[i]
+			if c >= 'A' && c <= 'Z' || c >= 'a' && c <= 'z' {
+				letters++
+			}
+		}
+		if letters >= 4 {
+			return true
+		}
+	}
+	return false
 }
 
 func pathsInText(s string) []string {
@@ -476,6 +578,8 @@ func SettleClaims(claims []Claim, ev ClaimEvidence) []Claim {
 			out[i] = settleCriterionClaim(out[i], ev)
 		case ClaimKindTests:
 			out[i] = settleTestsClaim(out[i], ev)
+		case ClaimKindChange:
+			out[i] = settleChangeClaim(out[i], ev)
 		}
 	}
 	return out
@@ -541,6 +645,74 @@ func settleTestsClaim(claim Claim, ev ClaimEvidence) Claim {
 	claim.Status = ClaimStatusContradicted
 	claim.Evidence = "tests gate failed"
 	return claim
+}
+
+func settleChangeClaim(claim Claim, ev ClaimEvidence) Claim {
+	switch claim.Change {
+	case ChangeKindIdentifier:
+		return settleIdentifierClaim(claim, ev)
+	case ChangeKindCount:
+		return settleCountClaim(claim, ev)
+	default:
+		return claim
+	}
+}
+
+func settleIdentifierClaim(claim Claim, ev ClaimEvidence) Claim {
+	ident := claim.Identifier
+	if ident == "" {
+		ident = claim.Text
+	}
+	if ident == "" {
+		return claim
+	}
+	if identifierOnAddedLine(ev.Diff, ident) {
+		claim.Status = ClaimStatusSupported
+		claim.Source = ClaimSourceCode
+		claim.Evidence = "on added line"
+		return claim
+	}
+	if claim.Creating && !strings.Contains(ev.Diff, ident) {
+		claim.Status = ClaimStatusContradicted
+		claim.Source = ClaimSourceCode
+		claim.Evidence = claimDefectFabricatedReference
+		return claim
+	}
+	return claim
+}
+
+func settleCountClaim(claim Claim, ev ClaimEvidence) Claim {
+	got := countAddedTestFuncs(ev.Diff)
+	claim.Source = ClaimSourceCode
+	if claim.Count == got {
+		claim.Status = ClaimStatusSupported
+		claim.Evidence = "count matches"
+		return claim
+	}
+	claim.Status = ClaimStatusContradicted
+	claim.Evidence = claimDefectWrongCount
+	return claim
+}
+
+func identifierOnAddedLine(diff, ident string) bool {
+	for _, line := range strings.Split(diff, "\n") {
+		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") && strings.Contains(line, ident) {
+			return true
+		}
+	}
+	return false
+}
+
+var claimAddedTestFunc = regexp.MustCompile(`^\+func Test[A-Z_]`)
+
+func countAddedTestFuncs(diff string) int {
+	n := 0
+	for _, line := range strings.Split(diff, "\n") {
+		if claimAddedTestFunc.MatchString(line) {
+			n++
+		}
+	}
+	return n
 }
 
 func verifierIncomplete(line string) bool {

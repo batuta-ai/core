@@ -396,6 +396,64 @@ func TestExtractClaimsCriterionIndex(t *testing.T) {
 	}
 }
 
+func TestExtractChangeClaims(t *testing.T) {
+	t.Parallel()
+
+	identLine := "added `ExtractClaims` and `SettleClaims` to the extractor"
+	countLine := "added 3 new tests"
+	pathLine := "edited `loop/claims.go`"
+	report := strings.Join([]string{
+		identLine,
+		countLine,
+		pathLine,
+		"I read `NotAChange` in the docs",
+	}, "\n")
+
+	claims := ExtractClaims(report, nil, anyKnownPath)
+
+	var idents []Claim
+	var counts []Claim
+	for _, claim := range claims {
+		if claim.Kind != ClaimKindChange {
+			continue
+		}
+		switch claim.Change {
+		case ChangeKindIdentifier:
+			idents = append(idents, claim)
+		case ChangeKindCount:
+			counts = append(counts, claim)
+		}
+	}
+	if len(idents) != 2 {
+		t.Fatalf("identifier claims = %#v, want 2", idents)
+	}
+	if idents[0].Text != "ExtractClaims" || idents[0].Identifier != "ExtractClaims" || idents[0].Line != identLine {
+		t.Fatalf("first identifier = %#v", idents[0])
+	}
+	if !idents[0].Creating || idents[0].Status != ClaimStatusUnsettled {
+		t.Fatalf("first identifier creating/status = %#v", idents[0])
+	}
+	if idents[1].Text != "SettleClaims" || idents[1].Identifier != "SettleClaims" || !idents[1].Creating {
+		t.Fatalf("second identifier = %#v", idents[1])
+	}
+	if len(counts) != 1 || counts[0].Count != 3 || counts[0].Line != countLine {
+		t.Fatalf("count claims = %#v, want one claim of 3", counts)
+	}
+	if _, ok := pathClaim(claims, "loop/claims.go"); !ok {
+		t.Fatal("path claim for loop/claims.go was dropped")
+	}
+	for _, claim := range claims {
+		if claim.Kind == ClaimKindChange && claim.Change == ChangeKindBehaviour {
+			t.Fatalf("path-only edit produced a behaviour claim: %#v", claim)
+		}
+	}
+	for _, claim := range idents {
+		if claim.Identifier == "NotAChange" {
+			t.Fatal("extracted an identifier from a read-only mention")
+		}
+	}
+}
+
 func anyKnownPath(string) bool { return true }
 
 func pathClaim(claims []Claim, path string) (Claim, bool) {
@@ -516,6 +574,92 @@ func TestSettleClaimsTests(t *testing.T) {
 	passed := SettleClaims([]Claim{claim}, ClaimEvidence{TestsPass: true})
 	if len(passed) != 1 || passed[0].Status != ClaimStatusSupported || passed[0].Source != ClaimSourceCode {
 		t.Fatalf("tests gate passed = %#v", passed)
+	}
+}
+
+func TestSettleIdentifierClaims(t *testing.T) {
+	t.Parallel()
+
+	diff := strings.Join([]string{
+		"diff --git a/loop/claims.go b/loop/claims.go",
+		"--- a/loop/claims.go",
+		"+++ b/loop/claims.go",
+		"@@ -1,2 +1,3 @@",
+		" package loop",
+		"+func ExtractClaims() {}",
+		" func helper() {}",
+	}, "\n")
+	ev := ClaimEvidence{Diff: diff, TreeChanged: true}
+
+	present := Claim{
+		Kind: ClaimKindChange, Change: ChangeKindIdentifier,
+		Text: "ExtractClaims", Identifier: "ExtractClaims",
+		Creating: true, Status: ClaimStatusUnsettled,
+	}
+	supported := SettleClaims([]Claim{present}, ev)
+	if len(supported) != 1 || supported[0].Status != ClaimStatusSupported || supported[0].Source != ClaimSourceCode {
+		t.Fatalf("identifier on added line = %#v", supported)
+	}
+
+	missing := Claim{
+		Kind: ClaimKindChange, Change: ChangeKindIdentifier,
+		Text: "FabricatedIdent", Identifier: "FabricatedIdent",
+		Creating: true, Status: ClaimStatusUnsettled,
+	}
+	contradicted := SettleClaims([]Claim{missing}, ev)
+	if len(contradicted) != 1 || contradicted[0].Status != ClaimStatusContradicted || contradicted[0].Source != ClaimSourceCode {
+		t.Fatalf("creating identifier absent from diff = %#v", contradicted)
+	}
+	if contradicted[0].Evidence != "fabricated_reference" {
+		t.Fatalf("absent creating identifier evidence = %q, want fabricated_reference", contradicted[0].Evidence)
+	}
+
+	edited := Claim{
+		Kind: ClaimKindChange, Change: ChangeKindIdentifier,
+		Text: "NowhereIdent", Identifier: "NowhereIdent",
+		Creating: false, Status: ClaimStatusUnsettled,
+	}
+	unsettled := SettleClaims([]Claim{edited}, ev)
+	if len(unsettled) != 1 || unsettled[0].Status != ClaimStatusUnsettled || unsettled[0].Source != "" {
+		t.Fatalf("non-creating identifier absent from diff = %#v, want unsettled", unsettled)
+	}
+}
+
+func TestSettleCountClaims(t *testing.T) {
+	t.Parallel()
+
+	diff := strings.Join([]string{
+		"diff --git a/loop/claims_test.go b/loop/claims_test.go",
+		"--- a/loop/claims_test.go",
+		"+++ b/loop/claims_test.go",
+		"@@ -1,1 +1,4 @@",
+		" package loop",
+		"+func TestExtractChangeClaims(t *testing.T) {}",
+		"+func TestSettleIdentifierClaims(t *testing.T) {}",
+		"+func helper() {}",
+		"+func Testfoo(t *testing.T) {}",
+	}, "\n")
+	ev := ClaimEvidence{Diff: diff, TreeChanged: true}
+
+	wrong := Claim{
+		Kind: ClaimKindChange, Change: ChangeKindCount,
+		Text: "5", Count: 5, Status: ClaimStatusUnsettled,
+	}
+	contradicted := SettleClaims([]Claim{wrong}, ev)
+	if len(contradicted) != 1 || contradicted[0].Status != ClaimStatusContradicted || contradicted[0].Source != ClaimSourceCode {
+		t.Fatalf("wrong test count = %#v", contradicted)
+	}
+	if contradicted[0].Evidence != "wrong_count" {
+		t.Fatalf("wrong test count evidence = %q, want wrong_count", contradicted[0].Evidence)
+	}
+
+	matching := Claim{
+		Kind: ClaimKindChange, Change: ChangeKindCount,
+		Text: "2", Count: 2, Status: ClaimStatusUnsettled,
+	}
+	supported := SettleClaims([]Claim{matching}, ev)
+	if len(supported) != 1 || supported[0].Status != ClaimStatusSupported || supported[0].Source != ClaimSourceCode {
+		t.Fatalf("matching test count = %#v", supported)
 	}
 }
 

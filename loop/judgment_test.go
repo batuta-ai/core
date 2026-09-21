@@ -514,6 +514,75 @@ func TestClaimEvidenceCriteriaText(t *testing.T) {
 	}
 }
 
+func TestBehaviourClaimRequest(t *testing.T) {
+	t.Parallel()
+
+	line := "Updated `loop/claims.go` so that the routing matches the brief"
+	diff := strings.Join([]string{
+		"diff --git a/loop/claims.go b/loop/claims.go",
+		"index 111111..222222 100644",
+		"--- a/loop/claims.go",
+		"+++ b/loop/claims.go",
+		"@@ -1,3 +1,4 @@ package loop",
+		" import (",
+		"+\"strings\"",
+		" )",
+		"",
+	}, "\n")
+
+	extracted := ExtractClaims(line, nil, anyKnownPath)
+	var behaviour []Claim
+	for _, claim := range extracted {
+		if claim.Kind == ClaimKindChange && claim.Change == ChangeKindBehaviour {
+			behaviour = append(behaviour, claim)
+		}
+	}
+	if len(behaviour) != 1 {
+		t.Fatalf("behaviour claims = %#v, want 1 from %q", behaviour, line)
+	}
+	if behaviour[0].Status != ClaimStatusUnsettled || behaviour[0].Text != line {
+		t.Fatalf("extracted behaviour = %#v", behaviour[0])
+	}
+
+	settled := SettleClaims(behaviour, ClaimEvidence{
+		ChangedPaths: []string{"loop/claims.go"},
+		TreeChanged:  true,
+		Diff:         diff,
+	})
+	if len(settled) != 1 || settled[0].Status != ClaimStatusUnsettled || settled[0].Source != "" {
+		t.Fatalf("settled behaviour = %#v, want left unsettled", settled)
+	}
+
+	req := BuildClaimEvidenceRequest(ClaimEvidenceInput{
+		Task: routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: "task_1", Title: "Wire change claims"}},
+		Diff: diff,
+	}, settled)
+	body := marshalState(t, req.State)
+	all, _ := body["claims"].(map[string]any)
+	c1, _ := all["c1"].(map[string]any)
+	if c1 == nil {
+		t.Fatalf("state.claims = %#v, want unsettled behaviour as c1", all)
+	}
+	wantEvidence := DiffSlice(diff, settled[0].Text, claimEvidenceDiffBytes)
+	if c1["evidence"] != wantEvidence {
+		t.Fatalf("evidence = %q, want DiffSlice %q", c1["evidence"], wantEvidence)
+	}
+	question, ok := req.Questions["c1_relation"]
+	if !ok {
+		t.Fatal("missing c1_relation")
+	}
+	got := stringMap(t, question.Criteria)
+	if got["behaviour_absent"] != "the diff slice shows the path changed but nothing that does what the claim says" {
+		t.Fatalf("behaviour_absent = %q", got["behaviour_absent"])
+	}
+	if got["unverifiable"] != "claims.c1.evidence says nothing decisive about claims.c1.claim; a vague claim, a short slice or missing evidence is NOT contradiction" {
+		t.Fatalf("unverifiable = %q", got["unverifiable"])
+	}
+	if !isDefectChoice("behaviour_absent") || !isDefectChoice("fabricated_reference") || !isDefectChoice("wrong_count") {
+		t.Fatal("new defect labels are not counted as contradicted")
+	}
+}
+
 func TestClaimEvidenceMaterialQuestion(t *testing.T) {
 	t.Parallel()
 
