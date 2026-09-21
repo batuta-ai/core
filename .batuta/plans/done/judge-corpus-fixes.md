@@ -2,20 +2,20 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Close the four findings of the final review of delivery `judge-corpus-20260921-185659` (verdict FIX_BEFORE_SHIP) on branch `feat/judge-corpus`, each fix confined to the reviewed lines and covered by a test, so the constructed-corpus benchmark measures reviewed code.
-**Created:** 2026-09-21 · **Status:** approved
+**Created:** 2026-09-21 · **Status:** done
 
 ## Tasks
-- [ ] 1. Replay settlement receives the diff — backend/medium
+- [x] 1. Replay settlement receives the diff — backend/medium
       Scope: cmd/batuta/judge.go, cmd/batuta/judge_test.go
       Accept: replayClaimEvidenceRequest sets the Diff of the loop.ClaimEvidence it passes to SettleClaims from input.Diff, as corpusClaimEvidenceRequest does → go test ./cmd/batuta -run TestReplaySettlesChangeClaimsWithDiff; a replayed attempt whose report adds a fabricated identifier absent from its diff yields that claim contradicted by code with defect fabricated_reference and the judge not asked for it → go test ./cmd/batuta -run TestReplaySettlesChangeClaimsWithDiff; the package stays green → go test ./cmd/batuta
-- [ ] 2. Identifier on an added line matches the exact token — backend/medium
+- [x] 2. Identifier on an added line matches the exact token — backend/medium
       Scope: loop/claims.go, loop/claims_test.go
       Accept: identifierOnAddedLine returns true only when an added line of the diff holds a token equal to the identifier, delimited by characters outside [A-Za-z0-9_] or line ends; for the added line +func GreetHandler() string { return "hi" } the identifiers Greet and Handler are not found and GreetHandler is → go test ./loop -run TestIdentifierOnAddedLineExactToken; the contradicted branch keeps its whole-diff presence test, so an identifier present anywhere in the diff is never contradicted → go test ./loop -run TestSettleIdentifierClaims; the package stays green → go test ./loop
-- [ ] 3. Live diff covers the same files as the candidate, and a failed diff settles nothing — backend/high
+- [x] 3. Live diff covers the same files as the candidate, and a failed diff settles nothing — backend/high
       Depends on: 2
       Scope: loop/judgment.go, loop/judgment_test.go, loop/claims.go, loop/claims_test.go
       Accept: claimAttemptDiff runs git diff --no-color --no-ext-diff <base> -- . :(top,exclude).batuta with a 16 MiB stdout limit and appends new-file hunks for untracked files listed by git ls-files --others --exclude-standard, without touching the index → go test ./loop -run TestJudgeClaimEvidenceCarriesDiff; an untracked file holding the claimed identifier and test functions supports the identifier claim and matches the count claim → go test ./loop -run TestJudgeClaimEvidenceUntrackedDiff; when git fails or its output is truncated the diff is reported unavailable, and identifier and count claims are left unsettled instead of contradicted → go test ./loop -run TestJudgeClaimEvidenceDiffUnavailable; the package stays green → go test ./loop
-- [ ] 4. Docs state exactly what a v2 claim_evidence request sends — docs/low
+- [x] 4. Docs state exactly what a v2 claim_evidence request sends — docs/low
       Scope: docs/judge.md
       Accept: the "what leaves the machine" paragraph says each asked case sends the task id, the unsettled claims with their evidence, and a bounded diff slice, and no longer mentions the executor report → ! grep -n 'bounded and redacted executor report' docs/judge.md; the state description no longer lists the bounded report → ! grep -n 'state carries the bounded report' docs/judge.md; the corpus section still documents both subcommands → grep -q 'judge corpus run' docs/judge.md
 

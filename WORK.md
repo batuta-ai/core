@@ -233,6 +233,10 @@
 - [x] Change claims: identifier, count and behaviour claims settled by code first → cursor-agent (cursor-grok-4.6-high), commit ea3298a29ce2 (trail: .batuta/runs/2026-09-21-judge-corpus-task-2.md, delivery judge-corpus-20260921-185659, plan judge-corpus, 2026-09-21)
 - [x] batuta judge corpus build: clean cases and report-only defect variants from real attempts → opencode (opencode/glm-5.3-flash), commit b57fa7bf435f (trail: .batuta/runs/2026-09-21-judge-corpus-task-3.md, delivery judge-corpus-20260921-185659, plan judge-corpus, 2026-09-21)
 - [x] batuta judge corpus run: score the pipeline per label, frozen threshold → opencode (opencode/glm-5.3-flash), 1 retry, commit c733c8c2e4e9 (trail: .batuta/runs/2026-09-21-judge-corpus-task-4.md, delivery judge-corpus-20260921-185659, plan judge-corpus, 2026-09-21)
+- [x] Replay settlement receives the diff → opencode (opencode/glm-5.3-flash), commit 1f467c18bf93 (trail: .batuta/runs/2026-09-21-judge-corpus-fixes-task-1.md, delivery judge-corpus-fixes-20260921-213457, plan judge-corpus-fixes, 2026-09-21)
+- [x] Identifier on an added line matches the exact token → opencode (opencode/glm-5.3-flash), commit 6f4b9b1e24e4 (trail: .batuta/runs/2026-09-21-judge-corpus-fixes-task-2.md, delivery judge-corpus-fixes-20260921-213457, plan judge-corpus-fixes, 2026-09-21)
+- [x] Live diff covers the same files as the candidate, and a failed diff settles nothing → cursor-agent (cursor-grok-4.6-high), commit 656c62dabee7 (trail: .batuta/runs/2026-09-21-judge-corpus-fixes-task-3.md, delivery judge-corpus-fixes-20260921-213457, plan judge-corpus-fixes, 2026-09-21)
+- [x] Docs state exactly what a v2 claim_evidence request sends → agy (gemini-3.8-flash-low), commit 89b507deaab7 (trail: .batuta/runs/2026-09-21-judge-corpus-fixes-task-4.md, delivery judge-corpus-fixes-20260921-213457, plan judge-corpus-fixes, 2026-09-21)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
