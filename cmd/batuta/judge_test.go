@@ -751,6 +751,79 @@ func TestJudgeReplayChangedPaths(t *testing.T) {
 	})
 }
 
+func TestReplayEvidenceInputDiff(t *testing.T) {
+	progressLog := "BATUTA-PROGRESS 1 START\nBATUTA-PROGRESS 1 DONE"
+	assertDiff := func(t *testing.T, call *judgeCall, want string) {
+		t.Helper()
+		state, ok := call.body["state"].(map[string]any)
+		if !ok {
+			t.Fatalf("request state = %#v", call.body["state"])
+		}
+		diff, _ := state["diff"].(string)
+		if !strings.Contains(diff, want) {
+			t.Fatalf("state.diff = %q, want %q", diff, want)
+		}
+	}
+
+	t.Run("candidate base and commit", func(t *testing.T) {
+		server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+		root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+		base, commit := judgeReplayGitCommits(t, root)
+		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+			{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
+				"outcome": map[string]any{
+					"execution": 1, "commit": commit,
+					"evidence": map[string]any{"base_sha": base},
+				},
+				"log": progressLog},
+		})
+		_, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+		if err != nil {
+			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+		}
+		assertDiff(t, call, "+ok")
+	})
+
+	t.Run("falls back to base and snapshot", func(t *testing.T) {
+		server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+		root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+		base, commit := judgeReplayGitCommits(t, root)
+		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+			{"execution": 1, "tree_changed": true, "kind": loop.KindFailure,
+				"base_sha":     base,
+				"snapshot_sha": commit,
+				"outcome":      map[string]any{"execution": 1, "blocker": "tests_failed"},
+				"log":          progressLog},
+		})
+		_, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+		if err != nil {
+			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+		}
+		assertDiff(t, call, "+ok")
+	})
+
+	t.Run("leaves the diff empty when neither pair resolves", func(t *testing.T) {
+		server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+		root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+			{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
+				"outcome": map[string]any{"execution": 1, "commit": "sha"},
+				"log":     progressLog},
+		})
+		_, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+		if err != nil {
+			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+		}
+		state, ok := call.body["state"].(map[string]any)
+		if !ok {
+			t.Fatalf("request state = %#v", call.body["state"])
+		}
+		if diff, ok := state["diff"]; ok {
+			t.Fatalf("state.diff = %q, want no diff without a resolvable pair", diff)
+		}
+	})
+}
+
 func judgeReplayGitCommits(t *testing.T, root string) (base, commit string) {
 	t.Helper()
 	git := mustGit(t)
