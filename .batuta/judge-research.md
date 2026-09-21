@@ -114,3 +114,25 @@ Version 2 design, following the documents:
 - Evaluation: the same 23 retroactive attempts plus every new delivery, replayed with the same command; the cut for keeping `enforce` is stated before running: both false closures flagged, no legitimate candidate flagged.
 
 The honest expectation: on the two known false closures the code step alone will flag them (claimed path, unchanged tree). Jev's measured contribution will be whatever it adds on prose claims that code cannot match. That is the number the article should report.
+
+## 8. What compozy/yoshi teaches about applying Jev (read 2026-09-21)
+
+`github.com/compozy/yoshi` is a local context-pruning proxy for Claude Code and Codex: Jev judges which conversation history is still needed and the proxy omits validated spans before forwarding to Anthropic or OpenAI. Proof of concept, heading into CompozyOS. Read: README, `docs/CONTEXT-OPTIMIZATION.md`, `docs/BENCHMARKS.md`, `docs/STICKY-VALIDATION.md`.
+
+How they shape a judgment (their `focused-context-v11` lifecycle):
+- **One candidate per call, many calls in flight.** One historical span of about 1,200 characters per Jev request, up to eight requests in parallel, instead of one large batch. Same conclusion as TypeSafe's citation cookbook and as our section 7: atomic decisions, small state.
+- **State = task + constraints + candidate + bounded evidence.** Each request carries the current human task, earlier human constraints (deduplicated), the complete candidate span with its tool identity, and at most 1,800 characters of retained receipts ranked against the task. Long code blocks and catalogs are explicitly kept out of the evidence set.
+- **Two Boolean questions, both must be low to act.** "Would a required fact or code quote be lost?" and "Would a binding user constraint be lost?"; the span is omitted only when both probabilities are at most 0.2. Earlier stages used 0.8 for a proposal and 0.95 for preservation. They call this an experimental operating point, not a calibration claim.
+- **Fail closed, freeze decisions.** Invalid, failed or timed-out judgments keep the span; keep/omit/failed/skipped decisions are frozen and later turns only judge new arrivals; source hashes and exact offsets are rechecked before a verdict is applied. This is the same rule we wrote for the judge: it may only make things stricter, and unavailability changes nothing.
+- **Receipts carry the cost.** Per-kind coverage, Jev request bytes, applied spans, Gateway cost and provider usage are recorded per request; missing receipts are reported as unknown, not estimated.
+
+How they report results, which the batuta articles should copy:
+- "Measured, not claimed": one trial per arm, hash-verified study registry, generated offline with no new model calls, and the headline sentence is negative where the data is negative ("Both Yoshi trials were slower than baseline", "There is no single validated savings percentage for Yoshi").
+- Latency is reported as a cost of the design: judging on the request path took a session from 39.77 s to 210.54 s of wall time in one validation trial, with three Jev calls hitting the 45 s deadline. Their fix is architectural (judge between turns, not on the request path), which is exactly where batuta already sits: the loop judges after the gates, off any interactive path, so the 0.7 s per attempt we measured is not user-visible.
+
+What batuta should take from it:
+1. Keep v2's one-`choice`-per-claim design, and keep claims small (their 1,200-character spans; our claim plus its evidence slice).
+2. Add the second axis they use: besides "is this claim contradicted", ask "would acting on this change the task outcome" only when we move to enforce; two low probabilities to act, never one high one.
+3. Record cost per judgment in the journal (already done: `usage`, `latency_ns`, `provider`) and print unknown when a receipt is missing, never a guess.
+4. Report the benchmark the way they do: per delivery, one trial per arm, negative headline if the data is negative.
+5. Privacy note for the article and the docs: Jev-enabled judgments send executor output to TypeSafe (directly or through a gateway); our state builder already redacts paths and env-shaped lines, and the docs must say what leaves the machine, as yoshi's README does.
