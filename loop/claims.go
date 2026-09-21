@@ -696,8 +696,15 @@ func settleCountClaim(claim Claim, ev ClaimEvidence) Claim {
 
 func identifierOnAddedLine(diff, ident string) bool {
 	for _, line := range strings.Split(diff, "\n") {
-		if strings.HasPrefix(line, "+") && !strings.HasPrefix(line, "+++") && strings.Contains(line, ident) {
-			return true
+		if !strings.HasPrefix(line, "+") || strings.HasPrefix(line, "+++") {
+			continue
+		}
+		for _, token := range strings.FieldsFunc(line, func(r rune) bool {
+			return r != '_' && (r < '0' || r > '9') && (r < 'A' || r > 'Z') && (r < 'a' || r > 'z')
+		}) {
+			if token == ident {
+				return true
+			}
 		}
 	}
 	return false

@@ -623,6 +623,35 @@ func TestSettleIdentifierClaims(t *testing.T) {
 	if len(unsettled) != 1 || unsettled[0].Status != ClaimStatusUnsettled || unsettled[0].Source != "" {
 		t.Fatalf("non-creating identifier absent from diff = %#v, want unsettled", unsettled)
 	}
+
+	contextOnly := Claim{
+		Kind: ClaimKindChange, Change: ChangeKindIdentifier,
+		Text: "helper", Identifier: "helper",
+		Creating: true, Status: ClaimStatusUnsettled,
+	}
+	presentInDiff := SettleClaims([]Claim{contextOnly}, ev)
+	if len(presentInDiff) != 1 || presentInDiff[0].Status != ClaimStatusUnsettled {
+		t.Fatalf("identifier present in diff but not on an added line = %#v, want unsettled", presentInDiff)
+	}
+}
+
+func TestIdentifierOnAddedLineExactToken(t *testing.T) {
+	t.Parallel()
+
+	line := `+func GreetHandler() string { return "hi" }`
+	if identifierOnAddedLine(line, "Greet") || identifierOnAddedLine(line, "Handler") {
+		t.Fatal("substring of a token matched")
+	}
+	if !identifierOnAddedLine(line, "GreetHandler") {
+		t.Fatal("exact token not matched")
+	}
+
+	if !identifierOnAddedLine("+func handler", "handler") {
+		t.Fatal("token at line end not matched")
+	}
+	if identifierOnAddedLine("+func handlers", "handler") {
+		t.Fatal("token prefix matched at line end")
+	}
 }
 
 func TestSettleCountClaims(t *testing.T) {
