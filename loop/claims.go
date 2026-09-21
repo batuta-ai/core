@@ -60,9 +60,10 @@ type ClaimEvidence struct {
 
 var (
 	claimBacktick       = regexp.MustCompile("`([^`]+)`")
-	claimFilesHeading   = regexp.MustCompile(`(?i)^(?:#{1,6}\s+)?(?:paths|files)\s+(?:touched|changed|modified|edited)\b\s*:?\s*(.*)$`)
+	claimFilesHeading   = regexp.MustCompile(`(?i)^(?:#{1,6}\s+)?(?:(?:paths?|files?)\s+(?:touched|changed|modified|edited)|(?:touched|changed|modified|edited)\s+(?:paths?|files?))\b\s*:?\s*(.*)$`)
 	claimListItem       = regexp.MustCompile(`^\s*[-*]\s+(.*)$`)
-	claimEditVerb       = regexp.MustCompile(`(?i)\b(?:created|added|edited|modified|updated|rewrote|wrote|removed|deleted|renamed|moved)\b`)
+	claimMarkdownLink   = regexp.MustCompile(`\[([^\[\]]*)\]\(([^()]*)\)`)
+	claimEditVerb       = regexp.MustCompile(`(?i)\b(?:created|added|edited|modified|updated|rewrote|wrote|removed|deleted|renamed|moved|refreshed|reseated|replaced|patched|reworked|adjusted|touched|changed)\b`)
 	claimPathDisqualify = regexp.MustCompile(`(?i)(?:\b(?:read|referenced|frozen|unchanged)\b|out of scope|fora do escopo|for example)`)
 	claimProgressDone   = regexp.MustCompile(`^BATUTA-PROGRESS\s+([0-9]+)\s+DONE$`)
 	claimTaskDone       = regexp.MustCompile(`(?i)^\s*TASK\s+([0-9]+)\s*:\s*DONE\b`)
@@ -270,11 +271,52 @@ func listItemPath(trimmed string) string {
 	if match == nil {
 		return ""
 	}
-	path, ok := pathToken(match[1])
+	item := rewriteMarkdownLinks(match[1])
+	path, ok := pathToken(item)
 	if !ok {
 		return ""
 	}
 	return path
+}
+
+// claimWorktreeMarker separates a file:// URL from the repository-relative
+// path when the executor ran inside a .batuta worktree.
+const claimWorktreeMarker = "/.batuta/worktrees/"
+
+// rewriteMarkdownLinks resolves every Markdown link in a list item to the
+// path it names: the link text when it is a path, else the file:// target
+// made repository-relative; a link that names no path is dropped.
+func rewriteMarkdownLinks(item string) string {
+	matches := claimMarkdownLink.FindAllStringSubmatchIndex(item, -1)
+	if matches == nil {
+		return item
+	}
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		b.WriteString(item[last:m[0]])
+		b.WriteString(markdownLinkPath(item[m[2]:m[3]], item[m[4]:m[5]]))
+		last = m[1]
+	}
+	b.WriteString(item[last:])
+	return b.String()
+}
+
+func markdownLinkPath(text, target string) string {
+	if path, ok := pathToken(strings.ReplaceAll(text, "`", "")); ok {
+		return path
+	}
+	if !strings.HasPrefix(target, "file://") {
+		return ""
+	}
+	if idx := strings.Index(target, claimWorktreeMarker); idx >= 0 {
+		rest := target[idx+len(claimWorktreeMarker):]
+		if slash := strings.Index(rest, "/"); slash >= 0 {
+			return rest[slash+1:]
+		}
+		return ""
+	}
+	return strings.TrimLeft(strings.TrimPrefix(target, "file://"), "/")
 }
 
 func appendPathTokens(claims []Claim, seen map[string]bool, rest, line string, known func(string) bool) []Claim {

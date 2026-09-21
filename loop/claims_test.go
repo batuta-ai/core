@@ -118,6 +118,36 @@ func TestExtractClaims(t *testing.T) {
 	}
 }
 
+func TestExtractClaimsHeadingOrders(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		heading string
+	}{
+		{"paths touched", "Paths touched"},
+		{"paths touched with hash", "## Paths touched"},
+		{"paths touched with colon", "Paths touched:"},
+		{"paths touched with trailing text", "Paths touched in this task:"},
+		{"touched path", "Touched path:"},
+		{"touched paths", "Touched paths"},
+		{"files changed", "Files changed"},
+		{"changed files", "Changed files:"},
+		{"modified files", "### Modified files"},
+		{"edited files", "Edited files:"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			report := tc.heading + "\n- loop/claims.go\n"
+			got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+			if len(got) != 1 || got[0] != "loop/claims.go" {
+				t.Fatalf("heading %q path claims = %v, want [loop/claims.go]", tc.heading, got)
+			}
+		})
+	}
+}
+
 func TestExtractClaimsEditStatements(t *testing.T) {
 	t.Parallel()
 
@@ -170,6 +200,8 @@ func TestExtractClaimsEditStatements(t *testing.T) {
 		verbs := []string{
 			"created", "added", "edited", "modified", "updated",
 			"rewrote", "wrote", "removed", "deleted", "renamed", "moved",
+			"refreshed", "reseated", "replaced", "patched", "reworked",
+			"adjusted", "touched", "changed",
 		}
 		var lines []string
 		var want []string
@@ -183,6 +215,46 @@ func TestExtractClaimsEditStatements(t *testing.T) {
 		got := pathClaimPaths(ExtractClaims(strings.Join(lines, "\n"), nil, anyKnownPath))
 		if strings.Join(got, ",") != strings.Join(want, ",") {
 			t.Fatalf("path claims = %v, want %v", got, want)
+		}
+	})
+}
+
+func TestExtractClaimsMarkdownLinkItems(t *testing.T) {
+	t.Parallel()
+
+	t.Run("link text is the path", func(t *testing.T) {
+		t.Parallel()
+		report := "Paths touched:\n- [loop/claims.go](file:///anywhere/loop/claims.go)\n"
+		got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+		if strings.Join(got, ",") != "loop/claims.go" {
+			t.Fatalf("path claims = %v, want [loop/claims.go]", got)
+		}
+	})
+
+	t.Run("backticked link text", func(t *testing.T) {
+		t.Parallel()
+		report := "Paths touched:\n- [`loop/claims_test.go`](file:///…)\n"
+		got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+		if strings.Join(got, ",") != "loop/claims_test.go" {
+			t.Fatalf("path claims = %v, want [loop/claims_test.go]", got)
+		}
+	})
+
+	t.Run("file target inside the worktree", func(t *testing.T) {
+		t.Parallel()
+		report := "Paths touched:\n- [routing](file:///Volumes/x/core/.batuta/worktrees/wt-task-1/.batuta/routing.md)\n"
+		got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+		if strings.Join(got, ",") != ".batuta/routing.md" {
+			t.Fatalf("path claims = %v, want [.batuta/routing.md]", got)
+		}
+	})
+
+	t.Run("plain markdown link dropped", func(t *testing.T) {
+		t.Parallel()
+		report := "Paths touched:\n- [docs](https://example.com/loop/claims.go)\n"
+		got := pathClaimPaths(ExtractClaims(report, nil, anyKnownPath))
+		if len(got) != 0 {
+			t.Fatalf("path claims = %v, want none", got)
 		}
 	})
 }
@@ -228,6 +300,30 @@ func TestExtractClaimsPathPrecision(t *testing.T) {
 	want := []string{"loop/claims.go", "cmd/batuta/judge.go", "docs/judge.md", "out/1.txt", "README.md", "loop/claims_test.go"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("path claims = %v, want %v", got, want)
+	}
+}
+
+func TestExtractClaimsBenchmarkRecall(t *testing.T) {
+	t.Parallel()
+
+	// The two report shapes quoted in .batuta/judge-benchmark.md
+	// "Version 2.2 replay" whose path claim the v2.2 extractor lost.
+	excerpts := []struct {
+		name   string
+		report string
+	}{
+		{"skills task 4", "### Paths touched\n- [.batuta/routing.md](file:///…/.batuta/routing.md)"},
+		{"core task 3", "Touched path:\n- [`.batuta/routing.md`](file:///…)"},
+	}
+	for _, tc := range excerpts {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			known := knownClaimPath([]string{".batuta/routing.md"}, nil, nil)
+			got := pathClaimPaths(ExtractClaims(tc.report, nil, known))
+			if strings.Join(got, ",") != ".batuta/routing.md" {
+				t.Fatalf("path claims = %v, want [.batuta/routing.md]", got)
+			}
+		})
 	}
 }
 
