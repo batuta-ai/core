@@ -1,5 +1,11 @@
 # WORK — core
 
+## Current status — 2026-09-21 pause
+- [ ] Judge (Jev) work paused before the constructed corpus. Merged on main: `judge` package (PR #101), claim_evidence v1 in shadow/enforce + replay (#103), polish (#105), v2/v2.1 (#106). Open, CI green after one ACP flake rerun, not merged: PR #108 (claim_evidence v2.2/v2.3, Tempo retrospective triage, GitHub Jev survey). Evidence: `.batuta/judge-benchmark.md` (v2.3: 2/2 false closures and 0/27 legitimate flagged, both by code; judge asked 18 times, 0 contradictions), `.batuta/judge-research.md` sections 7–9.
+- [ ] Next, agreed with the user: (1) constructed corpus in the BargLabs style (prose claims with correct paths that the evidence refutes) as the gate; (2) verifier Jev-first, LLM only on the residue (measured cost: 14 verifier runs, 814 s, 58 s average); (3) plan classification through `batuta judge classify` in the skills. The user may pick (3) first for visible savings.
+- [ ] Tempo MVP retrospective backlog (`.batuta/feedback/2026-09-21-tempo-mvp-triage.md`), agreed order: claude adapter permissions (skills PR #58, open) → review contract (findings never null, review failures distinct from REWORK) → capability preflight → `batuta loop --recover` → `.batuta` isolation and orphan cleanup → persistent grants → skills (adversarial review, `Lint:`, final-origin smoke) → `batuta trail --metrics`.
+- Routing is codex-free since 2026-09-20 (agy low, opencode glm-5.3-flash medium, cursor-agent grok-4.6-high high, self critical). Local binary `~/.local/bin/batuta` is v1.1.0-beta.29 (backup `batuta-beta24`); dev binaries in `/tmp/batuta-v2*`. `.batuta/judge.json` (excluded) = auto provider, claim_evidence shadow; keys live in `~/.zshrc` and must be exported in the shell that launches the loop.
+
 ## Current status — 2026-09-18 closeout complete
 - Core v1.1.0-beta.24 is published at b5cda7bbb4fc515415868058439f5658e321ae21 (PR90 merged3102c845; release PR91); complete CI/race/release gates passed. Host v0.6.7 now distributes it with skills v0.11.0, and the official binary is installed on PATH locally.
 - Exact native ACP qualification remains OpenCode1.18.31 / opencode acp / darwin-arm64 / opencode/big-pickle / empty effort. Owned-group shutdown and direct-child reaping, not arbitrary escaped-descendant containment. CLI stays default; uncertain work is never replayed automatically.
