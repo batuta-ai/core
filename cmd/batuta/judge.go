@@ -28,17 +28,19 @@ const judgeEnvVar = "BATUTA_JUDGE"
 
 func runJudge(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("a judge form is required; available forms: ask, probe, replay")
+		return errors.New("a judge form is required; available forms: ask, corpus, probe, replay")
 	}
 	switch args[0] {
 	case "ask":
 		return runJudgeAsk(args[1:], stdout, stderr)
+	case "corpus":
+		return runJudgeCorpus(args[1:], stdout, stderr)
 	case "probe":
 		return runJudgeProbe(args[1:], stdout, stderr)
 	case "replay":
 		return runJudgeReplay(args[1:], stdout, stderr)
 	default:
-		return fmt.Errorf("unknown judge form %q; available forms: ask, probe, replay", args[0])
+		return fmt.Errorf("unknown judge form %q; available forms: ask, corpus, probe, replay", args[0])
 	}
 }
 
