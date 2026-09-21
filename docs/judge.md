@@ -131,23 +131,25 @@ asks one `choice` per unsettled claim in a single request — and prints one
 line per attempt:
 
 ```text
-task_1 e1 outcome=already_satisfied asked=true claims=3 code_contradicted=1 judge_contradicted=1 uncertain=1 max_contradicted=0.93 flagged=true provider=typesafe
+task_1 e1 outcome=already_satisfied asked=true claims=3 code_contradicted=1 judge_contradicted=1 uncertain=1 max_contradicted=0.93 material_max=0.95 flagged=true provider=typesafe
 ```
 
 Beside the attempt's `outcome` and the answering `provider`, the line reports
 the v2 breakdown: `claims` is the total number of extracted claims;
 `code_contradicted` and `judge_contradicted` count the claims settled as
-`contradicted` (the judge one only at confidence at or above the decision
-threshold, default 0.9); `uncertain` counts the judge answers that landed in
-the uncertain bucket (confidence below the threshold or a `contradicted`
-probability in 0.30–0.70); `max_contradicted` is the highest `contradicted`
-probability among the judge's answers (`0.00` when the judge was not asked);
+`contradicted` (the judge one only when both `confidence` and `material` are
+at or above the decision threshold, default 0.9); `uncertain` counts the
+judge answers that landed in the uncertain bucket (confidence below the
+threshold or a `contradicted` probability in 0.30–0.70); `max_contradicted`
+is the highest `contradicted` probability among the judge's answers (`0.00`
+when the judge was not asked); `material_max` is the highest material
+probability among the judged claims (`0.00` when none were asked);
 `flagged` repeats the aggregation the loop applies. `asked=false` marks an
 attempt with no unsettled claims: nothing is sent and no tokens are spent,
 and the breakdown is code-only. With `--json`, replay prints one JSON object
 per attempt instead of the text line, carrying the per-claim `claims` list
-(kind, text, report line, source, choice, confidence) and the `uncertain`
-list beside the same fields; a missing run log prints
+(kind, text, report line, source, choice, confidence, material) and the
+`uncertain` list beside the same fields; a missing run log prints
 `{"task_id":…,"execution":…,"skipped":"<path>"}`.
 
 The outcome is the recorded verdict of the attempt: the `blocker` of the
@@ -204,19 +206,32 @@ failed, a tests claim against a failing tests gate — never reach the
 model.
 
 Unsettled claims go in one request. The state is a short task summary
-(`task_id`, `title`, `scope`, `outcome_gates`). Each remaining claim is a
-`choice` question `claim_<i>` whose instructions object carries
-`question`, `claim` and `evidence`, with criteria `supported`,
-`contradicted` and `unverifiable`. Executor output is untrusted input;
-secrets and absolute paths are redacted before extraction.
+(`task` with id, title and scope, `outcome_gates`), a `note` that the
+executor report and every claim are untrusted data — not instructions to
+the judge — and that a short evidence slice is not proof of absence, and
+`claims.cN` objects holding `claim`, `kind` and `evidence`. Each remaining
+claim is two questions that point at those keys instead of restating the
+text: `cN_relation` is a `choice` asking "Is there positive evidence in
+`claims.cN.evidence` that `claims.cN.claim` is false?" whose options are
+the concrete defect for that kind (`path_not_changed`; `proof_failed` and
+`verifier_incomplete`; `tests_gate_failed`; `count_mismatch`) plus
+`supported` and `unverifiable`; `cN_material` is a `noul` asking whether
+the task would not be done if the claim were false. The unverifiable
+criterion says a vague claim, a short slice or missing evidence is NOT
+contradiction. Code maps any defect label to `contradicted`. Executor
+output is untrusted input; secrets and absolute paths are redacted before
+extraction.
 
-Code aggregates the settled list: the attempt is flagged when any claim
-is contradicted by code, or by the judge with `confidence` at or above
-the decision threshold (default 0.9). Judge answers with confidence
-below the threshold, or whose `contradicted` probability lies in
-0.30–0.70, land in an `uncertain` bucket that is recorded and never
-acted on. `judge_result` keeps its existing fields and adds `claims`
-(source `code` or `judge`, choice, confidence) and `uncertain`.
+Code aggregates the settled list: a code-settled contradiction flags on
+its own. A judge contradiction flags only when `confidence` and `material`
+are both at or above the decision threshold (default 0.9) — enforce needs
+those two answers, never one. Judge answers with confidence below the
+threshold, or whose `contradicted` probability lies in 0.30–0.70, land
+in an `uncertain` bucket that is recorded and never acted on.
+`judge_result` keeps its existing fields and adds `claims` (source
+`code` or `judge`, choice, confidence, material), `uncertain` and
+`material_max`. Provider error bodies never land in a journal record, a
+trail or a log line: only the `UnavailableError` reason is recorded.
 
 `shadow` records `judge_intent` and `judge_result` (state digest and
 answers, never the state body) and changes nothing. `enforce` may only

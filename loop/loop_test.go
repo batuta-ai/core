@@ -130,7 +130,7 @@ case "${FAKE_SCENARIO:-default}" in
     if [ "$n" = 1 ]; then
       echo "BATUTA-PROGRESS 1 START"
       echo "BATUTA-PROGRESS 1 DONE"
-      echo "Paths touched: docs/missing.md"
+      echo "Paths touched: shared.txt"
       echo "ok" > out/1.txt
       exit 0
     fi
@@ -3407,9 +3407,13 @@ func (f *fakeLoopJudge) Ask(_ context.Context, req judge.Request) (judge.Respons
 		conf = 0.95
 	}
 	answers := make(map[string]judge.Answer, len(req.Questions))
-	for key := range req.Questions {
+	for key, question := range req.Questions {
 		if noul, ok := f.answers[key]; ok {
 			answers[key] = judge.Answer{Type: judge.QuestionNoul, Noul: noul}
+			continue
+		}
+		if question.Type == judge.QuestionNoul {
+			answers[key] = judge.Answer{Type: judge.QuestionNoul}
 			continue
 		}
 		answer := judge.Answer{Type: judge.QuestionChoice, Choice: choice, Confidence: conf}
@@ -3610,7 +3614,7 @@ func TestJudgeEnforceBlocksUnsupportedClaim(t *testing.T) {
 		t.Fatalf("first task_1 blocker = %q, want %s\n%s", first.Blocker, blockerClaimUnsupported, out.String())
 	}
 	joined := strings.Join(first.Feedback, "\n")
-	if !strings.Contains(joined, "Paths touched: docs/missing.md") || !strings.Contains(joined, "docs/missing.md") {
+	if !strings.Contains(joined, "Paths touched: shared.txt") || !strings.Contains(joined, "shared.txt") {
 		t.Fatalf("retry feedback does not quote the contradicted claim and report line:\n%s", joined)
 	}
 	if !strings.Contains(joined, "claim_evidence: claim_unsupported") {
@@ -3649,7 +3653,7 @@ func TestJudgeUnavailableKeepsRule(t *testing.T) {
 	fake := &fakeLoopJudge{
 		choice:     "contradicted",
 		confidence: 0.99,
-		err:        &judge.UnavailableError{Reason: judge.ReasonTimeout},
+		err:        &judge.UnavailableError{Reason: judge.ReasonTimeout, Err: errors.New(`{"error":"provider leaked the request"}`)},
 	}
 	opts := f.options("claim-commit", &out)
 	opts.Judge = fake
@@ -3683,6 +3687,32 @@ func TestJudgeUnavailableKeepsRule(t *testing.T) {
 	}
 	if !sawResult {
 		t.Fatal("unavailable judge did not journal judge_result")
+	}
+	const leaked = "provider leaked the request"
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if strings.Contains(string(record.Detail), leaked) {
+			t.Fatalf("journal %s carries the provider error body: %s", record.Kind, record.Detail)
+		}
+	}
+	if strings.Contains(out.String(), leaked) {
+		t.Fatalf("loop output carries the provider error body:\n%s", out.String())
+	}
+	runs := filepath.Join(f.root, ".batuta", "runs")
+	entries, err := os.ReadDir(runs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(runs, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(body), leaked) {
+			t.Fatalf("run file %s carries the provider error body:\n%s", entry.Name(), body)
+		}
 	}
 }
 

@@ -21,7 +21,7 @@ import (
 
 const judgeTestAnswer = `{"model":"jev-1.13.0","answers":{"ok":{"type":"noul","noul":0.93}},"usage":{"input_tokens":12,"output_tokens":3}}`
 
-const judgeTestReplayAnswer = `{"model":"jev-1.13.0","answers":{"claim_1":{"type":"choice","choice":"contradicted","confidence":0.93,"probabilities":{"supported":0.02,"contradicted":0.93,"unverifiable":0.05}}},"usage":{"input_tokens":12,"output_tokens":3}}`
+const judgeTestReplayAnswer = `{"model":"jev-1.13.0","answers":{"c1_relation":{"type":"choice","choice":"proof_failed","confidence":0.93,"probabilities":{"supported":0.02,"proof_failed":0.93,"verifier_incomplete":0.00,"unverifiable":0.05}},"c1_material":{"type":"noul","noul":0.93}},"usage":{"input_tokens":12,"output_tokens":3}}`
 
 // judgeTestServer answers every request with status and body, recording the
 // wire facts of the last request.
@@ -389,7 +389,7 @@ func TestJudgeReplayCommand(t *testing.T) {
 			"log":     "wrote nothing\nTASK 1: DONE"},
 		{"execution": 2, "tree_changed": true, "kind": loop.KindCandidate,
 			"outcome": map[string]any{"execution": 2, "commit": "sha"},
-			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 START\nBATUTA-PROGRESS 1 DONE"},
+			"log":     "BATUTA-PROGRESS 1 START\nBATUTA-PROGRESS 1 DONE"},
 	})
 
 	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
@@ -400,10 +400,10 @@ func TestJudgeReplayCommand(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("stdout = %q, want one line per attempt", stdout)
 	}
-	if want := "task_1 e1 outcome=already_satisfied asked=true claims=1 changed_paths=0 code_contradicted=0 judge_contradicted=1 uncertain=0 max_contradicted=0.93 flagged=true provider=typesafe"; lines[0] != want {
+	if want := "task_1 e1 outcome=already_satisfied asked=true claims=1 changed_paths=0 code_contradicted=0 judge_contradicted=1 uncertain=0 max_contradicted=0.93 material_max=0.93 flagged=true provider=typesafe"; lines[0] != want {
 		t.Fatalf("first line = %q, want %q", lines[0], want)
 	}
-	if want := "task_1 e2 outcome=candidate asked=true claims=1 changed_paths=unknown code_contradicted=0 judge_contradicted=1 uncertain=0 max_contradicted=0.93 flagged=true provider=typesafe"; lines[1] != want {
+	if want := "task_1 e2 outcome=candidate asked=true claims=1 changed_paths=unknown code_contradicted=0 judge_contradicted=1 uncertain=0 max_contradicted=0.93 material_max=0.93 flagged=true provider=typesafe"; lines[1] != want {
 		t.Fatalf("second line = %q, want %q", lines[1], want)
 	}
 	if call.method != http.MethodPost || call.path != "/v1/systemone" {
@@ -416,23 +416,34 @@ func TestJudgeReplayCommand(t *testing.T) {
 	if !ok {
 		t.Fatalf("request state = %#v", call.body["state"])
 	}
-	if state["task_id"] != "task_1" || state["title"] != "Greet once" {
-		t.Fatalf("request state = %#v, want the task summary", state)
+	if state["task"] == nil {
+		t.Fatalf("request state = %#v, want the task object", state)
+	}
+	task, _ := state["task"].(map[string]any)
+	if task["id"] != "task_1" || task["title"] != "Greet once" {
+		t.Fatalf("request state.task = %#v, want the task summary", task)
 	}
 	if _, ok := state["executor_report"]; ok {
 		t.Fatalf("request state carries the v1 executor report: %#v", state)
 	}
+	if note, _ := state["note"].(string); note == "" {
+		t.Fatalf("request state missing the untrusted-data note: %#v", state)
+	}
 	questions, ok := call.body["questions"].(map[string]any)
-	if !ok || len(questions) != 1 {
-		t.Fatalf("request questions = %#v, want one choice per unsettled claim", call.body["questions"])
+	if !ok || len(questions) != 2 {
+		t.Fatalf("request questions = %#v, want relation and material per unsettled claim", call.body["questions"])
 	}
-	question, ok := questions["claim_1"].(map[string]any)
+	question, ok := questions["c1_relation"].(map[string]any)
 	if !ok || question["type"] != "choice" {
-		t.Fatalf("claim_1 = %#v", question)
+		t.Fatalf("c1_relation = %#v", question)
 	}
-	instructions, ok := question["instructions"].(map[string]any)
-	if !ok || instructions["question"] != "How does the evidence relate to the claim?" || instructions["claim"] != "a greeting exists" {
-		t.Fatalf("claim_1 instructions = %#v", question["instructions"])
+	instructions, _ := question["instructions"].(string)
+	if !strings.Contains(instructions, "claims.c1.evidence") || !strings.Contains(instructions, "claims.c1.claim") {
+		t.Fatalf("c1_relation instructions = %#v", question["instructions"])
+	}
+	material, ok := questions["c1_material"].(map[string]any)
+	if !ok || material["type"] != "noul" {
+		t.Fatalf("c1_material = %#v", questions["c1_material"])
 	}
 }
 
@@ -445,7 +456,7 @@ func TestJudgeReplayJSON(t *testing.T) {
 			"log":     "wrote `out/1.txt`"},
 		{"execution": 2, "tree_changed": true, "kind": loop.KindCandidate,
 			"outcome": map[string]any{"execution": 2, "commit": "sha"},
-			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 DONE"},
+			"log":     "BATUTA-PROGRESS 1 DONE"},
 	})
 
 	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL, "--json")
@@ -463,6 +474,7 @@ func TestJudgeReplayJSON(t *testing.T) {
 		Asked           bool              `json:"asked"`
 		Flagged         bool              `json:"flagged"`
 		MaxContradicted float64           `json:"max_contradicted"`
+		MaterialMax     float64           `json:"material_max"`
 		Provider        string            `json:"provider"`
 		Claims          []replayClaim     `json:"claims"`
 		Uncertain       []replayUncertain `json:"uncertain"`
@@ -476,11 +488,12 @@ func TestJudgeReplayJSON(t *testing.T) {
 	if first.TaskID != "task_1" || first.Execution != 1 || first.Outcome != "already_satisfied" {
 		t.Fatalf("first object = %#v", first)
 	}
-	if first.Asked || !first.Flagged || first.MaxContradicted != 0 || first.Provider != "typesafe" {
+	if first.Asked || !first.Flagged || first.MaxContradicted != 0 || first.MaterialMax != 0 || first.Provider != "typesafe" {
 		t.Fatalf("first object = %#v, want a code-settled attempt with no judge call", first)
 	}
 	if len(first.Claims) != 1 || first.Claims[0].Kind != "path" || first.Claims[0].Text != "out/1.txt" ||
-		first.Claims[0].Source != "code" || first.Claims[0].Choice != "contradicted" || first.Claims[0].Confidence != 1 {
+		first.Claims[0].Source != "code" || first.Claims[0].Choice != "contradicted" || first.Claims[0].Confidence != 1 ||
+		first.Claims[0].Material != 0 {
 		t.Fatalf("first claims = %#v, want the code-contradicted path claim", first.Claims)
 	}
 	if len(first.Uncertain) != 0 {
@@ -489,11 +502,12 @@ func TestJudgeReplayJSON(t *testing.T) {
 	if second.TaskID != "task_1" || second.Execution != 2 || second.Outcome != "candidate" {
 		t.Fatalf("second object = %#v", second)
 	}
-	if !second.Asked || !second.Flagged || second.MaxContradicted != 0.93 || second.Provider != "typesafe" {
+	if !second.Asked || !second.Flagged || second.MaxContradicted != 0.93 || second.MaterialMax != 0.93 || second.Provider != "typesafe" {
 		t.Fatalf("second object = %#v, want a judged attempt", second)
 	}
 	if len(second.Claims) != 1 || second.Claims[0].Kind != "criterion" || second.Claims[0].Text != "a greeting exists" ||
-		second.Claims[0].Source != "judge" || second.Claims[0].Choice != "contradicted" || second.Claims[0].Confidence != 0.93 {
+		second.Claims[0].Source != "judge" || second.Claims[0].Choice != "contradicted" || second.Claims[0].Confidence != 0.93 ||
+		second.Claims[0].Material != 0.93 {
 		t.Fatalf("second claims = %#v, want the judge-contradicted criterion claim", second.Claims)
 	}
 	if len(second.Uncertain) != 0 {
@@ -514,7 +528,7 @@ func TestJudgeReplayNoCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
 	}
-	want := "task_1 e1 outcome=already_satisfied asked=false claims=1 changed_paths=0 code_contradicted=1 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=true provider=typesafe\n"
+	want := "task_1 e1 outcome=already_satisfied asked=false claims=1 changed_paths=0 code_contradicted=1 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=true provider=typesafe\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
@@ -551,7 +565,7 @@ func TestJudgeReplayReadOnly(t *testing.T) {
 	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
 		{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
 			"outcome": map[string]any{"execution": 1, "commit": "sha"},
-			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 DONE"},
+			"log":     "BATUTA-PROGRESS 1 DONE"},
 	})
 	logPath := filepath.Join(runs, "2026-09-06-greetings-task-1-e1.out.log")
 	before := map[string]string{}
@@ -617,6 +631,9 @@ func TestJudgeReplayUnavailable(t *testing.T) {
 		if !strings.Contains(stderr, judge.ReasonServerError) {
 			t.Fatalf("stderr = %q, want reason %q", stderr, judge.ReasonServerError)
 		}
+		if strings.Contains(stderr, `{"error":"no"}`) {
+			t.Fatalf("stderr carries the provider error body: %q", stderr)
+		}
 	})
 }
 
@@ -655,7 +672,7 @@ func TestJudgeReplayChangedPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
 		}
-		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=2 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=2 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
 		}
@@ -679,7 +696,7 @@ func TestJudgeReplayChangedPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
 		}
-		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
 		}
@@ -702,7 +719,7 @@ func TestJudgeReplayChangedPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
 		}
-		want := "task_1 e1 outcome=tests_failed asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+		want := "task_1 e1 outcome=tests_failed asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q", stdout, want)
 		}
@@ -727,7 +744,7 @@ func TestJudgeReplayChangedPaths(t *testing.T) {
 		if err != nil {
 			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
 		}
-		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe\n"
 		if stdout != want {
 			t.Fatalf("stdout = %q, want %q — git would have contradicted cmd/greet.go", stdout, want)
 		}
@@ -778,7 +795,7 @@ func TestJudgeReplayUnknownPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
 	}
-	want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+	want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe\n"
 	if stdout != want {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
