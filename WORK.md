@@ -229,6 +229,10 @@
 - [x] Path claims only from edit statements about existing files → cursor-agent (cursor-grok-4.6-high), commit 862bde1941f8 (trail: .batuta/runs/2026-09-21-judge-claims-v22-task-1.md, delivery judge-claims-v22-20260921-140512, plan judge-claims-v22, 2026-09-21)
 - [x] Untrusted-data note, key-pointing questions, positive-evidence criteria and the material question → cursor-agent (cursor-grok-4.6-high), commit 1fdb0ca8b334 (trail: .batuta/runs/2026-09-21-judge-claims-v22-task-2.md, delivery judge-claims-v22-20260921-140512, plan judge-claims-v22, 2026-09-21)
 - [x] Touched-file headings in either order and Markdown-link items → opencode (opencode/glm-5.3-flash), commit de604eb0115d (trail: .batuta/runs/2026-09-21-judge-claims-v23-task-1.md, delivery judge-claims-v23-20260921-145528, plan judge-claims-v23, 2026-09-21)
+- [x] Candidate diff in the claim_evidence input, live and in replay → opencode (opencode/glm-5.3-flash), commit 06affa752ec2 (trail: .batuta/runs/2026-09-21-judge-corpus-task-1.md, delivery judge-corpus-20260921-185659, plan judge-corpus, 2026-09-21)
+- [x] Change claims: identifier, count and behaviour claims settled by code first → cursor-agent (cursor-grok-4.6-high), commit ea3298a29ce2 (trail: .batuta/runs/2026-09-21-judge-corpus-task-2.md, delivery judge-corpus-20260921-185659, plan judge-corpus, 2026-09-21)
+- [x] batuta judge corpus build: clean cases and report-only defect variants from real attempts → opencode (opencode/glm-5.3-flash), commit b57fa7bf435f (trail: .batuta/runs/2026-09-21-judge-corpus-task-3.md, delivery judge-corpus-20260921-185659, plan judge-corpus, 2026-09-21)
+- [x] batuta judge corpus run: score the pipeline per label, frozen threshold → opencode (opencode/glm-5.3-flash), 1 retry, commit c733c8c2e4e9 (trail: .batuta/runs/2026-09-21-judge-corpus-task-4.md, delivery judge-corpus-20260921-185659, plan judge-corpus, 2026-09-21)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
