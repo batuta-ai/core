@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -822,6 +823,80 @@ func TestReplayEvidenceInputDiff(t *testing.T) {
 			t.Fatalf("state.diff = %q, want no diff without a resolvable pair", diff)
 		}
 	})
+}
+
+// TestReplaySettlesChangeClaimsWithDiff replays a candidate attempt whose
+// run log claims two new identifiers: one the replay diff really adds and
+// one absent from it. Code must settle both from the diff — the added
+// identifier supported, the fabricated one contradicted — and the judge
+// must not be asked for either.
+func TestReplaySettlesChangeClaimsWithDiff(t *testing.T) {
+	server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	base, commit := corpusGitCommits(t, root)
+	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+		{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
+			"outcome": map[string]any{
+				"execution": 1, "commit": commit,
+				"evidence": map[string]any{"base_sha": base},
+			},
+			"log": "Added `GreetHandler` and `FabricatedHelper` to `greet.go`"},
+	})
+	delivery := strings.TrimSuffix(filepath.Base(journalPath), ".jsonl")
+
+	records, err := readJournal(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempts, titles, slug := replayAttempts(records)
+	if len(attempts) != 1 {
+		t.Fatalf("got %d attempts, want 1", len(attempts))
+	}
+	attempt := attempts[0]
+	log, err := os.ReadFile(attempt.runLogPath(root, runs, delivery, slug))
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths, known := resolveReplayChangedPaths(context.Background(), root, attempt)
+	input := replayEvidenceInput(context.Background(), root, attempt, titles[attempt.taskID], string(log), paths)
+	state, err := loop.BuildClaimEvidenceState(input, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, claims, err := replayClaimEvidenceRequest(input, state, known)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claims) != 3 {
+		t.Fatalf("got %d claims, want 3: %#v", len(claims), claims)
+	}
+	supported := claims[1]
+	if supported.Kind != loop.ClaimKindChange || supported.Identifier != "GreetHandler" ||
+		supported.Status != loop.ClaimStatusSupported || supported.Source != loop.ClaimSourceCode ||
+		supported.Evidence != "on added line" {
+		t.Fatalf("GreetHandler claim = %#v, want code-supported on an added line of the diff", supported)
+	}
+	fabricated := claims[2]
+	if fabricated.Kind != loop.ClaimKindChange || fabricated.Identifier != "FabricatedHelper" ||
+		fabricated.Status != loop.ClaimStatusContradicted || fabricated.Source != loop.ClaimSourceCode ||
+		fabricated.Evidence != "fabricated_reference" {
+		t.Fatalf("FabricatedHelper claim = %#v, want code-contradicted as fabricated_reference", fabricated)
+	}
+	if len(request.Questions) != 0 {
+		t.Fatalf("request has %d questions, want none for code-settled change claims", len(request.Questions))
+	}
+
+	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+	if err != nil {
+		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+	}
+	want := "task_1 e1 outcome=candidate asked=false claims=3 changed_paths=2 code_contradicted=1 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=true provider=typesafe\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if call.method != "" {
+		t.Fatalf("the judge was called (%s %s) for code-settled change claims", call.method, call.path)
+	}
 }
 
 func judgeReplayGitCommits(t *testing.T, root string) (base, commit string) {

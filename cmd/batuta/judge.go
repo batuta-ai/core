@@ -454,6 +454,7 @@ func replayClaimEvidenceRequest(input loop.ClaimEvidenceInput, state any, pathsK
 		TreeChanged:  input.TreeChanged,
 		Proofs:       input.Report.Proofs,
 		TestsPass:    input.Report.Tests.Pass,
+		Diff:         input.Diff,
 	}
 	if input.Report.Verifier != nil {
 		evidence.VerifierLines = loop.ParseVerifierLines(input.Report.Verifier.Detail)
