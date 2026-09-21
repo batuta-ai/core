@@ -2,13 +2,13 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Let the claim_evidence decision settle claims in code and act on them (shadow records, enforce fails the attempt) when no judge is available or the provider is off, so the part that measured well (2/2 false closures in the v2.3 replay, 112/112 fabricated identifiers and 92/92 wrong test counts in the constructed corpus) can be used without an API key. The judge stays optional and is asked only when one is built.
-**Created:** 2026-09-21 · **Status:** approved
+**Created:** 2026-09-21 · **Status:** done
 
 ## Tasks
-- [ ] 1. Code settlement runs whenever the decision is on, judge or not — backend/high
+- [x] 1. Code settlement runs whenever the decision is on, judge or not — backend/high
       Scope: loop/attempt.go, loop/judgment.go, loop/judgment_test.go, loop/loop_test.go
       Accept: with claim_evidence in shadow and no judge (Options.Judge nil), an attempt whose report claims a path that the tree did not change records the settled claims in the journal and keeps its outcome → go test ./loop -run TestClaimEvidenceCodeOnlyShadow; with claim_evidence in enforce and no judge, the same attempt fails with a judge proof naming the code-contradicted claim → go test ./loop -run TestClaimEvidenceCodeOnlyEnforce; with no judge, unsettled claims are recorded as not asked and never flag the attempt → go test ./loop -run TestClaimEvidenceCodeOnlyLeavesUnsettled; with claim_evidence off, nothing is extracted, recorded or enforced, judge or not → go test ./loop -run TestClaimEvidenceOffSkips; the existing judge-backed shadow and enforce tests stay green → go test ./loop -run 'TestClaimEvidence|TestJudgeClaimEvidence'; the package stays green → go test ./loop
-- [ ] 2. Config and docs for code-only claim_evidence — backend/medium
+- [x] 2. Config and docs for code-only claim_evidence — backend/medium
       Depends on: 1
       Scope: judge/config.go, judge/config_test.go, docs/judge.md
       Accept: a config with provider off still validates the mode and threshold of every decision and keeps them, so {"provider":"off","decisions":{"claim_evidence":{"mode":"enforce","threshold":0.9}}} loads with claim_evidence in enforce and an unknown mode is rejected → go test ./judge -run TestConfigProviderOffKeepsDecisions; BATUTA_JUDGE=off still turns every decision off → go test ./judge -run TestLoadConfigEnvOff; docs/judge.md documents code-only claim_evidence with that exact config, says no request leaves the machine in that mode, and records the constructed-corpus result that motivated it → grep -q '"provider":"off","decisions":{"claim_evidence":{"mode":"enforce"' docs/judge.md; the package stays green → go test ./judge
