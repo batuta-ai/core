@@ -1,7 +1,9 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -9,14 +11,27 @@ import (
 
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
+	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/routing"
 )
 
 const (
-	claimEvidenceReportLines = 60
-	claimEvidenceReportBytes = 8 << 10
+	claimEvidenceDecision         = "claim_evidence"
+	claimUnsupportedKey           = "claim_unsupported"
+	verifierContradictedKey       = "verifier_contradicted"
+	defaultClaimEvidenceThreshold = 0.9
+	claimEvidenceReportLines      = 60
+	claimEvidenceReportBytes      = 8 << 10
 )
+
+// judgment is the loop's view of one claim_evidence call. Shadow records it
+// and stops; enforce may fail a passing attempt.
+type judgment struct {
+	Asked       bool
+	Unavailable string
+	Answers     map[string]float64
+}
 
 var (
 	claimProgressLine = regexp.MustCompile(`^BATUTA-PROGRESS [0-9]+ (START|DONE)$`)
@@ -384,4 +399,157 @@ func sizeOf(state claimEvidenceState) int {
 		return 0
 	}
 	return len(encoded)
+}
+
+func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, report *gates.Report, result executor.Result, treeChanged bool, changedPaths []string) (judgment, error) {
+	if r.opts.Judge == nil {
+		return judgment{}, nil
+	}
+	decision := r.opts.JudgeConfig.Decision(claimEvidenceDecision)
+	if decision.Mode == judge.ModeOff {
+		return judgment{}, nil
+	}
+
+	maxBytes := r.opts.JudgeConfig.MaxStateBytes
+	if maxBytes <= 0 {
+		maxBytes = 100000
+	}
+	state, err := BuildClaimEvidenceState(ClaimEvidenceInput{
+		Workspace:    r.root,
+		Task:         ac.plan,
+		Criteria:     gates.ParseCriteria(ac.plan.Accept),
+		Report:       *report,
+		OutputTail:   claimEvidenceOutputTail(result),
+		Progress:     result.Progress,
+		ChangedPaths: changedPaths,
+		TreeChanged:  treeChanged,
+	}, maxBytes)
+	if err != nil {
+		if recErr := r.recordJudgeUnavailable(ac, "", nil, judge.ReasonStateTooLarge); recErr != nil {
+			return judgment{}, recErr
+		}
+		return judgment{Asked: true, Unavailable: judge.ReasonStateTooLarge}, nil
+	}
+
+	var sinkErr error
+	traced := &judge.Traced{
+		Judge: r.opts.Judge,
+		Sink: func(kind string, record any) error {
+			err := r.locked(journal.Kind(kind), ac.taskID, record, nil)
+			if err != nil && sinkErr == nil {
+				sinkErr = err
+			}
+			return err
+		},
+	}
+	resp, err := traced.Ask(ctx, judge.Request{
+		Decision:  claimEvidenceDecision,
+		State:     state,
+		Questions: ClaimEvidenceQuestions(),
+	})
+	if sinkErr != nil {
+		return judgment{Asked: true}, sinkErr
+	}
+
+	out := judgment{Asked: true, Answers: noulAnswers(resp.Answers)}
+	if err != nil {
+		var unavail *judge.UnavailableError
+		if errors.As(err, &unavail) {
+			out.Unavailable = unavail.Reason
+			return out, nil
+		}
+		out.Unavailable = err.Error()
+		return out, nil
+	}
+
+	if decision.Mode == judge.ModeEnforce && report.Passed {
+		threshold := decision.Threshold
+		if threshold == 0 {
+			threshold = defaultClaimEvidenceThreshold
+		}
+		if key, probability, ok := claimEvidenceEnforced(out.Answers, threshold); ok {
+			report.Passed = false
+			report.Proofs = append(report.Proofs, gates.Verdict{
+				Name:   "judge",
+				Pass:   false,
+				Signal: fmt.Sprintf("claim_evidence: %s %.2f (threshold %.2f)", key, probability, threshold),
+				Detail: claimEvidenceContradiction(state),
+			})
+		}
+	}
+	return out, nil
+}
+
+func (r *Runner) recordJudgeUnavailable(ac attemptContext, digest string, keys []string, reason string) error {
+	if keys == nil {
+		keys = []string{claimUnsupportedKey, verifierContradictedKey}
+	}
+	intent := judge.IntentRecord{Decision: claimEvidenceDecision, QuestionKeys: keys, StateDigest: digest}
+	if err := r.locked(KindJudgeIntent, ac.taskID, intent, nil); err != nil {
+		return err
+	}
+	return r.locked(KindJudgeResult, ac.taskID, judge.ResultRecord{
+		Decision:          claimEvidenceDecision,
+		QuestionKeys:      keys,
+		StateDigest:       digest,
+		UnavailableReason: reason,
+	}, nil)
+}
+
+func claimEvidenceOutputTail(result executor.Result) string {
+	stdout := string(result.Stdout)
+	stderr := string(result.Stderr)
+	switch {
+	case stdout == "":
+		return stderr
+	case stderr == "":
+		return stdout
+	default:
+		return stdout + "\n" + stderr
+	}
+}
+
+func noulAnswers(answers map[string]judge.Answer) map[string]float64 {
+	out := make(map[string]float64, len(answers))
+	for key, answer := range answers {
+		out[key] = answer.Noul
+	}
+	return out
+}
+
+func claimEvidenceEnforced(answers map[string]float64, threshold float64) (string, float64, bool) {
+	for _, key := range []string{claimUnsupportedKey, verifierContradictedKey} {
+		if probability, ok := answers[key]; ok && probability >= threshold {
+			return key, probability, true
+		}
+	}
+	return "", 0, false
+}
+
+func claimEvidenceContradiction(state any) string {
+	encoded, err := json.Marshal(state)
+	if err != nil {
+		return ""
+	}
+	var parsed claimEvidenceState
+	if err := json.Unmarshal(encoded, &parsed); err != nil {
+		return strings.TrimSpace(string(encoded))
+	}
+	var claims []string
+	for _, line := range splitReportLines(parsed.ExecutorReport) {
+		trimmed := strings.TrimSpace(line)
+		if claimProgressLine.MatchString(trimmed) || claimTaskLine.MatchString(trimmed) {
+			claims = append(claims, trimmed)
+		}
+	}
+	if len(claims) == 0 {
+		lines := splitReportLines(parsed.ExecutorReport)
+		for i := len(lines) - 1; i >= 0 && len(claims) < 3; i-- {
+			trimmed := strings.TrimSpace(lines[i])
+			if trimmed != "" {
+				claims = append([]string{trimmed}, claims...)
+			}
+		}
+	}
+	return strings.Join(claims, "\n")
 }

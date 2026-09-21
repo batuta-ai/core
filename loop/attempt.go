@@ -16,6 +16,7 @@ import (
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/integration"
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
@@ -31,6 +32,7 @@ const (
 	blockerScope               = "scope_violation"
 	blockerProof               = "proof_failed"
 	blockerVerifier            = "verifier_incomplete"
+	blockerClaimUnsupported    = "claim_unsupported"
 	blockerInstall             = "install_failed"
 	blockerInterrupted         = "interrupted"
 	blockerCandidate           = "candidate_invalid"
@@ -356,12 +358,14 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	report.Finished = gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, finishedDetail)
 	report.Tree = gates.Verdict{Name: "tree", Pass: true, Signal: "the worktree differs from the attempt's base"}
 	silent := !treeChanged
+	var changedPaths []string
 	if report.Finished.Pass && !silent {
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		changed, err := r.git.ChangedPaths(ctx, ac.worktree.Root, ac.base)
 		if err != nil {
 			return err
 		}
+		changedPaths = changed
 		report.Scope = gates.Scope(changed, ac.plan.Scope)
 		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
 		if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution) && len(criteria) > 0 {
@@ -378,6 +382,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "nothing changed"}
 		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
+		alreadySatisfied := false
 		if len(criteria) > 0 {
 			verdict, err := r.verify(ctx, &ac, criteria, report.Proofs)
 			if err != nil {
@@ -388,25 +393,29 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 			for _, proof := range report.Proofs {
 				proofsPass = proofsPass && proof.Pass
 			}
-			if verdict.Pass && report.Tests.Pass && proofsPass {
-				report.Passed = true
-				if err := r.locked(KindGates, taskID, report, nil); err != nil {
-					return err
-				}
-				r.writeTrail(ac, brief, result, report, "already satisfied on the base — no commit")
-				return r.recordBlocked(ctx, ac, &result, blockerAlreadySatisfied, []string{"gates 2 and 3 green against the base commit: the criteria already hold; nothing to commit"})
-			}
+			alreadySatisfied = verdict.Pass && report.Tests.Pass && proofsPass
 		}
-		report.Tree = gates.Verdict{Name: "tree", Pass: false, Signal: "silent: the worktree equals the base and the criteria do not all hold on the base"}
+		if !alreadySatisfied {
+			report.Tree = gates.Verdict{Name: "tree", Pass: false, Signal: "silent: the worktree equals the base and the criteria do not all hold on the base"}
+		}
 	} else {
 		report.Tests = gates.Verdict{Name: "tests", Pass: false, Signal: "skipped: the executor did not finish"}
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "not evaluated"}
 	}
 	report.Decide()
+	if r.opts.Judge != nil && r.opts.JudgeConfig.Decision(claimEvidenceDecision).Mode != judge.ModeOff && !result.RateLimited {
+		if _, err := r.judgeClaimEvidence(ctx, ac, &report, result, treeChanged, changedPaths); err != nil {
+			return err
+		}
+	}
 	if err := r.locked(KindGates, taskID, report, nil); err != nil {
 		return err
 	}
-	r.writeTrail(ac, brief, result, report, "")
+	trailNote := ""
+	if silent && report.Passed {
+		trailNote = "already satisfied on the base — no commit"
+	}
+	r.writeTrail(ac, brief, result, report, trailNote)
 
 	if !report.Passed {
 		code := blockerCode(report, result, silent)
@@ -415,6 +424,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 			return r.recordBlocked(ctx, ac, &result, code, feedback)
 		}
 		return r.recordFailure(ctx, ac, &result, code, feedback)
+	}
+	if silent {
+		return r.recordBlocked(ctx, ac, &result, blockerAlreadySatisfied, []string{"gates 2 and 3 green against the base commit: the criteria already hold; nothing to commit"})
 	}
 	return r.recordCandidate(ctx, ac, report, result)
 }
@@ -937,9 +949,20 @@ func blockerCode(report gates.Report, result executor.Result, silent bool) strin
 		return blockerScope
 	case report.Verifier != nil && !report.Verifier.Pass:
 		return blockerVerifier
+	case failingJudge(report):
+		return blockerClaimUnsupported
 	default:
 		return blockerProof
 	}
+}
+
+func failingJudge(report gates.Report) bool {
+	for _, proof := range report.Proofs {
+		if proof.Name == "judge" && !proof.Pass {
+			return true
+		}
+	}
+	return false
 }
 
 // commitMessage is the candidate's conventional commit subject. The

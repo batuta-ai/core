@@ -139,5 +139,34 @@ from the logs.
   0.9, ignore below 0.1, log in between.
 - Shadow mode first: record verdicts for at least one full delivery per
   project, compare them against the deterministic outcome and the operator's
-  judgments, then enable per decision. No decision point in the loop consumes
-  the judge yet.
+  judgments, then enable per decision.
+
+## `claim_evidence`
+
+The loop's first decision runs after the gates `Decide()` an attempt and
+before the attempt is recorded as a candidate, an already-satisfied task, or
+a failure. The state is built by code from bounded evidence: the task (id,
+title, scope), criteria with proof verdicts, the last 60 lines of the
+executor report (capped at 8 KiB), progress events, whether the tree
+changed and which paths, the verifier signal and detail when present, and
+the deterministic outcome. Executor output is untrusted input; secrets and
+absolute paths are redacted before the judge sees them. The two questions
+are `noul`:
+
+- `claim_unsupported` — the executor's report claims work that the tree,
+  proofs or verifier do not show.
+- `verifier_contradicted` — a verifier DONE line is contradicted by a
+  failed proof or by the executor's own report.
+
+There is no confidence on `noul`; each probability is gated on the
+decision's threshold (default 0.9). `shadow` records `judge_intent` and
+`judge_result` (state digest and answers, never the state body) and
+changes nothing. `enforce` may only fail a passing attempt: when either
+probability is at or above the threshold it sets `report.Passed = false`,
+appends a synthetic failing `judge` proof so `Failures()` and the trail
+show the contradiction, and records blocker `claim_unsupported`. It never
+turns a failure into a pass, never clears a gate, and never marks a task
+satisfied. Any error, including `ErrUnavailable`, is recorded on
+`judge_result` and ignored. The decision is not consulted when it is
+`off`, the judge is off, or the attempt ended in a question, a rate
+limit, an executor error or a reconciliation block.

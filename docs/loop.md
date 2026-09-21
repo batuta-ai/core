@@ -113,6 +113,17 @@ exit `1` with the reason on stderr.
   reads the verifier output from stdin and checks it against the criterion
   count and optional proof verdicts.
 
+After `report.Decide()`, the loop may ask the optional `claim_evidence`
+decision: two `noul` questions (`claim_unsupported`, `verifier_contradicted`)
+over a bounded state of the plan criteria, executor report, tree, proofs and
+verifier. `shadow` records `judge_intent`/`judge_result` and leaves the
+attempt unchanged. `enforce` may only fail a passing attempt, and only when
+either probability is at or above the decision threshold (default 0.9), with
+blocker `claim_unsupported`; it never turns a failure into a pass. A missing
+or unavailable judge keeps the deterministic gates. Attempts that ended in a
+question, a rate limit, an executor error or a reconciliation block are not
+asked.
+
 ## Decisions
 
 - **External transport is opt-in.** `--transport cli|acp|auto` selects the
