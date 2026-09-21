@@ -63,3 +63,28 @@ Why, from the claim dumps (`--json`) rather than from the totals:
 3. `BATUTA-PROGRESS n DONE` and `TASK n: DONE` claims were emitted without their criterion index, so no proof verdict or verifier line was attached; the judge received a claim with empty evidence and answered `unverifiable` (confidence 0.30–0.84).
 
 So version 2 as built does not yet test the design. Version 2.1 fixes the three defects and reruns this exact replay; until then no number here supports or refutes the judge.
+
+## Version 2.1 replay (2026-09-21)
+
+Binary built from `f9454c0` (plan `judge-claims-v21`, tasks 1–2 integrated by the loop; task 3 done by the conducting host because a worktree executor cannot read journals outside its worktree). Judge `provider: auto` → TypeSafe direct. Raw output verbatim in `.batuta/judge-replay-v21-raw.txt`; every count below was computed from that file.
+
+| measure | value |
+|---|---|
+| finished attempts replayed | 33 (11 journals: 9 core, 2 skills) |
+| legitimate candidates | 24 |
+| known false closures | 2 |
+| false closures flagged | 2 of 2, both by code (`changed_paths=0`, claimed path), judge not asked |
+| legitimate candidates flagged | 7 of 24 |
+| attempts where the judge was asked | 17 |
+| claims extracted / settled contradicted by code / contradicted by judge / uncertain | 403 / 43 / 0 / 35 |
+| highest judge "contradicted" probability on any claim | 0.33 |
+| attempts with `changed_paths=unknown` | 6 (all in the skills journals: the replay resolves candidate commits with git in the current workspace, and those commits live in the skills repository) |
+| gate-failed attempts flagged | 2 of 7 (one `tests_failed`, one `scope_violation`) |
+
+What changed from version 2: the replay now has real changed paths for every core attempt (`scope.paths` recorded live from this version on, `git diff --name-only base..candidate` for older journals), and criterion claims reach the judge with their proof verdict and verifier line attached.
+
+What did not change: 7 legitimate candidates are still flagged by code. The `--json` claim dump shows every one comes from a token accepted as a path claim although the report only mentions it: Go import paths (`encoding/json`, `github.com/batuta-ai/core/judge`), a model id (`typesafe/jev-1.13`), branch names (`batuta/judge-package/task-1-e1`), bare extensions (`.go`, `.md`) and files named as examples (`docs/missing.md`). The task 2 implementation let `known` accept any token with a known source extension, and the extractor still takes backticked tokens from any line rather than from "Paths touched" lists or edit-verb sentences. That is a specification defect in this plan, not a judge result.
+
+What the judge did: asked 17 times with evidence attached, it never answered `contradicted` above 0.33 on any claim; 35 answers landed in the uncertain bucket. On this corpus there is no case where the judge found a contradiction that code had not already settled.
+
+Decision rule stated before the run (research note, section 7): keep `enforce` only if both false closures are flagged and no legitimate candidate is flagged. Result: the first half holds through code, the second does not because of the extractor. Version 2.2 must restrict path claims to explicit edit statements before the rule can be evaluated; the judge's own contribution so far is zero contradictions.
