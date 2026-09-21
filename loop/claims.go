@@ -26,6 +26,7 @@ const (
 	ClaimStatusUnsettled    ClaimStatus = "unsettled"
 	ClaimStatusSupported    ClaimStatus = "supported"
 	ClaimStatusContradicted ClaimStatus = "contradicted"
+	ClaimStatusUnverifiable ClaimStatus = "unverifiable"
 )
 
 // ClaimSource is who settled the claim.
@@ -83,8 +84,13 @@ var knownPathExt = map[string]bool{
 }
 
 // ExtractClaims reads the bounded executor report line by line and returns
-// the atomic claims the executor made. It never calls the judge.
-func ExtractClaims(report string, criteria []gates.Criterion) []Claim {
+// the atomic claims the executor made. A path token is kept only when known
+// returns true. It never calls the judge.
+func ExtractClaims(report string, criteria []gates.Criterion, known ...func(path string) bool) []Claim {
+	var check func(string) bool
+	if len(known) > 0 {
+		check = known[0]
+	}
 	lines := boundClaimReportLines(report)
 	var claims []Claim
 	seenPath := map[string]bool{}
@@ -99,10 +105,10 @@ func ExtractClaims(report string, criteria []gates.Criterion) []Claim {
 			if trimmed == "" {
 				collectingPaths = false
 			} else if item := listItemPath(trimmed); item != "" {
-				claims = appendPathClaim(claims, seenPath, item, line)
+				claims = appendPathClaim(claims, seenPath, item, line, check)
 				continue
 			} else if rest, ok := pathsTouchedRest(trimmed); ok {
-				claims = appendPathTokens(claims, seenPath, rest, line)
+				claims = appendPathTokens(claims, seenPath, rest, line, check)
 				collectingPaths = rest == ""
 				continue
 			} else {
@@ -110,12 +116,12 @@ func ExtractClaims(report string, criteria []gates.Criterion) []Claim {
 			}
 		}
 		if rest, ok := pathsTouchedRest(trimmed); ok {
-			claims = appendPathTokens(claims, seenPath, rest, line)
+			claims = appendPathTokens(claims, seenPath, rest, line, check)
 			collectingPaths = rest == ""
 		}
 		for _, raw := range claimBacktick.FindAllStringSubmatch(line, -1) {
 			if path, ok := pathToken(raw[1]); ok {
-				claims = appendPathClaim(claims, seenPath, path, line)
+				claims = appendPathClaim(claims, seenPath, path, line, check)
 			}
 		}
 		claims = append(claims, criterionClaims(trimmed, line, criteria)...)
@@ -127,6 +133,31 @@ func ExtractClaims(report string, criteria []gates.Criterion) []Claim {
 		}
 	}
 	return claims
+}
+
+// knownClaimPath is true for paths in the tree listing, changed_paths,
+// Scope globs, or with a known source-file extension.
+func knownClaimPath(tree, changed, scope []string) func(string) bool {
+	listed := make(map[string]bool, len(tree)+len(changed))
+	add := func(paths []string) {
+		for _, path := range paths {
+			path = filepath.ToSlash(strings.TrimPrefix(strings.TrimSpace(path), "./"))
+			if path != "" {
+				listed[path] = true
+			}
+		}
+	}
+	add(tree)
+	add(changed)
+	return func(path string) bool {
+		if listed[path] {
+			return true
+		}
+		if len(scope) > 0 && gates.InScope(path, scope) {
+			return true
+		}
+		return knownPathExt[strings.ToLower(filepath.Ext(path))]
+	}
 }
 
 func boundClaimReportLines(report string) []string {
@@ -157,7 +188,7 @@ func listItemPath(trimmed string) string {
 	return path
 }
 
-func appendPathTokens(claims []Claim, seen map[string]bool, rest, line string) []Claim {
+func appendPathTokens(claims []Claim, seen map[string]bool, rest, line string, known func(string) bool) []Claim {
 	if rest == "" {
 		return claims
 	}
@@ -165,13 +196,16 @@ func appendPathTokens(claims []Claim, seen map[string]bool, rest, line string) [
 		raw = strings.TrimSpace(raw)
 		raw = strings.TrimPrefix(raw, "and ")
 		if path, ok := pathToken(raw); ok {
-			claims = appendPathClaim(claims, seen, path, line)
+			claims = appendPathClaim(claims, seen, path, line, known)
 		}
 	}
 	return claims
 }
 
-func appendPathClaim(claims []Claim, seen map[string]bool, path, line string) []Claim {
+func appendPathClaim(claims []Claim, seen map[string]bool, path, line string, known func(string) bool) []Claim {
+	if known != nil && !known(path) {
+		return claims
+	}
 	if seen[path] {
 		return claims
 	}
@@ -248,17 +282,13 @@ func criterionClaims(trimmed, line string, criteria []gates.Criterion) []Claim {
 }
 
 func criterionClaim(number, line string, criteria []gates.Criterion) Claim {
-	n, _ := strconv.Atoi(number)
-	if n < 1 {
+	n, err := strconv.Atoi(number)
+	if err != nil || n < 1 || n > len(criteria) {
 		return Claim{}
-	}
-	text := line
-	if n <= len(criteria) {
-		text = criteria[n-1].Text
 	}
 	return Claim{
 		Kind:      ClaimKindCriterion,
-		Text:      text,
+		Text:      criteria[n-1].Text,
 		Line:      line,
 		Criterion: n,
 		Status:    ClaimStatusUnsettled,
@@ -335,28 +365,23 @@ func settleCriterionClaim(claim Claim, ev ClaimEvidence) Claim {
 		proof = &item
 	}
 	line, hasVerifier := ev.VerifierLines[claim.Criterion]
-	if proof == nil && !hasVerifier {
-		return claim
+	proofText := ""
+	if proof != nil {
+		proofText = proof.Signal
 	}
-	if proof != nil && !proof.Pass {
+	verifierText := ""
+	if hasVerifier {
+		verifierText = line
+	}
+	claim.Evidence = "proof: " + proofText + "; verifier: " + verifierText
+	if (proof != nil && !proof.Pass) || (hasVerifier && verifierIncomplete(line)) {
 		claim.Status = ClaimStatusContradicted
 		claim.Source = ClaimSourceCode
-		claim.Evidence = "proof failed"
-		if hasVerifier && verifierIncomplete(line) {
-			claim.Evidence = "proof failed; verifier INCOMPLETE"
-		}
-		return claim
-	}
-	if hasVerifier && verifierIncomplete(line) {
-		claim.Status = ClaimStatusContradicted
-		claim.Source = ClaimSourceCode
-		claim.Evidence = "verifier INCOMPLETE"
 		return claim
 	}
 	if proof != nil && proof.Pass && hasVerifier && verifierDone(line) {
 		claim.Status = ClaimStatusSupported
 		claim.Source = ClaimSourceCode
-		claim.Evidence = "proof passed; verifier DONE"
 		return claim
 	}
 	return claim
@@ -394,8 +419,8 @@ func changedPathPresent(path string, changed []string) bool {
 	return false
 }
 
-// ParseVerifierLines maps criterion numbers to DONE|INCOMPLETE using the
-// same TASK n: regex gates uses.
+// ParseVerifierLines maps criterion numbers to the matching TASK n: line
+// using the same regex gates uses.
 func ParseVerifierLines(detail string) map[int]string {
 	out := map[int]string{}
 	for _, match := range claimVerifierLine.FindAllStringSubmatch(detail, -1) {
@@ -403,7 +428,7 @@ func ParseVerifierLines(detail string) map[int]string {
 		if n < 1 {
 			continue
 		}
-		out[n] = match[2]
+		out[n] = strings.TrimSpace(match[0])
 	}
 	return out
 }

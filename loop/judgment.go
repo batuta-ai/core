@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,6 +16,7 @@ import (
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
 
@@ -87,6 +89,7 @@ type ClaimEvidenceInput struct {
 	Progress     []executor.ProgressEvent
 	ChangedPaths []string
 	TreeChanged  bool
+	TreeFiles    []string
 }
 
 type claimEvidenceState struct {
@@ -231,8 +234,17 @@ func BuildClaimEvidenceRequest(input ClaimEvidenceInput, claims []Claim) judge.R
 		workspace = filepath.Clean(workspace)
 	}
 	questions := make(map[string]judge.Question)
-	for index, claim := range claims {
+	for index := range claims {
+		claim := &claims[index]
 		if claim.Status != ClaimStatusUnsettled {
+			continue
+		}
+		if claim.Evidence == "" {
+			claim.Evidence = unsettledClaimEvidence(*claim, input)
+		}
+		if claim.Evidence == "" {
+			claim.Status = ClaimStatusUnverifiable
+			claim.Source = ClaimSourceCode
 			continue
 		}
 		questions[claimQuestionKey(index)] = judge.Question{
@@ -240,7 +252,7 @@ func BuildClaimEvidenceRequest(input ClaimEvidenceInput, claims []Claim) judge.R
 			Instructions: map[string]string{
 				"question": claimEvidenceQuestionText,
 				"claim":    claim.Text,
-				"evidence": unsettledClaimEvidence(claim, input),
+				"evidence": claim.Evidence,
 			},
 			Criteria: map[string]string{
 				claimChoiceSupported:    "the evidence states or directly implies the claim",
@@ -315,9 +327,11 @@ func criterionQuestionEvidence(claim Claim, input ClaimEvidenceInput) string {
 }
 
 func claimsFromInput(input ClaimEvidenceInput) []Claim {
-	extracted := ExtractClaims(boundExecutorReport(input.OutputTail, input.Workspace), input.Criteria)
+	changed := redactPaths(input.ChangedPaths, input.Workspace)
+	known := knownClaimPath(redactPaths(input.TreeFiles, input.Workspace), changed, redactPaths(input.Task.Scope, input.Workspace))
+	extracted := ExtractClaims(boundExecutorReport(input.OutputTail, input.Workspace), input.Criteria, known)
 	ev := ClaimEvidence{
-		ChangedPaths: redactPaths(input.ChangedPaths, input.Workspace),
+		ChangedPaths: changed,
 		TreeChanged:  input.TreeChanged,
 		Proofs:       input.Report.Proofs,
 		TestsPass:    input.Report.Tests.Pass,
@@ -654,6 +668,29 @@ func sizeOf(state claimEvidenceState) int {
 	return len(encoded)
 }
 
+func (r *Runner) listClaimTreeFiles(ctx context.Context) []string {
+	if r.git.Runner == nil || r.git.Git == "" {
+		return nil
+	}
+	result, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable:  r.git.Git,
+		Directory:   r.root,
+		Args:        []string{"ls-files", "-z"},
+		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+	})
+	if err != nil || result.ExitCode != 0 || result.StdoutTruncated {
+		return nil
+	}
+	var files []string
+	for _, name := range bytes.Split(result.Stdout, []byte{0}) {
+		path := filepath.ToSlash(strings.TrimSpace(string(name)))
+		if path != "" {
+			files = append(files, path)
+		}
+	}
+	return files
+}
+
 func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, report *gates.Report, result executor.Result, treeChanged bool, changedPaths []string) (judgment, error) {
 	if r.opts.Judge == nil {
 		return judgment{}, nil
@@ -676,6 +713,7 @@ func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, repo
 		Progress:     result.Progress,
 		ChangedPaths: changedPaths,
 		TreeChanged:  treeChanged,
+		TreeFiles:    r.listClaimTreeFiles(ctx),
 	}
 	claims := claimsFromInput(input)
 	req := BuildClaimEvidenceRequest(input, claims)

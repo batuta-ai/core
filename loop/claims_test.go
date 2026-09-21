@@ -37,7 +37,7 @@ func TestExtractClaims(t *testing.T) {
 		"left uncommitted notes in the log",
 	}, "\n")
 
-	claims := ExtractClaims(report, criteria)
+	claims := ExtractClaims(report, criteria, anyKnownPath)
 
 	wantPaths := []string{"loop/claims.go", "loop/claims_test.go", "cmd/batuta/judge.go", "README.md"}
 	var gotPaths []string
@@ -112,11 +112,80 @@ func TestExtractClaims(t *testing.T) {
 		t.Fatalf("commit claims = %#v", commitClaims)
 	}
 
-	dup := ExtractClaims("Paths touched: loop/claims.go\nlater `loop/claims.go` again\n", nil)
+	dup := ExtractClaims("Paths touched: loop/claims.go\nlater `loop/claims.go` again\n", nil, anyKnownPath)
 	if paths := pathClaims(dup); len(paths) != 1 || paths[0].Path != "loop/claims.go" || paths[0].Line != "Paths touched: loop/claims.go" {
 		t.Fatalf("deduped path claims = %#v", paths)
 	}
 }
+
+func TestExtractClaimsPathPrecision(t *testing.T) {
+	t.Parallel()
+
+	tree := []string{"loop/claims.go", "cmd/batuta/judge.go", "README.md"}
+	changed := []string{"loop/claims.go", "loop/claims_test.go"}
+	scope := []string{"docs/**", "out/1.txt"}
+	known := knownClaimPath(tree, changed, scope)
+
+	report := strings.Join([]string{
+		"Paths touched: loop/claims.go, encoding/json, github.com/batuta-ai/core/judge, typesafe/jev-1.13",
+		"edited `cmd/batuta/judge.go` and `feat/judge-claims` and `https://example.com/x.go`",
+		"also `docs/judge.md` and `out/1.txt` and `README.md` and `loop/claims_test.go`",
+	}, "\n")
+
+	var got []string
+	for _, claim := range ExtractClaims(report, nil, known) {
+		if claim.Kind != ClaimKindPath {
+			continue
+		}
+		got = append(got, claim.Path)
+	}
+	want := []string{"loop/claims.go", "cmd/batuta/judge.go", "docs/judge.md", "out/1.txt", "README.md", "loop/claims_test.go"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("path claims = %v, want %v", got, want)
+	}
+}
+
+func TestExtractClaimsCriterionIndex(t *testing.T) {
+	t.Parallel()
+
+	criteria := []gates.Criterion{
+		{Text: "path claims are precise"},
+		{Text: "criterion claims carry their index"},
+		{Text: "evidence is attached"},
+	}
+	report := strings.Join([]string{
+		"BATUTA-PROGRESS 1 DONE",
+		"TASK 2: DONE",
+		"BATUTA-PROGRESS 3 DONE",
+		"TASK 4: DONE",
+		"BATUTA-PROGRESS 0 DONE",
+		"criterion 2 passed",
+	}, "\n")
+
+	var got []Claim
+	for _, claim := range ExtractClaims(report, criteria, anyKnownPath) {
+		if claim.Kind == ClaimKindCriterion {
+			got = append(got, claim)
+		}
+	}
+	if len(got) != 4 {
+		t.Fatalf("criterion claims = %#v, want 4 in-range claims", got)
+	}
+	if got[0].Criterion != 1 || got[0].Text != criteria[0].Text || got[0].Line != "BATUTA-PROGRESS 1 DONE" {
+		t.Fatalf("progress claim = %#v", got[0])
+	}
+	if got[1].Criterion != 2 || got[1].Text != criteria[1].Text || got[1].Line != "TASK 2: DONE" {
+		t.Fatalf("task claim = %#v", got[1])
+	}
+	if got[2].Criterion != 3 || got[2].Text != criteria[2].Text || got[2].Line != "BATUTA-PROGRESS 3 DONE" {
+		t.Fatalf("progress-3 claim = %#v", got[2])
+	}
+	if got[3].Criterion != 2 || got[3].Text != criteria[1].Text || got[3].Line != "criterion 2 passed" {
+		t.Fatalf("criterion-passed claim = %#v", got[3])
+	}
+}
+
+func anyKnownPath(string) bool { return true }
 
 func pathClaim(claims []Claim, path string) (Claim, bool) {
 	for _, claim := range claims {
@@ -177,36 +246,50 @@ func TestSettleClaimsCriteria(t *testing.T) {
 	t.Parallel()
 
 	claim := Claim{Kind: ClaimKindCriterion, Text: "settles criteria", Line: "BATUTA-PROGRESS 1 DONE", Criterion: 1, Status: ClaimStatusUnsettled}
-	pass := gates.Verdict{Name: "proof 1", Pass: true}
-	fail := gates.Verdict{Name: "proof 1", Pass: false}
+	pass := gates.Verdict{Name: "proof 1", Pass: true, Signal: "settles criteria — `go test ./loop -run TestSettleClaimsCriteria` passed"}
+	fail := gates.Verdict{Name: "proof 1", Pass: false, Signal: "settles criteria — `go test ./loop -run TestSettleClaimsCriteria` failed"}
+	done := ParseVerifierLines("TASK 1: DONE")
+	incompleteLine := ParseVerifierLines("TASK 1: INCOMPLETE — missing tests")
 
 	failed := SettleClaims([]Claim{claim}, ClaimEvidence{
 		Proofs:        []gates.Verdict{fail},
-		VerifierLines: ParseVerifierLines("TASK 1: DONE"),
+		VerifierLines: done,
 	})
 	if len(failed) != 1 || failed[0].Status != ClaimStatusContradicted || failed[0].Source != ClaimSourceCode {
 		t.Fatalf("failed proof = %#v", failed)
 	}
+	if failed[0].Evidence != "proof: "+fail.Signal+"; verifier: TASK 1: DONE" {
+		t.Fatalf("failed proof evidence = %q", failed[0].Evidence)
+	}
 
 	incomplete := SettleClaims([]Claim{claim}, ClaimEvidence{
 		Proofs:        []gates.Verdict{pass},
-		VerifierLines: ParseVerifierLines("TASK 1: INCOMPLETE — missing tests"),
+		VerifierLines: incompleteLine,
 	})
 	if len(incomplete) != 1 || incomplete[0].Status != ClaimStatusContradicted || incomplete[0].Source != ClaimSourceCode {
 		t.Fatalf("incomplete verifier = %#v", incomplete)
 	}
+	if incomplete[0].Evidence != "proof: "+pass.Signal+"; verifier: TASK 1: INCOMPLETE — missing tests" {
+		t.Fatalf("incomplete verifier evidence = %q", incomplete[0].Evidence)
+	}
 
 	supported := SettleClaims([]Claim{claim}, ClaimEvidence{
 		Proofs:        []gates.Verdict{pass},
-		VerifierLines: ParseVerifierLines("TASK 1: DONE"),
+		VerifierLines: done,
 	})
 	if len(supported) != 1 || supported[0].Status != ClaimStatusSupported || supported[0].Source != ClaimSourceCode {
 		t.Fatalf("both pass = %#v", supported)
+	}
+	if supported[0].Evidence != "proof: "+pass.Signal+"; verifier: TASK 1: DONE" {
+		t.Fatalf("supported evidence = %q", supported[0].Evidence)
 	}
 
 	unsettled := SettleClaims([]Claim{claim}, ClaimEvidence{})
 	if len(unsettled) != 1 || unsettled[0].Status != ClaimStatusUnsettled || unsettled[0].Source != "" {
 		t.Fatalf("no proof and no verifier = %#v", unsettled)
+	}
+	if unsettled[0].Evidence != "proof: ; verifier: " {
+		t.Fatalf("neither-exists evidence = %q", unsettled[0].Evidence)
 	}
 }
 
@@ -238,12 +321,12 @@ func pathClaims(claims []Claim) []Claim {
 func TestExtractClaimsBounds(t *testing.T) {
 	t.Parallel()
 
-	empty := ExtractClaims("", nil)
+	empty := ExtractClaims("", nil, anyKnownPath)
 	if len(empty) != 0 {
 		t.Fatalf("empty report = %#v", empty)
 	}
 
-	binary := ExtractClaims("\x00\xff`loop/secret.go`\nthe suite passed\n", nil)
+	binary := ExtractClaims("\x00\xff`loop/secret.go`\nthe suite passed\n", nil, anyKnownPath)
 	if _, ok := pathClaim(binary, "loop/secret.go"); ok {
 		t.Fatal("extracted a path from a binary line")
 	}
@@ -254,7 +337,7 @@ func TestExtractClaimsBounds(t *testing.T) {
 		prefixed.WriteString("noise line\n")
 	}
 	prefixed.WriteString("Paths touched: loop/claims.go\n")
-	bounded := ExtractClaims(prefixed.String(), nil)
+	bounded := ExtractClaims(prefixed.String(), nil, anyKnownPath)
 	if _, ok := pathClaim(bounded, "stale/old.go"); ok {
 		t.Fatal("extracted a path from a line outside the report limit")
 	}
@@ -263,7 +346,7 @@ func TestExtractClaimsBounds(t *testing.T) {
 	}
 
 	huge := strings.Repeat("noise line\n", 100000) + "the suite passed\n"
-	got := ExtractClaims(huge, nil)
+	got := ExtractClaims(huge, nil, anyKnownPath)
 	if len(got) != 1 || got[0].Kind != ClaimKindTests {
 		t.Fatalf("huge report = %#v", got)
 	}

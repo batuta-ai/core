@@ -1,10 +1,12 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -484,6 +486,7 @@ func TestClaimEvidenceNoCallWhenSettled(t *testing.T) {
 		report := passingClaimReport()
 		result := executor.Result{Stdout: []byte("edited `docs/missing.md`\n")}
 		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		ac.plan.Scope = []string{"docs/"}
 		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, []string{"out/1.txt"})
 		if err != nil {
 			t.Fatalf("judgeClaimEvidence() error = %v", err)
@@ -505,6 +508,109 @@ func TestClaimEvidenceNoCallWhenSettled(t *testing.T) {
 			t.Fatalf("judge proof does not name the contradicted claim and report line:\n%s", joined)
 		}
 	})
+}
+
+func TestClaimEvidenceNoEmptyEvidence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sent questions always carry evidence", func(t *testing.T) {
+		t.Parallel()
+		rec := &claimQuestionRecorder{}
+		r := newJudgmentRunner(t, rec, judge.ModeShadow, 0.9)
+		report := passingClaimReport()
+		report.Proofs = nil
+		report.Verifier = nil
+		result := executor.Result{Stdout: []byte("BATUTA-PROGRESS 1 DONE\ncommitted abcdef1 on the feature branch\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, nil)
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if rec.Asks() == 0 {
+			t.Fatal("judge was not asked for unsettled claims with evidence")
+		}
+		if !got.Asked {
+			t.Fatal("Asked = false, want true")
+		}
+		for key, question := range rec.Questions() {
+			inst := stringMap(t, question.Instructions)
+			if inst["evidence"] == "" {
+				t.Fatalf("%s was sent with empty evidence: %#v", key, inst)
+			}
+		}
+	})
+
+	t.Run("empty evidence is unverifiable by code without a judge call", func(t *testing.T) {
+		t.Parallel()
+		rec := &claimQuestionRecorder{}
+		claims := []Claim{{
+			Text:   "the routing now matches the brief",
+			Line:   "the routing now matches the brief",
+			Status: ClaimStatusUnsettled,
+		}}
+		req := BuildClaimEvidenceRequest(ClaimEvidenceInput{
+			Task: routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: "task_1"}},
+		}, claims)
+		if len(req.Questions) != 0 {
+			t.Fatalf("Questions = %#v, want none", req.Questions)
+		}
+		if claims[0].Status != ClaimStatusUnverifiable || claims[0].Source != ClaimSourceCode {
+			t.Fatalf("claim = %#v, want unverifiable by code", claims[0])
+		}
+
+		r := newJudgmentRunner(t, rec, judge.ModeShadow, 0.9)
+		report := passingClaimReport()
+		result := executor.Result{Stdout: []byte("the routing now matches the brief\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, nil)
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if rec.Asks() != 0 || got.Asked {
+			t.Fatalf("asks = %d asked = %t, want no judge call", rec.Asks(), got.Asked)
+		}
+		flagged, records, uncertain := aggregateClaimEvidence(claims, nil, 0.9)
+		if flagged || len(uncertain) != 0 {
+			t.Fatalf("unverifiable flagged or uncertain: flagged=%t uncertain=%#v", flagged, uncertain)
+		}
+		if len(records) != 1 || records[0].Source != string(ClaimSourceCode) || records[0].Choice != string(ClaimStatusUnverifiable) {
+			t.Fatalf("records = %#v, want code/unverifiable", records)
+		}
+	})
+}
+
+type claimQuestionRecorder struct {
+	mu        sync.Mutex
+	asks      int
+	questions map[string]judge.Question
+}
+
+func (r *claimQuestionRecorder) Ask(_ context.Context, req judge.Request) (judge.Response, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.asks++
+	r.questions = req.Questions
+	answers := make(map[string]judge.Answer, len(req.Questions))
+	for key := range req.Questions {
+		answers[key] = judge.Answer{Type: judge.QuestionChoice, Choice: claimChoiceUnverifiable, Confidence: 0.4}
+	}
+	return judge.Response{Model: "jev-test", Answers: answers}, nil
+}
+
+func (r *claimQuestionRecorder) Asks() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.asks
+}
+
+func (r *claimQuestionRecorder) Questions() map[string]judge.Question {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]judge.Question, len(r.questions))
+	for key, question := range r.questions {
+		out[key] = question
+	}
+	return out
 }
 
 func TestClaimEvidenceAggregation(t *testing.T) {
@@ -984,7 +1090,7 @@ func stringMap(t *testing.T, value any) map[string]string {
 	return got
 }
 
-func newJudgmentRunner(t *testing.T, fake *fakeLoopJudge, mode judge.Mode, threshold float64) *Runner {
+func newJudgmentRunner(t *testing.T, j judge.Judge, mode judge.Mode, threshold float64) *Runner {
 	t.Helper()
 	root := t.TempDir()
 	store, err := journal.Open(root)
@@ -993,7 +1099,7 @@ func newJudgmentRunner(t *testing.T, fake *fakeLoopJudge, mode judge.Mode, thres
 	}
 	return &Runner{
 		opts: Options{
-			Judge:       fake,
+			Judge:       j,
 			JudgeConfig: claimEvidenceJudgeConfig(mode, threshold),
 		},
 		root:     root,
