@@ -215,6 +215,8 @@
 - [x] Claim extraction and code settlement → cursor-agent (cursor-grok-4.6-high), commit f3dd121cb3cf (trail: .batuta/runs/2026-09-21-judge-claims-v2-task-1.md, delivery judge-claims-v2-20260921-094157, plan judge-claims-v2, 2026-09-21)
 - [x] One choice per unsettled claim with structured instructions → cursor-agent (cursor-grok-4.6-high), commit 5a332016bc14 (trail: .batuta/runs/2026-09-21-judge-claims-v2-task-2.md, delivery judge-claims-v2-20260921-094157, plan judge-claims-v2, 2026-09-21)
 - [x] Replay prints the v2 breakdown → opencode (opencode/glm-5.3-flash), 1 retry, commit 844d619901b1 (trail: .batuta/runs/2026-09-21-judge-claims-v2-task-3.md, delivery judge-claims-v2-20260921-094157, plan judge-claims-v2, 2026-09-21)
+- [x] Changed paths recorded live and recovered in replay → cursor-agent (cursor-grok-4.6-high), commit d2f1fb93d1b6 (trail: .batuta/runs/2026-09-21-judge-claims-v21-task-1.md, delivery judge-claims-v21-20260921-111251, plan judge-claims-v21, 2026-09-21)
+- [x] Path claims only for repository paths, criterion claims with their index and evidence → cursor-agent (cursor-grok-4.6-high), commit f9454c006467 (trail: .batuta/runs/2026-09-21-judge-claims-v21-task-2.md, delivery judge-claims-v21-20260921-111251, plan judge-claims-v21, 2026-09-21)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
