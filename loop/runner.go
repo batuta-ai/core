@@ -22,6 +22,7 @@ import (
 	"github.com/batuta-ai/core/integration"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 	"github.com/batuta-ai/core/worktree"
@@ -54,6 +55,8 @@ const (
 	KindLimitWait         journal.Kind = "limit_wait"
 	KindLimitFallback     journal.Kind = "limit_fallback"
 	KindPresenceTakenOver journal.Kind = "presence_taken_over"
+	KindJudgeIntent       journal.Kind = "judge_intent"
+	KindJudgeResult       journal.Kind = "judge_result"
 )
 
 // Terminal states of a delivery.
@@ -107,6 +110,9 @@ type Options struct {
 	Runner      publication.CommandRunner
 	Environment []string // extra environment for executors (tests)
 	Now         func() time.Time
+	// Judge is the optional decision model; nil keeps today's deterministic rule.
+	Judge       judge.Judge
+	JudgeConfig judge.Config
 }
 
 // Runner holds one delivery in flight.

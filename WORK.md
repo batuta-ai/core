@@ -209,6 +209,9 @@
 - [x] Vercel provider over the TypeSafe-compatible gateway API → opencode (opencode/glm-5.3-flash), commit a15c7dac2296 (trail: .batuta/runs/2026-09-20-judge-vercel-auto-task-1.md, delivery judge-vercel-auto-20260920-144937, plan judge-vercel-auto, 2026-09-20)
 - [x] Vercel provider over the TypeSafe-compatible gateway API → ticked in the plan before the run, commit eb49832641af (trail: .batuta/runs/2026-09-20-judge-vercel-auto-task-1.md, delivery judge-vercel-auto-20260920-152219, plan judge-vercel-auto, 2026-09-20)
 - [x] Automatic provider selection with a fallback chain → cursor-agent (cursor-grok-4.6-high), 1 retry, commit db5c984af512 (trail: .batuta/runs/2026-09-20-judge-vercel-auto-task-2.md, delivery judge-vercel-auto-20260920-152219, plan judge-vercel-auto, 2026-09-20)
+- [x] Judgment state, questions and journal records → cursor-agent (cursor-grok-4.6-high), commit ce72d29eac2c (trail: .batuta/runs/2026-09-20-judge-claim-evidence-task-1.md, delivery judge-claim-evidence-20260920-235929, plan judge-claim-evidence, 2026-09-21)
+- [x] Shadow and enforce in runAttempt → cursor-agent (cursor-grok-4.6-high), commit 1f9b86cbcd8e (trail: .batuta/runs/2026-09-20-judge-claim-evidence-task-2.md, delivery judge-claim-evidence-20260920-235929, plan judge-claim-evidence, 2026-09-21)
+- [x] batuta judge replay over a delivery journal → opencode (opencode/glm-5.3-flash), commit 366c681970d6 (trail: .batuta/runs/2026-09-20-judge-claim-evidence-task-3.md, delivery judge-claim-evidence-20260920-235929, plan judge-claim-evidence, 2026-09-21)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

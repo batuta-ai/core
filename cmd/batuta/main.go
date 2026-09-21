@@ -28,6 +28,7 @@ import (
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/inventory/adapters"
+	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/loop"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/review"
@@ -828,6 +829,12 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		return errors.New("--watch requires --dashboard")
 	}
 	opts := executionOptions()
+	if err := attachLoopJudge(&opts, *workspace); err != nil {
+		return err
+	}
+	if *dryRun {
+		fmt.Fprintf(stdout, "judge     %s\n", judgeProviderLine(opts.JudgeConfig))
+	}
 	if *roadmap && *dryRun {
 		return loop.DryRunRoadmap(opts)
 	}
@@ -913,6 +920,42 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		return nil
 	}
 	return loopRunExit(state, err)
+}
+
+func attachLoopJudge(opts *loop.Options, workspace string) error {
+	root, err := workspaceRoot(workspace)
+	if err != nil {
+		return err
+	}
+	config, err := judge.LoadConfig(root, os.Getenv)
+	if err != nil {
+		return err
+	}
+	opts.JudgeConfig = config
+	built, err := config.Judge(os.Getenv)
+	if err == nil {
+		opts.Judge = built
+	}
+	return nil
+}
+
+func judgeProviderLine(config judge.Config) string {
+	switch config.Provider {
+	case judge.ProviderOff, "":
+		return judge.ReasonJudgeOff
+	case judge.ProviderAuto:
+		providers := config.Providers
+		if len(providers) == 0 {
+			providers = []judge.Provider{judge.ProviderTypesafe, judge.ProviderVercel, judge.ProviderOpenRouter}
+		}
+		names := make([]string, len(providers))
+		for i, provider := range providers {
+			names[i] = string(provider)
+		}
+		return strings.Join(names, ",")
+	default:
+		return string(config.Provider)
+	}
 }
 
 func loopRunExit(state string, err error) error {

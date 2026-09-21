@@ -114,6 +114,38 @@ way. With `"auto"` it also prints the answering provider on the success line
 (`provider: typesafe`). It is the cheapest way to confirm that a provider,
 model and key work before wiring a decision point.
 
+`replay` judges a past delivery after the fact:
+
+```text
+batuta judge replay --journal <path> [--runs <dir>] [--config <path>]
+                    [--decision <name>] [--workspace <dir>] [--base-url <url>]
+```
+
+`--journal` is a delivery journal (`.batuta/journal/<delivery>.jsonl`). For
+each `gates_reported` record with a matching `executor_finished` record,
+replay locates the attempt's run log `<runs>/<date>-<slug>-<task>-e<n>.out.log`
+(`--runs` defaults to `<workspace>/.batuta/runs`; a relative `--runs` is
+workspace-relative), rebuilds the claim_evidence state from the journal
+detail and the log, and asks the configured judge. One line per attempt:
+
+```text
+task_1 e1 outcome=already_satisfied claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe
+```
+
+The outcome is the recorded verdict of the attempt: the `blocker` of the
+following `failure_recorded` record (for example `already_satisfied`),
+`candidate` for `candidate_recorded` or `question` for `question_recorded`.
+The run log is not journaled, so an attempt whose log is missing is reported
+as `task_1 e1 skipped <expected path>` — replay state is built from the
+journal and the log only, so the plan's scope is empty, the criteria are
+recovered from the recorded proof signals, the changed paths only from a
+failed scope verdict, and the progress events carry no timestamps. Replay is
+read-only: the journal and the run logs are opened for reading and never
+through the journal's append paths. Exit `0` even when attempts are skipped
+or a later ask fails (`unavailable=<reason>` on that line); exit `2` when the
+judge is unavailable before the first question is answered, and `1` for
+usage, config or journal errors.
+
 Exit codes: `0` answered, `2` unavailable — the reason is printed on stderr —
 and `1` usage or config error. Exit `2` is a non-failure outcome: the caller
 keeps the deterministic rule.
@@ -139,5 +171,34 @@ from the logs.
   0.9, ignore below 0.1, log in between.
 - Shadow mode first: record verdicts for at least one full delivery per
   project, compare them against the deterministic outcome and the operator's
-  judgments, then enable per decision. No decision point in the loop consumes
-  the judge yet.
+  judgments, then enable per decision.
+
+## `claim_evidence`
+
+The loop's first decision runs after the gates `Decide()` an attempt and
+before the attempt is recorded as a candidate, an already-satisfied task, or
+a failure. The state is built by code from bounded evidence: the task (id,
+title, scope), criteria with proof verdicts, the last 60 lines of the
+executor report (capped at 8 KiB), progress events, whether the tree
+changed and which paths, the verifier signal and detail when present, and
+the deterministic outcome. Executor output is untrusted input; secrets and
+absolute paths are redacted before the judge sees them. The two questions
+are `noul`:
+
+- `claim_unsupported` — the executor's report claims work that the tree,
+  proofs or verifier do not show.
+- `verifier_contradicted` — a verifier DONE line is contradicted by a
+  failed proof or by the executor's own report.
+
+There is no confidence on `noul`; each probability is gated on the
+decision's threshold (default 0.9). `shadow` records `judge_intent` and
+`judge_result` (state digest and answers, never the state body) and
+changes nothing. `enforce` may only fail a passing attempt: when either
+probability is at or above the threshold it sets `report.Passed = false`,
+appends a synthetic failing `judge` proof so `Failures()` and the trail
+show the contradiction, and records blocker `claim_unsupported`. It never
+turns a failure into a pass, never clears a gate, and never marks a task
+satisfied. Any error, including `ErrUnavailable`, is recorded on
+`judge_result` and ignored. The decision is not consulted when it is
+`off`, the judge is off, or the attempt ended in a question, a rate
+limit, an executor error or a reconciliation block.

@@ -18,6 +18,7 @@ import (
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
@@ -3342,4 +3343,348 @@ func TestLoopParksConflictedWorktree(t *testing.T) {
 	if len(snapshotRecords(t, f, r.Delivery())) == 0 || terminalState(records) != StateBlocked {
 		t.Fatal("failure handling did not finalize")
 	}
+}
+
+type fakeLoopJudge struct {
+	mu      sync.Mutex
+	asks    int
+	answers map[string]float64
+	err     error
+	states  []any
+}
+
+func (f *fakeLoopJudge) Ask(_ context.Context, req judge.Request) (judge.Response, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.asks++
+	f.states = append(f.states, req.State)
+	if f.err != nil {
+		return judge.Response{}, f.err
+	}
+	answers := make(map[string]judge.Answer, len(f.answers))
+	for key, noul := range f.answers {
+		answers[key] = judge.Answer{Type: judge.QuestionNoul, Noul: noul}
+	}
+	return judge.Response{Model: "jev-test", Answers: answers, Usage: judge.Usage{InputTokens: 8}}, nil
+}
+
+func (f *fakeLoopJudge) Asks() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.asks
+}
+
+func claimEvidenceJudgeConfig(mode judge.Mode, threshold float64) judge.Config {
+	return judge.Config{
+		Provider:      judge.ProviderTypesafe,
+		Model:         "jev-test",
+		MaxStateBytes: 100000,
+		Decisions: map[string]judge.DecisionConfig{
+			"claim_evidence": {Mode: mode, Threshold: threshold},
+		},
+	}
+}
+
+func setupGreetingOneOnBase(t *testing.T) fixture {
+	t.Helper()
+	f := setup(t)
+	if err := os.MkdirAll(filepath.Join(f.root, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "out", "1.txt"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "chore: greeting one by hand")
+	f.base = f.run(t, "rev-parse", "HEAD")
+	return f
+}
+
+func attemptOutcomes(records []journal.Record) map[string][]string {
+	out := map[string][]string{}
+	for _, record := range records {
+		if record.TaskID == "" {
+			continue
+		}
+		switch record.Kind {
+		case KindCandidate:
+			out[record.TaskID] = append(out[record.TaskID], "candidate")
+		case KindQuestion:
+			out[record.TaskID] = append(out[record.TaskID], "question")
+		case KindFailure:
+			var detail struct {
+				Blocker string `json:"blocker"`
+			}
+			_ = json.Unmarshal(record.Detail, &detail)
+			out[record.TaskID] = append(out[record.TaskID], detail.Blocker)
+		}
+	}
+	return out
+}
+
+func runSatisfiedGreetingLoop(t *testing.T, fake *fakeLoopJudge, mode judge.Mode) (string, []journal.Record, string) {
+	t.Helper()
+	f := setupGreetingOneOnBase(t)
+	var out bytes.Buffer
+	opts := f.options("satisfied", &out)
+	if fake != nil {
+		opts.Judge = fake
+		opts.JudgeConfig = claimEvidenceJudgeConfig(mode, 0.9)
+	}
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	return state, readJournal(t, f, r.Delivery()), out.String()
+}
+
+func TestJudgeShadowRecordsWithoutEffect(t *testing.T) {
+	controlState, controlRecords, controlOut := runSatisfiedGreetingLoop(t, nil, judge.ModeOff)
+	if controlState != StateDone {
+		t.Fatalf("control Run() = %s\n%s", controlState, controlOut)
+	}
+
+	fake := &fakeLoopJudge{answers: map[string]float64{
+		"claim_unsupported":     0.93,
+		"verifier_contradicted": 0.88,
+	}}
+	state, records, out := runSatisfiedGreetingLoop(t, fake, judge.ModeShadow)
+	if state != controlState {
+		t.Fatalf("shadow Run() = %s, want %s\n%s", state, controlState, out)
+	}
+	gotOutcomes, wantOutcomes := attemptOutcomes(records), attemptOutcomes(controlRecords)
+	if len(gotOutcomes) != len(wantOutcomes) {
+		t.Fatalf("shadow outcomes = %v, want %v\n%s", gotOutcomes, wantOutcomes, out)
+	}
+	for taskID, want := range wantOutcomes {
+		if fmt.Sprint(gotOutcomes[taskID]) != fmt.Sprint(want) {
+			t.Fatalf("shadow %s outcomes = %v, want %v\n%s", taskID, gotOutcomes[taskID], want, out)
+		}
+	}
+
+	finished := map[string]bool{}
+	gated := map[string]bool{}
+	intents := map[string]judge.IntentRecord{}
+	results := map[string]judge.ResultRecord{}
+	for _, record := range records {
+		switch record.Kind {
+		case KindFinished:
+			finished[record.TaskID] = true
+		case KindGates:
+			gated[record.TaskID] = true
+		case KindJudgeIntent:
+			if !finished[record.TaskID] {
+				t.Fatalf("judge_intent for %s before executor_finished", record.TaskID)
+			}
+			var detail judge.IntentRecord
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			intents[record.TaskID] = detail
+		case KindJudgeResult:
+			var detail judge.ResultRecord
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			results[record.TaskID] = detail
+		}
+	}
+	if fake.Asks() != 3 || len(intents) != 3 || len(results) != 3 {
+		t.Fatalf("asks=%d intents=%d results=%d, want 3 each", fake.Asks(), len(intents), len(results))
+	}
+	digests := map[string]bool{}
+	fake.mu.Lock()
+	for _, captured := range fake.states {
+		digest, err := judge.StateDigest(captured)
+		if err != nil {
+			fake.mu.Unlock()
+			t.Fatal(err)
+		}
+		digests[digest] = true
+	}
+	fake.mu.Unlock()
+	for _, taskID := range []string{"task_1", "task_2", "task_3"} {
+		intent := intents[taskID]
+		resultDetail := results[taskID]
+		if intent.Decision != "claim_evidence" || !digests[intent.StateDigest] {
+			t.Fatalf("%s intent = %+v, digests=%v", taskID, intent, digests)
+		}
+		if resultDetail.StateDigest != intent.StateDigest || resultDetail.UnavailableReason != "" {
+			t.Fatalf("%s result = %+v", taskID, resultDetail)
+		}
+		if resultDetail.Answers["claim_unsupported"].Noul != 0.93 || resultDetail.Answers["verifier_contradicted"].Noul != 0.88 {
+			t.Fatalf("%s answers = %#v", taskID, resultDetail.Answers)
+		}
+	}
+	if !gated["task_1"] {
+		t.Fatal("silent already-satisfied path did not journal gates_reported")
+	}
+}
+
+func TestJudgeEnforceBlocksUnsupportedClaim(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	fake := &fakeLoopJudge{answers: map[string]float64{
+		"claim_unsupported":     0.93,
+		"verifier_contradicted": 0.12,
+	}}
+	opts := f.options("default", &out)
+	opts.Judge = fake
+	opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeEnforce, 0.9)
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if state == StateDone {
+		t.Fatalf("Run() = %s, want a blocked delivery\n%s", state, out.String())
+	}
+
+	var first struct {
+		Blocker  string   `json:"blocker"`
+		Feedback []string `json:"feedback"`
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind != KindFailure || record.TaskID != "task_1" {
+			continue
+		}
+		if err := json.Unmarshal(record.Detail, &first); err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	if first.Blocker != blockerClaimUnsupported {
+		t.Fatalf("first task_1 blocker = %q, want %s\n%s", first.Blocker, blockerClaimUnsupported, out.String())
+	}
+	joined := strings.Join(first.Feedback, "\n")
+	if !strings.Contains(joined, "BATUTA-PROGRESS 1 DONE") {
+		t.Fatalf("retry feedback does not quote the executor claim:\n%s", joined)
+	}
+	if !strings.Contains(joined, "claim_evidence: claim_unsupported 0.93 (threshold 0.90)") {
+		t.Fatalf("retry feedback missing judge signal:\n%s", joined)
+	}
+}
+
+func TestJudgeEnforceBelowThreshold(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	fake := &fakeLoopJudge{answers: map[string]float64{
+		"claim_unsupported":     0.2,
+		"verifier_contradicted": 0.1,
+	}}
+	opts := f.options("default", &out)
+	opts.Judge = fake
+	opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeEnforce, 0.9)
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if fake.Asks() == 0 {
+		t.Fatal("enforce below threshold never asked the judge")
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind == KindFailure && strings.Contains(string(record.Detail), blockerClaimUnsupported) {
+			t.Fatalf("below-threshold enforce recorded claim_unsupported: %s", record.Detail)
+		}
+	}
+}
+
+func TestJudgeUnavailableKeepsRule(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	fake := &fakeLoopJudge{
+		answers: map[string]float64{"claim_unsupported": 0.99, "verifier_contradicted": 0.99},
+		err:     &judge.UnavailableError{Reason: judge.ReasonTimeout},
+	}
+	opts := f.options("default", &out)
+	opts.Judge = fake
+	opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeEnforce, 0.9)
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+
+	var sawResult bool
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		switch record.Kind {
+		case KindJudgeResult:
+			var detail judge.ResultRecord
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if detail.UnavailableReason != judge.ReasonTimeout {
+				t.Fatalf("unavailable_reason = %q, want %s", detail.UnavailableReason, judge.ReasonTimeout)
+			}
+			sawResult = true
+		case KindFailure:
+			if strings.Contains(string(record.Detail), blockerClaimUnsupported) {
+				t.Fatalf("unavailable judge changed the outcome: %s", record.Detail)
+			}
+		}
+	}
+	if !sawResult {
+		t.Fatal("unavailable judge did not journal judge_result")
+	}
+}
+
+func TestJudgeOffNeverAsks(t *testing.T) {
+	t.Run("decision off", func(t *testing.T) {
+		f := setup(t)
+		var out bytes.Buffer
+		fake := &fakeLoopJudge{answers: map[string]float64{
+			"claim_unsupported":     0.93,
+			"verifier_contradicted": 0.93,
+		}}
+		opts := f.options("default", &out)
+		opts.Judge = fake
+		opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeOff, 0.9)
+		r, err := New(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+			t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+		}
+		if fake.Asks() != 0 {
+			t.Fatalf("decision off asked the judge %d time(s)", fake.Asks())
+		}
+		for _, record := range readJournal(t, f, r.Delivery()) {
+			if record.Kind == KindJudgeIntent || record.Kind == KindJudgeResult {
+				t.Fatalf("decision off journaled %s", record.Kind)
+			}
+		}
+	})
+	t.Run("judge nil", func(t *testing.T) {
+		f := setup(t)
+		var out bytes.Buffer
+		opts := f.options("default", &out)
+		opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeShadow, 0.9)
+		r, err := New(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+			t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+		}
+		for _, record := range readJournal(t, f, r.Delivery()) {
+			if record.Kind == KindJudgeIntent || record.Kind == KindJudgeResult {
+				t.Fatalf("nil judge journaled %s", record.Kind)
+			}
+		}
+	})
 }
