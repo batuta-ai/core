@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,16 +16,21 @@ import (
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
 
 const (
 	claimEvidenceDecision         = "claim_evidence"
-	claimUnsupportedKey           = "claim_unsupported"
-	verifierContradictedKey       = "verifier_contradicted"
 	defaultClaimEvidenceThreshold = 0.9
 	claimEvidenceReportLines      = 60
 	claimEvidenceReportBytes      = 8 << 10
+	claimEvidenceQuestionText     = "How does the evidence relate to the claim?"
+	claimChoiceSupported          = "supported"
+	claimChoiceContradicted       = "contradicted"
+	claimChoiceUnverifiable       = "unverifiable"
+	uncertainContradictedLow      = 0.30
+	uncertainContradictedHigh     = 0.70
 )
 
 // judgment is the loop's view of one claim_evidence call. Shadow records it
@@ -32,7 +38,38 @@ const (
 type judgment struct {
 	Asked       bool
 	Unavailable string
-	Answers     map[string]float64
+	Flagged     bool
+	Claims      []claimEvidenceClaimJSON
+	Uncertain   []claimEvidenceUncertainJSON
+}
+
+type claimEvidenceRequestState struct {
+	TaskID       string   `json:"task_id"`
+	Title        string   `json:"title"`
+	Scope        []string `json:"scope"`
+	OutcomeGates []string `json:"outcome_gates"`
+}
+
+type claimEvidenceResultRecord struct {
+	judge.ResultRecord
+	Claims    []claimEvidenceClaimJSON     `json:"claims"`
+	Uncertain []claimEvidenceUncertainJSON `json:"uncertain"`
+}
+
+type claimEvidenceClaimJSON struct {
+	Kind       string  `json:"kind"`
+	Text       string  `json:"text"`
+	Line       string  `json:"line,omitempty"`
+	Source     string  `json:"source"`
+	Choice     string  `json:"choice"`
+	Confidence float64 `json:"confidence"`
+}
+
+type claimEvidenceUncertainJSON struct {
+	Key          string  `json:"key"`
+	Choice       string  `json:"choice"`
+	Confidence   float64 `json:"confidence"`
+	Contradicted float64 `json:"contradicted"`
 }
 
 var (
@@ -52,6 +89,7 @@ type ClaimEvidenceInput struct {
 	Progress     []executor.ProgressEvent
 	ChangedPaths []string
 	TreeChanged  bool
+	TreeFiles    []string
 }
 
 type claimEvidenceState struct {
@@ -186,6 +224,122 @@ func ClaimEvidenceQuestions() map[string]judge.Question {
 			},
 		},
 	}
+}
+
+// BuildClaimEvidenceRequest builds the v2 claim_evidence call: a short task
+// summary as state and one choice question per claim code could not settle.
+func BuildClaimEvidenceRequest(input ClaimEvidenceInput, claims []Claim) judge.Request {
+	workspace := input.Workspace
+	if workspace != "" {
+		workspace = filepath.Clean(workspace)
+	}
+	questions := make(map[string]judge.Question)
+	for index := range claims {
+		claim := &claims[index]
+		if claim.Status != ClaimStatusUnsettled {
+			continue
+		}
+		if claim.Evidence == "" {
+			claim.Evidence = unsettledClaimEvidence(*claim, input)
+		}
+		if claim.Evidence == "" {
+			claim.Status = ClaimStatusUnverifiable
+			claim.Source = ClaimSourceCode
+			continue
+		}
+		questions[claimQuestionKey(index)] = judge.Question{
+			Type: judge.QuestionChoice,
+			Instructions: map[string]string{
+				"question": claimEvidenceQuestionText,
+				"claim":    claim.Text,
+				"evidence": claim.Evidence,
+			},
+			Criteria: map[string]string{
+				claimChoiceSupported:    "the evidence states or directly implies the claim",
+				claimChoiceContradicted: "the evidence shows the claim is false",
+				claimChoiceUnverifiable: "the evidence says nothing about the claim",
+			},
+		}
+	}
+	return judge.Request{
+		Decision: claimEvidenceDecision,
+		State: claimEvidenceRequestState{
+			TaskID:       input.Task.ID,
+			Title:        redactText(input.Task.Title, workspace),
+			Scope:        redactPaths(input.Task.Scope, workspace),
+			OutcomeGates: failingGateNames(input.Report),
+		},
+		Questions: questions,
+	}
+}
+
+func claimQuestionKey(index int) string {
+	return "claim_" + strconv.Itoa(index+1)
+}
+
+func unsettledClaimEvidence(claim Claim, input ClaimEvidenceInput) string {
+	if claim.Evidence != "" {
+		return claim.Evidence
+	}
+	switch claim.Kind {
+	case ClaimKindCommit:
+		if input.TreeChanged {
+			return "tree changed; commit not verified by code"
+		}
+		return "tree unchanged; commit not verified by code"
+	case ClaimKindCriterion:
+		return criterionQuestionEvidence(claim, input)
+	case ClaimKindTests:
+		if input.Report.Tests.Pass {
+			return "tests gate passed"
+		}
+		return "tests gate failed"
+	case ClaimKindPath:
+		return "not in changed_paths"
+	default:
+		return ""
+	}
+}
+
+func criterionQuestionEvidence(claim Claim, input ClaimEvidenceInput) string {
+	idx := claim.Criterion - 1
+	var parts []string
+	if idx >= 0 && idx < len(input.Report.Proofs) {
+		if input.Report.Proofs[idx].Pass {
+			parts = append(parts, "proof passed")
+		} else {
+			parts = append(parts, "proof failed")
+		}
+	} else {
+		parts = append(parts, "no proof verdict")
+	}
+	if input.Report.Verifier == nil {
+		parts = append(parts, "no verifier line")
+		return strings.Join(parts, "; ")
+	}
+	line, ok := ParseVerifierLines(input.Report.Verifier.Detail)[claim.Criterion]
+	if !ok {
+		parts = append(parts, "no verifier line")
+		return strings.Join(parts, "; ")
+	}
+	parts = append(parts, "verifier "+line)
+	return strings.Join(parts, "; ")
+}
+
+func claimsFromInput(input ClaimEvidenceInput) []Claim {
+	changed := redactPaths(input.ChangedPaths, input.Workspace)
+	known := knownClaimPath(redactPaths(input.TreeFiles, input.Workspace), changed, redactPaths(input.Task.Scope, input.Workspace))
+	extracted := ExtractClaims(boundExecutorReport(input.OutputTail, input.Workspace), input.Criteria, known)
+	ev := ClaimEvidence{
+		ChangedPaths: changed,
+		TreeChanged:  input.TreeChanged,
+		Proofs:       input.Report.Proofs,
+		TestsPass:    input.Report.Tests.Pass,
+	}
+	if input.Report.Verifier != nil {
+		ev.VerifierLines = ParseVerifierLines(input.Report.Verifier.Detail)
+	}
+	return SettleClaims(extracted, ev)
 }
 
 func boundExecutorReport(output, workspace string) string {
@@ -514,6 +668,29 @@ func sizeOf(state claimEvidenceState) int {
 	return len(encoded)
 }
 
+func (r *Runner) listClaimTreeFiles(ctx context.Context) []string {
+	if r.git.Runner == nil || r.git.Git == "" {
+		return nil
+	}
+	result, err := r.git.Runner.Run(ctx, publication.Command{
+		Executable:  r.git.Git,
+		Directory:   r.root,
+		Args:        []string{"ls-files", "-z"},
+		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+	})
+	if err != nil || result.ExitCode != 0 || result.StdoutTruncated {
+		return nil
+	}
+	var files []string
+	for _, name := range bytes.Split(result.Stdout, []byte{0}) {
+		path := filepath.ToSlash(strings.TrimSpace(string(name)))
+		if path != "" {
+			files = append(files, path)
+		}
+	}
+	return files
+}
+
 func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, report *gates.Report, result executor.Result, treeChanged bool, changedPaths []string) (judgment, error) {
 	if r.opts.Judge == nil {
 		return judgment{}, nil
@@ -522,12 +699,12 @@ func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, repo
 	if decision.Mode == judge.ModeOff {
 		return judgment{}, nil
 	}
-
-	maxBytes := r.opts.JudgeConfig.MaxStateBytes
-	if maxBytes <= 0 {
-		maxBytes = 100000
+	threshold := decision.Threshold
+	if threshold == 0 {
+		threshold = defaultClaimEvidenceThreshold
 	}
-	state, err := BuildClaimEvidenceState(ClaimEvidenceInput{
+
+	input := ClaimEvidenceInput{
 		Workspace:    r.root,
 		Task:         ac.plan,
 		Criteria:     gates.ParseCriteria(ac.plan.Accept),
@@ -536,18 +713,37 @@ func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, repo
 		Progress:     result.Progress,
 		ChangedPaths: changedPaths,
 		TreeChanged:  treeChanged,
-	}, maxBytes)
-	if err != nil {
-		if recErr := r.recordJudgeUnavailable(ac, "", nil, judge.ReasonStateTooLarge); recErr != nil {
-			return judgment{}, recErr
+		TreeFiles:    r.listClaimTreeFiles(ctx),
+	}
+	claims := claimsFromInput(input)
+	req := BuildClaimEvidenceRequest(input, claims)
+	out := judgment{}
+
+	if len(req.Questions) == 0 {
+		flagged, records, uncertain := aggregateClaimEvidence(claims, nil, threshold)
+		out.Flagged = flagged
+		out.Claims = records
+		out.Uncertain = uncertain
+		if err := r.recordSettledClaimEvidence(ac, req.State, records, uncertain); err != nil {
+			return out, err
 		}
-		return judgment{Asked: true, Unavailable: judge.ReasonStateTooLarge}, nil
+		if decision.Mode == judge.ModeEnforce && report.Passed && out.Flagged {
+			enforceClaimEvidence(report, claims, nil, threshold)
+		}
+		return out, nil
 	}
 
 	var sinkErr error
 	traced := &judge.Traced{
 		Judge: r.opts.Judge,
 		Sink: func(kind string, record any) error {
+			if rec, ok := record.(judge.ResultRecord); ok {
+				flagged, records, uncertain := aggregateClaimEvidence(claims, rec.Answers, threshold)
+				out.Flagged = flagged
+				out.Claims = records
+				out.Uncertain = uncertain
+				record = claimEvidenceResultRecord{ResultRecord: rec, Claims: records, Uncertain: uncertain}
+			}
 			err := r.locked(journal.Kind(kind), ac.taskID, record, nil)
 			if err != nil && sinkErr == nil {
 				sinkErr = err
@@ -555,58 +751,136 @@ func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, repo
 			return err
 		},
 	}
-	resp, err := traced.Ask(ctx, judge.Request{
-		Decision:  claimEvidenceDecision,
-		State:     state,
-		Questions: ClaimEvidenceQuestions(),
-	})
+	resp, err := traced.Ask(ctx, req)
+	out.Asked = true
 	if sinkErr != nil {
-		return judgment{Asked: true}, sinkErr
+		return out, sinkErr
 	}
-
-	out := judgment{Asked: true, Answers: noulAnswers(resp.Answers)}
 	if err != nil {
 		var unavail *judge.UnavailableError
 		if errors.As(err, &unavail) {
 			out.Unavailable = unavail.Reason
-			return out, nil
+		} else {
+			out.Unavailable = err.Error()
 		}
-		out.Unavailable = err.Error()
+		if decision.Mode == judge.ModeEnforce && report.Passed && out.Flagged {
+			enforceClaimEvidence(report, claims, resp.Answers, threshold)
+		}
 		return out, nil
 	}
 
-	if decision.Mode == judge.ModeEnforce && report.Passed {
-		threshold := decision.Threshold
-		if threshold == 0 {
-			threshold = defaultClaimEvidenceThreshold
-		}
-		if key, probability, ok := claimEvidenceEnforced(out.Answers, threshold); ok {
-			report.Passed = false
-			report.Proofs = append(report.Proofs, gates.Verdict{
-				Name:   "judge",
-				Pass:   false,
-				Signal: fmt.Sprintf("claim_evidence: %s %.2f (threshold %.2f)", key, probability, threshold),
-				Detail: claimEvidenceContradiction(state),
-			})
-		}
+	if decision.Mode == judge.ModeEnforce && report.Passed && out.Flagged {
+		enforceClaimEvidence(report, claims, resp.Answers, threshold)
 	}
 	return out, nil
 }
 
-func (r *Runner) recordJudgeUnavailable(ac attemptContext, digest string, keys []string, reason string) error {
-	if keys == nil {
-		keys = []string{claimUnsupportedKey, verifierContradictedKey}
-	}
-	intent := judge.IntentRecord{Decision: claimEvidenceDecision, QuestionKeys: keys, StateDigest: digest}
-	if err := r.locked(KindJudgeIntent, ac.taskID, intent, nil); err != nil {
+func (r *Runner) recordSettledClaimEvidence(ac attemptContext, state any, claims []claimEvidenceClaimJSON, uncertain []claimEvidenceUncertainJSON) error {
+	digest, err := judge.StateDigest(state)
+	if err != nil {
 		return err
 	}
-	return r.locked(KindJudgeResult, ac.taskID, judge.ResultRecord{
-		Decision:          claimEvidenceDecision,
-		QuestionKeys:      keys,
-		StateDigest:       digest,
-		UnavailableReason: reason,
+	keys := []string{}
+	if err := r.locked(KindJudgeIntent, ac.taskID, judge.IntentRecord{
+		Decision:     claimEvidenceDecision,
+		QuestionKeys: keys,
+		StateDigest:  digest,
+	}, nil); err != nil {
+		return err
+	}
+	return r.locked(KindJudgeResult, ac.taskID, claimEvidenceResultRecord{
+		ResultRecord: judge.ResultRecord{
+			Decision:     claimEvidenceDecision,
+			QuestionKeys: keys,
+			StateDigest:  digest,
+		},
+		Claims:    claims,
+		Uncertain: uncertain,
 	}, nil)
+}
+
+func aggregateClaimEvidence(claims []Claim, answers map[string]judge.Answer, threshold float64) (bool, []claimEvidenceClaimJSON, []claimEvidenceUncertainJSON) {
+	records := make([]claimEvidenceClaimJSON, 0, len(claims))
+	uncertain := make([]claimEvidenceUncertainJSON, 0)
+	flagged := false
+	for index, claim := range claims {
+		record := claimEvidenceClaimJSON{
+			Kind: string(claim.Kind),
+			Text: claim.Text,
+			Line: claim.Line,
+		}
+		key := claimQuestionKey(index)
+		answer, asked := answers[key]
+		if asked && claim.Status == ClaimStatusUnsettled {
+			record.Source = string(ClaimSourceJudge)
+			record.Choice = answer.Choice
+			record.Confidence = answer.Confidence
+			if claimEvidenceUncertain(answer, threshold) {
+				uncertain = append(uncertain, claimEvidenceUncertainJSON{
+					Key:          key,
+					Choice:       answer.Choice,
+					Confidence:   answer.Confidence,
+					Contradicted: answer.Probabilities[claimChoiceContradicted],
+				})
+			} else if answer.Choice == claimChoiceContradicted && answer.Confidence >= threshold {
+				flagged = true
+			}
+		} else {
+			record.Source = string(claim.Source)
+			record.Choice = string(claim.Status)
+			if claim.Source == ClaimSourceCode {
+				record.Confidence = 1
+			}
+			if claim.Source == ClaimSourceCode && claim.Status == ClaimStatusContradicted {
+				flagged = true
+			}
+		}
+		records = append(records, record)
+	}
+	return flagged, records, uncertain
+}
+
+func claimEvidenceUncertain(answer judge.Answer, threshold float64) bool {
+	if answer.Confidence < threshold {
+		return true
+	}
+	probability, ok := answer.Probabilities[claimChoiceContradicted]
+	if !ok {
+		return false
+	}
+	return probability >= uncertainContradictedLow && probability <= uncertainContradictedHigh
+}
+
+func enforceClaimEvidence(report *gates.Report, claims []Claim, answers map[string]judge.Answer, threshold float64) {
+	signal, detail := claimEvidenceFlagDetail(claims, answers, threshold)
+	if signal == "" {
+		return
+	}
+	report.Passed = false
+	report.Proofs = append(report.Proofs, gates.Verdict{
+		Name:   "judge",
+		Pass:   false,
+		Signal: signal,
+		Detail: detail,
+	})
+}
+
+func claimEvidenceFlagDetail(claims []Claim, answers map[string]judge.Answer, threshold float64) (string, string) {
+	for _, claim := range claims {
+		if claim.Source == ClaimSourceCode && claim.Status == ClaimStatusContradicted {
+			return "claim_evidence: claim_unsupported: " + claim.Text, claim.Line
+		}
+	}
+	for index, claim := range claims {
+		answer, ok := answers[claimQuestionKey(index)]
+		if !ok || claimEvidenceUncertain(answer, threshold) {
+			continue
+		}
+		if answer.Choice == claimChoiceContradicted && answer.Confidence >= threshold {
+			return "claim_evidence: claim_unsupported: " + claim.Text, claim.Line
+		}
+	}
+	return "", ""
 }
 
 func claimEvidenceOutputTail(result executor.Result) string {
@@ -620,49 +894,4 @@ func claimEvidenceOutputTail(result executor.Result) string {
 	default:
 		return stdout + "\n" + stderr
 	}
-}
-
-func noulAnswers(answers map[string]judge.Answer) map[string]float64 {
-	out := make(map[string]float64, len(answers))
-	for key, answer := range answers {
-		out[key] = answer.Noul
-	}
-	return out
-}
-
-func claimEvidenceEnforced(answers map[string]float64, threshold float64) (string, float64, bool) {
-	for _, key := range []string{claimUnsupportedKey, verifierContradictedKey} {
-		if probability, ok := answers[key]; ok && probability >= threshold {
-			return key, probability, true
-		}
-	}
-	return "", 0, false
-}
-
-func claimEvidenceContradiction(state any) string {
-	encoded, err := json.Marshal(state)
-	if err != nil {
-		return ""
-	}
-	var parsed claimEvidenceState
-	if err := json.Unmarshal(encoded, &parsed); err != nil {
-		return strings.TrimSpace(string(encoded))
-	}
-	var claims []string
-	for _, line := range splitReportLines(parsed.ExecutorReport) {
-		trimmed := strings.TrimSpace(line)
-		if claimProgressLine.MatchString(trimmed) || claimTaskLine.MatchString(trimmed) {
-			claims = append(claims, trimmed)
-		}
-	}
-	if len(claims) == 0 {
-		lines := splitReportLines(parsed.ExecutorReport)
-		for i := len(lines) - 1; i >= 0 && len(claims) < 3; i-- {
-			trimmed := strings.TrimSpace(lines[i])
-			if trimmed != "" {
-				claims = append([]string{trimmed}, claims...)
-			}
-		}
-	}
-	return strings.Join(claims, "\n")
 }

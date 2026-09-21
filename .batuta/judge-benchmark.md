@@ -47,3 +47,44 @@ Ground truth: the two `already_satisfied` rows are the attempts where the execut
 The state and questions shipped in `loop/judgment.go` do not separate a false closure from a legitimate candidate: the false ones are near the top, but 0.76 and 0.66 are not far from the legitimate 0.60–0.63. The likely cause, from the state shape: the judge receives the executor's last 60 lines and the changed-path list, and is asked to infer the contradiction itself. TypeSafe's own guidance is to compute in code what code can compute. The next iteration should extract the executor's claimed paths and claimed proof results in code, compare them with `changed_paths` and the proof verdicts, and pass the judge an explicit `claims_without_evidence` list plus the raw report, asking a narrower `noul` ("the listed claims are material to the task"). That is a change to the state builder only; the judge wiring, journal records and replay stay.
 
 Nothing in this file should be quoted as an improvement. It is the baseline.
+
+## Version 2 replay — atomic claims, code first (2026-09-21)
+
+Binary built from `844d619` (plan `judge-claims-v2`, merged locally on main), same command as the baseline, same 23 retroactive attempts plus the 7 attempts of the two deliveries run since. Raw output copied verbatim to `.batuta/judge-replay-v2-raw.txt`. Fields: `claims` extracted from the executor report, `code_contradicted` settled by code, `judge_contradicted` by the judge, `uncertain` bucket, `max_contradicted` the highest judge probability of "contradicted", `flagged` the aggregate.
+
+Headline numbers:
+- Both known false closures are flagged: core `research-ladder task_3` (claims=4, code_contradicted=1, judge max 0.03) and skills `research-ladder task_4` (claims=3, code_contradicted=1, judge max 0.01). Code caught them through the claimed path that the tree did not change. The judge contributed nothing to either.
+- `judge_contradicted=0` on every one of the 30 attempts. The judge answered `unverifiable` on every criterion claim it was asked.
+- 9 of 19 legitimate candidates are also flagged (`flagged=true` with `code_contradicted` between 2 and 15), which would make `enforce` unusable as replayed.
+
+Why, from the claim dumps (`--json`) rather than from the totals:
+1. The journal records changed paths only when the scope gate fails (`gates.Scope` puts them in `Detail` on failure). For passing attempts the replay rebuilt the state with an empty `changed_paths`, so every path claim was "contradicted" by code. This is a replay artifact: the live path has the real list. The retroactive path numbers above are therefore not evidence about the extractor, and the two true positives were caught for a reason the replay cannot distinguish from this artifact (their trees were unchanged, which code does see).
+2. The path extractor accepted `typesafe/jev-1.13`, `encoding/json`, `github.com/batuta-ai/core/judge` and a branch name as repository paths.
+3. `BATUTA-PROGRESS n DONE` and `TASK n: DONE` claims were emitted without their criterion index, so no proof verdict or verifier line was attached; the judge received a claim with empty evidence and answered `unverifiable` (confidence 0.30–0.84).
+
+So version 2 as built does not yet test the design. Version 2.1 fixes the three defects and reruns this exact replay; until then no number here supports or refutes the judge.
+
+## Version 2.1 replay (2026-09-21)
+
+Binary built from `f9454c0` (plan `judge-claims-v21`, tasks 1–2 integrated by the loop; task 3 done by the conducting host because a worktree executor cannot read journals outside its worktree). Judge `provider: auto` → TypeSafe direct. Raw output verbatim in `.batuta/judge-replay-v21-raw.txt`; every count below was computed from that file.
+
+| measure | value |
+|---|---|
+| finished attempts replayed | 33 (11 journals: 9 core, 2 skills) |
+| legitimate candidates | 24 |
+| known false closures | 2 |
+| false closures flagged | 2 of 2, both by code (`changed_paths=0`, claimed path), judge not asked |
+| legitimate candidates flagged | 7 of 24 |
+| attempts where the judge was asked | 17 |
+| claims extracted / settled contradicted by code / contradicted by judge / uncertain | 403 / 43 / 0 / 35 |
+| highest judge "contradicted" probability on any claim | 0.33 |
+| attempts with `changed_paths=unknown` | 6 (all in the skills journals: the replay resolves candidate commits with git in the current workspace, and those commits live in the skills repository) |
+| gate-failed attempts flagged | 2 of 7 (one `tests_failed`, one `scope_violation`) |
+
+What changed from version 2: the replay now has real changed paths for every core attempt (`scope.paths` recorded live from this version on, `git diff --name-only base..candidate` for older journals), and criterion claims reach the judge with their proof verdict and verifier line attached.
+
+What did not change: 7 legitimate candidates are still flagged by code. The `--json` claim dump shows every one comes from a token accepted as a path claim although the report only mentions it: Go import paths (`encoding/json`, `github.com/batuta-ai/core/judge`), a model id (`typesafe/jev-1.13`), branch names (`batuta/judge-package/task-1-e1`), bare extensions (`.go`, `.md`) and files named as examples (`docs/missing.md`). The task 2 implementation let `known` accept any token with a known source extension, and the extractor still takes backticked tokens from any line rather than from "Paths touched" lists or edit-verb sentences. That is a specification defect in this plan, not a judge result.
+
+What the judge did: asked 17 times with evidence attached, it never answered `contradicted` above 0.33 on any claim; 35 answers landed in the uncertain bucket. On this corpus there is no case where the judge found a contradiction that code had not already settled.
+
+Decision rule stated before the run (research note, section 7): keep `enforce` only if both false closures are flagged and no legitimate candidate is flagged. Result: the first half holds through code, the second does not because of the extractor. Version 2.2 must restrict path claims to explicit edit statements before the rule can be evaluated; the judge's own contribution so far is zero contradictions.

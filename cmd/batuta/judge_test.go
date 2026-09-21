@@ -21,7 +21,7 @@ import (
 
 const judgeTestAnswer = `{"model":"jev-1.13.0","answers":{"ok":{"type":"noul","noul":0.93}},"usage":{"input_tokens":12,"output_tokens":3}}`
 
-const judgeTestReplayAnswer = `{"model":"jev-1.13.0","answers":{"claim_unsupported":{"type":"noul","noul":0.93},"verifier_contradicted":{"type":"noul","noul":0.88}},"usage":{"input_tokens":12,"output_tokens":3}}`
+const judgeTestReplayAnswer = `{"model":"jev-1.13.0","answers":{"claim_1":{"type":"choice","choice":"contradicted","confidence":0.93,"probabilities":{"supported":0.02,"contradicted":0.93,"unverifiable":0.05}}},"usage":{"input_tokens":12,"output_tokens":3}}`
 
 // judgeTestServer answers every request with status and body, recording the
 // wire facts of the last request.
@@ -301,9 +301,13 @@ func judgeReplayFixture(t *testing.T, root string, attempts []map[string]any, ru
 	}
 	for index, attempt := range attempts {
 		execution := attempt["execution"].(int)
-		finished, err := json.Marshal(map[string]any{
+		finishedDetail := map[string]any{
 			"execution": execution, "exit_code": 0, "finished": true, "tree_changed": attempt["tree_changed"],
-		})
+		}
+		if base, ok := attempt["base_sha"].(string); ok {
+			finishedDetail["base_head_sha"] = base
+		}
+		finished, err := json.Marshal(finishedDetail)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -322,6 +326,15 @@ func judgeReplayFixture(t *testing.T, root string, attempts []map[string]any, ru
 			Verifier: &gates.Verdict{Name: "verifier", Pass: true, Signal: "1 criterion(s) DONE"},
 			Passed:   true,
 		}
+		if paths, ok := attempt["paths"].([]string); ok {
+			report.Scope.Paths = paths
+		}
+		if detail, ok := attempt["scope_detail"].(string); ok {
+			report.Scope.Pass = false
+			report.Scope.Detail = detail
+			report.Scope.Signal = "1 path(s) outside Scope"
+			report.Passed = false
+		}
 		detail, err := json.Marshal(report)
 		if err != nil {
 			t.Fatal(err)
@@ -335,6 +348,15 @@ func judgeReplayFixture(t *testing.T, root string, attempts []map[string]any, ru
 		}
 		if _, err := store.Append(delivery, journal.Record{Kind: attempt["kind"].(journal.Kind), TaskID: "task_1", Detail: outcome}); err != nil {
 			t.Fatal(err)
+		}
+		if sha, ok := attempt["snapshot_sha"].(string); ok {
+			snap, err := json.Marshal(map[string]any{"execution": execution, "sha": sha})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Append(delivery, journal.Record{Kind: loop.KindSnapshot, TaskID: "task_1", Detail: snap}); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if !slices.Contains(runsMissing, execution) {
 			log := fmt.Sprintf("# exit 0 · finished true · timed out false · rate limited false · %d\n\n## stdout\n\n%s\n\n## stderr\n\n",
@@ -378,10 +400,10 @@ func TestJudgeReplayCommand(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("stdout = %q, want one line per attempt", stdout)
 	}
-	if want := "task_1 e1 outcome=already_satisfied claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe"; lines[0] != want {
+	if want := "task_1 e1 outcome=already_satisfied asked=true claims=1 changed_paths=0 code_contradicted=0 judge_contradicted=1 uncertain=0 max_contradicted=0.93 flagged=true provider=typesafe"; lines[0] != want {
 		t.Fatalf("first line = %q, want %q", lines[0], want)
 	}
-	if want := "task_1 e2 outcome=candidate claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe"; lines[1] != want {
+	if want := "task_1 e2 outcome=candidate asked=true claims=1 changed_paths=unknown code_contradicted=0 judge_contradicted=1 uncertain=0 max_contradicted=0.93 flagged=true provider=typesafe"; lines[1] != want {
 		t.Fatalf("second line = %q, want %q", lines[1], want)
 	}
 	if call.method != http.MethodPost || call.path != "/v1/systemone" {
@@ -394,20 +416,110 @@ func TestJudgeReplayCommand(t *testing.T) {
 	if !ok {
 		t.Fatalf("request state = %#v", call.body["state"])
 	}
-	if state["executor_report"] == "" {
-		t.Fatalf("request state carries no executor report: %#v", state)
+	if state["task_id"] != "task_1" || state["title"] != "Greet once" {
+		t.Fatalf("request state = %#v, want the task summary", state)
 	}
-	task, _ := state["task"].(map[string]any)
-	if task["id"] != "task_1" || task["title"] != "Greet once" {
-		t.Fatalf("request task = %#v", state["task"])
-	}
-	criteria, _ := state["criteria"].([]any)
-	if len(criteria) != 1 {
-		t.Fatalf("request criteria = %#v, want one from the recorded proof", state["criteria"])
+	if _, ok := state["executor_report"]; ok {
+		t.Fatalf("request state carries the v1 executor report: %#v", state)
 	}
 	questions, ok := call.body["questions"].(map[string]any)
-	if !ok || len(questions) != 2 {
-		t.Fatalf("request questions = %#v", call.body["questions"])
+	if !ok || len(questions) != 1 {
+		t.Fatalf("request questions = %#v, want one choice per unsettled claim", call.body["questions"])
+	}
+	question, ok := questions["claim_1"].(map[string]any)
+	if !ok || question["type"] != "choice" {
+		t.Fatalf("claim_1 = %#v", question)
+	}
+	instructions, ok := question["instructions"].(map[string]any)
+	if !ok || instructions["question"] != "How does the evidence relate to the claim?" || instructions["claim"] != "a greeting exists" {
+		t.Fatalf("claim_1 instructions = %#v", question["instructions"])
+	}
+}
+
+func TestJudgeReplayJSON(t *testing.T) {
+	server, _ := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+		{"execution": 1, "tree_changed": false, "kind": loop.KindFailure,
+			"outcome": map[string]any{"execution": 1, "blocker": "already_satisfied", "blocked": true},
+			"log":     "wrote `out/1.txt`"},
+		{"execution": 2, "tree_changed": true, "kind": loop.KindCandidate,
+			"outcome": map[string]any{"execution": 2, "commit": "sha"},
+			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 DONE"},
+	})
+
+	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL, "--json")
+	if err != nil {
+		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("stdout = %q, want one object per attempt", stdout)
+	}
+	var attempts [2]struct {
+		TaskID          string            `json:"task_id"`
+		Execution       int               `json:"execution"`
+		Outcome         string            `json:"outcome"`
+		Asked           bool              `json:"asked"`
+		Flagged         bool              `json:"flagged"`
+		MaxContradicted float64           `json:"max_contradicted"`
+		Provider        string            `json:"provider"`
+		Claims          []replayClaim     `json:"claims"`
+		Uncertain       []replayUncertain `json:"uncertain"`
+	}
+	for index, line := range lines {
+		if err := json.Unmarshal([]byte(line), &attempts[index]); err != nil {
+			t.Fatalf("line %d is not JSON: %v\n%s", index+1, err, line)
+		}
+	}
+	first, second := attempts[0], attempts[1]
+	if first.TaskID != "task_1" || first.Execution != 1 || first.Outcome != "already_satisfied" {
+		t.Fatalf("first object = %#v", first)
+	}
+	if first.Asked || !first.Flagged || first.MaxContradicted != 0 || first.Provider != "typesafe" {
+		t.Fatalf("first object = %#v, want a code-settled attempt with no judge call", first)
+	}
+	if len(first.Claims) != 1 || first.Claims[0].Kind != "path" || first.Claims[0].Text != "out/1.txt" ||
+		first.Claims[0].Source != "code" || first.Claims[0].Choice != "contradicted" || first.Claims[0].Confidence != 1 {
+		t.Fatalf("first claims = %#v, want the code-contradicted path claim", first.Claims)
+	}
+	if len(first.Uncertain) != 0 {
+		t.Fatalf("first uncertain = %#v", first.Uncertain)
+	}
+	if second.TaskID != "task_1" || second.Execution != 2 || second.Outcome != "candidate" {
+		t.Fatalf("second object = %#v", second)
+	}
+	if !second.Asked || !second.Flagged || second.MaxContradicted != 0.93 || second.Provider != "typesafe" {
+		t.Fatalf("second object = %#v, want a judged attempt", second)
+	}
+	if len(second.Claims) != 1 || second.Claims[0].Kind != "criterion" || second.Claims[0].Text != "a greeting exists" ||
+		second.Claims[0].Source != "judge" || second.Claims[0].Choice != "contradicted" || second.Claims[0].Confidence != 0.93 {
+		t.Fatalf("second claims = %#v, want the judge-contradicted criterion claim", second.Claims)
+	}
+	if len(second.Uncertain) != 0 {
+		t.Fatalf("second uncertain = %#v", second.Uncertain)
+	}
+}
+
+func TestJudgeReplayNoCall(t *testing.T) {
+	server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+		{"execution": 1, "tree_changed": false, "kind": loop.KindFailure,
+			"outcome": map[string]any{"execution": 1, "blocker": "already_satisfied", "blocked": true},
+			"log":     "wrote `out/1.txt`"},
+	})
+
+	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+	if err != nil {
+		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+	}
+	want := "task_1 e1 outcome=already_satisfied asked=false claims=1 changed_paths=0 code_contradicted=1 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=true provider=typesafe\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if call.method != "" {
+		t.Fatalf("the judge was called (%s %s) for an attempt with no unsettled claims", call.method, call.path)
 	}
 }
 
@@ -495,7 +607,7 @@ func TestJudgeReplayUnavailable(t *testing.T) {
 		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
 			{"execution": 1, "tree_changed": false, "kind": loop.KindFailure,
 				"outcome": map[string]any{"execution": 1, "blocker": "already_satisfied"},
-				"log":     "wrote nothing"},
+				"log":     "wrote nothing\nTASK 1: DONE"},
 		})
 		_, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
 		var exit *ExitError
@@ -525,6 +637,168 @@ func TestJudgeReplayRejectsInvalidArguments(t *testing.T) {
 				t.Fatalf("judge replay = nil, want a usage error")
 			}
 		})
+	}
+}
+
+func TestJudgeReplayChangedPaths(t *testing.T) {
+	t.Run("scope.paths", func(t *testing.T) {
+		server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+		root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+			{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
+				"paths":        []string{"cmd/greet.go", "outside.txt"},
+				"scope_detail": "outside.txt",
+				"outcome":      map[string]any{"execution": 1, "commit": "sha"},
+				"log":          "edited `cmd/greet.go`"},
+		})
+		stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+		if err != nil {
+			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+		}
+		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=2 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+		if call.method != "" {
+			t.Fatalf("the judge was called (%s %s) for a code-settled path claim", call.method, call.path)
+		}
+	})
+	t.Run("candidate git diff", func(t *testing.T) {
+		server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+		root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+		base, commit := judgeReplayGitCommits(t, root)
+		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+			{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
+				"outcome": map[string]any{
+					"execution": 1, "commit": commit,
+					"evidence": map[string]any{"base_sha": base},
+				},
+				"log": "edited `out/1.txt`"},
+		})
+		stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+		if err != nil {
+			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+		}
+		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+		if call.method != "" {
+			t.Fatalf("the judge was called (%s %s) for a git-recovered path claim", call.method, call.path)
+		}
+	})
+	t.Run("worktree snapshot git diff", func(t *testing.T) {
+		server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+		root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+		base, commit := judgeReplayGitCommits(t, root)
+		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+			{"execution": 1, "tree_changed": true, "kind": loop.KindFailure,
+				"base_sha":     base,
+				"snapshot_sha": commit,
+				"outcome":      map[string]any{"execution": 1, "blocker": "tests_failed"},
+				"log":          "edited `out/1.txt`"},
+		})
+		stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+		if err != nil {
+			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+		}
+		want := "task_1 e1 outcome=tests_failed asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q", stdout, want)
+		}
+		if call.method != "" {
+			t.Fatalf("the judge was called (%s %s) for a snapshot-recovered path claim", call.method, call.path)
+		}
+	})
+	t.Run("scope.paths wins over git", func(t *testing.T) {
+		server, _ := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+		root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+		base, commit := judgeReplayGitCommits(t, root)
+		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+			{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
+				"paths": []string{"cmd/greet.go"},
+				"outcome": map[string]any{
+					"execution": 1, "commit": commit,
+					"evidence": map[string]any{"base_sha": base},
+				},
+				"log": "edited `cmd/greet.go`"},
+		})
+		stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+		if err != nil {
+			t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+		}
+		want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=1 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+		if stdout != want {
+			t.Fatalf("stdout = %q, want %q — git would have contradicted cmd/greet.go", stdout, want)
+		}
+	})
+}
+
+func judgeReplayGitCommits(t *testing.T, root string) (base, commit string) {
+	t.Helper()
+	git := mustGit(t)
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "commit.gpgsign", "false"},
+		{"config", "gc.auto", "0"},
+		{"config", "gc.autoDetach", "false"},
+		{"config", "maintenance.auto", "false"},
+	} {
+		runGit(t, git, root, args...)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, root, "add", "tracked.txt")
+	runGit(t, git, root, "commit", "-qm", "initial")
+	base = strings.TrimSpace(runGit(t, git, root, "rev-parse", "HEAD"))
+	if err := os.MkdirAll(filepath.Join(root, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "out", "1.txt"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, root, "add", "out/1.txt")
+	runGit(t, git, root, "commit", "-qm", "greeting")
+	commit = strings.TrimSpace(runGit(t, git, root, "rev-parse", "HEAD"))
+	return base, commit
+}
+
+func TestJudgeReplayUnknownPaths(t *testing.T) {
+	server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+		{"execution": 1, "tree_changed": true, "kind": loop.KindCandidate,
+			"outcome": map[string]any{"execution": 1, "commit": "sha"},
+			"log":     "edited `out/1.txt`"},
+	})
+	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+	if err != nil {
+		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+	}
+	want := "task_1 e1 outcome=candidate asked=false claims=1 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=false provider=typesafe\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if call.method != "" {
+		t.Fatalf("the judge was called (%s %s) for an unverifiable path claim", call.method, call.path)
+	}
+	jsonOut, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL, "--json")
+	if err != nil {
+		t.Fatalf("judge replay --json = %v\nstderr: %s", err, stderr)
+	}
+	var record replayJSONRecord
+	if err := json.Unmarshal([]byte(jsonOut), &record); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, jsonOut)
+	}
+	if record.Asked || record.Flagged || len(record.Claims) != 1 {
+		t.Fatalf("json record = %#v, want one code-settled unverifiable path claim", record)
+	}
+	claim := record.Claims[0]
+	if claim.Kind != "path" || claim.Text != "out/1.txt" || claim.Source != "code" || claim.Choice != "unverifiable" {
+		t.Fatalf("claim = %#v, want an unverifiable path claim, never contradicted", claim)
 	}
 }
 

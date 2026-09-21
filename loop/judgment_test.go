@@ -1,10 +1,12 @@
 package loop
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -348,6 +350,365 @@ func TestClaimEvidenceQuestions(t *testing.T) {
 	if again["claim_unsupported"].Instructions != unsupported.Instructions || again["verifier_contradicted"].Instructions != contradicted.Instructions {
 		t.Fatal("ClaimEvidenceQuestions() instructions were not stable across calls")
 	}
+}
+
+func TestClaimEvidenceRequestV2(t *testing.T) {
+	t.Parallel()
+
+	input := ClaimEvidenceInput{
+		Task: routing.PlanTask{
+			TaskArtifact: routing.TaskArtifact{ID: "task_1", Title: "Wire v2 claims"},
+			Scope:        []string{"loop/", "docs/judge.md"},
+		},
+		Report: gates.Report{
+			Passed: false,
+			Tests:  gates.Verdict{Name: "tests", Pass: false, Signal: "failed"},
+		},
+	}
+	claims := []Claim{
+		{
+			Kind: ClaimKindPath, Text: "loop/claims.go", Line: "edited `loop/claims.go`",
+			Path: "loop/claims.go", Status: ClaimStatusSupported, Source: ClaimSourceCode,
+			Evidence: "in changed_paths",
+		},
+		{
+			Kind: ClaimKindCommit, Text: "committed 1a2b3c4", Line: "committed 1a2b3c4 on the feature branch",
+			Status: ClaimStatusUnsettled, Evidence: "tree unchanged; commit not verified by code",
+		},
+		{
+			Kind: ClaimKindCriterion, Text: "questions are noul", Line: "criterion 2 passed",
+			Criterion: 2, Status: ClaimStatusUnsettled, Evidence: "no proof verdict; no verifier line",
+		},
+	}
+
+	req := BuildClaimEvidenceRequest(input, claims)
+	if req.Decision != claimEvidenceDecision {
+		t.Fatalf("Decision = %q, want %s", req.Decision, claimEvidenceDecision)
+	}
+
+	body := marshalState(t, req.State)
+	if body["task_id"] != "task_1" || body["title"] != "Wire v2 claims" {
+		t.Fatalf("state task = %#v", body)
+	}
+	scope, _ := body["scope"].([]any)
+	if len(scope) != 2 || scope[0] != "loop/" || scope[1] != "docs/judge.md" {
+		t.Fatalf("state.scope = %#v", body["scope"])
+	}
+	outcomeGates, _ := body["outcome_gates"].([]any)
+	if !containsAll(outcomeGates, "tests") {
+		t.Fatalf("outcome_gates = %#v, want tests", body["outcome_gates"])
+	}
+	for _, leaked := range []string{"criteria", "executor_report", "progress", "tree", "verifier", "outcome"} {
+		if _, ok := body[leaked]; ok {
+			t.Fatalf("v2 state still carries %q: %#v", leaked, body[leaked])
+		}
+	}
+
+	if len(req.Questions) != 2 {
+		t.Fatalf("Questions = %#v, want one per unsettled claim", req.Questions)
+	}
+	if _, ok := req.Questions["claim_1"]; ok {
+		t.Fatal("settled claim_1 was sent to the judge")
+	}
+	for _, key := range []string{"claim_2", "claim_3"} {
+		question, ok := req.Questions[key]
+		if !ok {
+			t.Fatalf("missing %s", key)
+		}
+		if question.Type != judge.QuestionChoice {
+			t.Fatalf("%s type = %q, want choice", key, question.Type)
+		}
+		inst := stringMap(t, question.Instructions)
+		if inst["question"] != "How does the evidence relate to the claim?" {
+			t.Fatalf("%s question = %q", key, inst["question"])
+		}
+		if inst["claim"] == "" || inst["evidence"] == "" {
+			t.Fatalf("%s instructions missing claim or evidence: %#v", key, inst)
+		}
+		got := stringMap(t, question.Criteria)
+		if got["supported"] != "the evidence states or directly implies the claim" ||
+			got["contradicted"] != "the evidence shows the claim is false" ||
+			got["unverifiable"] != "the evidence says nothing about the claim" {
+			t.Fatalf("%s criteria = %#v", key, got)
+		}
+	}
+	if stringMap(t, req.Questions["claim_2"].Instructions)["claim"] != "committed 1a2b3c4" {
+		t.Fatalf("claim_2 claim = %#v", req.Questions["claim_2"].Instructions)
+	}
+	if stringMap(t, req.Questions["claim_3"].Instructions)["claim"] != "questions are noul" {
+		t.Fatalf("claim_3 claim = %#v", req.Questions["claim_3"].Instructions)
+	}
+	if stringMap(t, req.Questions["claim_2"].Instructions)["evidence"] != "tree unchanged; commit not verified by code" {
+		t.Fatalf("claim_2 evidence = %#v", req.Questions["claim_2"].Instructions)
+	}
+}
+
+func TestClaimEvidenceNoCallWhenSettled(t *testing.T) {
+	t.Parallel()
+
+	t.Run("supported claims skip the judge and stay passing", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeLoopJudge{choice: "contradicted", confidence: 0.99}
+		r := newJudgmentRunner(t, fake, judge.ModeEnforce, 0.9)
+		report := passingClaimReport()
+		result := executor.Result{Stdout: []byte("BATUTA-PROGRESS 1 DONE\nedited `out/1.txt`\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, []string{"out/1.txt"})
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if fake.Asks() != 0 {
+			t.Fatalf("asks = %d, want 0 when every claim is settled", fake.Asks())
+		}
+		if got.Asked {
+			t.Fatal("Asked = true, want false")
+		}
+		if got.Flagged {
+			t.Fatal("supported claims flagged the attempt")
+		}
+		if !report.Passed {
+			t.Fatal("enforce failed a passing attempt with only supported claims")
+		}
+		if len(got.Claims) != 2 {
+			t.Fatalf("claims = %#v, want the two settled claims", got.Claims)
+		}
+		for _, claim := range got.Claims {
+			if claim.Source != string(ClaimSourceCode) || claim.Choice != string(ClaimStatusSupported) {
+				t.Fatalf("claim = %#v, want code/supported", claim)
+			}
+		}
+	})
+
+	t.Run("code-contradicted claims skip the judge and flag", func(t *testing.T) {
+		t.Parallel()
+		fake := &fakeLoopJudge{choice: "supported", confidence: 0.99}
+		r := newJudgmentRunner(t, fake, judge.ModeEnforce, 0.9)
+		report := passingClaimReport()
+		result := executor.Result{Stdout: []byte("edited `docs/missing.md`\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		ac.plan.Scope = []string{"docs/"}
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, []string{"out/1.txt"})
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if fake.Asks() != 0 {
+			t.Fatalf("asks = %d, want 0 when code settles every claim", fake.Asks())
+		}
+		if !got.Flagged {
+			t.Fatal("code-contradicted claim did not flag")
+		}
+		if report.Passed {
+			t.Fatal("enforce left a passing attempt after a code contradiction")
+		}
+		if !failingJudge(report) {
+			t.Fatal("enforce did not append a failing judge proof")
+		}
+		joined := strings.Join(report.Failures(), "\n")
+		if !strings.Contains(joined, "docs/missing.md") || !strings.Contains(joined, "edited `docs/missing.md`") {
+			t.Fatalf("judge proof does not name the contradicted claim and report line:\n%s", joined)
+		}
+	})
+}
+
+func TestClaimEvidenceNoEmptyEvidence(t *testing.T) {
+	t.Parallel()
+
+	t.Run("sent questions always carry evidence", func(t *testing.T) {
+		t.Parallel()
+		rec := &claimQuestionRecorder{}
+		r := newJudgmentRunner(t, rec, judge.ModeShadow, 0.9)
+		report := passingClaimReport()
+		report.Proofs = nil
+		report.Verifier = nil
+		result := executor.Result{Stdout: []byte("BATUTA-PROGRESS 1 DONE\ncommitted abcdef1 on the feature branch\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, nil)
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if rec.Asks() == 0 {
+			t.Fatal("judge was not asked for unsettled claims with evidence")
+		}
+		if !got.Asked {
+			t.Fatal("Asked = false, want true")
+		}
+		for key, question := range rec.Questions() {
+			inst := stringMap(t, question.Instructions)
+			if inst["evidence"] == "" {
+				t.Fatalf("%s was sent with empty evidence: %#v", key, inst)
+			}
+		}
+	})
+
+	t.Run("empty evidence is unverifiable by code without a judge call", func(t *testing.T) {
+		t.Parallel()
+		rec := &claimQuestionRecorder{}
+		claims := []Claim{{
+			Text:   "the routing now matches the brief",
+			Line:   "the routing now matches the brief",
+			Status: ClaimStatusUnsettled,
+		}}
+		req := BuildClaimEvidenceRequest(ClaimEvidenceInput{
+			Task: routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: "task_1"}},
+		}, claims)
+		if len(req.Questions) != 0 {
+			t.Fatalf("Questions = %#v, want none", req.Questions)
+		}
+		if claims[0].Status != ClaimStatusUnverifiable || claims[0].Source != ClaimSourceCode {
+			t.Fatalf("claim = %#v, want unverifiable by code", claims[0])
+		}
+
+		r := newJudgmentRunner(t, rec, judge.ModeShadow, 0.9)
+		report := passingClaimReport()
+		result := executor.Result{Stdout: []byte("the routing now matches the brief\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, nil)
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if rec.Asks() != 0 || got.Asked {
+			t.Fatalf("asks = %d asked = %t, want no judge call", rec.Asks(), got.Asked)
+		}
+		flagged, records, uncertain := aggregateClaimEvidence(claims, nil, 0.9)
+		if flagged || len(uncertain) != 0 {
+			t.Fatalf("unverifiable flagged or uncertain: flagged=%t uncertain=%#v", flagged, uncertain)
+		}
+		if len(records) != 1 || records[0].Source != string(ClaimSourceCode) || records[0].Choice != string(ClaimStatusUnverifiable) {
+			t.Fatalf("records = %#v, want code/unverifiable", records)
+		}
+	})
+}
+
+type claimQuestionRecorder struct {
+	mu        sync.Mutex
+	asks      int
+	questions map[string]judge.Question
+}
+
+func (r *claimQuestionRecorder) Ask(_ context.Context, req judge.Request) (judge.Response, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.asks++
+	r.questions = req.Questions
+	answers := make(map[string]judge.Answer, len(req.Questions))
+	for key := range req.Questions {
+		answers[key] = judge.Answer{Type: judge.QuestionChoice, Choice: claimChoiceUnverifiable, Confidence: 0.4}
+	}
+	return judge.Response{Model: "jev-test", Answers: answers}, nil
+}
+
+func (r *claimQuestionRecorder) Asks() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.asks
+}
+
+func (r *claimQuestionRecorder) Questions() map[string]judge.Question {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]judge.Question, len(r.questions))
+	for key, question := range r.questions {
+		out[key] = question
+	}
+	return out
+}
+
+func TestClaimEvidenceAggregation(t *testing.T) {
+	t.Parallel()
+
+	codeContradicted := Claim{
+		Kind: ClaimKindPath, Text: "a.go", Line: "edited `a.go`",
+		Status: ClaimStatusContradicted, Source: ClaimSourceCode,
+	}
+	unsettledCommit := Claim{
+		Kind: ClaimKindCommit, Text: "committed", Line: "committed the greeting",
+		Status: ClaimStatusUnsettled,
+	}
+
+	t.Run("code contradicted flags and is not uncertain", func(t *testing.T) {
+		t.Parallel()
+		flagged, records, uncertain := aggregateClaimEvidence([]Claim{codeContradicted}, nil, 0.9)
+		if !flagged {
+			t.Fatal("code contradicted did not flag")
+		}
+		if len(uncertain) != 0 {
+			t.Fatalf("uncertain = %#v, want empty", uncertain)
+		}
+		if len(records) != 1 || records[0].Source != string(ClaimSourceCode) || records[0].Choice != string(ClaimStatusContradicted) {
+			t.Fatalf("records = %#v", records)
+		}
+	})
+
+	t.Run("judge contradicted at threshold flags", func(t *testing.T) {
+		t.Parallel()
+		answers := map[string]judge.Answer{
+			"claim_1": {
+				Type: judge.QuestionChoice, Choice: "contradicted", Confidence: 0.9,
+				Probabilities: map[string]float64{"contradicted": 0.92, "supported": 0.05, "unverifiable": 0.03},
+			},
+		}
+		flagged, records, uncertain := aggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
+		if !flagged {
+			t.Fatal("judge contradicted at threshold did not flag")
+		}
+		if len(uncertain) != 0 {
+			t.Fatalf("uncertain = %#v, want empty", uncertain)
+		}
+		if records[0].Source != string(ClaimSourceJudge) || records[0].Choice != "contradicted" || records[0].Confidence != 0.9 {
+			t.Fatalf("records = %#v", records)
+		}
+	})
+
+	t.Run("confidence below threshold is uncertain and never flags", func(t *testing.T) {
+		t.Parallel()
+		answers := map[string]judge.Answer{
+			"claim_1": {
+				Type: judge.QuestionChoice, Choice: "contradicted", Confidence: 0.5,
+				Probabilities: map[string]float64{"contradicted": 0.8, "supported": 0.1, "unverifiable": 0.1},
+			},
+		}
+		flagged, _, uncertain := aggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
+		if flagged {
+			t.Fatal("low-confidence contradicted flagged")
+		}
+		if len(uncertain) != 1 || uncertain[0].Key != "claim_1" || uncertain[0].Choice != "contradicted" {
+			t.Fatalf("uncertain = %#v", uncertain)
+		}
+	})
+
+	t.Run("contradicted probability in 0.30-0.70 is uncertain and never flags", func(t *testing.T) {
+		t.Parallel()
+		answers := map[string]judge.Answer{
+			"claim_1": {
+				Type: judge.QuestionChoice, Choice: "contradicted", Confidence: 0.95,
+				Probabilities: map[string]float64{"contradicted": 0.5, "supported": 0.3, "unverifiable": 0.2},
+			},
+		}
+		flagged, _, uncertain := aggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
+		if flagged {
+			t.Fatal("mid-probability contradicted flagged")
+		}
+		if len(uncertain) != 1 || uncertain[0].Contradicted != 0.5 {
+			t.Fatalf("uncertain = %#v", uncertain)
+		}
+	})
+
+	t.Run("code contradicted still flags beside an uncertain judge answer", func(t *testing.T) {
+		t.Parallel()
+		answers := map[string]judge.Answer{
+			"claim_2": {
+				Type: judge.QuestionChoice, Choice: "contradicted", Confidence: 0.4,
+				Probabilities: map[string]float64{"contradicted": 0.8},
+			},
+		}
+		flagged, _, uncertain := aggregateClaimEvidence([]Claim{codeContradicted, unsettledCommit}, answers, 0.9)
+		if !flagged {
+			t.Fatal("code contradicted did not flag when a judge answer was uncertain")
+		}
+		if len(uncertain) != 1 || uncertain[0].Key != "claim_2" {
+			t.Fatalf("uncertain = %#v, want the judge answer only", uncertain)
+		}
+	})
 }
 
 func TestParseRunLog(t *testing.T) {
@@ -713,6 +1074,61 @@ func TestJudgeRecordKinds(t *testing.T) {
 	var resultDetail judge.ResultRecord
 	if err := json.Unmarshal(records[2].Detail, &resultDetail); err != nil || resultDetail.UnavailableReason != judge.ReasonJudgeOff {
 		t.Fatalf("result detail = %+v, %v", resultDetail, err)
+	}
+}
+
+func stringMap(t *testing.T, value any) map[string]string {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(encoded, &got); err != nil {
+		t.Fatalf("string map %s: %v", encoded, err)
+	}
+	return got
+}
+
+func newJudgmentRunner(t *testing.T, j judge.Judge, mode judge.Mode, threshold float64) *Runner {
+	t.Helper()
+	root := t.TempDir()
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &Runner{
+		opts: Options{
+			Judge:       j,
+			JudgeConfig: claimEvidenceJudgeConfig(mode, threshold),
+		},
+		root:     root,
+		store:    store,
+		graph:    &routing.DeliveryGraph{},
+		delivery: "demo",
+		now:      func() time.Time { return time.Date(2026, 9, 21, 0, 0, 0, 0, time.UTC) },
+	}
+}
+
+func passingClaimReport() gates.Report {
+	return gates.Report{
+		Passed:   true,
+		Finished: gates.Verdict{Name: "finished", Pass: true, Signal: "exit 0"},
+		Tree:     gates.Verdict{Name: "tree", Pass: true, Signal: "changed"},
+		Tests:    gates.Verdict{Name: "tests", Pass: true, Signal: "passed"},
+		Scope:    gates.Verdict{Name: "scope", Pass: true, Signal: "in scope"},
+		Proofs:   []gates.Verdict{{Name: "proof 1", Pass: true, Signal: "out/1.txt exists — `test -f out/1.txt` passed"}},
+		Verifier: &gates.Verdict{Name: "verifier", Pass: true, Signal: "all DONE", Detail: "TASK 1: DONE"},
+	}
+}
+
+func judgmentAttempt(accept string) attemptContext {
+	return attemptContext{
+		taskID: "task_1",
+		plan: routing.PlanTask{
+			TaskArtifact: routing.TaskArtifact{ID: "task_1", Title: "Add greeting one"},
+			Accept:       []string{accept},
+		},
 	}
 }
 

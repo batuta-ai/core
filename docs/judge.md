@@ -118,19 +118,37 @@ model and key work before wiring a decision point.
 
 ```text
 batuta judge replay --journal <path> [--runs <dir>] [--config <path>]
-                    [--decision <name>] [--workspace <dir>] [--base-url <url>]
+                    [--decision <name>] [--json] [--workspace <dir>] [--base-url <url>]
 ```
 
 `--journal` is a delivery journal (`.batuta/journal/<delivery>.jsonl`). For
 each `gates_reported` record with a matching `executor_finished` record,
 replay locates the attempt's run log `<runs>/<date>-<slug>-<task>-e<n>.out.log`
 (`--runs` defaults to `<workspace>/.batuta/runs`; a relative `--runs` is
-workspace-relative), rebuilds the claim_evidence state from the journal
-detail and the log, and asks the configured judge. One line per attempt:
+workspace-relative), rebuilds the attempt the way the loop decides live —
+code extracts the atomic claims from the run log, settles what it can, and
+asks one `choice` per unsettled claim in a single request — and prints one
+line per attempt:
 
 ```text
-task_1 e1 outcome=already_satisfied claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe
+task_1 e1 outcome=already_satisfied asked=true claims=3 code_contradicted=1 judge_contradicted=1 uncertain=1 max_contradicted=0.93 flagged=true provider=typesafe
 ```
+
+Beside the attempt's `outcome` and the answering `provider`, the line reports
+the v2 breakdown: `claims` is the total number of extracted claims;
+`code_contradicted` and `judge_contradicted` count the claims settled as
+`contradicted` (the judge one only at confidence at or above the decision
+threshold, default 0.9); `uncertain` counts the judge answers that landed in
+the uncertain bucket (confidence below the threshold or a `contradicted`
+probability in 0.30–0.70); `max_contradicted` is the highest `contradicted`
+probability among the judge's answers (`0.00` when the judge was not asked);
+`flagged` repeats the aggregation the loop applies. `asked=false` marks an
+attempt with no unsettled claims: nothing is sent and no tokens are spent,
+and the breakdown is code-only. With `--json`, replay prints one JSON object
+per attempt instead of the text line, carrying the per-claim `claims` list
+(kind, text, report line, source, choice, confidence) and the `uncertain`
+list beside the same fields; a missing run log prints
+`{"task_id":…,"execution":…,"skipped":"<path>"}`.
 
 The outcome is the recorded verdict of the attempt: the `blocker` of the
 following `failure_recorded` record (for example `already_satisfied`),
@@ -177,28 +195,39 @@ from the logs.
 
 The loop's first decision runs after the gates `Decide()` an attempt and
 before the attempt is recorded as a candidate, an already-satisfied task, or
-a failure. The state is built by code from bounded evidence: the task (id,
-title, scope), criteria with proof verdicts, the last 60 lines of the
-executor report (capped at 8 KiB), progress events, whether the tree
-changed and which paths, the verifier signal and detail when present, and
-the deterministic outcome. Executor output is untrusted input; secrets and
-absolute paths are redacted before the judge sees them. The two questions
-are `noul`:
+a failure. Code extracts atomic claims from the executor report (paths
+touched, criteria marked done, test and commit claims) and attaches only
+the matching evidence: the path's presence in `changed_paths`, the proof
+verdict and verifier line for that criterion, the tests gate. Claims that
+code can settle exactly — a claimed path that is missing, a proof that
+failed, a tests claim against a failing tests gate — never reach the
+model.
 
-- `claim_unsupported` — the executor's report claims work that the tree,
-  proofs or verifier do not show.
-- `verifier_contradicted` — a verifier DONE line is contradicted by a
-  failed proof or by the executor's own report.
+Unsettled claims go in one request. The state is a short task summary
+(`task_id`, `title`, `scope`, `outcome_gates`). Each remaining claim is a
+`choice` question `claim_<i>` whose instructions object carries
+`question`, `claim` and `evidence`, with criteria `supported`,
+`contradicted` and `unverifiable`. Executor output is untrusted input;
+secrets and absolute paths are redacted before extraction.
 
-There is no confidence on `noul`; each probability is gated on the
-decision's threshold (default 0.9). `shadow` records `judge_intent` and
-`judge_result` (state digest and answers, never the state body) and
-changes nothing. `enforce` may only fail a passing attempt: when either
-probability is at or above the threshold it sets `report.Passed = false`,
-appends a synthetic failing `judge` proof so `Failures()` and the trail
-show the contradiction, and records blocker `claim_unsupported`. It never
-turns a failure into a pass, never clears a gate, and never marks a task
-satisfied. Any error, including `ErrUnavailable`, is recorded on
-`judge_result` and ignored. The decision is not consulted when it is
-`off`, the judge is off, or the attempt ended in a question, a rate
-limit, an executor error or a reconciliation block.
+Code aggregates the settled list: the attempt is flagged when any claim
+is contradicted by code, or by the judge with `confidence` at or above
+the decision threshold (default 0.9). Judge answers with confidence
+below the threshold, or whose `contradicted` probability lies in
+0.30–0.70, land in an `uncertain` bucket that is recorded and never
+acted on. `judge_result` keeps its existing fields and adds `claims`
+(source `code` or `judge`, choice, confidence) and `uncertain`.
+
+`shadow` records `judge_intent` and `judge_result` (state digest and
+answers, never the state body) and changes nothing. `enforce` may only
+fail a passing attempt: a flagged contradiction sets `report.Passed =
+false`, appends a synthetic failing `judge` proof so `Failures()` and
+the trail name the contradicted claim and its report line, and records
+blocker `claim_unsupported`. It never turns a failure into a pass, never
+clears a gate, and never marks a task satisfied. Any error, including
+`ErrUnavailable`, is recorded on `judge_result` and ignored. The
+decision is not consulted when it is `off`, the judge is off, or the
+attempt ended in a question, a rate limit, an executor error or a
+reconciliation block. The v1 state builder and `ClaimEvidenceQuestions`
+remain exported so a replay `--v1` flag can still compare against the
+baseline.
