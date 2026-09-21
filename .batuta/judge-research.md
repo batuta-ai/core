@@ -91,3 +91,26 @@ Not for Jev: proofs, scope, tree equality, test exit codes, counting cohorts, da
 - Cloudflare model page for the request/response schema: https://developers.cloudflare.com/ai/models/typesafe/jev/.
 - Independent test: https://www.mindstudio.ai/blog/jev-system-one-model-classification.
 - Local probe of `opencode/jev-1.13-free` on 2026-09-20 (`~/.local/share/opencode/log/opencode.log`).
+
+## 7. Are we applying Jev the way TypeSafe says to? (study, 2026-09-21)
+
+Read against `concepts/how-to-build-with-system-one`, `patterns` (speculative fan-out, confidence-gated routing, composite scoring), `cookbooks/citation_check`, `cookbooks/consistency_noul_cookbook` and `model-jaggedness/jev-1.13`, after the baseline in `.batuta/judge-benchmark.md`.
+
+What version 1 of `claim_evidence` does: one state holding the whole attempt (criteria, proofs, 60 lines of executor output, changed paths, verifier verdict) and two global `noul` questions asking the model to find any contradiction.
+
+Where that departs from the documented way:
+1. **Atomic decisions, not a global verdict.** The citation cookbook checks one claim at a time with state `{claim, section}` and a `choice` `{supports, contradicts, unsupported}`; code then decides the verdict. We ask "is anything contradicted anywhere" over everything at once. The jaggedness page lists large irrelevant context and multi-hop reasoning as the top accuracy killers; our state is both.
+2. **Code computes what code can compute.** "Executor says it edited `.batuta/routing.md`; `changed_paths` is empty" is a string comparison. We handed it to the model. TypeSafe's design step is explicit: keep deterministic work in code, send only relevant structured context.
+3. **Use structure in the questions.** A request carries one state and many questions; each question's `instructions` can be an object holding the question plus the data it refers to. That is the intended way to ask one question per claim in a single call (speculative fan-out), not one prose paragraph.
+4. **`choice` gives confidence, `noul` does not.** The confidence-gated routing pattern needs the `confidence` field; our `noul` questions only give a probability, so we gate on a raw 0.9 with nothing to say how spread the answer is. The self-consistency cookbook maps 0.30–0.70 to an explicit `uncertain` outcome instead of a single threshold.
+5. **Escape option.** A `choice` without "unverifiable/other" forces an answer; the independent test saw a 0.31-confidence pick on an irrelevant question. Our v1 has no such option.
+
+Version 2 design, following the documents:
+- Code extracts atomic claims from the executor report: paths it says it touched (`Paths touched`, backtick paths in the report), criteria it marked done (`BATUTA-PROGRESS n DONE`, `TASK n: DONE`, "criterion n passed"), test claims ("suite passed", "go test ... ok"), commit claims.
+- Code attaches to each claim only its evidence: the path's presence in `changed_paths`; the proof verdict and verifier line for that criterion; the tests gate verdict.
+- Code settles the claims it can settle exactly (path claimed but unchanged ⇒ contradicted by code, no model call). Only claims code cannot match exactly go to the judge.
+- One request, state = short task summary, one `choice` per remaining claim with `instructions` = `{question, claim, evidence}` and criteria `{supported, contradicted, unverifiable}`.
+- Code aggregates: an attempt is flagged when any claim is `contradicted` with `confidence` at or above the decision threshold; `unverifiable` and 0.30–0.70 land in an `uncertain` bucket that is recorded, never acted on.
+- Evaluation: the same 23 retroactive attempts plus every new delivery, replayed with the same command; the cut for keeping `enforce` is stated before running: both false closures flagged, no legitimate candidate flagged.
+
+The honest expectation: on the two known false closures the code step alone will flag them (claimed path, unchanged tree). Jev's measured contribution will be whatever it adds on prose claims that code cannot match. That is the number the article should report.
