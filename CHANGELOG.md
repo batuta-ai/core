@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.0-beta.30](https://github.com/batuta-ai/core/compare/v1.1.0-beta.29...v1.1.0-beta.30) (2026-09-21)
+
+
+### Features
+
+* batuta judge replay over a delivery journal ([366c681](https://github.com/batuta-ai/core/commit/366c681970d6d90c90d91472e338531e03f45478))
+* judgment state, questions and journal records ([ce72d29](https://github.com/batuta-ai/core/commit/ce72d29eac2c05c6959e4a8500886495937c79c1))
+* **loop:** judge decision 1, claim versus evidence in shadow, with replay and baseline ([c777b88](https://github.com/batuta-ai/core/commit/c777b889a483a4e6076d76a114066329791f82c8))
+* shadow and enforce in runAttempt ([1f9b86c](https://github.com/batuta-ai/core/commit/1f9b86cbcd8edce3b318c23c2bb835b67047ed74))
+
 ## [1.1.0-beta.29](https://github.com/batuta-ai/core/compare/v1.1.0-beta.28...v1.1.0-beta.29) (2026-09-20)
 
 
