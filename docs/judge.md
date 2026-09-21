@@ -118,19 +118,37 @@ model and key work before wiring a decision point.
 
 ```text
 batuta judge replay --journal <path> [--runs <dir>] [--config <path>]
-                    [--decision <name>] [--workspace <dir>] [--base-url <url>]
+                    [--decision <name>] [--json] [--workspace <dir>] [--base-url <url>]
 ```
 
 `--journal` is a delivery journal (`.batuta/journal/<delivery>.jsonl`). For
 each `gates_reported` record with a matching `executor_finished` record,
 replay locates the attempt's run log `<runs>/<date>-<slug>-<task>-e<n>.out.log`
 (`--runs` defaults to `<workspace>/.batuta/runs`; a relative `--runs` is
-workspace-relative), rebuilds the claim_evidence state from the journal
-detail and the log, and asks the configured judge. One line per attempt:
+workspace-relative), rebuilds the attempt the way the loop decides live —
+code extracts the atomic claims from the run log, settles what it can, and
+asks one `choice` per unsettled claim in a single request — and prints one
+line per attempt:
 
 ```text
-task_1 e1 outcome=already_satisfied claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe
+task_1 e1 outcome=already_satisfied asked=true claims=3 code_contradicted=1 judge_contradicted=1 uncertain=1 max_contradicted=0.93 flagged=true provider=typesafe
 ```
+
+Beside the attempt's `outcome` and the answering `provider`, the line reports
+the v2 breakdown: `claims` is the total number of extracted claims;
+`code_contradicted` and `judge_contradicted` count the claims settled as
+`contradicted` (the judge one only at confidence at or above the decision
+threshold, default 0.9); `uncertain` counts the judge answers that landed in
+the uncertain bucket (confidence below the threshold or a `contradicted`
+probability in 0.30–0.70); `max_contradicted` is the highest `contradicted`
+probability among the judge's answers (`0.00` when the judge was not asked);
+`flagged` repeats the aggregation the loop applies. `asked=false` marks an
+attempt with no unsettled claims: nothing is sent and no tokens are spent,
+and the breakdown is code-only. With `--json`, replay prints one JSON object
+per attempt instead of the text line, carrying the per-claim `claims` list
+(kind, text, report line, source, choice, confidence) and the `uncertain`
+list beside the same fields; a missing run log prints
+`{"task_id":…,"execution":…,"skipped":"<path>"}`.
 
 The outcome is the recorded verdict of the attempt: the `blocker` of the
 following `failure_recorded` record (for example `already_satisfied`),

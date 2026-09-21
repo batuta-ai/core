@@ -16,6 +16,7 @@ import (
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/loop"
+	"github.com/batuta-ai/core/routing"
 )
 
 // judgeEnvVar selects another judge config file or turns the judge off;
@@ -293,11 +294,12 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 	decision := flags.String("decision", "claim_evidence", "decision name asked and printed")
 	workspace := flags.String("workspace", "", "workspace directory (default: current directory)")
 	baseURL := flags.String("base-url", "", "override the configured provider base URL")
+	asJSON := flags.Bool("json", false, "print one JSON object per attempt with the per-claim list")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if flags.NArg() != 0 || *journalPath == "" {
-		return errors.New("usage: batuta judge replay --journal <path> [--runs <dir>] [--config <path>] [--decision <name>] [--workspace <dir>] [--base-url <url>]")
+		return errors.New("usage: batuta judge replay --journal <path> [--runs <dir>] [--config <path>] [--decision <name>] [--json] [--workspace <dir>] [--base-url <url>]")
 	}
 
 	root, err := workspaceRoot(*workspace)
@@ -323,42 +325,257 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 
 	attempts, titles, slug := replayAttempts(records)
 	delivery := strings.TrimSuffix(filepath.Base(*journalPath), ".jsonl")
+	threshold := config.Decision(*decision).Threshold
+	if threshold == 0 {
+		threshold = replayDefaultThreshold
+	}
 	maxBytes := config.MaxStateBytes
 	if maxBytes <= 0 {
 		maxBytes = 100000
 	}
 	answered := 0
+	encoder := json.NewEncoder(stdout)
 	for _, attempt := range attempts {
 		logPath := attempt.runLogPath(root, *runs, delivery, slug)
 		log, err := os.ReadFile(logPath)
 		if err != nil {
-			fmt.Fprintf(stdout, "%s e%d skipped %s\n", attempt.taskID, attempt.execution, logPath)
+			if *asJSON {
+				if err := encoder.Encode(replayJSONRecord{TaskID: attempt.taskID, Execution: attempt.execution, Skipped: logPath}); err != nil {
+					return err
+				}
+			} else {
+				fmt.Fprintf(stdout, "%s e%d skipped %s\n", attempt.taskID, attempt.execution, logPath)
+			}
 			continue
 		}
-		state, err := loop.ReplayClaimEvidenceState(loop.ReplayClaimEvidenceInput{
-			Workspace: root, TaskID: attempt.taskID, TaskTitle: titles[attempt.taskID],
-			Report: attempt.report, TreeChanged: attempt.treeChanged, RunLog: string(log),
-		}, maxBytes)
+		input := replayEvidenceInput(root, attempt, titles[attempt.taskID], string(log))
+		state, err := loop.BuildClaimEvidenceState(input, maxBytes)
 		if err != nil {
 			return fmt.Errorf("judge replay: %s e%d: %w", attempt.taskID, attempt.execution, err)
 		}
-		response, err := j.Ask(context.Background(), judge.Request{
-			Decision: *decision, State: state, Questions: loop.ClaimEvidenceQuestions(),
-		})
+		request, claims, err := replayClaimEvidenceRequest(input, state)
 		if err != nil {
-			if answered == 0 {
-				return judgeFailure(stderr, err)
+			return fmt.Errorf("judge replay: %s e%d: %w", attempt.taskID, attempt.execution, err)
+		}
+		asked := len(request.Questions) > 0
+		var answers map[string]judge.Answer
+		unavailable := ""
+		if asked {
+			response, err := j.Ask(context.Background(), request)
+			if err != nil {
+				if answered == 0 {
+					return judgeFailure(stderr, err)
+				}
+				unavailable = judgeReplayReason(err)
+			} else {
+				answered++
+				provider = judgeProviderName(j, config)
+				answers = response.Answers
 			}
-			fmt.Fprintf(stdout, "%s e%d outcome=%s unavailable=%s\n", attempt.taskID, attempt.execution, attempt.outcome, judgeReplayReason(err))
+		}
+		judgment := aggregateReplayClaims(claims, answers, threshold)
+		if *asJSON {
+			record := replayJSONRecord{
+				TaskID: attempt.taskID, Execution: attempt.execution, Outcome: attempt.outcome,
+				Unavailable: unavailable, Asked: asked, Flagged: judgment.Flagged,
+				MaxContradicted: judgment.MaxContradicted, Provider: provider,
+				Claims: judgment.Claims, Uncertain: judgment.Uncertain,
+			}
+			if err := encoder.Encode(record); err != nil {
+				return err
+			}
 			continue
 		}
-		answered++
-		provider = judgeProviderName(j, config)
-		fmt.Fprintf(stdout, "%s e%d outcome=%s claim_unsupported=%.2f verifier_contradicted=%.2f provider=%s\n",
-			attempt.taskID, attempt.execution, attempt.outcome,
-			response.Answers["claim_unsupported"].Noul, response.Answers["verifier_contradicted"].Noul, provider)
+		line := fmt.Sprintf("%s e%d outcome=%s asked=%t claims=%d code_contradicted=%d judge_contradicted=%d uncertain=%d max_contradicted=%.2f flagged=%t",
+			attempt.taskID, attempt.execution, attempt.outcome, asked,
+			len(judgment.Claims), judgment.CodeContradicted, judgment.JudgeContradicted,
+			len(judgment.Uncertain), judgment.MaxContradicted, judgment.Flagged)
+		if unavailable != "" {
+			line += " unavailable=" + unavailable
+		}
+		fmt.Fprintf(stdout, "%s provider=%s\n", line, provider)
 	}
 	return nil
+}
+
+// replayClaimEvidenceRequest mirrors the loop's live claim_evidence build:
+// code extracts the atomic claims from the bounded, redacted executor report
+// the v1 state builder produces, settles what it can settle exactly against
+// the redacted changed paths, the proof verdicts, the verifier lines and the
+// tests gate, and asks one choice question per unsettled claim.
+func replayClaimEvidenceRequest(input loop.ClaimEvidenceInput, state any) (judge.Request, []loop.Claim, error) {
+	payload, err := json.Marshal(state)
+	if err != nil {
+		return judge.Request{}, nil, err
+	}
+	var bounded replayBoundedState
+	if err := json.Unmarshal(payload, &bounded); err != nil {
+		return judge.Request{}, nil, err
+	}
+	evidence := loop.ClaimEvidence{
+		ChangedPaths: bounded.Tree.ChangedPaths,
+		TreeChanged:  input.TreeChanged,
+		Proofs:       input.Report.Proofs,
+		TestsPass:    input.Report.Tests.Pass,
+	}
+	if input.Report.Verifier != nil {
+		evidence.VerifierLines = loop.ParseVerifierLines(input.Report.Verifier.Detail)
+	}
+	claims := loop.SettleClaims(loop.ExtractClaims(bounded.ExecutorReport, input.Criteria), evidence)
+	return loop.BuildClaimEvidenceRequest(input, claims), claims, nil
+}
+
+// replayBoundedState is the part of the v1 state replay reuses for claim
+// extraction: the executor report as the loop bounds and redacts it, and the
+// changed paths as it redacts them.
+type replayBoundedState struct {
+	ExecutorReport string `json:"executor_report"`
+	Tree           struct {
+		ChangedPaths []string `json:"changed_paths"`
+	} `json:"tree"`
+}
+
+// replayEvidenceInput reconstructs the bounded claim_evidence input of a
+// recorded attempt from its journal report and run log. The plan file is not
+// part of the journal: the criteria come from the recorded proof signals, and
+// the changed paths only from a failed scope verdict, so both are
+// reconstructions and the progress events carry no timestamps.
+func replayEvidenceInput(workspace string, attempt replayAttempt, title, runLog string) loop.ClaimEvidenceInput {
+	tail, progress := loop.ParseRunLog(runLog)
+	var changedPaths []string
+	if !attempt.report.Scope.Pass && attempt.report.Scope.Detail != "" {
+		changedPaths = strings.Split(strings.TrimRight(attempt.report.Scope.Detail, "\n"), "\n")
+	}
+	return loop.ClaimEvidenceInput{
+		Workspace:    workspace,
+		Task:         routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: attempt.taskID, Title: title}},
+		Criteria:     loop.CriteriaFromProofs(attempt.report.Proofs),
+		Report:       attempt.report,
+		OutputTail:   tail,
+		Progress:     progress,
+		ChangedPaths: changedPaths,
+		TreeChanged:  attempt.treeChanged,
+	}
+}
+
+const (
+	replayDefaultThreshold   = 0.9
+	replayChoiceContradicted = "contradicted"
+	replayUncertainLow       = 0.30
+	replayUncertainHigh      = 0.70
+)
+
+// replayClaim is one settled claim as replay reports it: who settled it
+// (code or judge), the choice and the confidence.
+type replayClaim struct {
+	Kind       string  `json:"kind"`
+	Text       string  `json:"text"`
+	Line       string  `json:"line,omitempty"`
+	Source     string  `json:"source"`
+	Choice     string  `json:"choice"`
+	Confidence float64 `json:"confidence"`
+}
+
+// replayUncertain is one judge answer routed to the uncertain bucket because
+// its confidence is below the threshold or its contradicted probability lies
+// in the 0.30–0.70 band.
+type replayUncertain struct {
+	Key          string  `json:"key"`
+	Choice       string  `json:"choice"`
+	Confidence   float64 `json:"confidence"`
+	Contradicted float64 `json:"contradicted"`
+}
+
+// replayJudgment is the aggregated view of one attempt's claims: the flag,
+// the per-claim records, the uncertain bucket and the breakdown counts the
+// replay line reports.
+type replayJudgment struct {
+	Flagged           bool
+	Claims            []replayClaim
+	Uncertain         []replayUncertain
+	CodeContradicted  int
+	JudgeContradicted int
+	MaxContradicted   float64
+}
+
+// aggregateReplayClaims applies the loop's aggregation to the settled claims
+// and the judge's answers — the same rules live and replay report: the
+// attempt is flagged when any claim is contradicted by code, or by the judge
+// with confidence at or above the threshold; answers below the threshold or
+// whose contradicted probability lies in 0.30–0.70 land in the uncertain
+// bucket, and MaxContradicted is the highest contradicted probability among
+// the judge's answers.
+func aggregateReplayClaims(claims []loop.Claim, answers map[string]judge.Answer, threshold float64) replayJudgment {
+	judgment := replayJudgment{Claims: make([]replayClaim, 0, len(claims)), Uncertain: []replayUncertain{}}
+	for index, claim := range claims {
+		key := fmt.Sprintf("claim_%d", index+1)
+		record := replayClaim{Kind: string(claim.Kind), Text: claim.Text, Line: claim.Line}
+		answer, asked := answers[key]
+		if asked && claim.Status == loop.ClaimStatusUnsettled {
+			record.Source = string(loop.ClaimSourceJudge)
+			record.Choice = answer.Choice
+			record.Confidence = answer.Confidence
+			if replayAnswerUncertain(answer, threshold) {
+				judgment.Uncertain = append(judgment.Uncertain, replayUncertain{
+					Key:          key,
+					Choice:       answer.Choice,
+					Confidence:   answer.Confidence,
+					Contradicted: answer.Probabilities[replayChoiceContradicted],
+				})
+			} else if answer.Choice == replayChoiceContradicted && answer.Confidence >= threshold {
+				judgment.JudgeContradicted++
+				judgment.Flagged = true
+			}
+		} else {
+			record.Source = string(claim.Source)
+			record.Choice = string(claim.Status)
+			if claim.Source == loop.ClaimSourceCode {
+				record.Confidence = 1
+				if claim.Status == loop.ClaimStatusContradicted {
+					judgment.CodeContradicted++
+					judgment.Flagged = true
+				}
+			}
+		}
+		judgment.Claims = append(judgment.Claims, record)
+	}
+	for _, answer := range answers {
+		if probability, ok := answer.Probabilities[replayChoiceContradicted]; ok && probability > judgment.MaxContradicted {
+			judgment.MaxContradicted = probability
+		}
+	}
+	return judgment
+}
+
+// replayAnswerUncertain mirrors the loop's uncertain rule: an answer is
+// uncertain when its confidence is below the threshold or its contradicted
+// probability lies in the 0.30–0.70 band.
+func replayAnswerUncertain(answer judge.Answer, threshold float64) bool {
+	if answer.Confidence < threshold {
+		return true
+	}
+	probability, ok := answer.Probabilities[replayChoiceContradicted]
+	if !ok {
+		return false
+	}
+	return probability >= replayUncertainLow && probability <= replayUncertainHigh
+}
+
+// replayJSONRecord is one attempt of a --json replay: the per-claim list and
+// the uncertain bucket next to the fields the text line reports. A skipped
+// attempt carries only the identifier and the expected log path.
+type replayJSONRecord struct {
+	TaskID          string            `json:"task_id"`
+	Execution       int               `json:"execution"`
+	Outcome         string            `json:"outcome,omitempty"`
+	Skipped         string            `json:"skipped,omitempty"`
+	Unavailable     string            `json:"unavailable,omitempty"`
+	Asked           bool              `json:"asked"`
+	Flagged         bool              `json:"flagged"`
+	MaxContradicted float64           `json:"max_contradicted"`
+	Provider        string            `json:"provider,omitempty"`
+	Claims          []replayClaim     `json:"claims"`
+	Uncertain       []replayUncertain `json:"uncertain"`
 }
 
 // judgeProviderName reports the provider that answered the last ask; a

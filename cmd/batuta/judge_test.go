@@ -21,7 +21,7 @@ import (
 
 const judgeTestAnswer = `{"model":"jev-1.13.0","answers":{"ok":{"type":"noul","noul":0.93}},"usage":{"input_tokens":12,"output_tokens":3}}`
 
-const judgeTestReplayAnswer = `{"model":"jev-1.13.0","answers":{"claim_unsupported":{"type":"noul","noul":0.93},"verifier_contradicted":{"type":"noul","noul":0.88}},"usage":{"input_tokens":12,"output_tokens":3}}`
+const judgeTestReplayAnswer = `{"model":"jev-1.13.0","answers":{"claim_1":{"type":"choice","choice":"contradicted","confidence":0.93,"probabilities":{"supported":0.02,"contradicted":0.93,"unverifiable":0.05}}},"usage":{"input_tokens":12,"output_tokens":3}}`
 
 // judgeTestServer answers every request with status and body, recording the
 // wire facts of the last request.
@@ -378,10 +378,10 @@ func TestJudgeReplayCommand(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("stdout = %q, want one line per attempt", stdout)
 	}
-	if want := "task_1 e1 outcome=already_satisfied claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe"; lines[0] != want {
+	if want := "task_1 e1 outcome=already_satisfied asked=true claims=1 code_contradicted=0 judge_contradicted=1 uncertain=0 max_contradicted=0.93 flagged=true provider=typesafe"; lines[0] != want {
 		t.Fatalf("first line = %q, want %q", lines[0], want)
 	}
-	if want := "task_1 e2 outcome=candidate claim_unsupported=0.93 verifier_contradicted=0.88 provider=typesafe"; lines[1] != want {
+	if want := "task_1 e2 outcome=candidate asked=true claims=1 code_contradicted=0 judge_contradicted=1 uncertain=0 max_contradicted=0.93 flagged=true provider=typesafe"; lines[1] != want {
 		t.Fatalf("second line = %q, want %q", lines[1], want)
 	}
 	if call.method != http.MethodPost || call.path != "/v1/systemone" {
@@ -394,20 +394,110 @@ func TestJudgeReplayCommand(t *testing.T) {
 	if !ok {
 		t.Fatalf("request state = %#v", call.body["state"])
 	}
-	if state["executor_report"] == "" {
-		t.Fatalf("request state carries no executor report: %#v", state)
+	if state["task_id"] != "task_1" || state["title"] != "Greet once" {
+		t.Fatalf("request state = %#v, want the task summary", state)
 	}
-	task, _ := state["task"].(map[string]any)
-	if task["id"] != "task_1" || task["title"] != "Greet once" {
-		t.Fatalf("request task = %#v", state["task"])
-	}
-	criteria, _ := state["criteria"].([]any)
-	if len(criteria) != 1 {
-		t.Fatalf("request criteria = %#v, want one from the recorded proof", state["criteria"])
+	if _, ok := state["executor_report"]; ok {
+		t.Fatalf("request state carries the v1 executor report: %#v", state)
 	}
 	questions, ok := call.body["questions"].(map[string]any)
-	if !ok || len(questions) != 2 {
-		t.Fatalf("request questions = %#v", call.body["questions"])
+	if !ok || len(questions) != 1 {
+		t.Fatalf("request questions = %#v, want one choice per unsettled claim", call.body["questions"])
+	}
+	question, ok := questions["claim_1"].(map[string]any)
+	if !ok || question["type"] != "choice" {
+		t.Fatalf("claim_1 = %#v", question)
+	}
+	instructions, ok := question["instructions"].(map[string]any)
+	if !ok || instructions["question"] != "How does the evidence relate to the claim?" || instructions["claim"] != "a greeting exists" {
+		t.Fatalf("claim_1 instructions = %#v", question["instructions"])
+	}
+}
+
+func TestJudgeReplayJSON(t *testing.T) {
+	server, _ := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+		{"execution": 1, "tree_changed": false, "kind": loop.KindFailure,
+			"outcome": map[string]any{"execution": 1, "blocker": "already_satisfied", "blocked": true},
+			"log":     "wrote `out/1.txt`"},
+		{"execution": 2, "tree_changed": true, "kind": loop.KindCandidate,
+			"outcome": map[string]any{"execution": 2, "commit": "sha"},
+			"log":     "wrote cmd/greet.go\nBATUTA-PROGRESS 1 DONE"},
+	})
+
+	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL, "--json")
+	if err != nil {
+		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout, "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("stdout = %q, want one object per attempt", stdout)
+	}
+	var attempts [2]struct {
+		TaskID          string            `json:"task_id"`
+		Execution       int               `json:"execution"`
+		Outcome         string            `json:"outcome"`
+		Asked           bool              `json:"asked"`
+		Flagged         bool              `json:"flagged"`
+		MaxContradicted float64           `json:"max_contradicted"`
+		Provider        string            `json:"provider"`
+		Claims          []replayClaim     `json:"claims"`
+		Uncertain       []replayUncertain `json:"uncertain"`
+	}
+	for index, line := range lines {
+		if err := json.Unmarshal([]byte(line), &attempts[index]); err != nil {
+			t.Fatalf("line %d is not JSON: %v\n%s", index+1, err, line)
+		}
+	}
+	first, second := attempts[0], attempts[1]
+	if first.TaskID != "task_1" || first.Execution != 1 || first.Outcome != "already_satisfied" {
+		t.Fatalf("first object = %#v", first)
+	}
+	if first.Asked || !first.Flagged || first.MaxContradicted != 0 || first.Provider != "typesafe" {
+		t.Fatalf("first object = %#v, want a code-settled attempt with no judge call", first)
+	}
+	if len(first.Claims) != 1 || first.Claims[0].Kind != "path" || first.Claims[0].Text != "out/1.txt" ||
+		first.Claims[0].Source != "code" || first.Claims[0].Choice != "contradicted" || first.Claims[0].Confidence != 1 {
+		t.Fatalf("first claims = %#v, want the code-contradicted path claim", first.Claims)
+	}
+	if len(first.Uncertain) != 0 {
+		t.Fatalf("first uncertain = %#v", first.Uncertain)
+	}
+	if second.TaskID != "task_1" || second.Execution != 2 || second.Outcome != "candidate" {
+		t.Fatalf("second object = %#v", second)
+	}
+	if !second.Asked || !second.Flagged || second.MaxContradicted != 0.93 || second.Provider != "typesafe" {
+		t.Fatalf("second object = %#v, want a judged attempt", second)
+	}
+	if len(second.Claims) != 1 || second.Claims[0].Kind != "criterion" || second.Claims[0].Text != "a greeting exists" ||
+		second.Claims[0].Source != "judge" || second.Claims[0].Choice != "contradicted" || second.Claims[0].Confidence != 0.93 {
+		t.Fatalf("second claims = %#v, want the judge-contradicted criterion claim", second.Claims)
+	}
+	if len(second.Uncertain) != 0 {
+		t.Fatalf("second uncertain = %#v", second.Uncertain)
+	}
+}
+
+func TestJudgeReplayNoCall(t *testing.T) {
+	server, call := judgeTestServer(t, http.StatusOK, judgeTestReplayAnswer)
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+		{"execution": 1, "tree_changed": false, "kind": loop.KindFailure,
+			"outcome": map[string]any{"execution": 1, "blocker": "already_satisfied", "blocked": true},
+			"log":     "wrote `out/1.txt`"},
+	})
+
+	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
+	if err != nil {
+		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+	}
+	want := "task_1 e1 outcome=already_satisfied asked=false claims=1 code_contradicted=1 judge_contradicted=0 uncertain=0 max_contradicted=0.00 flagged=true provider=typesafe\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+	if call.method != "" {
+		t.Fatalf("the judge was called (%s %s) for an attempt with no unsettled claims", call.method, call.path)
 	}
 }
 
@@ -495,7 +585,7 @@ func TestJudgeReplayUnavailable(t *testing.T) {
 		journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
 			{"execution": 1, "tree_changed": false, "kind": loop.KindFailure,
 				"outcome": map[string]any{"execution": 1, "blocker": "already_satisfied"},
-				"log":     "wrote nothing"},
+				"log":     "wrote nothing\nTASK 1: DONE"},
 		})
 		_, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root, "--base-url", server.URL)
 		var exit *ExitError
