@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.1.0-beta.33](https://github.com/batuta-ai/core/compare/v1.1.0-beta.32...v1.1.0-beta.33) (2026-09-22)
+
+
+### Features
+
+* batuta judge corpus build: clean cases and report-only defect ([b57fa7b](https://github.com/batuta-ai/core/commit/b57fa7bf435f6d2bc0ead1a5fabd17befc1aea66))
+* batuta judge corpus run: score the pipeline per label, frozen ([c733c8c](https://github.com/batuta-ai/core/commit/c733c8c2e4e9c19cc47040003984659ab33a6ab7))
+* candidate diff in the claim_evidence input, live and in replay ([06affa7](https://github.com/batuta-ai/core/commit/06affa752ec266995b7bd07eec2e320b5eb2d4c0))
+* change claims: identifier, count and behaviour claims settled by ([ea3298a](https://github.com/batuta-ai/core/commit/ea3298a29ce2ca90f65ca34ac2e3b8ccbb4c785f))
+* identifier on an added line matches the exact token ([6f4b9b1](https://github.com/batuta-ai/core/commit/6f4b9b1e24e4a8860e559f4d447298895949af32))
+* **judge:** constructed corpus for claim_evidence, diff evidence and change claims ([c15303d](https://github.com/batuta-ai/core/commit/c15303dec098b2e9367c140c49b391ff606fa95c))
+* live diff covers the same files as the candidate, and a failed diff ([656c62d](https://github.com/batuta-ai/core/commit/656c62dabee7753915557e22f3930fefc5d38405))
+* replay settlement receives the diff ([1f467c1](https://github.com/batuta-ai/core/commit/1f467c18bf931a2dfc3b12f3dd02c27b9c50332f))
+
 ## [1.1.0-beta.32](https://github.com/batuta-ai/core/compare/v1.1.0-beta.31...v1.1.0-beta.32) (2026-09-21)
 
 
