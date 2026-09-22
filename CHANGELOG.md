@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.0-beta.36](https://github.com/batuta-ai/core/compare/v1.1.0-beta.35...v1.1.0-beta.36) (2026-09-22)
+
+
+### Features
+
+* adapters may declare usage_regex, and executor_finished records the ([e798e47](https://github.com/batuta-ai/core/commit/e798e4761540aae7b63f2eb98dcd19043523f1bc))
+* executor_finished and limit_wait carry the output tail of an unclean ([42c1424](https://github.com/batuta-ai/core/commit/42c1424509d98f3737545fa73ac5cfca3cab9ba6))
+* **loop:** journal the output tail of unclean sessions and CLI-reported usage ([94ce7d6](https://github.com/batuta-ai/core/commit/94ce7d6262f4f4522706103e448cee3836ce77d0))
+* the output tail is redacted before it is cut to 4096 bytes ([618709e](https://github.com/batuta-ai/core/commit/618709e3932c1a26288b9a4120239adc6581273c))
+
 ## [1.1.0-beta.35](https://github.com/batuta-ai/core/compare/v1.1.0-beta.34...v1.1.0-beta.35) (2026-09-22)
 
 
