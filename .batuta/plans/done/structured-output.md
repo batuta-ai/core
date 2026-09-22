@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Make every routed executor report its token usage without losing live progress. CLI executors run in their streaming JSON mode and a per-format decoder turns each event into the text the batuta already parses (progress, questions, verifier lines, run log) and reads the usage from the final event. ACP sessions keep every usage counter and the cost the agent sends. The usage record carries cache read and write, reasoning, reported total, provider cost and whether cache is additive to input. `opencode acp` qualifies for any model its session advertises and confirms, not only `opencode/big-pickle`.
-**Created:** 2026-09-22 · **Status:** approved
+**Created:** 2026-09-22 · **Status:** done
 
 ## Tasks
 - [x] 1. Usage record: cache read and write, reasoning, reported total, cost, cache semantics — backend/medium
@@ -20,7 +20,7 @@
       Depends on: 1
       Scope: executor/acp/session.go, executor/acp/session_test.go, executor/acp_backend.go, executor/acp_backend_test.go
       Accept: the ACP usage decoder keeps inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens, thoughtTokens and totalTokens, and a usage_update session update with cost {amount, currency} sets CostAmount and CostCurrency, each nil when absent → go test ./executor/acp -run TestDecodeUsageAllCounters; ACP usage is recorded with CacheSemantics additive → go test ./executor/acp -run TestDecodeUsageAllCounters; the receipt copies every field into executor.Usage → go test ./executor -run TestACPReceiptCarriesFullUsage; the packages stay green → go test ./executor ./executor/acp
-- [ ] 5. opencode ACP qualifies for any model the session advertises and confirms — backend/high
+- [x] 5. opencode ACP qualifies for any model the session advertises and confirms — backend/high
       Depends on: 4
       Scope: executor/transport.go, executor/transport_test.go, executor/acp_native.go, executor/acp_native_test.go, executor/receipt.go, executor/acp/session.go, executor/acp/session_test.go, cmd/batuta/main_test.go, docs/dispatch.md
       Accept: an ACPQualification with Model set to * matches any requested model, while executor, run, version, platform and the lifecycle flags still must match exactly → go test ./executor -run TestQualificationAnyModel; the native opencode qualification uses Model * and the session still refuses a model that is not among its advertised options or that it does not confirm before the prompt → go test ./executor/acp -run TestSessionRefusesUnconfirmedModel; when the adapter declares no acp_effort_config, a requested effort is recorded in the receipt as not_applicable instead of failing qualification → go test ./executor -run TestQualificationEffortNotApplicable; docs/dispatch.md states the any-model rule and its limits → grep -q 'any model the session advertises' docs/dispatch.md; the packages stay green → go test ./executor ./executor/acp
