@@ -240,9 +240,77 @@ func TestSessionStreamsOnlyAgentTextAndCannotReplay(t *testing.T) {
 	}
 	sessionReply(t, peer, request, `{"stopReason":"end_turn","usage":{"inputTokens":100,"outputTokens":20,"cachedReadTokens":40}}`)
 	got := <-done
-	if got.err != nil || got.text != "hello world" || !got.result.Completed || !got.result.SubmissionAttempted || got.result.Usage == nil || *got.result.Usage.InputTokens != 100 || *got.result.Usage.CachedInputTokens != 40 {
+	if got.err != nil || got.text != "hello world" || !got.result.Completed || !got.result.SubmissionAttempted || got.result.Usage == nil || *got.result.Usage.InputTokens != 100 || *got.result.Usage.CacheReadTokens != 40 {
 		t.Fatalf("turn: %+v", got)
 	}
+}
+
+func runUsageTurn(t *testing.T, update, response string) TurnResult {
+	t.Helper()
+	conn, peer := testConnection(t, Options{})
+	cwd := t.TempDir()
+	type outcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd})
+		var result TurnResult
+		if err == nil {
+			result, err = session.Prompt(context.Background(), "brief", nil)
+		}
+		done <- outcome{result, err}
+	}()
+	reader := bufio.NewReader(peer)
+	setupPeer(t, peer, reader, cwd, `{}`)
+	request := expectMethod(t, reader, "session/prompt")
+	writeMessage(t, peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":`+update+`}}`)
+	sessionReply(t, peer, request, response)
+	got := <-done
+	if got.err != nil || !got.result.Completed {
+		t.Fatalf("turn: %+v / %v", got.result, got.err)
+	}
+	return got.result
+}
+
+func TestDecodeUsageAllCounters(t *testing.T) {
+	t.Run("keeps every counter with the reported cost", func(t *testing.T) {
+		t.Parallel()
+		usage := runUsageTurn(t,
+			`{"sessionUpdate":"usage_update","used":300,"size":1000,"cost":{"amount":0.25,"currency":"EUR"}}`,
+			`{"stopReason":"end_turn","usage":{"inputTokens":100,"outputTokens":20,"cachedReadTokens":40,"cachedWriteTokens":5,"thoughtTokens":8,"totalTokens":173}}`).Usage
+		if usage == nil {
+			t.Fatal("no usage recorded")
+		}
+		if usage.InputTokens == nil || *usage.InputTokens != 100 || usage.OutputTokens == nil || *usage.OutputTokens != 20 ||
+			usage.CacheReadTokens == nil || *usage.CacheReadTokens != 40 || usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 5 ||
+			usage.ReasoningTokens == nil || *usage.ReasoningTokens != 8 || usage.ReportedTotalTokens == nil || *usage.ReportedTotalTokens != 173 {
+			t.Fatalf("counters: %+v", usage)
+		}
+		if usage.CostAmount == nil || *usage.CostAmount != 0.25 || usage.CostCurrency != "EUR" {
+			t.Fatalf("cost: %+v", usage)
+		}
+		if usage.CacheSemantics != CacheSemanticsAdditive {
+			t.Fatalf("cache semantics: %q", usage.CacheSemantics)
+		}
+		if usage.Provenance != "acp/session-prompt/usage (draft)" {
+			t.Fatalf("provenance: %q", usage.Provenance)
+		}
+	})
+	t.Run("absent cost and unusable counters stay nil", func(t *testing.T) {
+		t.Parallel()
+		usage := runUsageTurn(t,
+			`{"sessionUpdate":"usage_update","used":300,"size":1000}`,
+			`{"stopReason":"end_turn","usage":{"inputTokens":-1,"outputTokens":1.5,"cachedReadTokens":"credential-canary","cachedWriteTokens":null,"thoughtTokens":-2,"totalTokens":false}}`).Usage
+		if usage == nil {
+			t.Fatal("no usage recorded")
+		}
+		if usage.InputTokens != nil || usage.OutputTokens != nil || usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil ||
+			usage.ReasoningTokens != nil || usage.ReportedTotalTokens != nil || usage.CostAmount != nil || usage.CostCurrency != "" {
+			t.Fatalf("invented accounting: %+v", usage)
+		}
+	})
 }
 
 func TestSessionCancellationNotifiesAndRejectsLateResult(t *testing.T) {

@@ -99,7 +99,7 @@ func TestACPBackendMapsStopReasonsAndStreams(t *testing.T) {
 			if receipt == nil || receipt.Submission.State != SubmissionSubmitted || receipt.Transport.Outcome != TransportCompleted || (receipt.Worker.Outcome == WorkerClaimedSuccess) != (reason == "end_turn") {
 				t.Fatalf("receipt: %+v", receipt)
 			}
-			if total, ok := receipt.Usage.TotalTokens(); !ok || total != 120 || *receipt.Usage.CachedInputTokens != 40 || receipt.Usage.Provenance != "acp/session-prompt/usage (draft)" {
+			if total, ok := receipt.Usage.TotalTokens(); !ok || total != 160 || receipt.Usage.CacheReadTokens == nil || *receipt.Usage.CacheReadTokens != 40 || receipt.Usage.CachedInputTokens != nil || receipt.Usage.CacheSemantics != CacheSemanticsAdditive || receipt.Usage.Provenance != "acp/session-prompt/usage (draft)" {
 				t.Fatalf("usage: %+v", receipt.Usage)
 			}
 			encoded, err := MarshalReceipt(*receipt)
@@ -107,6 +107,44 @@ func TestACPBackendMapsStopReasonsAndStreams(t *testing.T) {
 				t.Fatalf("receipt payload: %s / %v", encoded, err)
 			}
 		})
+	}
+}
+
+func TestACPReceiptCarriesFullUsage(t *testing.T) {
+	execution := Execution{Request: Request{Cwd: t.TempDir(), Brief: "brief"}}
+	backend := backendPeer(t, execution, func(reader *bufio.Reader, peer net.Conn) {
+		request := backendSetup(t, reader, peer)
+		fmt.Fprintln(peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"usage_update","cost":{"amount":0.25,"currency":"EUR"}}}}`)
+		backendReply(peer, request, `{"stopReason":"end_turn","usage":{"inputTokens":100,"outputTokens":20,"cachedReadTokens":40,"cachedWriteTokens":5,"thoughtTokens":8,"totalTokens":173}}`)
+		io.Copy(io.Discard, reader)
+	})
+	result, err := backend.Execute(context.Background(), execution)
+	if err != nil || !result.Finished || result.ExitCode != 0 {
+		t.Fatalf("result: %+v / %v", result, err)
+	}
+	usage := result.Receipt.Usage
+	if usage == nil || usage.InputTokens == nil || *usage.InputTokens != 100 ||
+		usage.OutputTokens == nil || *usage.OutputTokens != 20 ||
+		usage.CacheReadTokens == nil || *usage.CacheReadTokens != 40 ||
+		usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 5 ||
+		usage.ReasoningTokens == nil || *usage.ReasoningTokens != 8 ||
+		usage.ReportedTotalTokens == nil || *usage.ReportedTotalTokens != 173 ||
+		usage.CostAmount == nil || *usage.CostAmount != 0.25 || usage.CostCurrency != "EUR" ||
+		usage.CacheSemantics != CacheSemanticsAdditive ||
+		usage.Provenance != "acp/session-prompt/usage (draft)" {
+		t.Fatalf("usage: %+v", usage)
+	}
+	// Additive semantics: cache reads and writes are on top of the input
+	// counter, so no subset cache-read counter may appear.
+	if usage.CachedInputTokens != nil {
+		t.Fatalf("cached input invented: %+v", usage)
+	}
+	if total, known := usage.TotalTokens(); !known || total != 165 {
+		t.Fatalf("total: %d / %v", total, known)
+	}
+	encoded, err := MarshalReceipt(*result.Receipt)
+	if err != nil || len(encoded) > ReceiptLimit {
+		t.Fatalf("receipt payload: %s / %v", encoded, err)
 	}
 }
 
@@ -241,7 +279,7 @@ func TestACPBackendUsageRemainsOptional(t *testing.T) {
 				t.Fatalf("usage provenance: %+v", usage)
 			}
 			if test.scenario == "zero counters" {
-				if total, known := usage.TotalTokens(); !known || total != 0 || usage.CachedInputTokens == nil || *usage.CachedInputTokens != 0 {
+				if total, known := usage.TotalTokens(); !known || total != 0 || usage.CacheReadTokens == nil || *usage.CacheReadTokens != 0 {
 					t.Fatalf("explicit zero usage: %+v", usage)
 				}
 			} else if usage.InputTokens != nil || usage.CachedInputTokens != nil || usage.OutputTokens != nil {
