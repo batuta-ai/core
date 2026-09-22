@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.0-beta.35](https://github.com/batuta-ai/core/compare/v1.1.0-beta.34...v1.1.0-beta.35) (2026-09-22)
+
+
+### Features
+
+* batuta judge classify bench: agreement with the label, outcome ([2ad59ba](https://github.com/batuta-ai/core/commit/2ad59ba5301ea4e7a8cda42686b655c6c9cd2abf))
+* batuta judge classify: lanes for one plan ([9676b90](https://github.com/batuta-ai/core/commit/9676b90bafa69d2bf366a9c4173edb9a88eff4c2))
+* first-attempt outcome sees an escalation after a same-executor retry ([965afea](https://github.com/batuta-ai/core/commit/965afea693b2fc3ea0bbb187f47236005c152879))
+* **judge:** classify decision and bench for plan-task lanes ([c695bf3](https://github.com/batuta-ai/core/commit/c695bf3439db486010a33eeecddb6896d7d6814e))
+
 ## [1.1.0-beta.34](https://github.com/batuta-ai/core/compare/v1.1.0-beta.33...v1.1.0-beta.34) (2026-09-22)
 
 
