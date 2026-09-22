@@ -37,3 +37,9 @@
 
 - A task that changes an extractor must list in Scope every test file that uses its fixtures: grep the function name in `*_test.go` before writing Scope.
 - Worktree executors cannot read `.batuta/journal/` or `.batuta/runs/`, so replay and benchmark steps belong to the conductor, never to a loop task.
+
+## 2026-09-22 — executor telemetry
+
+- A `limit_regex` alternative as broad as `rate limit` matches an executor's own report and makes the loop wait and re-run a finished attempt. Match provider error shapes, never prose (skills#60; the run log is kept as evidence).
+- `git gc` prunes candidate commits about two weeks after the loop deletes their refs; that cost 41 corpus attempts their diffs on 2026-09-22. Keep candidate commits reachable (for example `refs/batuta/corpus/*`) when a corpus must stay rebuildable.
+- ACP cache semantics differ by source: additive for the codex bridge and for claude, subset for `codex exec --json`. Never sum a total without knowing which.

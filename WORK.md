@@ -1,5 +1,11 @@
 # WORK — core
 
+## Current status — 2026-09-22 evening: structured-output running
+- [ ] Merged 2026-09-22: core#118 (executor telemetry), core#119 (probes, fixtures, plans), skills#60 (opencode limit_regex).
+- [ ] Loop `structured-output` launched on `feat/structured-output-impl` with `--transport auto`; then `verifier-coverage`.
+- [ ] Transport: ACP for codex, claude, opencode; CLI JSON for cursor and agy (their ACP sends no usage). Bridges come from the ACP registry `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`, which the host installer should read instead of a hand-kept list; the codex bridge is `@agentclientprotocol/codex-acp` (the `@zed-industries` one stops at gpt-5.5).
+- [ ] After the plans: qualify the codex and claude ACP bridges with real lifecycle probes, then the loop defaults to `--transport auto`.
+
 ## Current status — 2026-09-22 pause: telemetry shipped, transport decided
 - [ ] Open PRs, all CI green at pause: **core#118** `feat/executor-telemetry` (output tail of unclean sessions and `limit_wait`, adapter `usage_regex`; both plans reviewed SHIP), **core#119** `feat/structured-output` (evidence and the next two plans, no production code), **skills#60** `fix/opencode-limit-regex`. None merged.
 - [ ] Transport decided from real probes (`.batuta/acp-probes/`, on core#119): **ACP** for codex (`@agentclientprotocol/codex-acp` 1.12.0, has gpt-6-astra/gpt-5.6-sol and effort low…ultra), claude (`@agentclientprotocol/claude-agent-acp` 0.81.0, reports cost) and opencode (`opencode acp`, any model, reports cost); **CLI JSON** for cursor (`agent acp` works with Grok but sends no usage) and agy (official `agy_acp_server.par` works, Google login in `~/.gemini/antigravity-acp/`, no usage). Bridges come from the ACP registry `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`.
