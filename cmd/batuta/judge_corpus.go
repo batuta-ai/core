@@ -24,13 +24,15 @@ import (
 	"github.com/batuta-ai/core/routing"
 )
 
-// Corpus case labels: the clean case plus the report-only defect variants
-// the decision rule scores.
+// Corpus case labels: the clean case, the true behaviour negative and the
+// defect variants the decision rule scores.
 const (
 	corpusLabelClean               = "clean"
 	corpusLabelFabricatedReference = "fabricated_reference"
 	corpusLabelWrongCount          = "wrong_count"
 	corpusLabelBehaviourAbsent     = "behaviour_absent"
+	corpusLabelTrueBehaviour       = "true_behaviour"
+	corpusLabelWrongDiff           = "wrong_diff"
 )
 
 // corpusMaxStateBytes bounds the state the build runs to redact a report;
@@ -38,14 +40,15 @@ const (
 const corpusMaxStateBytes = 1 << 20
 
 // corpusCase is one JSON line of a built corpus: a source attempt's evidence
-// (clean) or a report-only defect variant of it. The id is
-// <delivery>/<task>/e<execution>/<label>.
+// (clean), a true behaviour variant of it, or one of its defect variants.
+// The id is <delivery>/<task>/e<execution>/<label>.
 type corpusCase struct {
 	ID           string          `json:"id"`
 	Delivery     string          `json:"delivery"`
 	Task         string          `json:"task"`
 	Execution    int             `json:"execution"`
 	Label        string          `json:"label"`
+	Split        string          `json:"split"`
 	Report       string          `json:"report"`
 	Diff         string          `json:"diff"`
 	ChangedPaths []string        `json:"changed_paths"`
@@ -69,9 +72,14 @@ type corpusSource struct {
 	verifier  *gates.Verdict
 }
 
+// corpusVariant is one case to build from a source: a line appended to the
+// unchanged report, plus the diff and changed paths the case carries — the
+// source's own, except wrong_diff, which carries the borrowed source's.
 type corpusVariant struct {
 	label string
 	line  string
+	diff  string
+	paths []string
 }
 
 // corpusJournals collects repeated --journal flags.
@@ -93,8 +101,10 @@ func runJudgeCorpus(args []string, stdout, stderr io.Writer) error {
 		return runJudgeCorpusBuild(args[1:], stdout, stderr)
 	case "run":
 		return runJudgeCorpusRun(args[1:], stdout, stderr)
+	case "calibrate":
+		return runJudgeCorpusCalibrate(args[1:], stdout, stderr)
 	default:
-		return fmt.Errorf("unknown corpus form %q; available forms: build, run", args[0])
+		return fmt.Errorf("unknown corpus form %q; available forms: build, run, calibrate", args[0])
 	}
 }
 
@@ -198,16 +208,18 @@ func corpusSourceOf(root, runs, delivery, slug string, attempt replayAttempt, ti
 	}, ""
 }
 
-// corpusCases builds every source's cases: the clean case plus the
-// report-only defect variants, sorted by id for a byte-identical build.
+// corpusCases builds every source's cases: the clean case plus its variants,
+// sorted by id for a byte-identical build.
 func corpusCases(sources []corpusSource) []corpusCase {
 	sorted := slices.Clone(sources)
 	slices.SortFunc(sorted, func(a, b corpusSource) int { return strings.Compare(a.id, b.id) })
-	cases := make([]corpusCase, 0, 4*len(sorted))
+	cases := make([]corpusCase, 0, 6*len(sorted))
 	for _, source := range sorted {
 		cases = append(cases, corpusCaseOf(source, corpusLabelClean, source.report))
 		for _, variant := range corpusVariants(sorted, source) {
-			cases = append(cases, corpusCaseOf(source, variant.label, appendCorpusReportLine(source.report, variant.line)))
+			attempt := source
+			attempt.diff, attempt.paths = variant.diff, variant.paths
+			cases = append(cases, corpusCaseOf(attempt, variant.label, appendCorpusReportLine(source.report, variant.line)))
 		}
 	}
 	slices.SortFunc(cases, func(a, b corpusCase) int { return strings.Compare(a.ID, b.ID) })
@@ -221,6 +233,7 @@ func corpusCaseOf(source corpusSource, label, report string) corpusCase {
 		Task:         source.taskID,
 		Execution:    source.execution,
 		Label:        label,
+		Split:        corpusCaseSplit(source.id),
 		Report:       report,
 		Diff:         source.diff,
 		ChangedPaths: source.paths,
@@ -238,33 +251,56 @@ func corpusCaseOf(source corpusSource, label, report string) corpusCase {
 	return c
 }
 
-// corpusVariants returns the report-only defect variants of one source,
+// corpusVariants returns the behaviour and defect variants of one source,
 // each appending exactly one line to the unchanged report. A variant whose
 // frozen rule names no material — no changed path, no added identifier, no
-// different delivery to borrow a task title from — does not exist.
+// different delivery to borrow a task title or a diff from — does not exist.
 func corpusVariants(sorted []corpusSource, source corpusSource) []corpusVariant {
 	paths := slices.Clone(source.paths)
 	slices.Sort(paths)
 	if len(paths) == 0 {
 		return nil
 	}
-	var variants []corpusVariant
+	variants := []corpusVariant{{
+		label: corpusLabelTrueBehaviour,
+		line:  fmt.Sprintf("Updated `%s` so that %s.", paths[0], corpusLowerFirst(source.title)),
+		diff:  source.diff,
+		paths: source.paths,
+	}}
+	if next, ok := corpusNextSource(sorted, source); ok {
+		if next.title != "" {
+			variants = append(variants, corpusVariant{
+				label: corpusLabelBehaviourAbsent,
+				line:  fmt.Sprintf("Updated `%s` so that %s.", paths[0], corpusLowerFirst(next.title)),
+				diff:  source.diff,
+				paths: source.paths,
+			})
+		}
+		nextPaths := slices.Clone(next.paths)
+		slices.Sort(nextPaths)
+		if len(nextPaths) > 0 {
+			variants = append(variants, corpusVariant{
+				label: corpusLabelWrongDiff,
+				line:  fmt.Sprintf("Updated `%s` so that %s.", nextPaths[0], corpusLowerFirst(source.title)),
+				diff:  next.diff,
+				paths: next.paths,
+			})
+		}
+	}
 	if ident := corpusFirstAddedIdentifier(source.diff, paths[0]); ident != "" {
 		variants = append(variants, corpusVariant{
 			label: corpusLabelFabricatedReference,
 			line:  fmt.Sprintf("Added `%s` to `%s`.", corpusFabricatedIdentifier(source.diff, ident), paths[0]),
+			diff:  source.diff,
+			paths: source.paths,
 		})
 	}
 	if testPath := corpusFirstTestPath(paths); testPath != "" {
 		variants = append(variants, corpusVariant{
 			label: corpusLabelWrongCount,
 			line:  fmt.Sprintf("Added %d new tests in `%s`.", corpusAddedTestCount(source.diff)+3, testPath),
-		})
-	}
-	if title := corpusBehaviourTitle(sorted, source); title != "" {
-		variants = append(variants, corpusVariant{
-			label: corpusLabelBehaviourAbsent,
-			line:  fmt.Sprintf("Updated `%s` so that %s.", paths[0], corpusLowerFirst(title)),
+			diff:  source.diff,
+			paths: source.paths,
 		})
 	}
 	return variants
@@ -286,20 +322,20 @@ func corpusFabricatedIdentifier(diff, ident string) string {
 	}
 }
 
-// corpusBehaviourTitle returns the task title of the next source in id
-// order — wrapping — from a different delivery, empty when there is none.
-func corpusBehaviourTitle(sorted []corpusSource, source corpusSource) string {
+// corpusNextSource returns the next source in id order — wrapping — from a
+// different delivery, ok false when there is none.
+func corpusNextSource(sorted []corpusSource, source corpusSource) (corpusSource, bool) {
 	pos := slices.IndexFunc(sorted, func(s corpusSource) bool { return s.id == source.id })
 	if pos < 0 {
-		return ""
+		return corpusSource{}, false
 	}
 	for step := 1; step < len(sorted); step++ {
 		next := sorted[(pos+step)%len(sorted)]
 		if next.delivery != source.delivery {
-			return next.title
+			return next, true
 		}
 	}
-	return ""
+	return corpusSource{}, false
 }
 
 func corpusFirstTestPath(sortedPaths []string) string {
@@ -374,6 +410,22 @@ func corpusAddedTestCount(diff string) int {
 	return n
 }
 
+// Corpus split halves: an attempt's cases all land in the same one, chosen
+// by the parity of the first byte of the attempt id's sha256.
+const (
+	corpusSplitCalibrate = "calibrate"
+	corpusSplitTest      = "test"
+)
+
+// corpusCaseSplit freezes the calibrate/test split of an attempt id.
+func corpusCaseSplit(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	if sum[0]%2 == 0 {
+		return corpusSplitCalibrate
+	}
+	return corpusSplitTest
+}
+
 func corpusSHA256(value string) string {
 	sum := sha256.Sum256([]byte(value))
 	return "sha256:" + hex.EncodeToString(sum[:])
@@ -426,6 +478,7 @@ func runJudgeCorpusRun(args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("judge corpus run", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	corpusPath := flags.String("corpus", "", "JSONL corpus file built by judge corpus build")
+	split := flags.String("split", "", "score one split half only: calibrate or test (default: both)")
 	configPath := flags.String("config", "", "judge config path (default: .batuta/judge.json under --workspace)")
 	workspace := flags.String("workspace", "", "workspace directory (default: current directory)")
 	baseURL := flags.String("base-url", "", "override the configured provider base URL")
@@ -434,12 +487,16 @@ func runJudgeCorpusRun(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	if flags.NArg() != 0 || *corpusPath == "" {
-		return errors.New("usage: batuta judge corpus run --corpus <file> [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]")
+		return errors.New("usage: batuta judge corpus run --corpus <file> [--split calibrate|test] [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]")
+	}
+	if *split != "" && *split != corpusSplitCalibrate && *split != corpusSplitTest {
+		return fmt.Errorf("invalid --split %q; use %q or %q", *split, corpusSplitCalibrate, corpusSplitTest)
 	}
 	cases, err := readCorpusRunCases(*corpusPath)
 	if err != nil {
 		return err
 	}
+	cases = corpusFilterSplit(cases, *split)
 	config, err := loadJudgeConfig(*configPath, *workspace)
 	if err != nil {
 		return err
@@ -499,6 +556,21 @@ func readCorpusRunCases(path string) ([]corpusCase, error) {
 	return cases, nil
 }
 
+// corpusFilterSplit keeps only the cases of one split half; an empty split
+// keeps every case.
+func corpusFilterSplit(cases []corpusCase, split string) []corpusCase {
+	if split == "" {
+		return cases
+	}
+	kept := make([]corpusCase, 0, len(cases))
+	for _, c := range cases {
+		if c.Split == split {
+			kept = append(kept, c)
+		}
+	}
+	return kept
+}
+
 // corpusClaimEvidenceRequest builds a case's claim_evidence request the way
 // the live loop builds it: code extracts the atomic claims from the bounded
 // report the case carries, settles them against the changed paths, the proof
@@ -538,7 +610,7 @@ func corpusRunCases(ctx context.Context, j judge.Judge, buildReason string, thre
 	var totals corpusRunTotals
 	for _, item := range cases {
 		request, claims := corpusClaimEvidenceRequest(item)
-		outcome := corpusRunCase{item: item, judgment: aggregateReplayClaims(claims, nil, threshold)}
+		outcome := corpusRunCase{item: item, judgment: replayJudgmentFrom(claims, nil, threshold)}
 		if len(request.Questions) > 0 {
 			outcome.asked = true
 			switch {
@@ -554,7 +626,7 @@ func corpusRunCases(ctx context.Context, j judge.Judge, buildReason string, thre
 						totals.sawUsage = true
 					}
 					totals.inputTokens += response.Usage.InputTokens
-					outcome.judgment = aggregateReplayClaims(claims, response.Answers, threshold)
+					outcome.judgment = replayJudgmentFrom(claims, response.Answers, threshold)
 				}
 			}
 		}
@@ -683,6 +755,7 @@ func printCorpusRunText(stdout io.Writer, threshold float64, outcomes []corpusRu
 type corpusRunCaseJSON struct {
 	ID              string  `json:"id"`
 	Label           string  `json:"label"`
+	Split           string  `json:"split"`
 	Flagged         bool    `json:"flagged"`
 	SettledBy       string  `json:"settled_by"`
 	MaxContradicted float64 `json:"max_contradicted"`
@@ -704,7 +777,7 @@ func printCorpusRunJSON(stdout io.Writer, threshold float64, outcomes []corpusRu
 	encoder := json.NewEncoder(stdout)
 	for _, outcome := range outcomes {
 		record := corpusRunCaseJSON{
-			ID: outcome.item.ID, Label: outcome.item.Label, Flagged: outcome.judgment.Flagged,
+			ID: outcome.item.ID, Label: outcome.item.Label, Split: outcome.item.Split, Flagged: outcome.judgment.Flagged,
 			SettledBy: outcome.settledBy, MaxContradicted: outcome.judgment.MaxContradicted,
 			Asked: outcome.asked, Uncertain: len(outcome.judgment.Uncertain), Unavailable: outcome.unavailable,
 		}
@@ -726,4 +799,187 @@ func printCorpusRunJSON(stdout io.Writer, threshold float64, outcomes []corpusRu
 
 func corpusThresholdLabel(threshold float64) string {
 	return strconv.FormatFloat(threshold, 'g', -1, 64)
+}
+
+// corpusCalibrateMaxFalseFlagRate is the false-flag rate a sweep threshold
+// must not exceed to be chosen: at most two flagged negatives in a hundred.
+const corpusCalibrateMaxFalseFlagRate = 0.02
+
+// corpusCalibrateSweep is the fixed threshold sweep: 0.50 to 0.95 in steps
+// of 0.05.
+func corpusCalibrateSweep() []float64 {
+	sweep := make([]float64, 0, 10)
+	for n := 50; n <= 95; n += 5 {
+		sweep = append(sweep, float64(n)/100)
+	}
+	return sweep
+}
+
+// corpusCalibrateCase is one scored calibrate case reduced to the numbers
+// the sweep counts from: a code-settled contradiction flags at every
+// threshold, and the max contradicted probability flags at every threshold
+// it reaches — the same aggregation the live loop applies, so the sweep
+// derives every threshold's counts from one judge call per case.
+type corpusCalibrateCase struct {
+	item            corpusCase
+	codeFlagged     bool
+	maxContradicted float64
+}
+
+func (c corpusCalibrateCase) flaggedAt(threshold float64) bool {
+	return c.codeFlagged || c.maxContradicted >= threshold
+}
+
+// corpusCalibrateNegative names the labels the false-flag rate is computed
+// over.
+func corpusCalibrateNegative(label string) bool {
+	return label == corpusLabelClean || label == corpusLabelTrueBehaviour
+}
+
+// corpusLabelCount is one label's flagged count at one threshold.
+type corpusLabelCount struct {
+	Label   string `json:"label"`
+	Cases   int    `json:"cases"`
+	Flagged int    `json:"flagged"`
+}
+
+// corpusCalibrateRow is one threshold of the sweep.
+type corpusCalibrateRow struct {
+	Threshold     float64            `json:"threshold"`
+	Labels        []corpusLabelCount `json:"labels"`
+	FalseFlags    int                `json:"false_flags"`
+	Negatives     int                `json:"negatives"`
+	FalseFlagRate float64            `json:"false_flag_rate"`
+}
+
+func runJudgeCorpusCalibrate(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("judge corpus calibrate", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	corpusPath := flags.String("corpus", "", "JSONL corpus file built by judge corpus build")
+	configPath := flags.String("config", "", "judge config path (default: .batuta/judge.json under --workspace)")
+	workspace := flags.String("workspace", "", "workspace directory (default: current directory)")
+	baseURL := flags.String("base-url", "", "override the configured provider base URL")
+	asJSON := flags.Bool("json", false, "print one JSON object per threshold with a final chosen object")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *corpusPath == "" {
+		return errors.New("usage: batuta judge corpus calibrate --corpus <file> [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]")
+	}
+	cases, err := readCorpusRunCases(*corpusPath)
+	if err != nil {
+		return err
+	}
+	cases = corpusFilterSplit(cases, corpusSplitCalibrate)
+	config, err := loadJudgeConfig(*configPath, *workspace)
+	if err != nil {
+		return err
+	}
+	if *baseURL != "" {
+		config.BaseURL = *baseURL
+	}
+	j, buildReason, err := corpusRunJudge(config)
+	if err != nil {
+		return err
+	}
+	outcomes, _ := corpusRunCases(context.Background(), j, buildReason, replayDefaultThreshold, cases)
+	scored := make([]corpusCalibrateCase, 0, len(outcomes))
+	for _, outcome := range outcomes {
+		scored = append(scored, corpusCalibrateCase{
+			item:            outcome.item,
+			codeFlagged:     outcome.judgment.CodeContradicted > 0,
+			maxContradicted: outcome.judgment.MaxContradicted,
+		})
+	}
+	rows := corpusCalibrateRows(scored)
+	if *asJSON {
+		return printCorpusCalibrateJSON(stdout, rows)
+	}
+	return printCorpusCalibrateText(stdout, rows)
+}
+
+// corpusCalibrateRows sweeps the thresholds over the scored calibrate cases:
+// one row per threshold, with the flagged count per label — labels sorted —
+// and the false-flag rate over the clean and true_behaviour cases. With no
+// negative cases the rate is 0.
+func corpusCalibrateRows(scored []corpusCalibrateCase) []corpusCalibrateRow {
+	var labels []string
+	caseCounts := map[string]int{}
+	for _, c := range scored {
+		if caseCounts[c.item.Label] == 0 {
+			labels = append(labels, c.item.Label)
+		}
+		caseCounts[c.item.Label]++
+	}
+	slices.Sort(labels)
+	negatives := 0
+	for _, c := range scored {
+		if corpusCalibrateNegative(c.item.Label) {
+			negatives++
+		}
+	}
+	rows := make([]corpusCalibrateRow, 0, len(corpusCalibrateSweep()))
+	for _, threshold := range corpusCalibrateSweep() {
+		row := corpusCalibrateRow{
+			Threshold: threshold, Labels: make([]corpusLabelCount, 0, len(labels)), Negatives: negatives,
+		}
+		for _, label := range labels {
+			flagged := 0
+			for _, c := range scored {
+				if c.item.Label == label && c.flaggedAt(threshold) {
+					flagged++
+				}
+			}
+			row.Labels = append(row.Labels, corpusLabelCount{Label: label, Cases: caseCounts[label], Flagged: flagged})
+			if corpusCalibrateNegative(label) {
+				row.FalseFlags += flagged
+			}
+		}
+		if negatives > 0 {
+			row.FalseFlagRate = float64(row.FalseFlags) / float64(negatives)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// corpusCalibrateChosen returns the lowest threshold whose false-flag rate
+// is at most 0.02, ok false when none qualifies.
+func corpusCalibrateChosen(rows []corpusCalibrateRow) (float64, bool) {
+	for _, row := range rows {
+		if row.FalseFlagRate <= corpusCalibrateMaxFalseFlagRate {
+			return row.Threshold, true
+		}
+	}
+	return 0, false
+}
+
+func printCorpusCalibrateText(stdout io.Writer, rows []corpusCalibrateRow) error {
+	for _, row := range rows {
+		fmt.Fprintf(stdout, "threshold=%.2f", row.Threshold)
+		for _, label := range row.Labels {
+			fmt.Fprintf(stdout, " %s=%d/%d", label.Label, label.Flagged, label.Cases)
+		}
+		fmt.Fprintf(stdout, " false_flags=%d/%d rate=%.4f\n", row.FalseFlags, row.Negatives, row.FalseFlagRate)
+	}
+	if chosen, ok := corpusCalibrateChosen(rows); ok {
+		fmt.Fprintf(stdout, "chosen=%.2f\n", chosen)
+		return nil
+	}
+	fmt.Fprintln(stdout, "chosen=none")
+	return nil
+}
+
+func printCorpusCalibrateJSON(stdout io.Writer, rows []corpusCalibrateRow) error {
+	encoder := json.NewEncoder(stdout)
+	for _, row := range rows {
+		if err := encoder.Encode(row); err != nil {
+			return err
+		}
+	}
+	var chosen *float64
+	if value, ok := corpusCalibrateChosen(rows); ok {
+		chosen = &value
+	}
+	return encoder.Encode(map[string]*float64{"chosen": chosen})
 }

@@ -438,7 +438,7 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 				outputTokens += attemptOutput
 			}
 		}
-		judgment := aggregateReplayClaims(claims, answers, threshold)
+		judgment := replayJudgmentFrom(claims, answers, threshold)
 		if *asJSON {
 			record := replayJSONRecord{
 				TaskID: attempt.taskID, Execution: attempt.execution, Outcome: attempt.outcome,
@@ -637,11 +637,8 @@ func replayChangedPathsCount(paths []string, known bool) string {
 
 const (
 	replayDefaultThreshold   = 0.9
-	replayChoiceSupported    = "supported"
 	replayChoiceContradicted = "contradicted"
 	replayChoiceUnverifiable = "unverifiable"
-	replayUncertainLow       = 0.30
-	replayUncertainHigh      = 0.70
 )
 
 // replayClaim is one settled claim as replay reports it: who settled it
@@ -657,8 +654,7 @@ type replayClaim struct {
 }
 
 // replayUncertain is one judge answer routed to the uncertain bucket because
-// its confidence is below the threshold or its contradicted probability lies
-// in the 0.30–0.70 band.
+// its contradicted probability lies in [0.30, threshold).
 type replayUncertain struct {
 	Key          string  `json:"key"`
 	Choice       string  `json:"choice"`
@@ -679,73 +675,59 @@ type replayJudgment struct {
 	MaterialMax       float64
 }
 
-// aggregateReplayClaims applies the loop's aggregation to the settled claims
-// and the judge's answers — the same rules live and replay report: a
-// code-settled contradiction flags on its own; a judge contradiction flags
-// only when confidence and material are both at or above the threshold;
-// answers below the threshold or whose contradicted probability lies in
-// 0.30–0.70 land in the uncertain bucket; MaxContradicted is the highest
-// contradicted probability among the judge's answers and MaterialMax is
-// the highest material probability among the judged claims.
-func aggregateReplayClaims(claims []loop.Claim, answers map[string]judge.Answer, threshold float64) replayJudgment {
-	judgment := replayJudgment{Claims: make([]replayClaim, 0, len(claims)), Uncertain: []replayUncertain{}}
-	for index, claim := range claims {
-		key := fmt.Sprintf("c%d_relation", index+1)
-		materialKey := fmt.Sprintf("c%d_material", index+1)
-		record := replayClaim{Kind: string(claim.Kind), Text: claim.Text, Line: claim.Line}
-		answer, asked := answers[key]
-		material, askedMaterial := answers[materialKey]
-		if asked && claim.Status == loop.ClaimStatusUnsettled {
-			record.Source = string(loop.ClaimSourceJudge)
-			record.Choice = replayMappedChoice(answer.Choice)
-			record.Confidence = answer.Confidence
-			if askedMaterial {
-				record.Material = material.Noul
-			}
-			if replayAnswerUncertain(answer, threshold) {
-				judgment.Uncertain = append(judgment.Uncertain, replayUncertain{
-					Key:          key,
-					Choice:       answer.Choice,
-					Confidence:   answer.Confidence,
-					Contradicted: replayContradictedProbability(answer),
-				})
-			} else if replayDefectChoice(answer.Choice) && answer.Confidence >= threshold && askedMaterial && material.Noul >= threshold {
-				judgment.JudgeContradicted++
-				judgment.Flagged = true
-			}
-		} else {
-			record.Source = string(claim.Source)
-			record.Choice = string(claim.Status)
-			if claim.Source == loop.ClaimSourceCode {
-				record.Confidence = 1
-				if claim.Status == loop.ClaimStatusContradicted {
-					judgment.CodeContradicted++
-					judgment.Flagged = true
-				}
-			}
+// replayJudgmentFrom maps loop.AggregateClaimEvidence onto the replay
+// report: the flag, per-claim records and uncertain list come from that
+// one function; CodeContradicted, JudgeContradicted, MaxContradicted and
+// MaterialMax are the counts the replay line prints.
+func replayJudgmentFrom(claims []loop.Claim, answers map[string]judge.Answer, threshold float64) replayJudgment {
+	flagged, records, uncertain := loop.AggregateClaimEvidence(claims, answers, threshold)
+	judgment := replayJudgment{
+		Flagged:   flagged,
+		Claims:    make([]replayClaim, 0, len(records)),
+		Uncertain: make([]replayUncertain, 0, len(uncertain)),
+	}
+	for _, record := range records {
+		judgment.Claims = append(judgment.Claims, replayClaim{
+			Kind:       record.Kind,
+			Text:       record.Text,
+			Line:       record.Line,
+			Source:     record.Source,
+			Choice:     record.Choice,
+			Confidence: record.Confidence,
+			Material:   record.Material,
+		})
+		if record.Source == string(loop.ClaimSourceCode) && record.Choice == string(loop.ClaimStatusContradicted) {
+			judgment.CodeContradicted++
 		}
-		judgment.Claims = append(judgment.Claims, record)
 		if record.Material > judgment.MaterialMax {
 			judgment.MaterialMax = record.Material
 		}
 	}
-	for _, answer := range answers {
-		if probability := replayContradictedProbability(answer); probability > judgment.MaxContradicted {
+	for _, item := range uncertain {
+		judgment.Uncertain = append(judgment.Uncertain, replayUncertain{
+			Key:          item.Key,
+			Choice:       item.Choice,
+			Confidence:   item.Confidence,
+			Contradicted: item.Contradicted,
+		})
+	}
+	for index, claim := range claims {
+		if claim.Status != loop.ClaimStatusUnsettled {
+			continue
+		}
+		answer, ok := answers[fmt.Sprintf("c%d_relation", index+1)]
+		if !ok {
+			continue
+		}
+		probability := replayContradictedProbability(answer)
+		if probability > judgment.MaxContradicted {
 			judgment.MaxContradicted = probability
+		}
+		if probability >= threshold {
+			judgment.JudgeContradicted++
 		}
 	}
 	return judgment
-}
-
-func replayMappedChoice(choice string) string {
-	switch choice {
-	case replayChoiceSupported, replayChoiceUnverifiable:
-		return choice
-	}
-	if replayDefectChoice(choice) {
-		return replayChoiceContradicted
-	}
-	return choice
 }
 
 func replayDefectChoice(choice string) bool {
@@ -765,17 +747,6 @@ func replayContradictedProbability(answer judge.Answer) float64 {
 		}
 	}
 	return sum
-}
-
-// replayAnswerUncertain mirrors the loop's uncertain rule: an answer is
-// uncertain when its confidence is below the threshold or its contradicted
-// probability lies in the 0.30–0.70 band.
-func replayAnswerUncertain(answer judge.Answer, threshold float64) bool {
-	if answer.Confidence < threshold {
-		return true
-	}
-	probability := replayContradictedProbability(answer)
-	return probability >= replayUncertainLow && probability <= replayUncertainHigh
 }
 
 // replayJSONRecord is one attempt of a --json replay: the per-claim list and

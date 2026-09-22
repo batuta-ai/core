@@ -1,8 +1,10 @@
 # WORK — core
 
-## Current status — 2026-09-22 Jev experiments closed negative
-- [ ] Both Jev experiments failed their frozen rules. claim_evidence corpus run 1 (#110): judge flagged 0/112 `behaviour_absent`. Plan classification run 1 (branch `feat/judge-classify`): 44.2% exact agreement against a 46.4% constant baseline; the judge answered `high` for 171/181 tasks (median confidence 0.93). Evidence in `.batuta/judge-benchmark.md`, rules in `.batuta/judge-research.md` §10–11.
-- [ ] Agreed next step when the second experiment is also negative: remove Jev from batuta and write the article with the negative headline. Awaiting the maintainer's go before removing code.
+## Current status — 2026-09-22 Jev experiments, after the reanalysis
+- [ ] claim_evidence v3 (branch `feat/claim-evidence-v3`, stacked on `feat/judge-classify` / #114): aggregation on the contradicted probability, corpus with `true_behaviour` / `wrong_diff`, calibrate/test split. Calibration (rule §12) negative: no threshold 0.50–0.95 keeps false flags ≤2% (0.025 at 0.95); the judge flags true behaviour claims 21/40 at 0.50. Test half not run.
+- [ ] Plan classification run 1 negative (44.2% vs 46.4% baseline), attributed to a non-discriminating `high` rubric; a v2 with discriminating criteria was proposed, not started.
+- [ ] Next agreed: codex/gpt-6-astra read-only review of how batuta applies Jev (research §7–12, benchmark, `loop/judgment.go`, `classify/`).
+- [ ] Data loss: `git gc` on 2026-09-22 pruned the candidate commits of the 2026-09-06/07 deliveries (41 core corpus attempts lost their diff). Keep candidate commits reachable (for example a `refs/batuta/corpus/*` ref per candidate) if the corpus must stay rebuildable.
 - [ ] Merged 2026-09-22: #110 (corpus), #111 (code-only claim_evidence), #105 (polish, conflicts resolved). Local `core/.batuta/judge.json` = `{"provider":"off","decisions":{"claim_evidence":{"mode":"shadow","threshold":0.9}}}` (code-only shadow; needs a binary with #111).
 - [ ] Defects found by corpus run 1, not fixed: corpus runner skips the live `known` path gate; extractor keeps `[text](.batuta/worktrees/…` links with relative targets.
 
@@ -254,6 +256,9 @@
 - [x] First-attempt outcome sees an escalation after a same-executor retry → opencode (opencode/glm-5.3-flash), commit 965afea693b2 (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-1.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
 - [x] Bench tests prove the requests carry neither label nor journal content → opencode (opencode/glm-5.3-flash), commit db645ee12b0e (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-2.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
 - [x] docs/judge.md describes classify as built → agy (gemini-3.8-flash-low), 1 retry, commit 045a989d1ac5 (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-3.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
+- [x] One aggregation, flagged on the contradicted probability → cursor-agent (cursor-grok-4.6-high), commit 9689a21b5bfd (trail: .batuta/runs/2026-09-22-claim-evidence-v3-task-1.md, delivery claim-evidence-v3-20260922-123213, plan claim-evidence-v3, 2026-09-22)
+- [x] Corpus v2: true behaviour claims and a frozen calibrate/test split → opencode (opencode/glm-5.3-flash), commit 8837542c6a2f (trail: .batuta/runs/2026-09-22-claim-evidence-v3-task-2.md, delivery claim-evidence-v3-20260922-123213, plan claim-evidence-v3, 2026-09-22)
+- [x] corpus run --split and corpus calibrate → opencode (opencode/glm-5.3-flash), 1 retry, commit 6574ade1a480 (trail: .batuta/runs/2026-09-22-claim-evidence-v3-task-3.md, delivery claim-evidence-v3-20260922-123213, plan claim-evidence-v3, 2026-09-22)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

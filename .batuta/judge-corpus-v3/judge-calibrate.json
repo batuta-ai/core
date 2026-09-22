@@ -1,0 +1,1 @@
+{"provider":"auto","timeout_ms":20000,"decisions":{"claim_evidence":{"mode":"shadow","threshold":0.9}}}
