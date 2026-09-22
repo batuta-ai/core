@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -100,6 +101,29 @@ func TestRunDecodesStreamOutput(t *testing.T) {
 		t.Fatalf("run log = %q, want %q", log.String(), want.Text)
 	}
 	assertProgressEvents(t, result.Progress, []ProgressEvent{{Criterion: 1, State: "START"}})
+}
+
+func TestRunDecodedOutputBounded(t *testing.T) {
+	t.Parallel()
+	text := strings.Repeat("x", 120)
+	line := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"` + text + `"}]}}` + "\n")
+	payload := make([]byte, 0, 2*outputLimit+2*len(line))
+	for len(payload) <= 2*outputLimit {
+		payload = append(payload, line...)
+	}
+	result := executeDecoded(t, Adapter{OutputDecoder: "cursor-stream-json"}, splitStreamRunner{
+		chunks: [][]byte{payload[:len(payload)/2], payload[len(payload)/2:]},
+		stdout: payload,
+	}, nil)
+	if len(result.RawStdout) != outputLimit {
+		t.Fatalf("RawStdout length = %d, want %d", len(result.RawStdout), outputLimit)
+	}
+	if len(result.Stdout) > outputLimit {
+		t.Fatalf("Stdout length = %d, want <= %d", len(result.Stdout), outputLimit)
+	}
+	if !result.Truncated {
+		t.Fatal("Truncated = false, want true once an output exceeds the limit")
+	}
 }
 
 func TestRunDecodedProgressAndQuestion(t *testing.T) {
@@ -222,6 +246,69 @@ func TestRunWithoutDecoderUnchanged(t *testing.T) {
 	}
 	if result.Usage != nil {
 		t.Fatalf("Usage = %#v, want nil", result.Usage)
+	}
+}
+
+// failOnceWriter fails the first decoded write, then records what arrives.
+type failOnceWriter struct {
+	failed  bool
+	written bytes.Buffer
+}
+
+func (w *failOnceWriter) Write(p []byte) (int, error) {
+	if !w.failed {
+		w.failed = true
+		return 0, errors.New("destination closed")
+	}
+	w.written.Write(p)
+	return len(p), nil
+}
+
+func TestDecodeWriterDropsLineAfterWriteError(t *testing.T) {
+	t.Parallel()
+	dest := &failOnceWriter{}
+	w := newDecodeWriter(LookupDecoder("cursor-stream-json"), dest)
+	if _, err := w.Write([]byte("alpha\nbeta\n")); err == nil {
+		t.Fatal("Write() error = nil, want the destination failure")
+	}
+	if err := w.flush(); err != nil {
+		t.Fatalf("flush() error = %v", err)
+	}
+	if _, err := w.Write([]byte("gamma\n")); err != nil {
+		t.Fatalf("Write() after flush error = %v", err)
+	}
+	if got := dest.written.String(); strings.Contains(got, "alpha") {
+		t.Fatalf("destination received the failed line again: %q", got)
+	}
+	if got := dest.written.String(); !strings.Contains(got, "beta") || !strings.Contains(got, "gamma") {
+		t.Fatalf("destination received %q after the failure, want beta and gamma", got)
+	}
+	if decoded := string(w.bytes()); strings.Count(decoded, "alpha") != 1 {
+		t.Fatalf("decoded buffer = %q, want alpha retained exactly once", decoded)
+	}
+}
+
+func TestDecodeWriterBoundsPendingLine(t *testing.T) {
+	t.Parallel()
+	dest := &bytes.Buffer{}
+	w := newDecodeWriter(LookupDecoder("cursor-stream-json"), dest)
+	chunk := bytes.Repeat([]byte{'x'}, outputLimit/2+1)
+	for i := 0; i < 2; i++ {
+		if _, err := w.Write(chunk); err != nil {
+			t.Fatalf("Write() error = %v", err)
+		}
+	}
+	if len(w.pending) > outputLimit {
+		t.Fatalf("pending length = %d, want <= %d", len(w.pending), outputLimit)
+	}
+	if !w.truncated {
+		t.Fatal("truncated = false, want true once pending drops its excess")
+	}
+	if err := w.flush(); err != nil {
+		t.Fatalf("flush() error = %v", err)
+	}
+	if got := dest.String(); len(got) > outputLimit {
+		t.Fatalf("destination received %d bytes, want <= %d", len(got), outputLimit)
 	}
 }
 

@@ -300,15 +300,23 @@ func newDecodeWriter(decoder Decoder, dest io.Writer) *decodeWriter {
 func (w *decodeWriter) Write(payload []byte) (int, error) {
 	written := len(payload)
 	w.pending = append(w.pending, payload...)
+	// A line that never terminates would otherwise buffer without limit;
+	// the excess is real output the decoded stream loses, so it counts as
+	// truncation.
+	if len(w.pending) > outputLimit {
+		w.pending = w.pending[:outputLimit]
+		w.truncated = true
+	}
 	for {
 		newline := bytes.IndexByte(w.pending, '\n')
 		if newline < 0 {
 			break
 		}
-		if err := w.emit(string(w.pending[:newline])); err != nil {
+		line := string(w.pending[:newline])
+		w.pending = w.pending[newline+1:]
+		if err := w.emit(line); err != nil {
 			return written, err
 		}
-		w.pending = w.pending[newline+1:]
 	}
 	return written, nil
 }
