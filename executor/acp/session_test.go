@@ -171,6 +171,9 @@ func TestSessionEffortNotApplicableWithoutThoughtLevel(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high"})
+		if err == nil && !session.EffortNotApplicable() {
+			err = fmt.Errorf("EffortNotApplicable() = false, want true")
+		}
 		if err == nil {
 			var result TurnResult
 			result, err = session.Prompt(context.Background(), "the brief", nil)
@@ -226,25 +229,47 @@ func TestSessionSelectsExplicitIDsAndGroupedValues(t *testing.T) {
 }
 
 func TestSessionRejectsConfigurationDriftDuringPrompt(t *testing.T) {
-	conn, peer := testConnection(t, Options{})
-	cwd := t.TempDir()
-	done := make(chan error, 1)
-	go func() {
-		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high"})
-		if err == nil {
-			var result TurnResult
-			result, err = session.Prompt(context.Background(), "brief", nil)
-			if result.Completed || !result.SubmissionAttempted {
-				err = fmt.Errorf("configuration drift turn: %+v / %v", result, err)
+	modelOnly := `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"large","options":[{"value":"small"},{"value":"large"}]}]}`
+	tests := []struct {
+		name   string
+		state  string
+		update string
+		want   error
+	}{
+		{name: "model drifted", state: configState("large", "high"), update: configState("small", "high"), want: ErrConfiguration},
+		{name: "effort_option_dropped", state: configState("large", "high"), update: modelOnly, want: ErrConfiguration},
+		{name: "skipped_effort_stays_skipped", state: modelOnly, update: modelOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, peer := testConnection(t, Options{})
+			cwd := t.TempDir()
+			done := make(chan error, 1)
+			go func() {
+				session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high"})
+				if err == nil {
+					var result TurnResult
+					result, err = session.Prompt(context.Background(), "brief", nil)
+					if tt.want != nil {
+						if result.Completed || !result.SubmissionAttempted {
+							err = fmt.Errorf("configuration drift turn: %+v / %v", result, err)
+						}
+					} else if err == nil && (!result.Completed || result.StopReason != "end_turn") {
+						err = fmt.Errorf("turn: %+v", result)
+					}
+				}
+				done <- err
+			}()
+			reader := bufio.NewReader(peer)
+			setupPeer(t, peer, reader, cwd, tt.state)
+			request := expectMethod(t, reader, "session/prompt")
+			writeMessage(t, peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"config_option_update",`+strings.TrimPrefix(tt.update, "{")+`}}`)
+			if tt.want == nil {
+				sessionReply(t, peer, request, `{"stopReason":"end_turn"}`)
 			}
-		}
-		done <- err
-	}()
-	reader := bufio.NewReader(peer)
-	setupPeer(t, peer, reader, cwd, configState("large", "high"))
-	expectMethod(t, reader, "session/prompt")
-	writeMessage(t, peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"config_option_update",`+strings.TrimPrefix(configState("small", "high"), "{")+`}}`)
-	awaitError(t, done, ErrConfiguration)
+			awaitError(t, done, tt.want)
+		})
+	}
 }
 
 func TestSessionRejectsOversizedPromptBeforeSubmission(t *testing.T) {

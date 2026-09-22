@@ -32,12 +32,13 @@ type SessionConfig struct {
 // Session is one configured attempt. It neither authenticates nor owns the
 // worker process. The owner must close the connection and verify worker exit.
 type Session struct {
-	conn      *Connection
-	id        string
-	config    SessionConfig
-	options   []ConfigOption
-	prompted  atomic.Bool
-	enforcing bool
+	conn          *Connection
+	id            string
+	config        SessionConfig
+	options       []ConfigOption
+	prompted      atomic.Bool
+	enforcing     bool
+	skippedEffort bool
 }
 
 type TurnResult struct {
@@ -113,6 +114,7 @@ func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*S
 		if !session.effortNotApplicable(err) {
 			return nil, err
 		}
+		session.skippedEffort = true
 	}
 	if err := session.checkConfiguration(); err != nil {
 		return nil, err
@@ -212,11 +214,21 @@ func (s *Session) effortNotApplicable(err error) bool {
 	return err != nil && s.config.EffortConfigID == "" && !s.hasOption("thought_level", s.config.EffortConfigID)
 }
 
+func (s *Session) EffortNotApplicable() bool {
+	return s.skippedEffort
+}
+
 func (s *Session) checkConfiguration() error {
 	if err := s.checkOption("model", s.config.ModelConfigID, s.config.Model); err != nil {
 		return err
 	}
 	if err := s.checkOption("thought_level", s.config.EffortConfigID, s.config.Effort); err != nil {
+		if s.enforcing {
+			if s.skippedEffort && !s.hasOption("thought_level", s.config.EffortConfigID) {
+				return nil
+			}
+			return err
+		}
 		if s.effortNotApplicable(err) {
 			return nil
 		}
