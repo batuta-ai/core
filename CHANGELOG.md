@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.34](https://github.com/batuta-ai/core/compare/v1.1.0-beta.33...v1.1.0-beta.34) (2026-09-22)
+
+
+### Features
+
+* **judge:** provider model defaults, JSON output, 10 s timeout, usage and latency in probe and replay ([fa2a273](https://github.com/batuta-ai/core/commit/fa2a2737532a269c6e7bea7615c76f001b76df2e))
+
 ## [1.1.0-beta.33](https://github.com/batuta-ai/core/compare/v1.1.0-beta.32...v1.1.0-beta.33) (2026-09-22)
 
 
