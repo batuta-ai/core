@@ -56,12 +56,15 @@ Prompts travel through the protocol, never a shell command. The factory carries
 one release-owned qualification: OpenCode **1.18.31**, fixed launch
 `opencode acp`, native **macOS arm64** (`darwin/arm64`), and effort per the
 [`not_applicable` rule](#qualification-and-permissions).
-`Model: *` matches any model the session advertises and confirms. Executor,
-launch, version, platform and the lifecycle flags still must match exactly; `*`
-does not transfer evidence to another executor, version or platform. All other
-combinations remain unavailable for explicit ACP; `auto` uses CLI before
-submission. This describes the source constructor, not ACP availability in an
-installed beta23 binary.
+Launch matching checks only the qualification fields: `Model: *` matches any
+requested model, and an empty qualification effort matches any requested effort
+when the adapter declares no `acp_effort_config`. It does not inspect session options.
+Advertising and confirming the model and skipping the effort happen
+in the session after launch (`acp.NewSession`). Executor, launch, version, platform
+and the lifecycle flags still must match exactly; `*` does not transfer evidence
+to another executor, version or platform. All other combinations remain unavailable
+for explicit ACP; `auto` uses CLI before submission. This describes the source
+constructor, not ACP availability in an installed beta23 binary.
 
 The command writes one compact JSON report to stdout and puts its brief,
 pre-submission intent, complete evidence and bounded stdout/stderr in a new

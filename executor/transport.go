@@ -62,11 +62,12 @@ func (a Adapter) acpCommand() (Invocation, error) {
 
 // ACPQualification is trusted release evidence supplied by the owner of ACP.Open,
 // for that exact launch, version, platform, model and effort. Model "*" matches
-// any requested model; executor, run, version, platform and lifecycle flags
-// still must match exactly. Adapter frontmatter cannot grant eligibility. No
-// provider is universally qualified: OpenCode and Cursor remain pilots; Codex
-// permission/cleanup and Claude authenticated task evidence are gates. Native
-// Windows tests are required for a Windows record.
+// any requested model, and an empty qualification Effort matches any requested effort
+// when the adapter declares no acp_effort_config; executor, run, version,
+// platform and lifecycle flags still must match exactly. Adapter frontmatter
+// cannot grant eligibility. No provider is universally qualified: OpenCode and
+// Cursor remain pilots; Codex permission/cleanup and Claude authenticated task
+// evidence are gates. Native Windows tests are required for a Windows record.
 type ACPQualification struct {
 	Executor          string
 	Run               string
