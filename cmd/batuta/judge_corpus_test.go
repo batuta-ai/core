@@ -19,11 +19,8 @@ import (
 	"github.com/batuta-ai/core/loop"
 )
 
-// corpusGitCommits initializes the fixture repository and returns the base
-// and candidate commits the journals reference: greet.go gains GreetHandler
-// and greet_test.go adds one test, so the candidate diff carries an added
-// identifier line and one added test function.
-func corpusGitCommits(t *testing.T, root string) (base, commit string) {
+// corpusGitInit initializes the fixture repository.
+func corpusGitInit(t *testing.T, root string) {
 	t.Helper()
 	git := mustGit(t)
 	for _, args := range [][]string{
@@ -37,6 +34,16 @@ func corpusGitCommits(t *testing.T, root string) (base, commit string) {
 	} {
 		runGit(t, git, root, args...)
 	}
+}
+
+// corpusGitCommits initializes the fixture repository and returns the base
+// and candidate commits the journals reference: greet.go gains GreetHandler
+// and greet_test.go adds one test, so the candidate diff carries an added
+// identifier line and one added test function.
+func corpusGitCommits(t *testing.T, root string) (base, commit string) {
+	t.Helper()
+	corpusGitInit(t, root)
+	git := mustGit(t)
 	if err := os.WriteFile(filepath.Join(root, "greet.go"), []byte("package main\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -55,6 +62,37 @@ func corpusGitCommits(t *testing.T, root string) (base, commit string) {
 	runGit(t, git, root, "commit", "-qm", "greeting")
 	commit = strings.TrimSpace(runGit(t, git, root, "rev-parse", "HEAD"))
 	return base, commit
+}
+
+// corpusGitTwoCandidates initializes the fixture repository and returns the
+// base commit plus two different candidate commits: one adds GreetHandler to
+// greet.go, the other adds FarewellHandler to farewell.go, so the attempts
+// of two deliveries carry different diffs and changed paths.
+func corpusGitTwoCandidates(t *testing.T, root string) (base, greet, farewell string) {
+	t.Helper()
+	corpusGitInit(t, root)
+	git := mustGit(t)
+	if err := os.WriteFile(filepath.Join(root, "greet.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, root, "add", "greet.go")
+	runGit(t, git, root, "commit", "-qm", "base")
+	base = strings.TrimSpace(runGit(t, git, root, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(root, "greet.go"),
+		[]byte("package main\n\nfunc GreetHandler() string { return \"hi\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, root, "add", "greet.go")
+	runGit(t, git, root, "commit", "-qm", "greeting")
+	greet = strings.TrimSpace(runGit(t, git, root, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(root, "farewell.go"),
+		[]byte("package main\n\nfunc FarewellHandler() string { return \"bye\" }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, git, root, "add", "farewell.go")
+	runGit(t, git, root, "commit", "-qm", "farewell")
+	farewell = strings.TrimSpace(runGit(t, git, root, "rev-parse", "HEAD"))
+	return base, greet, farewell
 }
 
 // corpusJournalFixture writes a delivery journal with one opened record and
@@ -195,8 +233,8 @@ func TestCorpusBuildCases(t *testing.T) {
 		t.Fatalf("stdout = %q, want nothing", stdout.String())
 	}
 	cases, lines := readCorpusCases(t, out)
-	if len(cases) != 3 {
-		t.Fatalf("got %d cases, want the 3 of attempt e1:\n%s", len(cases), strings.Join(lines, "\n"))
+	if len(cases) != 4 {
+		t.Fatalf("got %d cases, want the 4 of attempt e1:\n%s", len(cases), strings.Join(lines, "\n"))
 	}
 	for _, line := range lines {
 		var object map[string]any
@@ -213,6 +251,7 @@ func TestCorpusBuildCases(t *testing.T) {
 	wantIDs := []string{
 		delivery + "/task_1/e1/clean",
 		delivery + "/task_1/e1/fabricated_reference",
+		delivery + "/task_1/e1/true_behaviour",
 		delivery + "/task_1/e1/wrong_count",
 	}
 	for index, c := range cases {
@@ -299,26 +338,43 @@ func TestCorpusBuildVariants(t *testing.T) {
 		alpha + "/task_1/e1/behaviour_absent",
 		alpha + "/task_1/e1/clean",
 		alpha + "/task_1/e1/fabricated_reference",
+		alpha + "/task_1/e1/true_behaviour",
 		alpha + "/task_1/e1/wrong_count",
+		alpha + "/task_1/e1/wrong_diff",
 		beta + "/task_1/e1/behaviour_absent",
 		beta + "/task_1/e1/clean",
 		beta + "/task_1/e1/fabricated_reference",
+		beta + "/task_1/e1/true_behaviour",
 		beta + "/task_1/e1/wrong_count",
+		beta + "/task_1/e1/wrong_diff",
 	}
 	if !slices.Equal(ids, wantIDs) {
 		t.Fatalf("case ids = %v, want %v", ids, wantIDs)
 	}
 	wantLines := map[string][]string{
-		alpha: {"Updated `greet.go` so that greet twice.", "Added `GreetHandlerChecked` to `greet.go`.", "Added 4 new tests in `greet_test.go`."},
-		beta:  {"Updated `greet.go` so that greet once.", "Added `GreetHandlerChecked` to `greet.go`.", "Added 4 new tests in `greet_test.go`."},
+		alpha: {
+			"Updated `greet.go` so that greet twice.",
+			"Added `GreetHandlerChecked` to `greet.go`.",
+			"Updated `greet.go` so that greet once.",
+			"Added 4 new tests in `greet_test.go`.",
+			"Updated `greet.go` so that greet once.",
+		},
+		beta: {
+			"Updated `greet.go` so that greet once.",
+			"Added `GreetHandlerChecked` to `greet.go`.",
+			"Updated `greet.go` so that greet twice.",
+			"Added 4 new tests in `greet_test.go`.",
+			"Updated `greet.go` so that greet twice.",
+		},
 	}
+	variantLabels := []string{"behaviour_absent", "fabricated_reference", "true_behaviour", "wrong_count", "wrong_diff"}
 	for _, delivery := range []string{alpha, beta} {
 		clean := byID[delivery+"/task_1/e1/clean"]
 		if clean.Report != corpusTestReport {
 			t.Fatalf("clean report = %q", clean.Report)
 		}
-		for _, label := range []string{"behaviour_absent", "fabricated_reference", "wrong_count"} {
-			line := wantLines[delivery][slices.Index([]string{"behaviour_absent", "fabricated_reference", "wrong_count"}, label)]
+		for _, label := range variantLabels {
+			line := wantLines[delivery][slices.Index(variantLabels, label)]
 			variant := byID[delivery+"/task_1/e1/"+label]
 			if variant.Report != clean.Report+"\n"+line {
 				t.Fatalf("%s report = %q, want the clean report plus %q", label, variant.Report, line)
@@ -333,6 +389,114 @@ func TestCorpusBuildVariants(t *testing.T) {
 				t.Fatalf("%s report_sha256 = %q", label, variant.ReportSHA256)
 			}
 		}
+	}
+}
+
+func TestCorpusBuildBehaviourVariants(t *testing.T) {
+	root := t.TempDir()
+	base, greet, farewell := corpusGitTwoCandidates(t, root)
+	alpha := "alpha-20260901-010101"
+	beta := "beta-20260902-020202"
+	journalAlpha := corpusJournalFixture(t, root, alpha, "alpha", "task_1", "Greet once",
+		[]map[string]any{corpusCandidateAttempt(1, base, greet, corpusTestReport)})
+	journalBeta := corpusJournalFixture(t, root, beta, "beta", "task_1", "Greet twice",
+		[]map[string]any{corpusCandidateAttempt(1, base, farewell, corpusTestReport)})
+	out := filepath.Join(root, "corpus.jsonl")
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "corpus", "build", "--journal", journalAlpha, "--journal", journalBeta,
+		"--out", out, "--workspace", root}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge corpus build = %v\nstderr: %s", err, stderr.String())
+	}
+	cases, _ := readCorpusCases(t, out)
+	byID := map[string]corpusCase{}
+	for _, c := range cases {
+		byID[c.ID] = c
+	}
+	alphaClean := byID[alpha+"/task_1/e1/clean"]
+	betaClean := byID[beta+"/task_1/e1/clean"]
+	if alphaClean.Diff == betaClean.Diff || slices.Equal(alphaClean.ChangedPaths, betaClean.ChangedPaths) {
+		t.Fatalf("the fixture's attempts share one diff: alpha %#v, beta %#v", alphaClean.ChangedPaths, betaClean.ChangedPaths)
+	}
+	for _, want := range []struct {
+		id       string
+		line     string
+		reportOf string
+		diffOf   string
+	}{
+		{alpha + "/task_1/e1/true_behaviour", "Updated `greet.go` so that greet once.", alphaClean.ID, alphaClean.ID},
+		{alpha + "/task_1/e1/wrong_diff", "Updated `farewell.go` so that greet once.", alphaClean.ID, betaClean.ID},
+		{beta + "/task_1/e1/true_behaviour", "Updated `farewell.go` so that greet twice.", betaClean.ID, betaClean.ID},
+		{beta + "/task_1/e1/wrong_diff", "Updated `greet.go` so that greet twice.", betaClean.ID, alphaClean.ID},
+	} {
+		variant, ok := byID[want.id]
+		if !ok {
+			t.Fatalf("case %s missing, got ids %v", want.id, byID)
+		}
+		reportOf, diffOf := byID[want.reportOf], byID[want.diffOf]
+		if variant.Report != reportOf.Report+"\n"+want.line {
+			t.Fatalf("%s report = %q, want the report of %s plus %q", want.id, variant.Report, want.reportOf, want.line)
+		}
+		if variant.Diff != diffOf.Diff || variant.DiffSHA256 != diffOf.DiffSHA256 {
+			t.Fatalf("%s diff = %q, want the diff of %s", want.id, variant.Diff, want.diffOf)
+		}
+		if !slices.Equal(variant.ChangedPaths, diffOf.ChangedPaths) {
+			t.Fatalf("%s changed_paths = %#v, want the changed paths of %s (%#v)",
+				want.id, variant.ChangedPaths, want.diffOf, diffOf.ChangedPaths)
+		}
+	}
+}
+
+func TestCorpusBuildSplit(t *testing.T) {
+	root := t.TempDir()
+	base, commit := corpusGitCommits(t, root)
+	alpha := "alpha-20260901-010101"
+	beta := "beta-20260902-020202"
+	journalAlpha := corpusJournalFixture(t, root, alpha, "alpha", "task_1", "Greet once", []map[string]any{
+		corpusCandidateAttempt(1, base, commit, corpusTestReport),
+		corpusCandidateAttempt(3, base, commit, corpusTestReport),
+		corpusCandidateAttempt(5, base, commit, corpusTestReport),
+	})
+	journalBeta := corpusJournalFixture(t, root, beta, "beta", "task_1", "Greet twice",
+		[]map[string]any{corpusCandidateAttempt(1, base, commit, corpusTestReport)})
+	out := filepath.Join(root, "corpus.jsonl")
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "corpus", "build", "--journal", journalAlpha, "--journal", journalBeta,
+		"--out", out, "--workspace", root}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge corpus build = %v\nstderr: %s", err, stderr.String())
+	}
+	cases, _ := readCorpusCases(t, out)
+	splitByAttempt := map[string]string{}
+	for _, c := range cases {
+		attemptID := c.ID[:strings.LastIndex(c.ID, "/")]
+		sum := sha256.Sum256([]byte(attemptID))
+		wantSplit := "test"
+		if sum[0]%2 == 0 {
+			wantSplit = "calibrate"
+		}
+		if c.Split != wantSplit {
+			t.Fatalf("%s split = %q, want %q from the first sha256 byte %d", c.ID, c.Split, wantSplit, sum[0])
+		}
+		if got, seen := splitByAttempt[attemptID]; seen && got != c.Split {
+			t.Fatalf("%s split = %q, want the split %q the attempt's other cases carry", c.ID, c.Split, got)
+		}
+		splitByAttempt[attemptID] = c.Split
+	}
+	if len(splitByAttempt) != 4 {
+		t.Fatalf("splits cover %d attempts, want the 4 fixture attempts: %v", len(splitByAttempt), splitByAttempt)
+	}
+	var calibrate, test int
+	for _, split := range splitByAttempt {
+		switch split {
+		case "calibrate":
+			calibrate++
+		case "test":
+			test++
+		}
+	}
+	if calibrate == 0 || test == 0 {
+		t.Fatalf("splits = %v, want both a calibrate and a test attempt", splitByAttempt)
 	}
 }
 

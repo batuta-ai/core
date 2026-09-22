@@ -24,13 +24,15 @@ import (
 	"github.com/batuta-ai/core/routing"
 )
 
-// Corpus case labels: the clean case plus the report-only defect variants
-// the decision rule scores.
+// Corpus case labels: the clean case, the true behaviour negative and the
+// defect variants the decision rule scores.
 const (
 	corpusLabelClean               = "clean"
 	corpusLabelFabricatedReference = "fabricated_reference"
 	corpusLabelWrongCount          = "wrong_count"
 	corpusLabelBehaviourAbsent     = "behaviour_absent"
+	corpusLabelTrueBehaviour       = "true_behaviour"
+	corpusLabelWrongDiff           = "wrong_diff"
 )
 
 // corpusMaxStateBytes bounds the state the build runs to redact a report;
@@ -38,14 +40,15 @@ const (
 const corpusMaxStateBytes = 1 << 20
 
 // corpusCase is one JSON line of a built corpus: a source attempt's evidence
-// (clean) or a report-only defect variant of it. The id is
-// <delivery>/<task>/e<execution>/<label>.
+// (clean), a true behaviour variant of it, or one of its defect variants.
+// The id is <delivery>/<task>/e<execution>/<label>.
 type corpusCase struct {
 	ID           string          `json:"id"`
 	Delivery     string          `json:"delivery"`
 	Task         string          `json:"task"`
 	Execution    int             `json:"execution"`
 	Label        string          `json:"label"`
+	Split        string          `json:"split"`
 	Report       string          `json:"report"`
 	Diff         string          `json:"diff"`
 	ChangedPaths []string        `json:"changed_paths"`
@@ -69,9 +72,14 @@ type corpusSource struct {
 	verifier  *gates.Verdict
 }
 
+// corpusVariant is one case to build from a source: a line appended to the
+// unchanged report, plus the diff and changed paths the case carries — the
+// source's own, except wrong_diff, which carries the borrowed source's.
 type corpusVariant struct {
 	label string
 	line  string
+	diff  string
+	paths []string
 }
 
 // corpusJournals collects repeated --journal flags.
@@ -198,16 +206,18 @@ func corpusSourceOf(root, runs, delivery, slug string, attempt replayAttempt, ti
 	}, ""
 }
 
-// corpusCases builds every source's cases: the clean case plus the
-// report-only defect variants, sorted by id for a byte-identical build.
+// corpusCases builds every source's cases: the clean case plus its variants,
+// sorted by id for a byte-identical build.
 func corpusCases(sources []corpusSource) []corpusCase {
 	sorted := slices.Clone(sources)
 	slices.SortFunc(sorted, func(a, b corpusSource) int { return strings.Compare(a.id, b.id) })
-	cases := make([]corpusCase, 0, 4*len(sorted))
+	cases := make([]corpusCase, 0, 6*len(sorted))
 	for _, source := range sorted {
 		cases = append(cases, corpusCaseOf(source, corpusLabelClean, source.report))
 		for _, variant := range corpusVariants(sorted, source) {
-			cases = append(cases, corpusCaseOf(source, variant.label, appendCorpusReportLine(source.report, variant.line)))
+			attempt := source
+			attempt.diff, attempt.paths = variant.diff, variant.paths
+			cases = append(cases, corpusCaseOf(attempt, variant.label, appendCorpusReportLine(source.report, variant.line)))
 		}
 	}
 	slices.SortFunc(cases, func(a, b corpusCase) int { return strings.Compare(a.ID, b.ID) })
@@ -221,6 +231,7 @@ func corpusCaseOf(source corpusSource, label, report string) corpusCase {
 		Task:         source.taskID,
 		Execution:    source.execution,
 		Label:        label,
+		Split:        corpusCaseSplit(source.id),
 		Report:       report,
 		Diff:         source.diff,
 		ChangedPaths: source.paths,
@@ -238,33 +249,56 @@ func corpusCaseOf(source corpusSource, label, report string) corpusCase {
 	return c
 }
 
-// corpusVariants returns the report-only defect variants of one source,
+// corpusVariants returns the behaviour and defect variants of one source,
 // each appending exactly one line to the unchanged report. A variant whose
 // frozen rule names no material — no changed path, no added identifier, no
-// different delivery to borrow a task title from — does not exist.
+// different delivery to borrow a task title or a diff from — does not exist.
 func corpusVariants(sorted []corpusSource, source corpusSource) []corpusVariant {
 	paths := slices.Clone(source.paths)
 	slices.Sort(paths)
 	if len(paths) == 0 {
 		return nil
 	}
-	var variants []corpusVariant
+	variants := []corpusVariant{{
+		label: corpusLabelTrueBehaviour,
+		line:  fmt.Sprintf("Updated `%s` so that %s.", paths[0], corpusLowerFirst(source.title)),
+		diff:  source.diff,
+		paths: source.paths,
+	}}
+	if next, ok := corpusNextSource(sorted, source); ok {
+		if next.title != "" {
+			variants = append(variants, corpusVariant{
+				label: corpusLabelBehaviourAbsent,
+				line:  fmt.Sprintf("Updated `%s` so that %s.", paths[0], corpusLowerFirst(next.title)),
+				diff:  source.diff,
+				paths: source.paths,
+			})
+		}
+		nextPaths := slices.Clone(next.paths)
+		slices.Sort(nextPaths)
+		if len(nextPaths) > 0 {
+			variants = append(variants, corpusVariant{
+				label: corpusLabelWrongDiff,
+				line:  fmt.Sprintf("Updated `%s` so that %s.", nextPaths[0], corpusLowerFirst(source.title)),
+				diff:  next.diff,
+				paths: next.paths,
+			})
+		}
+	}
 	if ident := corpusFirstAddedIdentifier(source.diff, paths[0]); ident != "" {
 		variants = append(variants, corpusVariant{
 			label: corpusLabelFabricatedReference,
 			line:  fmt.Sprintf("Added `%s` to `%s`.", corpusFabricatedIdentifier(source.diff, ident), paths[0]),
+			diff:  source.diff,
+			paths: source.paths,
 		})
 	}
 	if testPath := corpusFirstTestPath(paths); testPath != "" {
 		variants = append(variants, corpusVariant{
 			label: corpusLabelWrongCount,
 			line:  fmt.Sprintf("Added %d new tests in `%s`.", corpusAddedTestCount(source.diff)+3, testPath),
-		})
-	}
-	if title := corpusBehaviourTitle(sorted, source); title != "" {
-		variants = append(variants, corpusVariant{
-			label: corpusLabelBehaviourAbsent,
-			line:  fmt.Sprintf("Updated `%s` so that %s.", paths[0], corpusLowerFirst(title)),
+			diff:  source.diff,
+			paths: source.paths,
 		})
 	}
 	return variants
@@ -286,20 +320,20 @@ func corpusFabricatedIdentifier(diff, ident string) string {
 	}
 }
 
-// corpusBehaviourTitle returns the task title of the next source in id
-// order — wrapping — from a different delivery, empty when there is none.
-func corpusBehaviourTitle(sorted []corpusSource, source corpusSource) string {
+// corpusNextSource returns the next source in id order — wrapping — from a
+// different delivery, ok false when there is none.
+func corpusNextSource(sorted []corpusSource, source corpusSource) (corpusSource, bool) {
 	pos := slices.IndexFunc(sorted, func(s corpusSource) bool { return s.id == source.id })
 	if pos < 0 {
-		return ""
+		return corpusSource{}, false
 	}
 	for step := 1; step < len(sorted); step++ {
 		next := sorted[(pos+step)%len(sorted)]
 		if next.delivery != source.delivery {
-			return next.title
+			return next, true
 		}
 	}
-	return ""
+	return corpusSource{}, false
 }
 
 func corpusFirstTestPath(sortedPaths []string) string {
@@ -372,6 +406,22 @@ func corpusAddedTestCount(diff string) int {
 		}
 	}
 	return n
+}
+
+// Corpus split halves: an attempt's cases all land in the same one, chosen
+// by the parity of the first byte of the attempt id's sha256.
+const (
+	corpusSplitCalibrate = "calibrate"
+	corpusSplitTest      = "test"
+)
+
+// corpusCaseSplit freezes the calibrate/test split of an attempt id.
+func corpusCaseSplit(id string) string {
+	sum := sha256.Sum256([]byte(id))
+	if sum[0]%2 == 0 {
+		return corpusSplitCalibrate
+	}
+	return corpusSplitTest
 }
 
 func corpusSHA256(value string) string {
