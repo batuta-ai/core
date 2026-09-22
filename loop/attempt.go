@@ -303,7 +303,8 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		}
 		waits++
 		delay := r.limitDelay(result.ResetAt)
-		if err := r.locked(KindLimitWait, taskID, map[string]any{"execution": ac.execution, "wait": waits, "seconds": int(delay.Seconds()), "reset_at": result.ResetAt}, nil); err != nil {
+		limitWait := map[string]any{"execution": ac.execution, "wait": waits, "seconds": int(delay.Seconds()), "reset_at": result.ResetAt, "output_tail": r.outputTailDetail(result)}
+		if err := r.locked(KindLimitWait, taskID, limitWait, nil); err != nil {
 			return err
 		}
 		fmt.Fprintf(r.out, "%s e%d: %s hit a usage limit; waiting %s before re-running the same attempt (%d/%d)\n", taskID, ac.execution, ac.adapter.Name, delay.Round(time.Second), waits, r.opts.MaxLimitWaits)
@@ -333,12 +334,16 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("loop: compare %s against base %s: %w", ac.worktree.Name, ac.base, err)
 	}
-	if err := r.locked(KindFinished, taskID, map[string]any{
+	finished := map[string]any{
 		"execution": ac.execution, "exit_code": result.ExitCode, "finished": result.Finished, "timed_out": result.TimedOut,
 		"rate_limited": result.RateLimited, "duration_ms": result.Duration.Milliseconds(), "question": result.Question,
 		"stdout_bytes": len(result.Stdout), "stderr_bytes": len(result.Stderr), "tree_changed": treeChanged,
 		"base_head_sha": ac.base, "before": before, "after": after,
-	}, nil); err != nil {
+	}
+	if uncleanInvocation(result) {
+		finished["output_tail"] = r.outputTailDetail(result)
+	}
+	if err := r.locked(KindFinished, taskID, finished, nil); err != nil {
 		return err
 	}
 
@@ -1025,6 +1030,46 @@ func redactArgs(invocation executor.Invocation, brief string) []string {
 		args = append(args, arg)
 	}
 	return args
+}
+
+// Tail bounds of the output a journal record keeps of an unclean invocation.
+const (
+	outputTailLines = 40
+	outputTailBytes = 4096
+)
+
+// uncleanInvocation reports a session that did not end cleanly: a non-zero
+// exit, a timeout, a rate limit, or a turn that never finished. Only these
+// carry an output_tail in the journal.
+func uncleanInvocation(result executor.Result) bool {
+	return result.ExitCode != 0 || result.TimedOut || result.RateLimited || !result.Finished
+}
+
+// outputTailDetail builds the output_tail of an unclean invocation: the last
+// 40 lines of each stream, each cut to its final 4096 bytes on a UTF-8
+// boundary, redacted and stripped of secret-shaped lines before it reaches
+// the journal.
+func (r *Runner) outputTailDetail(result executor.Result) map[string]any {
+	stream := func(payload []byte) string {
+		return dropSecretLines(redactText(tailBytes(executor.Tail(payload, outputTailLines), outputTailBytes), r.root))
+	}
+	return map[string]any{"stdout": stream(result.Stdout), "stderr": stream(result.Stderr)}
+}
+
+// tailBytes keeps the last max bytes of s, trimming the cut so it does not
+// split a UTF-8 sequence straddling the boundary.
+func tailBytes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	cut := s[len(s)-max:]
+	for len(cut) > 0 && cut[0]&0xC0 == 0x80 {
+		cut = cut[1:]
+	}
+	return cut
 }
 
 func (r *Runner) writeLog(taskID string, execution int, result executor.Result) {
