@@ -165,9 +165,6 @@ func (b TransportBackend) Execute(ctx context.Context, e Execution) (result Resu
 		return open(ctx, execution)
 	}
 	result, err = backend.Execute(runCtx, e)
-	if result.Receipt != nil && e.Adapter.ACP != nil && e.Adapter.ACP.EffortConfigID == "" && e.Request.Effort != "" {
-		result.Receipt.Effort = "not_applicable"
-	}
 	var incompatible *acpCompatibilityError
 	if b.Mode == "auto" && runCtx.Err() == nil && errors.As(err, &incompatible) {
 		return cli.Execute(runCtx, e)

@@ -161,9 +161,10 @@ batuta dispatch \
 The session must advertise the requested model among its options and confirm
 it before receiving the prompt; a model that is missing or unconfirmed fails
 explicit ACP and permits `auto` fallback only after verified pre-submission
-shutdown. When the adapter declares no `acp_effort_config` and the session
-advertises no thought_level option, a requested effort is recorded in the
-receipt as `not_applicable` instead of failing qualification. Neither path
+shutdown. The receipt records `not_applicable` only when the session skipped
+the effort. When the adapter declares no `acp_effort_config` and the session
+advertises no thought_level option, a requested effort is recorded that way
+instead of failing qualification. Neither path
 silently changes the requested model or effort.
 See the
 [qualification evidence](dispatch-measurement.md#native-opencode-qualification)

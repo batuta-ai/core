@@ -88,6 +88,9 @@ func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Re
 		}
 	}
 	session, sessionErr := acp.NewSession(runCtx, conn, acp.SessionConfig{Cwd: execution.Request.Cwd, Model: execution.Request.Model, Effort: execution.Request.Effort, ModelConfigID: b.ModelConfigID, EffortConfigID: b.EffortConfigID, ClientInfo: b.ClientInfo, PermissionPolicy: policy})
+	if session != nil && session.EffortNotApplicable() {
+		receipt.Effort = "not_applicable"
+	}
 	turn := acp.TurnResult{}
 	sink := &progressSink{callback: execution.Progress}
 	observer := &progressObserver{sink: sink}

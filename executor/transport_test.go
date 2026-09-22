@@ -505,6 +505,60 @@ func TestQualificationEffortNotApplicable(t *testing.T) {
 	}
 }
 
+func TestACPReceiptEffortSelectedByCategory(t *testing.T) {
+	t.Parallel()
+	backend, execution, calls := transportFixture(t)
+	backend.Mode = "acp"
+	backend.Qualifications[0].Effort = ""
+	execution.Request.Effort = "high"
+	opens := 0
+	peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+		backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+		backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"high"}]}]}`)
+		backendReply(conn, backendRead(t, reader, "session/prompt"), `{"stopReason":"end_turn"}`)
+		io.Copy(io.Discard, reader)
+	})
+	backend.ACP.Open = func(ctx context.Context, got Execution) (*acp.Connection, func() error, error) {
+		opens++
+		return peer.Open(ctx, got)
+	}
+	result, err := backend.Execute(context.Background(), execution)
+	if err != nil || *calls != 0 || opens != 1 || !result.Finished || result.Receipt == nil || result.Receipt.Submission.State != SubmissionSubmitted {
+		t.Fatalf("selected effort: %+v / %v opens=%d calls=%d", result, err, opens, *calls)
+	}
+	if result.Receipt.Effort == "not_applicable" {
+		t.Fatalf("effort disposition: %q", result.Receipt.Effort)
+	}
+}
+
+func TestACPReceiptEffortRejectedNotStamped(t *testing.T) {
+	t.Parallel()
+	backend, execution, calls := transportFixture(t)
+	backend.Mode = "acp"
+	backend.Qualifications[0].Effort = ""
+	execution.Request.Effort = "high"
+	opens := 0
+	peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+		backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+		backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"low","options":[{"value":"low"}]}]}`)
+		line, _ := reader.ReadBytes('\n')
+		if len(line) != 0 {
+			t.Errorf("prompt after rejection: %s", line)
+		}
+	})
+	backend.ACP.Open = func(ctx context.Context, got Execution) (*acp.Connection, func() error, error) {
+		opens++
+		return peer.Open(ctx, got)
+	}
+	result, err := backend.Execute(context.Background(), execution)
+	if !errors.Is(err, acp.ErrConfiguration) || *calls != 0 || opens != 1 || result.Finished || result.Receipt == nil {
+		t.Fatalf("rejected effort: %+v / %v opens=%d calls=%d", result, err, opens, *calls)
+	}
+	if result.Receipt.Effort == "not_applicable" {
+		t.Fatalf("effort disposition: %q", result.Receipt.Effort)
+	}
+}
+
 func TestQualificationAnyModel(t *testing.T) {
 	t.Parallel()
 	for _, mismatch := range []string{"match", "executor", "run", "version", "os", "arch", "permissions", "cleanup", "task", "platform"} {
