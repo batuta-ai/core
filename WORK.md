@@ -1,8 +1,10 @@
 # WORK — core
 
-## Current status — 2026-09-22 Jev experiments closed negative
-- [ ] Both Jev experiments failed their frozen rules. claim_evidence corpus run 1 (#110): judge flagged 0/112 `behaviour_absent`. Plan classification run 1 (branch `feat/judge-classify`): 44.2% exact agreement against a 46.4% constant baseline; the judge answered `high` for 171/181 tasks (median confidence 0.93). Evidence in `.batuta/judge-benchmark.md`, rules in `.batuta/judge-research.md` §10–11.
-- [ ] Agreed next step when the second experiment is also negative: remove Jev from batuta and write the article with the negative headline. Awaiting the maintainer's go before removing code.
+## Current status — 2026-09-22 Jev experiments, after the reanalysis
+- [ ] claim_evidence v3 (branch `feat/claim-evidence-v3`, stacked on `feat/judge-classify` / #114): aggregation on the contradicted probability, corpus with `true_behaviour` / `wrong_diff`, calibrate/test split. Calibration (rule §12) negative: no threshold 0.50–0.95 keeps false flags ≤2% (0.025 at 0.95); the judge flags true behaviour claims 21/40 at 0.50. Test half not run.
+- [ ] Plan classification run 1 negative (44.2% vs 46.4% baseline), attributed to a non-discriminating `high` rubric; a v2 with discriminating criteria was proposed, not started.
+- [ ] Next agreed: codex/gpt-6-astra read-only review of how batuta applies Jev (research §7–12, benchmark, `loop/judgment.go`, `classify/`).
+- [ ] Data loss: `git gc` on 2026-09-22 pruned the candidate commits of the 2026-09-06/07 deliveries (41 core corpus attempts lost their diff). Keep candidate commits reachable (for example a `refs/batuta/corpus/*` ref per candidate) if the corpus must stay rebuildable.
 - [ ] Merged 2026-09-22: #110 (corpus), #111 (code-only claim_evidence), #105 (polish, conflicts resolved). Local `core/.batuta/judge.json` = `{"provider":"off","decisions":{"claim_evidence":{"mode":"shadow","threshold":0.9}}}` (code-only shadow; needs a binary with #111).
 - [ ] Defects found by corpus run 1, not fixed: corpus runner skips the live `known` path gate; extractor keeps `[text](.batuta/worktrees/…` links with relative targets.
 
