@@ -10,8 +10,37 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
+	"github.com/batuta-ai/core/loop"
 )
+
+// benchOutcomeTestPlan is a four-lane plan whose tasks are classified with
+// one recorded outcome each: candidate, retried, escalated and failed.
+const benchOutcomeTestPlan = `# Plan — Classify bench outcomes
+<!-- inputs: profile.md@sha256:1a2b3c4d5e6f routing.md@sha256:0f0e0d0c0b0a -->
+
+**Goal:** Score the classify decision against the recorded outcomes.
+**Created:** 2026-09-20 · **Status:** approved
+
+## Tasks
+- [ ] 1. First attempt sticks — testing/low → opencode/kimi-k2.5
+      Scope: tests/checkout/timeout.test.ts
+      Accept: a failing test reproduces the timeout → npm test -- timeout
+- [ ] 2. Retry the same lane — backend/medium → codex/gpt-5.6-terra
+      Depends on: 1
+      Scope: src/checkout/payment.ts
+      Accept: the reproduction passes → npm test -- timeout
+- [ ] 3. Bump to a higher lane — backend/medium → codex/gpt-5.6-terra
+      Depends on: 2
+      Scope: src/checkout/payment.ts
+      Accept: the reproduction passes → npm test -- timeout
+- [ ] 4. Only one try — docs/high
+      Accept: README mentions the retry → grep -n retry README.md
+
+## Decisions and context
+Free prose for a fresh session.
+`
 
 // classifyTestPlan is a two-lane plan the classify runs score; the slug the
 // command derives from the file name is classify-bench.
@@ -373,4 +402,260 @@ func writeBadPlan(t *testing.T, root string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// benchJournalEntry is one fixture record appended to a test delivery.
+type benchJournalEntry struct {
+	kind   journal.Kind
+	taskID string
+	detail map[string]any
+}
+
+// benchStartedDetail is the executor_started detail of a fixture attempt.
+func benchStartedDetail(execution int, executor string) map[string]any {
+	return map[string]any{"execution": execution, "executor": executor, "model": "small"}
+}
+
+// benchFinishedDetail is the executor_finished detail of a fixture attempt.
+func benchFinishedDetail(execution int) map[string]any {
+	return map[string]any{"execution": execution, "tree_changed": true, "base_head_sha": "abc"}
+}
+
+// benchCandidateDetail is the candidate_recorded detail of a fixture attempt.
+func benchCandidateDetail(execution int) map[string]any {
+	return map[string]any{"execution": execution, "commit": "abc", "evidence": map[string]any{"base_sha": "def"}}
+}
+
+// writeBenchJournal appends the fixture records of one delivery into a
+// journal directory; journal.Store fills the hash chain.
+func writeBenchJournal(t *testing.T, dir, delivery string, entries []benchJournalEntry) {
+	t.Helper()
+	store, err := journal.Open(dir)
+	if err != nil {
+		t.Fatalf("open journal store: %v", err)
+	}
+	for _, entry := range entries {
+		detail, err := json.Marshal(entry.detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.Append(delivery, journal.Record{Kind: entry.kind, TaskID: entry.taskID, Detail: detail}); err != nil {
+			t.Fatalf("append %s %s: %v", entry.kind, entry.taskID, err)
+		}
+	}
+}
+
+// writeBenchPlan writes a bench plan fixture under the workspace root.
+func writeBenchPlan(t *testing.T, root, name, payload string) string {
+	t.Helper()
+	path := filepath.Join(root, name)
+	if err := os.WriteFile(path, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestClassifyBenchSummary(t *testing.T) {
+	server, _ := classifyTestServer(t, map[string]classifyRoute{
+		"Reproduce the timeout in a test": {complexity: "low", domain: "testing", confidence: 0.9, inputTokens: 12},
+		"Retry the payment call once":     {complexity: "low", domain: "backend", confidence: 0.85, inputTokens: 7},
+		"Document the retry policy":       {complexity: "low", domain: "docs", confidence: 0.95, inputTokens: -1},
+	})
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	planPath := classifyTestPlanPath(t, root)
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "classify", "bench", "--plan", planPath, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge classify bench = %v\nstderr: %s", err, stderr.String())
+	}
+	got := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	want := []string{
+		"threshold=0.7",
+		"classify-bench task_1 plan=testing/low judge=testing/low complexity=0.90 domain=0.90 fallback=false input_tokens=12 outcome=unknown relation=equal",
+		"classify-bench task_2 plan=backend/medium judge=backend/low complexity=0.85 domain=0.85 fallback=false input_tokens=7 outcome=unknown relation=lower",
+		"classify-bench task_3 plan=docs/low judge=docs/low complexity=0.95 domain=0.95 fallback=false input_tokens=unknown outcome=unknown relation=equal",
+		"bench tasks=3 complexity_exact=2/3 domain_exact=3/3 under=1 over=0 fallbacks=0 unavailable=0 baseline=2/3",
+		"matrix plan=low judge: low=2 medium=0 high=0 critical=0",
+		"matrix plan=medium judge: low=1 medium=0 high=0 critical=0",
+		"matrix plan=high judge: low=0 medium=0 high=0 critical=0",
+		"matrix plan=critical judge: low=0 medium=0 high=0 critical=0",
+		"outcomes relation=lower: candidate=0 retried=0 escalated=0 failed=0 unknown=1",
+		"outcomes relation=equal: candidate=0 retried=0 escalated=0 failed=0 unknown=2",
+		"outcomes relation=higher: candidate=0 retried=0 escalated=0 failed=0 unknown=0",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("stdout = %q\nwant %q", got, want)
+	}
+	for i, line := range want {
+		if got[i] != line {
+			t.Errorf("line %d = %q, want %q", i+1, got[i], line)
+		}
+	}
+}
+
+func TestClassifyBenchOutcome(t *testing.T) {
+	server, _ := classifyTestServer(t, map[string]classifyRoute{
+		"First attempt sticks":  {complexity: "low", domain: "testing", confidence: 0.9, inputTokens: 12},
+		"Retry the same lane":   {complexity: "low", domain: "backend", confidence: 0.9, inputTokens: 12},
+		"Bump to a higher lane": {complexity: "high", domain: "backend", confidence: 0.9, inputTokens: 12},
+		"Only one try":          {complexity: "medium", domain: "docs", confidence: 0.9, inputTokens: 12},
+	})
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	planPath := writeBenchPlan(t, root, "classify-bench.md", benchOutcomeTestPlan)
+	journals := t.TempDir()
+	writeBenchJournal(t, journals, "classify-bench-run1", []benchJournalEntry{
+		{loop.KindStarted, "task_1", benchStartedDetail(1, "opencode")},
+		{loop.KindFinished, "task_1", benchFinishedDetail(1)},
+		{loop.KindCandidate, "task_1", benchCandidateDetail(1)},
+		{loop.KindStarted, "task_2", benchStartedDetail(1, "codex")},
+		{loop.KindFinished, "task_2", benchFinishedDetail(1)},
+		{loop.KindStarted, "task_2", benchStartedDetail(2, "codex")},
+		{loop.KindFinished, "task_2", benchFinishedDetail(2)},
+		{loop.KindCandidate, "task_2", benchCandidateDetail(2)},
+		{loop.KindStarted, "task_3", benchStartedDetail(1, "codex")},
+		{loop.KindFinished, "task_3", benchFinishedDetail(1)},
+		{loop.KindStarted, "task_3", benchStartedDetail(2, "opencode")},
+		{loop.KindFinished, "task_3", benchFinishedDetail(2)},
+		{loop.KindStarted, "task_4", benchStartedDetail(1, "codex")},
+		{loop.KindFinished, "task_4", benchFinishedDetail(1)},
+	})
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "classify", "bench", "--plan", planPath, "--journals", journals, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge classify bench = %v\nstderr: %s", err, stderr.String())
+	}
+	got := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	want := []string{
+		"threshold=0.7",
+		"classify-bench task_1 plan=testing/low judge=testing/low complexity=0.90 domain=0.90 fallback=false input_tokens=12 outcome=candidate relation=equal",
+		"classify-bench task_2 plan=backend/medium judge=backend/low complexity=0.90 domain=0.90 fallback=false input_tokens=12 outcome=retried relation=lower",
+		"classify-bench task_3 plan=backend/medium judge=backend/high complexity=0.90 domain=0.90 fallback=false input_tokens=12 outcome=escalated relation=higher",
+		"classify-bench task_4 plan=docs/high judge=docs/medium complexity=0.90 domain=0.90 fallback=false input_tokens=12 outcome=failed relation=lower",
+		"bench tasks=4 complexity_exact=1/4 domain_exact=4/4 under=2 over=1 fallbacks=0 unavailable=0 baseline=2/4",
+		"matrix plan=low judge: low=1 medium=0 high=0 critical=0",
+		"matrix plan=medium judge: low=1 medium=0 high=1 critical=0",
+		"matrix plan=high judge: low=0 medium=1 high=0 critical=0",
+		"matrix plan=critical judge: low=0 medium=0 high=0 critical=0",
+		"outcomes relation=lower: candidate=0 retried=1 escalated=0 failed=1 unknown=0",
+		"outcomes relation=equal: candidate=1 retried=0 escalated=0 failed=0 unknown=0",
+		"outcomes relation=higher: candidate=0 retried=0 escalated=1 failed=0 unknown=0",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("stdout = %q\nwant %q", got, want)
+	}
+	for i, line := range want {
+		if got[i] != line {
+			t.Errorf("line %d = %q, want %q", i+1, got[i], line)
+		}
+	}
+}
+
+func TestClassifyBenchOutcomeUnknown(t *testing.T) {
+	server, _ := classifyTestServer(t, map[string]classifyRoute{
+		"Reproduce the timeout in a test": {complexity: "low", domain: "testing", confidence: 0.9, inputTokens: 12},
+		"Retry the payment call once":     {complexity: "medium", domain: "backend", confidence: 0.9, inputTokens: 12},
+		"Document the retry policy":       {complexity: "low", domain: "docs", confidence: 0.9, inputTokens: 12},
+	})
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	planPath := classifyTestPlanPath(t, root)
+	journals := t.TempDir()
+	writeBenchJournal(t, journals, "classify-bench-run1", []benchJournalEntry{
+		{loop.KindStarted, "task_1", benchStartedDetail(1, "opencode")},
+		{loop.KindFinished, "task_1", benchFinishedDetail(1)},
+		{loop.KindCandidate, "task_1", benchCandidateDetail(1)},
+	})
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "classify", "bench", "--plan", planPath, "--journals", journals, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge classify bench = %v\nstderr: %s", err, stderr.String())
+	}
+	got := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(got) != 12 {
+		t.Fatalf("stdout lines = %d, want 12\n%s", len(got), stdout.String())
+	}
+	if !strings.Contains(got[1], "task_1") || !strings.Contains(got[1], "outcome=candidate relation=equal") {
+		t.Errorf("task 1 line = %q, want the journaled candidate", got[1])
+	}
+	for i, line := range got[2:4] {
+		if !strings.Contains(line, "outcome=unknown relation=equal") {
+			t.Errorf("task %d line = %q, want outcome=unknown", i+2, line)
+		}
+	}
+	if got[4] != "bench tasks=3 complexity_exact=3/3 domain_exact=3/3 under=0 over=0 fallbacks=0 unavailable=0 baseline=2/3" {
+		t.Errorf("summary = %q", got[4])
+	}
+	if got[10] != "outcomes relation=equal: candidate=1 retried=0 escalated=0 failed=0 unknown=2" {
+		t.Errorf("equal outcomes = %q, want the candidate counted beside the unknowns", got[10])
+	}
+}
+
+func TestClassifyBenchJSON(t *testing.T) {
+	server, _ := classifyTestServer(t, map[string]classifyRoute{
+		"Reproduce the timeout in a test": {complexity: "low", domain: "testing", confidence: 0.9, inputTokens: 12},
+		"Retry the payment call once":     {complexity: "low", domain: "backend", confidence: 0.85, inputTokens: 7},
+		"Document the retry policy":       {complexity: "low", domain: "docs", confidence: 0.95, inputTokens: -1},
+	})
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	planPath := classifyTestPlanPath(t, root)
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "classify", "bench", "--plan", planPath, "--json", "--workspace", root, "--base-url", server.URL}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("judge classify bench = %v\nstderr: %s", err, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("stdout lines = %d, want three tasks plus a summary\n%s", len(lines), stdout.String())
+	}
+	var task2 struct {
+		PlanSlug string `json:"plan_slug"`
+		Outcome  string `json:"outcome"`
+		Relation string `json:"relation"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &task2); err != nil {
+		t.Fatalf("line 2 is not JSON: %v\n%s", err, lines[1])
+	}
+	if task2.PlanSlug != "classify-bench" || task2.Outcome != "unknown" || task2.Relation != "lower" {
+		t.Errorf("task 2 = %+v", task2)
+	}
+	var summary struct {
+		Summary struct {
+			Tasks           int `json:"tasks"`
+			ComplexityExact int `json:"complexity_exact"`
+			Under           int `json:"under"`
+			Baseline        struct {
+				Label string  `json:"label"`
+				Count int     `json:"count"`
+				Share float64 `json:"share"`
+			} `json:"baseline"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(lines[3]), &summary); err != nil {
+		t.Fatalf("line 4 is not JSON: %v\n%s", err, lines[3])
+	}
+	if summary.Summary.Tasks != 3 || summary.Summary.ComplexityExact != 2 || summary.Summary.Under != 1 {
+		t.Errorf("summary = %+v", summary.Summary)
+	}
+	if summary.Summary.Baseline.Label != "low" || summary.Summary.Baseline.Count != 2 {
+		t.Errorf("baseline = %+v", summary.Summary.Baseline)
+	}
+}
+
+func TestClassifyBenchRejectsInvalidArguments(t *testing.T) {
+	root := t.TempDir()
+	planPath := filepath.Join(root, "classify-bench.md")
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"missing plan flag", []string{"judge", "classify", "bench", "--workspace", root}},
+		{"positional argument", []string{"judge", "classify", "bench", "--plan", planPath, "--workspace", root, "extra"}},
+		{"missing plan file", []string{"judge", "classify", "bench", "--plan", planPath, "--workspace", root}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			if err := run(tc.args, &stdout, &stderr); err == nil {
+				t.Fatalf("judge classify bench = nil, want an error")
+			}
+		})
+	}
 }
