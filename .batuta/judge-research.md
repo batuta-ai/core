@@ -190,3 +190,24 @@ Rule:
 - Sanity for the code step: code flags at least 90% of `fabricated_reference` and `wrong_count` cases. If this fails, the corpus or the settlement is broken and the judge result is not read.
 - Unavailable judge answers are counted separately and never as misses. If more than 10% of the judge's calls are unavailable, the run is repeated once and both runs are reported.
 - A negative result is the headline. Nothing is restated at another threshold.
+
+## 11. Plan classification: decision rule, frozen before the run (2026-09-22)
+
+Agreed with the maintainer on 2026-09-22, before the bench was run. This section is not edited afterwards.
+
+Inputs, fixed:
+- Binary built from `7ba6ead`, the last commit of branch `feat/judge-classify` after delivery `judge-classify-fixes-20260922-112834`, whose final review returned SHIP with no findings.
+- Tasks: every task of every plan under `core/.batuta/plans/done/` and `skills/.batuta/plans/done/` (175 tasks in 49 plans on 2026-09-21; the run uses whatever those directories hold when it starts, and records the count). The label is the lane the host wrote in the plan.
+- Journals: `core/.batuta/journal/` and `skills/.batuta/journal/`, for measure (b) only.
+- Judge: `provider: auto`, `classify` decision threshold 0.7 (the command default), from a config file passed with `--config`. One trial. No wording, threshold or criteria changes between build and run.
+
+Measure (a) decides. The judge is fit to classify plan tasks only if, over all tasks, all three hold:
+1. Exact complexity agreement with the label is at least 80%.
+2. That agreement is at least 20 percentage points above the constant-answer baseline (the share of the most common label).
+3. Under-routed tasks (judge lane lower than the label) are at most 10%.
+
+Fallbacks to `critical` count as the judge's answer for agreement and routing direction. Unavailable answers are counted separately and excluded from the denominator; if more than 10% are unavailable, the run is repeated once and both runs are reported.
+
+Measure (b) is reported beside it and decides nothing: for tasks with a journal, the first-attempt outcome of the executed lane against whether the judge's lane was lower, equal or higher.
+
+A negative result is the headline. Nothing is restated at another threshold.
