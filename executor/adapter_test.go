@@ -57,6 +57,31 @@ func TestParseAdapterReadsTheFrontmatterContract(t *testing.T) {
 	}
 }
 
+func TestAdapterUsageRegex(t *testing.T) {
+	t.Parallel()
+	withUsage := strings.Replace(codexAdapter, "finished: exit_code", "finished: exit_code\nusage_regex: \"total tokens used: (?P<total>[0-9][0-9., ]*)\"", 1)
+	adapter, err := ParseAdapter([]byte(withUsage))
+	if err != nil {
+		t.Fatalf("ParseAdapter() error = %v", err)
+	}
+	if adapter.UsageRegex != "total tokens used: (?P<total>[0-9][0-9., ]*)" {
+		t.Fatalf("usage_regex = %q", adapter.UsageRegex)
+	}
+	withInput := strings.Replace(codexAdapter, "finished: exit_code", `finished: exit_code
+usage_regex: "input=(?P<input>[0-9]+) output=(?P<output>[0-9]+)"`, 1)
+	if _, err := ParseAdapter([]byte(withInput)); err != nil {
+		t.Fatalf("ParseAdapter(input/output groups) error = %v", err)
+	}
+	for name, payload := range map[string]string{
+		"does not compile": strings.Replace(codexAdapter, "finished: exit_code", "finished: exit_code\nusage_regex: \"(total\"", 1),
+		"no named group":   strings.Replace(codexAdapter, "finished: exit_code", "finished: exit_code\nusage_regex: \"tokens used\"", 1),
+	} {
+		if _, err := ParseAdapter([]byte(payload)); err == nil {
+			t.Fatalf("ParseAdapter(%s) should fail", name)
+		}
+	}
+}
+
 func TestTokenizeSplitsLikeAShellWithoutRunningOne(t *testing.T) {
 	cases := map[string][]string{
 		`codex exec --sandbox workspace-write "{brief}" < /dev/null`:         {"codex", "exec", "--sandbox", "workspace-write", "{brief}"},

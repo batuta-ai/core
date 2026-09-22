@@ -34,7 +34,7 @@ must stand alone: no prefix, suffix, or extra text on the same line.
 |---|---|
 | `journal` | Append-only JSONL per delivery under `.batuta/journal/`, hash-chained; every record carries the graph after the transition |
 | `worktree` | `GitProvider`: worktrees under `.batuta/worktrees/`, squash, bookkeeping commits, `.git/info/exclude` |
-| `executor` | Adapter frontmatter → argv (no shell), subprocess with stdin closed, timeouts, process-group kill, `finished` and `limit_regex` rules, question line |
+| `executor` | Adapter frontmatter → argv (no shell), subprocess with stdin closed, timeouts, process-group kill, `finished`, `limit_regex` and `usage_regex` rules, question line |
 | `gates` | Gate 0 finished · 1 tree · 2 tests · 3 scope, proofs, independent read-only verifier |
 | `loop` | The runner over `routing.DeliveryGraph`: routing from the table, waves, attempts, retry then escalation, integration, bookkeeping, resume, answer, abandon, dashboard, trail |
 
@@ -193,6 +193,22 @@ asked.
   An ACP quota response after possible prompt submission is uncertain work,
   not proof of non-execution, so the loop parks it for reconciliation without
   a fallback, retry or escalation.
+- **Executor telemetry in the journal.** An unclean invocation — non-zero
+  exit, timeout, rate limit or unfinished turn — records `output_tail` in its
+  `executor_finished` and `limit_wait` records: the last 40 lines of each
+  stream, each cut to its final 4096 bytes on a UTF-8 boundary, with
+  workspace paths redacted and secret-shaped lines dropped before it reaches
+  the journal. Clean sessions carry no tail. An adapter may also declare
+  `usage_regex`, a case-insensitive pattern naming any of the counters
+  `input`, `output`, `cached` and `total` (it must compile and name at least
+  one, or the adapter is invalid). The loop applies it to the same last
+  20 lines of stdout and stderr `limit_regex` uses and records what it
+  captured as `usage` on `executor_finished` with provenance
+  `cli/usage_regex`; thousands separators (comma, dot, thin space) are
+  parsed away, unmatched counters stay nil, and a CLI that prints only a
+  total (e.g. `tokens used\s+(?P<total>[0-9][0-9., ]*)`) sets
+  `reported_total_tokens` without inventing input or output. A session with
+  no reported usage records `usage_unknown` instead.
 - **Conflicts keep the same runtime.** A conflicting candidate re-executes on
   the new base with the same executor, model, and reasoning; escalation is
   reserved for verification failures.
@@ -430,7 +446,8 @@ from plan discovery.
 
 - Delivery token budgeting or aggregation: ACP receipts can retain optional
   provider-reported usage, but missing counters remain unknown and the graph
-  does not consume them. CLI executors do not report tokens. The wall budget
+  does not consume them. CLI executors report tokens only when the adapter
+  declares `usage_regex`. The wall budget
   remains `--task-timeout` per session; paired measurement is described in
   [dispatch-measurement.md](dispatch-measurement.md).
 - Cross-review with lenses (the skill's `/batuta-review`); the loop runs the

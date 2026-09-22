@@ -29,6 +29,7 @@ type Adapter struct {
 	Models          string
 	Finished        string
 	LimitRegex      string
+	UsageRegex      string
 	CwdFlag         string
 	BriefLimitLines int
 	ACP             *ACPLaunch
@@ -111,7 +112,8 @@ func ParseAdapter(payload []byte) (Adapter, error) {
 		Name: fields["name"], Executable: fields["executable"], Run: fields["run"], RunFile: fields["run_file"],
 		ModelFlags: fields["model_flags"], Readonly: fields["readonly"], Available: fields["available"],
 		Models: fields["models"], Finished: fields["finished"], LimitRegex: fields["limit_regex"],
-		CwdFlag: fields["cwd_flag"], BriefLimitLines: 100, Fields: fields,
+		UsageRegex: fields["usage_regex"],
+		CwdFlag:    fields["cwd_flag"], BriefLimitLines: 100, Fields: fields,
 	}
 	for _, key := range []string{"acp_run", "acp_version", "acp_model_config", "acp_effort_config"} {
 		if _, present := fields[key]; present {
@@ -135,6 +137,22 @@ func ParseAdapter(payload []byte) (Adapter, error) {
 	if adapter.LimitRegex != "" {
 		if _, err := regexp.Compile(adapter.LimitRegex); err != nil {
 			return Adapter{}, fmt.Errorf("%w: limit_regex does not compile: %v", ErrAdapterInvalid, err)
+		}
+	}
+	if adapter.UsageRegex != "" {
+		pattern, err := regexp.Compile("(?i)" + adapter.UsageRegex)
+		if err != nil {
+			return Adapter{}, fmt.Errorf("%w: usage_regex does not compile: %v", ErrAdapterInvalid, err)
+		}
+		named := false
+		for _, name := range pattern.SubexpNames() {
+			switch name {
+			case "input", "output", "cached", "total":
+				named = true
+			}
+		}
+		if !named {
+			return Adapter{}, fmt.Errorf("%w: usage_regex must name one of the counters input, output, cached or total", ErrAdapterInvalid)
 		}
 	}
 	return adapter, nil
