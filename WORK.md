@@ -286,6 +286,7 @@
 - [x] Adapters may declare output_decoder; the run decodes stdout before the log, progress and outcome → ticked in the plan before the run, commit c6a4bf9a7fc7 (trail: .batuta/runs/2026-09-22-structured-output-task-3.md, delivery structured-output-20260922-193840, plan structured-output, 2026-09-22)
 - [x] ACP usage keeps every counter and the cost the agent sends → ticked in the plan before the run, commit c6a4bf9a7fc7 (trail: .batuta/runs/2026-09-22-structured-output-task-4.md, delivery structured-output-20260922-193840, plan structured-output, 2026-09-22)
 - [x] opencode ACP qualifies for any model the session advertises and confirms → cursor-agent (cursor-grok-4.6-high), commit e186a65c8ea9 (trail: .batuta/runs/2026-09-22-structured-output-task-5.md, delivery structured-output-20260922-193840, plan structured-output, 2026-09-22)
+- [x] Session effort is not_applicable only when no acp_effort_config is declared and the session advertises no thought_level option → opencode (opencode/glm-5.3-flash), commit 79f2612ccc42 (trail: .batuta/runs/2026-09-22-structured-output-fixes-task-1.md, delivery structured-output-fixes-20260922-203833, plan structured-output-fixes, 2026-09-22)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

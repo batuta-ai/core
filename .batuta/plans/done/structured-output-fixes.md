@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Close the findings of the final review of deliveries `structured-output-20260922-180501` and `structured-output-20260922-193840` (verdict FIX_BEFORE_SHIP, `.batuta/reviews/2026-09-22-structured-output/`) on branch `feat/structured-output-impl`: the session's `not_applicable` effort path gets the tests it lacks, and the docs state the rule the code implements.
-**Created:** 2026-09-22 · **Status:** approved
+**Created:** 2026-09-22 · **Status:** done
 
 ## Tasks
-- [ ] 1. Session effort is not_applicable only when no acp_effort_config is declared and the session advertises no thought_level option — backend/medium
+- [x] 1. Session effort is not_applicable only when no acp_effort_config is declared and the session advertises no thought_level option — backend/medium
       Scope: executor/acp/session_test.go, docs/dispatch.md, docs/loop.md
       Accept: a session whose state advertises only a model option (no option with category thought_level), created with a requested effort and no EffortConfigID, succeeds without sending session/set_config_option for the effort → go test ./executor/acp -run TestSessionEffortNotApplicableWithoutThoughtLevel; TestSessionRejectsIncompatibleConfiguration gains a case "effort not offered" where the state advertises a thought_level option by category, no EffortConfigID is set and the requested effort is not among its values, and NewSession fails with ErrConfiguration → go test ./executor/acp -run 'TestSessionRejectsIncompatibleConfiguration/effort_not_offered'; docs/dispatch.md states that effort is not_applicable only when the adapter declares no acp_effort_config and the session advertises no thought_level option, and the factory sentence no longer lists empty effort as a launch constraint → grep -q 'advertises no thought_level option' docs/dispatch.md && ! grep -q 'and \*\*empty effort\*\*' docs/dispatch.md; docs/loop.md says an adapter may also declare output_decoder, not instead → grep -q 'may also declare `output_decoder`' docs/loop.md; the packages stay green → go test ./executor ./executor/acp
 
