@@ -2,13 +2,13 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Close the two majors and the minor of the second review of branch `feat/structured-output-impl` (verdict FIX_BEFORE_SHIP, `.batuta/reviews/2026-09-22-structured-output-fixes/`): the receipt says `not_applicable` only when the session actually skipped the effort, and a configuration update during the prompt still rejects a lost effort.
-**Created:** 2026-09-22 · **Status:** approved
+**Created:** 2026-09-22 · **Status:** done
 
 ## Tasks
-- [ ] 1. The session records whether it skipped the effort; drift during the prompt keeps enforcing it — backend/high
+- [x] 1. The session records whether it skipped the effort; drift during the prompt keeps enforcing it — backend/high
       Scope: executor/acp/session.go, executor/acp/session_test.go
       Accept: acp.Session exposes EffortNotApplicable() bool, true only when NewSession skipped a requested effort because no EffortConfigID was declared and the session advertised no thought_level option, false when the effort was selected or none was requested → go test ./executor/acp -run TestSessionEffortNotApplicableWithoutThoughtLevel; after a successful selection of effort high through a thought_level option, a config_option_update during Prompt that drops the thought_level option fails the prompt as configuration drift → go test ./executor/acp -run 'TestSessionRejectsConfigurationDriftDuringPrompt/effort_option_dropped'; a session that skipped the effort at creation does not fail when a later config_option_update still carries no thought_level option → go test ./executor/acp -run 'TestSessionRejectsConfigurationDriftDuringPrompt/skipped_effort_stays_skipped'; the package stays green → go test ./executor/acp
-- [ ] 2. The receipt's not_applicable effort comes from the session, never from the adapter alone — backend/high
+- [x] 2. The receipt's not_applicable effort comes from the session, never from the adapter alone — backend/high
       Depends on: 1
       Scope: executor/acp_backend.go, executor/acp_backend_test.go, executor/transport.go, executor/transport_test.go, docs/dispatch.md
       Accept: ACPBackend.Execute sets Receipt.Effort to not_applicable exactly when the session's EffortNotApplicable() is true, and TransportBackend.Execute no longer overwrites Receipt.Effort → go test ./executor -run TestQualificationEffortNotApplicable; with no acp_effort_config and a session that advertises and confirms a thought_level option for the requested effort, Receipt.Effort is not not_applicable → go test ./executor -run TestACPReceiptEffortSelectedByCategory; when NewSession fails with ErrConfiguration on an offered but unsupported effort, Receipt.Effort is not not_applicable → go test ./executor -run TestACPReceiptEffortRejectedNotStamped; docs/dispatch.md says the receipt records not_applicable only when the session skipped the effort → grep -q 'only when the session skipped' docs/dispatch.md; the packages stay green → go test ./executor ./executor/acp
