@@ -550,6 +550,33 @@ func TestClassifyBenchOutcome(t *testing.T) {
 	}
 }
 
+// TestClassifyBenchOutcomeRetryThenEscalate builds the doctrine journal of a
+// task that retried once on the same executor and then escalated: finished
+// [1,2,3] with executors [A,A,B].
+func TestClassifyBenchOutcomeRetryThenEscalate(t *testing.T) {
+	var records []journal.Record
+	for _, attempt := range []struct {
+		execution int
+		executor  string
+	}{{1, "opencode"}, {2, "opencode"}, {3, "codex"}} {
+		started, err := json.Marshal(benchStartedDetail(attempt.execution, attempt.executor))
+		if err != nil {
+			t.Fatal(err)
+		}
+		finished, err := json.Marshal(benchFinishedDetail(attempt.execution))
+		if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records,
+			journal.Record{Kind: loop.KindStarted, TaskID: "task_1", Detail: started},
+			journal.Record{Kind: loop.KindFinished, TaskID: "task_1", Detail: finished},
+		)
+	}
+	if got := benchOutcome(records, "task_1"); got != benchOutcomeEscalated {
+		t.Fatalf("benchOutcome = %q, want %q", got, benchOutcomeEscalated)
+	}
+}
+
 func TestClassifyBenchOutcomeUnknown(t *testing.T) {
 	server, _ := classifyTestServer(t, map[string]classifyRoute{
 		"Reproduce the timeout in a test": {complexity: "low", domain: "testing", confidence: 0.9, inputTokens: 12},

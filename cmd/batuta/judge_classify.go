@@ -360,9 +360,10 @@ func benchOutcome(records []journal.Record, taskID string) string {
 	if len(finished) == 1 {
 		return benchOutcomeFailed
 	}
-	later := executors[finished[1]]
-	if later != "" && later != executors[first] {
-		return benchOutcomeEscalated
+	for _, attempt := range finished[1:] {
+		if executor := executors[attempt]; executor != "" && executor != executors[first] {
+			return benchOutcomeEscalated
+		}
 	}
 	return benchOutcomeRetried
 }
