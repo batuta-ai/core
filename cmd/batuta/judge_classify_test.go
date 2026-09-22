@@ -493,8 +493,42 @@ func TestClassifyBenchSummary(t *testing.T) {
 	}
 }
 
+// assertBenchBodiesLabelFree fails unless the fake judge received one call
+// per task and no body carries the fixture delivery name classify-bench-run1,
+// a journal kind or the host complexity or domain under task.
+func assertBenchBodiesLabelFree(t *testing.T, record *classifyCallRecord, wantCalls int) {
+	t.Helper()
+	if len(record.bodies) != wantCalls {
+		t.Fatalf("judge calls = %d, want one per task", len(record.bodies))
+	}
+	for i, body := range record.bodies {
+		wire, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("re-marshal call %d body: %v", i, err)
+		}
+		for _, leaked := range []string{"classify-bench-run1", "executor_started"} {
+			if strings.Contains(string(wire), leaked) {
+				t.Errorf("call %d body carries %q", i, leaked)
+			}
+		}
+		state, ok := body["state"].(map[string]any)
+		if !ok {
+			t.Fatalf("call %d state = %#v", i, body["state"])
+		}
+		task, ok := state["task"].(map[string]any)
+		if !ok {
+			t.Fatalf("call %d state task = %#v", i, state["task"])
+		}
+		for _, key := range []string{"complexity", "domain"} {
+			if _, carries := task[key]; carries {
+				t.Errorf("call %d task carries the host %s", i, key)
+			}
+		}
+	}
+}
+
 func TestClassifyBenchOutcome(t *testing.T) {
-	server, _ := classifyTestServer(t, map[string]classifyRoute{
+	server, record := classifyTestServer(t, map[string]classifyRoute{
 		"First attempt sticks":  {complexity: "low", domain: "testing", confidence: 0.9, inputTokens: 12},
 		"Retry the same lane":   {complexity: "low", domain: "backend", confidence: 0.9, inputTokens: 12},
 		"Bump to a higher lane": {complexity: "high", domain: "backend", confidence: 0.9, inputTokens: 12},
@@ -548,6 +582,7 @@ func TestClassifyBenchOutcome(t *testing.T) {
 			t.Errorf("line %d = %q, want %q", i+1, got[i], line)
 		}
 	}
+	assertBenchBodiesLabelFree(t, record, 4)
 }
 
 // TestClassifyBenchOutcomeRetryThenEscalate builds the doctrine journal of a
@@ -578,7 +613,7 @@ func TestClassifyBenchOutcomeRetryThenEscalate(t *testing.T) {
 }
 
 func TestClassifyBenchOutcomeUnknown(t *testing.T) {
-	server, _ := classifyTestServer(t, map[string]classifyRoute{
+	server, record := classifyTestServer(t, map[string]classifyRoute{
 		"Reproduce the timeout in a test": {complexity: "low", domain: "testing", confidence: 0.9, inputTokens: 12},
 		"Retry the payment call once":     {complexity: "medium", domain: "backend", confidence: 0.9, inputTokens: 12},
 		"Document the retry policy":       {complexity: "low", domain: "docs", confidence: 0.9, inputTokens: 12},
@@ -614,6 +649,7 @@ func TestClassifyBenchOutcomeUnknown(t *testing.T) {
 	if got[10] != "outcomes relation=equal: candidate=1 retried=0 escalated=0 failed=0 unknown=2" {
 		t.Errorf("equal outcomes = %q, want the candidate counted beside the unknowns", got[10])
 	}
+	assertBenchBodiesLabelFree(t, record, 3)
 }
 
 func TestClassifyBenchJSON(t *testing.T) {
