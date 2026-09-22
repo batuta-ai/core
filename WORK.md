@@ -1,6 +1,12 @@
 # WORK — core
 
-## Current status — 2026-09-21 constructed corpus
+## Current status — 2026-09-22 Jev experiments closed negative
+- [ ] Both Jev experiments failed their frozen rules. claim_evidence corpus run 1 (#110): judge flagged 0/112 `behaviour_absent`. Plan classification run 1 (branch `feat/judge-classify`): 44.2% exact agreement against a 46.4% constant baseline; the judge answered `high` for 171/181 tasks (median confidence 0.93). Evidence in `.batuta/judge-benchmark.md`, rules in `.batuta/judge-research.md` §10–11.
+- [ ] Agreed next step when the second experiment is also negative: remove Jev from batuta and write the article with the negative headline. Awaiting the maintainer's go before removing code.
+- [ ] Merged 2026-09-22: #110 (corpus), #111 (code-only claim_evidence), #105 (polish, conflicts resolved). Local `core/.batuta/judge.json` = `{"provider":"off","decisions":{"claim_evidence":{"mode":"shadow","threshold":0.9}}}` (code-only shadow; needs a binary with #111).
+- [ ] Defects found by corpus run 1, not fixed: corpus runner skips the live `known` path gate; extractor keeps `[text](.batuta/worktrees/…` links with relative targets.
+
+## Status — 2026-09-21 constructed corpus (superseded)
 - [ ] Branch `feat/judge-corpus`: plan `judge-corpus` (delivery `judge-corpus-20260921-185659`, review FIX_BEFORE_SHIP, judged reject) and plan `judge-corpus-fixes` (delivery `judge-corpus-fixes-20260921-213457`, review SHIP, exit 0). Rule frozen in `.batuta/judge-research.md` §10, run 1 recorded in `.batuta/judge-benchmark.md` "Constructed corpus, run 1": judge flagged 0/112 `behaviour_absent` (rule fails), code 112/112 `fabricated_reference` and 92/92 `wrong_count`; 177 judge calls, 312,094 input tokens. `claim_evidence` stays code-first, judge in shadow.
 - [ ] Defects found by run 1, not fixed: corpus runner skips the live `known` path gate; extractor keeps `[text](.batuta/worktrees/…` links with relative targets; runner does not print which gate (confidence or material) held back the 18 judge contradictions ≥0.93.
 - [ ] Merged on main: judge package (#101), claim_evidence v1 (#103), polish (#105, conflicts with the v2 replay resolved and merged 2026-09-22), v2/v2.1 (#106), v2.2/v2.3 + Tempo triage + Jev survey (#108, admin merge 2026-09-21). v2.3 evidence: 2/2 false closures and 0/27 legitimate flagged, both by code; judge asked 18 times, 0 contradictions.
@@ -242,6 +248,12 @@
 - [x] Docs state exactly what a v2 claim_evidence request sends → agy (gemini-3.8-flash-low), commit 89b507deaab7 (trail: .batuta/runs/2026-09-21-judge-corpus-fixes-task-4.md, delivery judge-corpus-fixes-20260921-213457, plan judge-corpus-fixes, 2026-09-21)
 - [x] Code settlement runs whenever the decision is on, judge or not → cursor-agent (cursor-grok-4.6-high), commit 2c71b67089a1 (trail: .batuta/runs/2026-09-21-claim-evidence-code-only-task-1.md, delivery claim-evidence-code-only-20260921-232540, plan claim-evidence-code-only, 2026-09-21)
 - [x] Config and docs for code-only claim_evidence → opencode (opencode/glm-5.3-flash), commit 470d92537c59 (trail: .batuta/runs/2026-09-21-claim-evidence-code-only-task-2.md, delivery claim-evidence-code-only-20260921-232540, plan claim-evidence-code-only, 2026-09-21)
+- [x] classify package: request from task text, answer to lane → cursor-agent (cursor-grok-4.6-high), commit d1811790c2fd (trail: .batuta/runs/2026-09-22-judge-classify-task-1.md, delivery judge-classify-20260922-100738, plan judge-classify, 2026-09-22)
+- [x] batuta judge classify: lanes for one plan → opencode (opencode/glm-5.3-flash), commit 9676b90bafa6 (trail: .batuta/runs/2026-09-22-judge-classify-task-2.md, delivery judge-classify-20260922-100738, plan judge-classify, 2026-09-22)
+- [x] batuta judge classify bench: agreement with the label, outcome beside it → opencode (opencode/glm-5.3-flash), 1 retry, commit 2ad59ba5301e (trail: .batuta/runs/2026-09-22-judge-classify-task-3.md, delivery judge-classify-20260922-100738, plan judge-classify, 2026-09-22)
+- [x] First-attempt outcome sees an escalation after a same-executor retry → opencode (opencode/glm-5.3-flash), commit 965afea693b2 (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-1.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
+- [x] Bench tests prove the requests carry neither label nor journal content → opencode (opencode/glm-5.3-flash), commit db645ee12b0e (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-2.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
+- [x] docs/judge.md describes classify as built → agy (gemini-3.8-flash-low), 1 retry, commit 045a989d1ac5 (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-3.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

@@ -276,12 +276,69 @@ bounded diff slice — never the corpus file's other cases, never a key (the API
 key lives in the environment variable `key_env` names). The run is read-only:
 it touches the corpus file and the judge endpoint, and writes nothing.
 
-Every question is also recorded as a `judge_intent` record before the call and
-a `judge_result` record after it, carrying the decision name, the question
-keys, the state digest (`sha256:<hex>` over canonical JSON), the model, the
-answers, the token usage and the latency. The trace never carries the state
-body — it may hold executor output — only its digest, so a run can be replayed
-from the logs.
+### `classify`
+
+`classify` asks the `classify` decision for a plan task's complexity lane and
+domain from the task text alone. The state is the task's title, scope and
+acceptance criteria, the context paragraphs labelled for the task followed
+by the unlabelled Decisions paragraphs (secret-shaped lines dropped, bounded
+at 4000 bytes) and a note that task text is data, not instructions. The request
+never carries the host's lane. Two `choice` questions come back — `complexity`
+over low/medium/high/critical and `domain` over the routing domains — and a
+missing, unknown or under-threshold answer falls back on that axis only
+(complexity to critical, domain to general), setting the `fallback` flag. The
+threshold is the `classify` decision's configured threshold (default 0.7) and
+is printed; there is no threshold flag. The judge only proposes: nothing
+downstream reads these lanes unless a caller does, and routing is unchanged.
+
+The plain form classifies one plan:
+
+```text
+batuta judge classify --plan <file> [--json] [--config <path>]
+                      [--workspace <dir>] [--base-url <url>]
+```
+
+It prints the threshold, then one line per task:
+
+```text
+task_1 plan=testing/low judge=testing/low complexity=0.90 domain=0.90 fallback=false input_tokens=12
+```
+
+`plan=` is the host's lane, `judge=` the proposed one with both confidences;
+an unavailable judge prints `unavailable=<reason>` and no lane. With
+`--json`, it prints one JSON object per task instead.
+
+The bench form scores the same decision against many plans — the frozen gate
+is agreement with the host's labels:
+
+```text
+batuta judge classify bench --plan <file> [--plan <file>...] [--journals <dir>...]
+                            [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]
+```
+
+It prints one line per task (prefixed with the plan slug) and a summary:
+tasks, exact complexity and domain agreement, under-routed (judge lane lower
+than the label), over-routed, fallbacks, unavailable, the constant-answer
+baseline (share of the most common label, first in lane order on a tie) and
+the complexity confusion matrix. Where `--journals` directories are given,
+their delivery journals (`*.jsonl`, found recursively, so both a bare journal
+directory and a workspace root's `.batuta/journal/` are covered) add the
+outcome beside the agreement: a delivery matches a plan when its file name
+starts with the plan slug followed by `-`, and the outcome is the recorded
+verdict of the task's first finished attempt — `candidate` when that attempt
+recorded a candidate, `retried` when a later attempt ran on the same
+executor, `escalated` when on a different one, `failed` when no later attempt
+ran, `unknown` when no delivery or no finished attempt matches (unknown tasks
+are counted, never dropped). Each line also names whether the judge lane was
+`lower`, `equal` or `higher` than the executed lane — the plan's lane — and
+the summary prints the outcome counts per relation, so a reader can see
+whether under-routing coincides with first-attempt successes.
+
+What leaves the machine is one classify request per task: the task text and
+applicable plan context described above — never the host's lane, never other
+plans or journals, and never a key (the API key lives in the environment
+variable `key_env` names). The bench touches the plan files, the journal
+files and the judge endpoint, and writes nothing.
 
 ## Safety rules
 
