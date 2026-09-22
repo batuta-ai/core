@@ -170,6 +170,86 @@ Exit codes: `0` answered, `2` unavailable — the reason is printed on stderr �
 and `1` usage or config error. Exit `2` is a non-failure outcome: the caller
 keeps the deterministic rule.
 
+### `corpus`
+
+`corpus build` and `corpus run` measure the `claim_evidence` pipeline on a
+constructed corpus: real legitimate attempts plus report-only defect
+variants, so the judge's contribution is scored on claims code cannot settle.
+
+`corpus build` turns recorded delivery journals into corpus cases:
+
+```text
+batuta judge corpus build --journal <path> [--journal <path>...]
+                          --out <file> [--runs <dir>] [--workspace <dir>]
+```
+
+Every recorded attempt whose outcome is `candidate` becomes one clean case;
+report-only defect variants append exactly one false line to the unchanged
+report, one case per label:
+
+- `clean` — the attempt's own report;
+- `fabricated_reference` — an added identifier that is not in the diff;
+- `wrong_count` — an added-tests count above the real one;
+- `behaviour_absent` — an update claim the diff does not carry out.
+
+A case is one JSON line: the case id (`<delivery>/<task>/e<execution>/<label>`),
+the delivery, task and execution it came from, the label, the bounded report
+the executor wrote, the candidate diff, the redacted changed paths, the proof
+verdicts, the verifier verdict, and the SHA-256 of the report and the diff.
+Attempts that cannot become cases — a non-candidate outcome, a missing run
+log, an unresolved diff — are skipped with the reason on stderr. The same
+journals always build the same bytes.
+
+`corpus run` scores the pipeline on a built corpus:
+
+```text
+batuta judge corpus run --corpus <file> [--json] [--config <path>]
+                        [--workspace <dir>] [--base-url <url>]
+```
+
+The run reuses the live loop's claim extraction, code settlement, request
+building and aggregation — no scoring logic lives in the command. Code
+settles what it can settle exactly against the case's changed paths, proof
+verdicts and verifier lines; a case with unsettled claims gets exactly one
+judge call whose state carries the claims with their evidence and a bounded
+diff slice. The threshold is the `claim_evidence`
+decision's configured threshold (default 0.9) and is printed; there is no
+threshold flag. One line per case:
+
+```text
+threshold=0.9
+d1/task_1/e1/behaviour_absent label=behaviour_absent flagged=true settled_by=judge max_contradicted=0.93 asked=true
+```
+
+`settled_by` names the source of the first contradicted claim — `code`,
+`judge` or `none`; an uncertain judge answer never settles a claim. A case
+counts as flagged when the aggregate is flagged. When the judge is
+unavailable on a case the line carries `unavailable=<reason>`, the case
+keeps its code-only verdict and the summary counts it separately, never as
+missed. With `--json`, the run prints one JSON object per case (id, label,
+flagged, settled_by, max_contradicted, asked, uncertain, unavailable) and a
+final `summary` object.
+
+The summary folds the cases into one row per label — cases, flagged by code,
+flagged by judge, uncertain, missed for the defect labels, false flags for
+`clean` — and a footer with the judge calls, the input tokens summed from
+the responses' usage (`unknown` when no response carried usage) and the
+unavailable total:
+
+```text
+label cases flagged_by_code flagged_by_judge uncertain missed false_flags unavailable
+behaviour_absent 1 0 1 0 0 0 0
+clean 2 0 0 0 0 0 1
+fabricated_reference 1 1 0 0 0 0 0
+judge calls=2 input_tokens=12 unavailable=1
+```
+
+What leaves the machine is what the live `claim_evidence` decision sends:
+per asked case, the task id, the unsettled claims with their evidence, and a
+bounded diff slice — never the corpus file's other cases, never a key (the API
+key lives in the environment variable `key_env` names). The run is read-only:
+it touches the corpus file and the judge endpoint, and writes nothing.
+
 Every question is also recorded as a `judge_intent` record before the call and
 a `judge_result` record after it, carrying the decision name, the question
 keys, the state digest (`sha256:<hex>` over canonical JSON), the model, the

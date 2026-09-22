@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,7 +15,9 @@ import (
 	"github.com/batuta-ai/core/gates"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
+	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
+	"github.com/batuta-ai/core/worktree"
 )
 
 func TestBuildClaimEvidenceState(t *testing.T) {
@@ -511,6 +514,75 @@ func TestClaimEvidenceCriteriaText(t *testing.T) {
 	}
 }
 
+func TestBehaviourClaimRequest(t *testing.T) {
+	t.Parallel()
+
+	line := "Updated `loop/claims.go` so that the routing matches the brief"
+	diff := strings.Join([]string{
+		"diff --git a/loop/claims.go b/loop/claims.go",
+		"index 111111..222222 100644",
+		"--- a/loop/claims.go",
+		"+++ b/loop/claims.go",
+		"@@ -1,3 +1,4 @@ package loop",
+		" import (",
+		"+\"strings\"",
+		" )",
+		"",
+	}, "\n")
+
+	extracted := ExtractClaims(line, nil, anyKnownPath)
+	var behaviour []Claim
+	for _, claim := range extracted {
+		if claim.Kind == ClaimKindChange && claim.Change == ChangeKindBehaviour {
+			behaviour = append(behaviour, claim)
+		}
+	}
+	if len(behaviour) != 1 {
+		t.Fatalf("behaviour claims = %#v, want 1 from %q", behaviour, line)
+	}
+	if behaviour[0].Status != ClaimStatusUnsettled || behaviour[0].Text != line {
+		t.Fatalf("extracted behaviour = %#v", behaviour[0])
+	}
+
+	settled := SettleClaims(behaviour, ClaimEvidence{
+		ChangedPaths: []string{"loop/claims.go"},
+		TreeChanged:  true,
+		Diff:         diff,
+	})
+	if len(settled) != 1 || settled[0].Status != ClaimStatusUnsettled || settled[0].Source != "" {
+		t.Fatalf("settled behaviour = %#v, want left unsettled", settled)
+	}
+
+	req := BuildClaimEvidenceRequest(ClaimEvidenceInput{
+		Task: routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: "task_1", Title: "Wire change claims"}},
+		Diff: diff,
+	}, settled)
+	body := marshalState(t, req.State)
+	all, _ := body["claims"].(map[string]any)
+	c1, _ := all["c1"].(map[string]any)
+	if c1 == nil {
+		t.Fatalf("state.claims = %#v, want unsettled behaviour as c1", all)
+	}
+	wantEvidence := DiffSlice(diff, settled[0].Text, claimEvidenceDiffBytes)
+	if c1["evidence"] != wantEvidence {
+		t.Fatalf("evidence = %q, want DiffSlice %q", c1["evidence"], wantEvidence)
+	}
+	question, ok := req.Questions["c1_relation"]
+	if !ok {
+		t.Fatal("missing c1_relation")
+	}
+	got := stringMap(t, question.Criteria)
+	if got["behaviour_absent"] != "the diff slice shows the path changed but nothing that does what the claim says" {
+		t.Fatalf("behaviour_absent = %q", got["behaviour_absent"])
+	}
+	if got["unverifiable"] != "claims.c1.evidence says nothing decisive about claims.c1.claim; a vague claim, a short slice or missing evidence is NOT contradiction" {
+		t.Fatalf("unverifiable = %q", got["unverifiable"])
+	}
+	if !isDefectChoice("behaviour_absent") || !isDefectChoice("fabricated_reference") || !isDefectChoice("wrong_count") {
+		t.Fatal("new defect labels are not counted as contradicted")
+	}
+}
+
 func TestClaimEvidenceMaterialQuestion(t *testing.T) {
 	t.Parallel()
 
@@ -888,6 +960,505 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 		}
 		if len(uncertain) != 1 || uncertain[0].Key != "c2_relation" {
 			t.Fatalf("uncertain = %#v, want the judge answer only", uncertain)
+		}
+	})
+}
+
+func TestDiffSlice(t *testing.T) {
+	t.Parallel()
+
+	diff := strings.Join([]string{
+		"diff --git a/loop/greet.go b/loop/greet.go",
+		"index 111111..222222 100644",
+		"--- a/loop/greet.go",
+		"+++ b/loop/greet.go",
+		"@@ -1,3 +1,4 @@ package greet",
+		" import (",
+		"+\"strings\"",
+		" )",
+		"",
+		"diff --git a/loop/other.go b/loop/other.go",
+		"index 333333..444444 100644",
+		"--- a/loop/other.go",
+		"+++ b/loop/other.go",
+		"@@ -10,3 +10,6 @@ func other() {",
+		"-old line about billing",
+		"+new line about billing invoices",
+		"+TYPESAFE_API_KEY=sk-dropped-secret",
+		"+wrote /Users/francisross/Projects/core/loop/secret.go",
+		"",
+	}, "\n")
+
+	t.Run("keeps the whole hunks a claim names in original order", func(t *testing.T) {
+		t.Parallel()
+		slice := DiffSlice(diff, "rewrote `loop/other.go` billing", 300)
+		if !strings.Contains(slice, "@@ -10,3 +10,6 @@ func other() {") {
+			t.Fatalf("slice dropped the hunk the claim names:\n%s", slice)
+		}
+		if strings.Contains(slice, "@@ -1,3 +1,4 @@ package greet") {
+			t.Fatalf("slice kept an unrelated hunk over the named one:\n%s", slice)
+		}
+		if !strings.Contains(slice, "+new line about billing invoices") || !strings.Contains(slice, "-old line about billing") {
+			t.Fatalf("slice split a hunk:\n%s", slice)
+		}
+		if !strings.Contains(slice, "diff --git a/loop/other.go b/loop/other.go") {
+			t.Fatalf("slice dropped the file header a hunk needs to be readable:\n%s", slice)
+		}
+	})
+
+	t.Run("never exceeds maxBytes and keeps whole hunks", func(t *testing.T) {
+		t.Parallel()
+		var hunks []string
+		for i := 0; i < 8; i++ {
+			hunks = append(hunks,
+				fmt.Sprintf("diff --git a/out/file%d.go b/out/file%d.go", i, i),
+				fmt.Sprintf("@@ -1,2 +1,3 @@ func f%d()", i),
+				fmt.Sprintf("+added line %d of the change", i),
+				"",
+			)
+		}
+		big := strings.Join(hunks, "\n")
+		slice := DiffSlice(big, "added", 400)
+		if slice == "" {
+			t.Fatal("DiffSlice() = \"\", want the best fitting hunks")
+		}
+		if len(slice) > 400 {
+			t.Fatalf("slice is %d bytes, exceeds 400:\n%s", len(slice), slice)
+		}
+		if trimmed := strings.TrimRight(slice, "\n"); !strings.HasSuffix(trimmed, "of the change") {
+			t.Fatalf("slice ends mid-hunk:\n%s", slice)
+		}
+		if strings.Count(slice, "diff --git") != strings.Count(slice, "+added line") {
+			t.Fatalf("slice split a hunk:\n%s", slice)
+		}
+		if strings.Count(slice, "diff --git") == 8 {
+			t.Fatalf("slice kept every hunk beyond the budget:\n%s", slice)
+		}
+	})
+
+	t.Run("a hunk larger than the budget is skipped whole", func(t *testing.T) {
+		t.Parallel()
+		if slice := DiffSlice(diff, "greet", 120); slice != "" {
+			t.Fatalf("DiffSlice() = %q, want nothing when no whole hunk fits", slice)
+		}
+	})
+
+	t.Run("redacts absolute paths and drops secret-shaped lines", func(t *testing.T) {
+		t.Parallel()
+		slice := DiffSlice(diff, "billing invoices", 16<<10)
+		if strings.Contains(slice, "/Users/francisross") {
+			t.Fatalf("slice still carries an absolute path:\n%s", slice)
+		}
+		if !strings.Contains(slice, "secret.go") {
+			t.Fatalf("slice did not keep the redacted line:\n%s", slice)
+		}
+		if strings.Contains(slice, "sk-dropped-secret") || strings.Contains(slice, "TYPESAFE_API_KEY") {
+			t.Fatalf("slice still carries a secret-shaped line:\n%s", slice)
+		}
+	})
+
+	t.Run("empty claim keeps hunks in original order and empty diff stays empty", func(t *testing.T) {
+		t.Parallel()
+		slice := DiffSlice(diff, "", 16<<10)
+		first := strings.Index(slice, "@@ -1,3 +1,4 @@ package greet")
+		second := strings.Index(slice, "@@ -10,3 +10,6 @@ func other() {")
+		if first < 0 || second < first {
+			t.Fatalf("slice reordered the hunks:\n%s", slice)
+		}
+		if got := DiffSlice("", "anything", 100); got != "" {
+			t.Fatalf("DiffSlice(\"\") = %q, want empty", got)
+		}
+	})
+
+	t.Run("default budget keeps a small diff whole", func(t *testing.T) {
+		t.Parallel()
+		slice := DiffSlice(diff, "greeting", 0)
+		if !strings.Contains(slice, "@@ -1,3 +1,4 @@ package greet") {
+			t.Fatalf("slice dropped hunks under the default budget:\n%s", slice)
+		}
+		if len(slice) > 1800 {
+			t.Fatalf("slice is %d bytes, exceeds the 1800 default", len(slice))
+		}
+	})
+}
+
+// claimGitCommand runs one git command in root, failing the test on any
+// error, and returns its stdout.
+func claimGitCommand(t *testing.T, gitPath, root string, args ...string) string {
+	t.Helper()
+	result, err := publication.ExecRunner{}.Run(context.Background(), publication.Command{
+		Executable:  gitPath,
+		Directory:   root,
+		Args:        args,
+		Environment: []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("git %v: %v %s", args, err, result.Stderr)
+	}
+	return string(result.Stdout)
+}
+
+type claimGitRecorder struct {
+	inner publication.CommandRunner
+	mu    sync.Mutex
+	cmds  []publication.Command
+}
+
+func (r *claimGitRecorder) Run(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+	r.mu.Lock()
+	r.cmds = append(r.cmds, cmd)
+	r.mu.Unlock()
+	return r.inner.Run(ctx, cmd)
+}
+
+func (r *claimGitRecorder) commands() []publication.Command {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]publication.Command, len(r.cmds))
+	copy(out, r.cmds)
+	return out
+}
+
+func containsArg(args []string, want string) bool {
+	for _, arg := range args {
+		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestJudgeClaimEvidenceCarriesDiff(t *testing.T) {
+	t.Parallel()
+
+	gitPath, err := publication.ExecutableResolver{}.Resolve("git")
+	if err != nil {
+		t.Fatalf("git is not available: %v", err)
+	}
+	rec := &claimQuestionRecorder{}
+	r := newJudgmentRunner(t, rec, judge.ModeShadow, 0.9)
+	root := r.root
+	claimGitCommand(t, gitPath, root, "init", "-q")
+	for _, args := range [][]string{
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		claimGitCommand(t, gitPath, root, args...)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	claimGitCommand(t, gitPath, root, "add", "tracked.txt")
+	claimGitCommand(t, gitPath, root, "commit", "-qm", "base")
+	base := strings.TrimSpace(claimGitCommand(t, gitPath, root, "rev-parse", "HEAD"))
+	if err := os.MkdirAll(filepath.Join(root, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "out", "1.txt"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	claimGitCommand(t, gitPath, root, "add", "out/1.txt")
+	claimGitCommand(t, gitPath, root, "commit", "-qm", "greeting")
+	if err := os.WriteFile(filepath.Join(root, "fresh.go"), []byte("package fresh\nfunc FreshIdent() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".batuta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".batuta", "hidden.go"), []byte("package hidden\nfunc BatutaHiddenMarker() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRec := &claimGitRecorder{inner: publication.ExecRunner{}}
+	r.git = worktree.GitProvider{Git: gitPath, Runner: gitRec, Root: root}
+
+	t.Run("the request carries the attempt's diff against its base", func(t *testing.T) {
+		report := passingClaimReport()
+		result := executor.Result{Stdout: []byte("committed abc1234 on the feature branch\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		ac.base = base
+		ac.worktree = attemptWorktree{Root: root}
+
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, []string{"out/1.txt"})
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if !got.Asked {
+			t.Fatal("judge was not asked, want an unsettled claim")
+		}
+		state := marshalState(t, rec.State())
+		diff, _ := state["diff"].(string)
+		if !strings.Contains(diff, "diff --git a/out/1.txt b/out/1.txt") || !strings.Contains(diff, "+ok") {
+			t.Fatalf("state.diff = %q, want the attempt's diff against its base", diff)
+		}
+		if !strings.Contains(diff, "+func FreshIdent() {}") {
+			t.Fatalf("state.diff = %q, want a new-file hunk for the untracked file", diff)
+		}
+		if strings.Contains(diff, "BatutaHiddenMarker") {
+			t.Fatalf("state.diff includes .batuta: %q", diff)
+		}
+		status := claimGitCommand(t, gitPath, root, "status", "--porcelain")
+		if !strings.Contains(status, "?? fresh.go") {
+			t.Fatalf("status = %q, want the untracked file still untracked", status)
+		}
+		var sawDiff, sawLs bool
+		for _, cmd := range gitRec.commands() {
+			if len(cmd.Args) == 0 {
+				continue
+			}
+			if cmd.Args[0] == "add" {
+				t.Fatalf("claimAttemptDiff ran git add: %v", cmd.Args)
+			}
+			if cmd.Args[0] == "diff" && !containsArg(cmd.Args, "--no-index") {
+				sawDiff = true
+				want := []string{"diff", "--no-color", "--no-ext-diff", base, "--", ".", ":(top,exclude).batuta"}
+				if strings.Join(cmd.Args, "\x00") != strings.Join(want, "\x00") {
+					t.Fatalf("git diff args = %v, want %v", cmd.Args, want)
+				}
+				if cmd.StdoutLimit != 16<<20 {
+					t.Fatalf("git diff StdoutLimit = %d, want 16 MiB", cmd.StdoutLimit)
+				}
+			}
+			if cmd.Args[0] == "ls-files" && containsArg(cmd.Args, "--others") {
+				sawLs = true
+				if !containsArg(cmd.Args, "--exclude-standard") {
+					t.Fatalf("git ls-files args = %v, want --exclude-standard", cmd.Args)
+				}
+			}
+		}
+		if !sawDiff {
+			t.Fatal("claimAttemptDiff did not run git diff against the base")
+		}
+		if !sawLs {
+			t.Fatal("claimAttemptDiff did not list untracked files")
+		}
+	})
+
+	t.Run("no diff without an attempt base", func(t *testing.T) {
+		rec := &claimQuestionRecorder{}
+		r := newJudgmentRunner(t, rec, judge.ModeShadow, 0.9)
+		r.root = root
+		r.git = worktree.GitProvider{Git: gitPath, Runner: publication.ExecRunner{}, Root: root}
+		report := passingClaimReport()
+		result := executor.Result{Stdout: []byte("committed abc1234 on the feature branch\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		ac.worktree = attemptWorktree{Root: root}
+
+		if _, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, []string{"out/1.txt"}); err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if state := marshalState(t, rec.State()); func() bool { _, ok := state["diff"]; return ok }() {
+			t.Fatalf("state carries a diff without a base: %#v", state["diff"])
+		}
+	})
+}
+
+func TestJudgeClaimEvidenceUntrackedDiff(t *testing.T) {
+	t.Parallel()
+
+	gitPath, err := publication.ExecutableResolver{}.Resolve("git")
+	if err != nil {
+		t.Fatalf("git is not available: %v", err)
+	}
+	fake := &fakeLoopJudge{choice: "contradicted", confidence: 0.99}
+	r := newJudgmentRunner(t, fake, judge.ModeShadow, 0.9)
+	root := r.root
+	claimGitCommand(t, gitPath, root, "init", "-q")
+	for _, args := range [][]string{
+		{"config", "user.name", "t"},
+		{"config", "user.email", "t@example.com"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		claimGitCommand(t, gitPath, root, args...)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	claimGitCommand(t, gitPath, root, "add", "tracked.txt")
+	claimGitCommand(t, gitPath, root, "commit", "-qm", "base")
+	base := strings.TrimSpace(claimGitCommand(t, gitPath, root, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(root, "greet.go"), []byte(""+
+		"package greet\n"+
+		"\n"+
+		"func GreetHandler() string { return \"hi\" }\n"+
+		"\n"+
+		"func TestGreetHandler(t *testing.T) {}\n"+
+		"func TestGreetEmpty(t *testing.T) {}\n",
+	), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r.git = worktree.GitProvider{Git: gitPath, Runner: publication.ExecRunner{}, Root: root}
+
+	report := passingClaimReport()
+	result := executor.Result{Stdout: []byte("added `GreetHandler`\nadded 2 new tests\n")}
+	ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+	ac.base = base
+	ac.worktree = attemptWorktree{Root: root}
+
+	got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, []string{"greet.go"})
+	if err != nil {
+		t.Fatalf("judgeClaimEvidence() error = %v", err)
+	}
+	if fake.Asks() != 0 {
+		t.Fatalf("asks = %d, want 0 when the untracked diff settles the claims", fake.Asks())
+	}
+	if got.Asked {
+		t.Fatal("Asked = true, want false")
+	}
+	if got.Flagged {
+		t.Fatal("supported untracked claims flagged the attempt")
+	}
+	var ident, count *claimEvidenceClaimJSON
+	for i := range got.Claims {
+		claim := &got.Claims[i]
+		if claim.Kind != string(ClaimKindChange) {
+			continue
+		}
+		switch claim.Text {
+		case "GreetHandler":
+			ident = claim
+		case "2":
+			count = claim
+		}
+	}
+	if ident == nil || ident.Source != string(ClaimSourceCode) || ident.Choice != string(ClaimStatusSupported) {
+		t.Fatalf("identifier claim = %#v, want code/supported", ident)
+	}
+	if count == nil || count.Source != string(ClaimSourceCode) || count.Choice != string(ClaimStatusSupported) {
+		t.Fatalf("count claim = %#v, want code/supported", count)
+	}
+}
+
+func TestJudgeClaimEvidenceDiffUnavailable(t *testing.T) {
+	t.Parallel()
+
+	gitPath, err := publication.ExecutableResolver{}.Resolve("git")
+	if err != nil {
+		t.Fatalf("git is not available: %v", err)
+	}
+
+	setup := func(t *testing.T) (*Runner, string, string) {
+		t.Helper()
+		r := newJudgmentRunner(t, &claimQuestionRecorder{}, judge.ModeShadow, 0.9)
+		root := r.root
+		claimGitCommand(t, gitPath, root, "init", "-q")
+		for _, args := range [][]string{
+			{"config", "user.name", "t"},
+			{"config", "user.email", "t@example.com"},
+			{"config", "commit.gpgsign", "false"},
+		} {
+			claimGitCommand(t, gitPath, root, args...)
+		}
+		if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("tracked\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		claimGitCommand(t, gitPath, root, "add", "tracked.txt")
+		claimGitCommand(t, gitPath, root, "commit", "-qm", "base")
+		base := strings.TrimSpace(claimGitCommand(t, gitPath, root, "rev-parse", "HEAD"))
+		r.git = worktree.GitProvider{Git: gitPath, Runner: publication.ExecRunner{}, Root: root}
+		return r, root, base
+	}
+
+	reportWithChangeClaims := func() (gates.Report, executor.Result, attemptContext) {
+		report := passingClaimReport()
+		result := executor.Result{Stdout: []byte("added `FabricatedIdent`\nadded 5 new tests\n")}
+		ac := judgmentAttempt("out/1.txt exists → test -f out/1.txt")
+		return report, result, ac
+	}
+
+	assertNotContradicted := func(t *testing.T, got judgment) {
+		t.Helper()
+		if got.Flagged {
+			t.Fatal("unavailable diff flagged the attempt")
+		}
+		var ident, count *claimEvidenceClaimJSON
+		for i := range got.Claims {
+			claim := &got.Claims[i]
+			if claim.Kind != string(ClaimKindChange) {
+				continue
+			}
+			switch claim.Text {
+			case "FabricatedIdent":
+				ident = claim
+			case "5":
+				count = claim
+			}
+			if claim.Choice == string(ClaimStatusContradicted) {
+				t.Fatalf("unavailable diff contradicted %q: %#v", claim.Text, claim)
+			}
+		}
+		if ident == nil || count == nil {
+			t.Fatalf("claims = %#v, want FabricatedIdent and 5", got.Claims)
+		}
+	}
+
+	t.Run("failed git leaves identifier and count unsettled", func(t *testing.T) {
+		r, root, _ := setup(t)
+		report, result, ac := reportWithChangeClaims()
+		ac.base = "not-a-commit"
+		ac.worktree = attemptWorktree{Root: root}
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, nil)
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		assertNotContradicted(t, got)
+	})
+
+	t.Run("truncated git leaves identifier and count unsettled", func(t *testing.T) {
+		r, root, base := setup(t)
+		inner := publication.ExecRunner{}
+		r.git.Runner = commandRunnerFunc(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
+			result, err := inner.Run(ctx, cmd)
+			if len(cmd.Args) > 0 && cmd.Args[0] == "diff" && !containsArg(cmd.Args, "--no-index") {
+				result.StdoutTruncated = true
+			}
+			return result, err
+		})
+		report, result, ac := reportWithChangeClaims()
+		ac.base = base
+		ac.worktree = attemptWorktree{Root: root}
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, nil)
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		assertNotContradicted(t, got)
+	})
+
+	t.Run("empty available diff still contradicts", func(t *testing.T) {
+		fake := &fakeLoopJudge{choice: "supported", confidence: 0.99}
+		r, root, base := setup(t)
+		r.opts.Judge = fake
+		report, result, ac := reportWithChangeClaims()
+		ac.base = base
+		ac.worktree = attemptWorktree{Root: root}
+		got, err := r.judgeClaimEvidence(t.Context(), ac, &report, result, true, nil)
+		if err != nil {
+			t.Fatalf("judgeClaimEvidence() error = %v", err)
+		}
+		if fake.Asks() != 0 {
+			t.Fatalf("asks = %d, want 0 when an empty available diff settles the claims", fake.Asks())
+		}
+		if !got.Flagged {
+			t.Fatal("empty available diff did not flag contradicted claims")
+		}
+		var ident, count *claimEvidenceClaimJSON
+		for i := range got.Claims {
+			claim := &got.Claims[i]
+			if claim.Kind != string(ClaimKindChange) {
+				continue
+			}
+			switch claim.Text {
+			case "FabricatedIdent":
+				ident = claim
+			case "5":
+				count = claim
+			}
+		}
+		if ident == nil || ident.Source != string(ClaimSourceCode) || ident.Choice != string(ClaimStatusContradicted) {
+			t.Fatalf("identifier claim = %#v, want code/contradicted", ident)
+		}
+		if count == nil || count.Source != string(ClaimSourceCode) || count.Choice != string(ClaimStatusContradicted) {
+			t.Fatalf("count claim = %#v, want code/contradicted", count)
 		}
 	})
 }

@@ -1,0 +1,49 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/batuta-ai/core/gates"
+	"github.com/batuta-ai/core/loop"
+)
+
+type kase struct {
+	ID           string          `json:"id"`
+	Label        string          `json:"label"`
+	Report       string          `json:"report"`
+	Diff         string          `json:"diff"`
+	ChangedPaths []string        `json:"changed_paths"`
+	Proofs       []gates.Verdict `json:"proofs"`
+	Verifier     *gates.Verdict  `json:"verifier"`
+}
+
+func main() {
+	f, _ := os.Open(os.Args[1])
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<20), 64<<20)
+	for sc.Scan() {
+		var c kase
+		if json.Unmarshal(sc.Bytes(), &c) != nil {
+			continue
+		}
+		if c.Label != "clean" && c.Label != "behaviour_absent" {
+			continue
+		}
+		ev := loop.ClaimEvidence{ChangedPaths: c.ChangedPaths, TreeChanged: len(c.ChangedPaths) > 0, Proofs: c.Proofs, TestsPass: true, Diff: c.Diff}
+		if c.Verifier != nil {
+			ev.VerifierLines = loop.ParseVerifierLines(c.Verifier.Detail)
+		}
+		for _, cl := range loop.SettleClaims(loop.ExtractClaims(c.Report, loop.CriteriaFromProofs(c.Proofs)), ev) {
+			if cl.Source == loop.ClaimSourceCode && cl.Status == loop.ClaimStatusContradicted {
+				line := cl.Line
+				if len(line) > 140 {
+					line = line[:140]
+				}
+				fmt.Printf("%s | %s | %q | %s | %s\n", c.ID, cl.Kind, cl.Text, cl.Evidence, line)
+			}
+		}
+	}
+}

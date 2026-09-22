@@ -28,17 +28,19 @@ const judgeEnvVar = "BATUTA_JUDGE"
 
 func runJudge(args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("a judge form is required; available forms: ask, probe, replay")
+		return errors.New("a judge form is required; available forms: ask, corpus, probe, replay")
 	}
 	switch args[0] {
 	case "ask":
 		return runJudgeAsk(args[1:], stdout, stderr)
+	case "corpus":
+		return runJudgeCorpus(args[1:], stdout, stderr)
 	case "probe":
 		return runJudgeProbe(args[1:], stdout, stderr)
 	case "replay":
 		return runJudgeReplay(args[1:], stdout, stderr)
 	default:
-		return fmt.Errorf("unknown judge form %q; available forms: ask, probe, replay", args[0])
+		return fmt.Errorf("unknown judge form %q; available forms: ask, corpus, probe, replay", args[0])
 	}
 }
 
@@ -383,7 +385,7 @@ func runJudgeReplay(args []string, stdout, stderr io.Writer) error {
 			continue
 		}
 		paths, known := resolveReplayChangedPaths(context.Background(), root, attempt)
-		input := replayEvidenceInput(root, attempt, titles[attempt.taskID], string(log), paths)
+		input := replayEvidenceInput(context.Background(), root, attempt, titles[attempt.taskID], string(log), paths)
 		state, err := loop.BuildClaimEvidenceState(input, maxBytes)
 		if err != nil {
 			return fmt.Errorf("judge replay: %s e%d: %w", attempt.taskID, attempt.execution, err)
@@ -452,6 +454,7 @@ func replayClaimEvidenceRequest(input loop.ClaimEvidenceInput, state any, pathsK
 		TreeChanged:  input.TreeChanged,
 		Proofs:       input.Report.Proofs,
 		TestsPass:    input.Report.Tests.Pass,
+		Diff:         input.Diff,
 	}
 	if input.Report.Verifier != nil {
 		evidence.VerifierLines = loop.ParseVerifierLines(input.Report.Verifier.Detail)
@@ -484,7 +487,7 @@ type replayBoundedState struct {
 // recorded attempt from its journal report and run log. The plan file is not
 // part of the journal: the criteria come from the recorded proof signals, and
 // the progress events carry no timestamps.
-func replayEvidenceInput(workspace string, attempt replayAttempt, title, runLog string, changedPaths []string) loop.ClaimEvidenceInput {
+func replayEvidenceInput(ctx context.Context, workspace string, attempt replayAttempt, title, runLog string, changedPaths []string) loop.ClaimEvidenceInput {
 	tail, progress := loop.ParseRunLog(runLog)
 	return loop.ClaimEvidenceInput{
 		Workspace:    workspace,
@@ -495,7 +498,41 @@ func replayEvidenceInput(workspace string, attempt replayAttempt, title, runLog 
 		Progress:     progress,
 		ChangedPaths: changedPaths,
 		TreeChanged:  attempt.treeChanged,
+		Diff:         replayAttemptDiff(ctx, workspace, attempt),
 	}
+}
+
+// replayAttemptDiff resolves the unified diff of a recorded attempt in the
+// same order resolveReplayChangedPaths walks for its paths: the candidate's
+// recorded base and commit first, then the attempt base and the worktree
+// snapshot. Without either pair there is no diff.
+func replayAttemptDiff(ctx context.Context, workspace string, attempt replayAttempt) string {
+	if diff, ok := replayGitDiff(ctx, workspace, attempt.candidateBase, attempt.candidateCommit); ok {
+		return diff
+	}
+	if diff, ok := replayGitDiff(ctx, workspace, attempt.baseSHA, attempt.snapshotSHA); ok {
+		return diff
+	}
+	return ""
+}
+
+func replayGitDiff(ctx context.Context, workspace, base, commit string) (string, bool) {
+	if base == "" || commit == "" {
+		return "", false
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return "", false
+	}
+	result, err := publication.ExecRunner{}.Run(ctx, publication.Command{
+		Executable: git,
+		Args:       []string{"diff", "--no-color", base, commit},
+		Directory:  workspace,
+	})
+	if err != nil || result.ExitCode != 0 || result.StdoutTruncated {
+		return "", false
+	}
+	return string(result.Stdout), true
 }
 
 func resolveReplayChangedPaths(ctx context.Context, workspace string, attempt replayAttempt) ([]string, bool) {
@@ -667,7 +704,8 @@ func replayMappedChoice(choice string) string {
 
 func replayDefectChoice(choice string) bool {
 	switch choice {
-	case replayChoiceContradicted, "path_not_changed", "proof_failed", "verifier_incomplete", "tests_gate_failed", "count_mismatch":
+	case replayChoiceContradicted, "path_not_changed", "proof_failed", "verifier_incomplete", "tests_gate_failed", "count_mismatch",
+		"fabricated_reference", "wrong_count", "behaviour_absent":
 		return true
 	}
 	return false

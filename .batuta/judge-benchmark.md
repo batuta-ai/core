@@ -122,3 +122,38 @@ Binary built from `de604eb` (plan `judge-claims-v23`: touched-file headings in e
 | gate-failed attempts flagged | 2 of 7 | 2 of 8 | 2 of 8 |
 
 Decision rule stated in the research note before the runs: keep `enforce` only if both false closures are flagged and no legitimate candidate is flagged. **Version 2.3 meets it on this corpus.** Both halves come from the code settlement (claimed path, unchanged tree); the judge was asked 18 times over prose claims with evidence attached and contradicted nothing, so its measured contribution to this decision on this corpus is zero contradictions. `enforce` therefore protects against the observed defect class through code, and the judge's calls are a cost (18 calls, about 2.5k input tokens each) without a detection yet. Whether the judge earns its place on `claim_evidence` needs the constructed corpus (prose claims with correct paths that the evidence refutes), not more replays of this one.
+
+## Constructed corpus, run 1 (2026-09-21)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 10 (commit `6620423`). Binary built from `f2cc89c` (branch `feat/judge-corpus`; final review of delivery `judge-corpus-fixes-20260921-213457` returned SHIP with no findings). Judge config `.batuta/judge.json` (excluded from git) was exactly `{"provider":"auto","timeout_ms":20000,"decisions":{"claim_evidence":{"mode":"shadow","threshold":0.9}}}`. One trial per repository, 2026-09-21 22:55:45Z to 22:56:38Z.
+
+Commands: `batuta judge corpus build` over every core journal except `judge-corpus-*`, and over every skills journal from the skills workspace; then `batuta judge corpus run --corpus <file> --json` (skills with `--config ../core/.batuta/judge.json`). The corpus files are 9.3 MB and 0.6 MB and are not committed; the build is deterministic and their sha256 are in `.batuta/judge-corpus-v1/corpus.sha256`. Raw run output, skip lists and the offline code-contradiction dump are in `.batuta/judge-corpus-v1/`. Every count below was computed from those files.
+
+| measure | core | skills | total |
+|---|---|---|---|
+| source attempts (legitimate candidates) | 97 | 15 | 112 |
+| attempts skipped (not `candidate`) | 29 | 5 | 34 |
+| cases | 383 | 45 | 428 |
+| judge calls / unavailable | 155 / 0 | 22 / 0 | 177 / 0 |
+| input tokens (from usage) | 275,961 | 36,133 | 312,094 |
+
+| label | cases | flagged | flagged by code | flagged by the judge | missed |
+|---|---|---|---|---|---|
+| `fabricated_reference` | 112 | 112 | 112 | 0 | 0 |
+| `wrong_count` | 92 | 92 | 92 | 0 | 0 |
+| `behaviour_absent` | 112 | 17 | 17 | **0** | 95 |
+| `clean` (false flags) | 112 | 7 | 7 | 0 | — |
+
+(`skills` has no `wrong_count` cases: no source attempt changed a `_test.go` file. The runner's `flagged_by_judge` column counts cases whose first contradicted claim came from the judge, whether or not the aggregate flagged them; the table above counts aggregate flags only.)
+
+Against the frozen rule:
+- Sanity, code flags ≥90% of `fabricated_reference` and `wrong_count`: 112/112 and 92/92. **Holds.**
+- The judge flags ≥50% of `behaviour_absent`: **0/112. Fails.** The judge does not earn its place on `claim_evidence` on this corpus.
+- The judge flags ≤5% of `clean`: 0/112. Holds, trivially.
+
+What the numbers show beyond the rule, without restating it at another threshold:
+- The judge did answer: on 18 of 112 `behaviour_absent` cases its contradicted probability was between 0.93 and 0.99; on `clean` cases it never exceeded 0.5. None of the 18 became a flag, because the aggregate also requires the choice's confidence and the `material` answer to reach 0.9, and the per-case output does not print which of the two fell short. Even counted as flags, 18/112 is 16%, below the 50% bar.
+- Every code flag on `behaviour_absent` and on `clean` is a path claim, not detection of the defect (`code-contradictions-*.txt`). Three causes: the corpus runner calls `ExtractClaims` without the `known` path gate that the live loop applies (bare basenames such as `panel_model.go` become claims); a Markdown link whose target is a relative `.batuta/worktrees/<name>/…` path is not rewritten, so the claim keeps the `[text](target` form; and the `behaviour_absent` rule borrows another task's title, which sometimes names a path (`docs/review.md`, `routing.md`) that the case did not change. The first two are runner and extractor defects to fix before any rerun; the third is a property of the frozen variant rule and stays as is for this run.
+- Cost of the judge on this corpus: 177 calls, 312,094 input tokens, 53 s wall time, for zero flags.
+
+Headline: on 112 legitimate attempts with a borrowed, false behaviour claim about a real changed file, the judge flagged none; code settled every fabricated identifier and wrong test count. `claim_evidence` stays code-first; the judge stays in shadow.

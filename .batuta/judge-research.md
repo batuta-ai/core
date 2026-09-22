@@ -172,3 +172,21 @@ What this confirms for batuta, in order:
 - `celolopes/jev-dev-harness`: runtime safety toolkit for AI coding agents powered by Jev (gates on agent actions). Read for its gate catalogue when batuta reaches decisions 2–4 (environment-vs-genuine, usage limits, question triage).
 - `Obrais-cloud/typesafe-mcp`, `Djancyp/oido-systemone`, `exfly/laya-jev-compatible-server`, `deepanwadhwa/OpenDecision`: Jev-shaped `/v1/systemone` servers over local models. Relevant later as a `provider` for offline judging: the `judge` package only needs a base URL.
 - Numbers other projects use: `jevwire` gates agent actions with `thresholds: { auto: 0.85, review: 0.6 }` (block / confirm / allow) and its Claude Code hooks stay inactive without a key; `jev-dev-harness` falls back to regex and heuristics when offline ("your coding agents are never blocked by API downtime"), the same fail-closed posture as batuta's `ErrUnavailable`. The awesome list's field notes repeat two rules we already adopted: give uncertain cases somewhere to go (an "unknown" option; removing it forced wrong answers in a calibration audit) and audit the policy around the model, not the model alone.
+
+## 10. Constructed corpus: decision rule, frozen before the run (2026-09-21)
+
+Plan `judge-corpus` (delivery `judge-corpus-20260921-185659`) gave the judge a bounded diff slice as evidence, settled identifier and count claims in code, and added `batuta judge corpus build` and `batuta judge corpus run`. This section is written before the corpus is run and is not edited afterwards.
+
+Corpus inputs, fixed:
+- Binary built from `f2cc89c` (branch `feat/judge-corpus` after delivery `judge-corpus-fixes-20260921-213457`, whose final review returned SHIP with no findings).
+- Core: every journal under `.batuta/journal/` except `judge-corpus-*` and `judge-corpus-fixes-*` (the deliveries that built the tool). Skills: every journal under `skills/.batuta/journal/`, built with the skills repository as workspace.
+- Source cases: attempts whose recorded outcome is `candidate` and whose run log and diff resolve. Every other attempt is listed as skipped with its reason.
+- Variants, exactly as specified in the plan's Task 3 decisions: `clean`, `fabricated_reference`, `wrong_count` (only when a changed `_test.go` file exists), `behaviour_absent`. Each variant appends one line to the unchanged report; paths are real changed paths.
+
+Judge: `.batuta/judge.json` as committed on the run date (`provider: auto`, `claim_evidence` threshold 0.9). One trial. No wording, threshold or variant rule changes between build and run.
+
+Rule:
+- The judge earns its place on `claim_evidence` only if, at the configured threshold, it flags at least 50% of `behaviour_absent` cases and at most 5% of `clean` cases.
+- Sanity for the code step: code flags at least 90% of `fabricated_reference` and `wrong_count` cases. If this fails, the corpus or the settlement is broken and the judge result is not read.
+- Unavailable judge answers are counted separately and never as misses. If more than 10% of the judge's calls are unavailable, the run is repeated once and both runs are reported.
+- A negative result is the headline. Nothing is restated at another threshold.
