@@ -82,6 +82,28 @@ usage_regex: "input=(?P<input>[0-9]+) output=(?P<output>[0-9]+)"`, 1)
 	}
 }
 
+func TestAdapterOutputDecoder(t *testing.T) {
+	t.Parallel()
+	for _, name := range streamDecoderNames {
+		payload := strings.Replace(codexAdapter, "finished: exit_code", "finished: exit_code\noutput_decoder: "+name, 1)
+		adapter, err := ParseAdapter([]byte(payload))
+		if err != nil {
+			t.Fatalf("ParseAdapter(%s) error = %v", name, err)
+		}
+		if adapter.OutputDecoder != name {
+			t.Fatalf("output_decoder = %q, want %q", adapter.OutputDecoder, name)
+		}
+	}
+	legacy, err := ParseAdapter([]byte(codexAdapter))
+	if err != nil || legacy.OutputDecoder != "" {
+		t.Fatalf("legacy output_decoder = %q, %v", legacy.OutputDecoder, err)
+	}
+	unknown := strings.Replace(codexAdapter, "finished: exit_code", "finished: exit_code\noutput_decoder: not-a-decoder", 1)
+	if _, err := ParseAdapter([]byte(unknown)); err == nil {
+		t.Fatal("ParseAdapter(unknown output_decoder) should fail")
+	}
+}
+
 func TestTokenizeSplitsLikeAShellWithoutRunningOne(t *testing.T) {
 	cases := map[string][]string{
 		`codex exec --sandbox workspace-write "{brief}" < /dev/null`:         {"codex", "exec", "--sandbox", "workspace-write", "{brief}"},

@@ -34,7 +34,7 @@ must stand alone: no prefix, suffix, or extra text on the same line.
 |---|---|
 | `journal` | Append-only JSONL per delivery under `.batuta/journal/`, hash-chained; every record carries the graph after the transition |
 | `worktree` | `GitProvider`: worktrees under `.batuta/worktrees/`, squash, bookkeeping commits, `.git/info/exclude` |
-| `executor` | Adapter frontmatter → argv (no shell), subprocess with stdin closed, timeouts, process-group kill, `finished`, `limit_regex` and `usage_regex` rules, question line |
+| `executor` | Adapter frontmatter → argv (no shell), subprocess with stdin closed, timeouts, process-group kill, `finished`, `limit_regex`, `usage_regex` and `output_decoder` rules, question line |
 | `gates` | Gate 0 finished · 1 tree · 2 tests · 3 scope, proofs, independent read-only verifier |
 | `loop` | The runner over `routing.DeliveryGraph`: routing from the table, waves, attempts, retry then escalation, integration, bookkeeping, resume, answer, abandon, dashboard, trail |
 
@@ -207,7 +207,16 @@ asked.
   `cli/usage_regex`; thousands separators (comma, dot, thin space) are
   parsed away, unmatched counters stay nil, and a CLI that prints only a
   total (e.g. `tokens used\s+(?P<total>[0-9][0-9., ]*)`) sets
-  `reported_total_tokens` without inventing input or output. A session with
+  `reported_total_tokens` without inventing input or output. An adapter may
+  instead declare `output_decoder` naming a known stream decoder
+  (`cursor-stream-json`, `agy-stream-json`, `codex-json`,
+  `claude-stream-json`, `opencode-json`); an unknown name makes the adapter
+  invalid. The run then decodes stdout before the run log, the progress
+  observer and the outcome, so `BATUTA-PROGRESS` and `BATUTA-QUESTION` lines
+  inside events, and `limit_regex` / `usage_regex`, apply to the decoded
+  text. `Result.Stdout` is that text, `Result.RawStdout` the bounded raw
+  bytes, and `Result.Usage` the decoder's counters with provenance
+  `cli/<decoder>`. A session with
   no reported usage records `usage_unknown` instead.
 - **Conflicts keep the same runtime.** A conflicting candidate re-executes on
   the new base with the same executor, model, and reasoning; escalation is
@@ -446,8 +455,8 @@ from plan discovery.
 
 - Delivery token budgeting or aggregation: ACP receipts can retain optional
   provider-reported usage, but missing counters remain unknown and the graph
-  does not consume them. CLI executors report tokens only when the adapter
-  declares `usage_regex`. The wall budget
+  does not consume them. CLI executors report tokens when the adapter
+  declares `usage_regex` or `output_decoder`. The wall budget
   remains `--task-timeout` per session; paired measurement is described in
   [dispatch-measurement.md](dispatch-measurement.md).
 - Cross-review with lenses (the skill's `/batuta-review`); the loop runs the
