@@ -2,17 +2,17 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Add a `classify` decision that asks the judge for a plan task's complexity lane and domain from the task text alone, and a bench command that scores it against the lanes of the 175 tasks in finished plans (agreement with the host's label, the frozen gate) and, where a journal exists, against what the lane actually did (first attempt or escalation, reported beside it).
-**Created:** 2026-09-22 · **Status:** approved
+**Created:** 2026-09-22 · **Status:** done
 
 ## Tasks
-- [ ] 1. classify package: request from task text, answer to lane — backend/high
+- [x] 1. classify package: request from task text, answer to lane — backend/high
       Scope: classify/classify.go, classify/classify_test.go
       Accept: BuildRequest(task routing.PlanTask, context string) returns a judge.Request with decision classify whose state holds the task title, scope, accept criteria and the task's labelled context paragraphs plus the unlabelled ones, and never the task's domain, complexity, executor or model → go test ./classify -run TestBuildRequestOmitsLabel; the request carries one choice question complexity with options low, medium, high, critical and one choice question domain with the ten domains, with criteria copied from the rubric in Decisions → go test ./classify -run TestBuildRequestQuestions; Decide(answers, threshold) returns the chosen lane and domain with their confidences, and falls back to critical and general, marked fallback, when a confidence is below the threshold or an answer is missing → go test ./classify -run TestDecideFallback; the package stays green → go test ./classify
-- [ ] 2. batuta judge classify: lanes for one plan — backend/medium
+- [x] 2. batuta judge classify: lanes for one plan — backend/medium
       Depends on: 1
       Scope: cmd/batuta/judge.go, cmd/batuta/judge_classify.go, cmd/batuta/judge_classify_test.go
       Accept: batuta judge classify --plan <file> [--json] [--config <path>] [--workspace <dir>] asks one judge call per task and prints per task its number, the plan's lane, the judge's lane and domain, both confidences, fallback, and input tokens or unknown → go test ./cmd/batuta -run TestJudgeClassifyPlan; the threshold comes from the classify decision in the judge config (default 0.7 when unset) and is printed → go test ./cmd/batuta -run TestJudgeClassifyThreshold; an unavailable judge prints unavailable for that task and never a guessed lane → go test ./cmd/batuta -run TestJudgeClassifyUnavailable; the package stays green → go test ./cmd/batuta
-- [ ] 3. batuta judge classify bench: agreement with the label, outcome beside it — backend/medium
+- [x] 3. batuta judge classify bench: agreement with the label, outcome beside it — backend/medium
       Depends on: 2
       Scope: cmd/batuta/judge_classify.go, cmd/batuta/judge_classify_test.go, docs/judge.md
       Accept: batuta judge classify bench --plan <file> [--plan <file>...] [--journals <dir>...] [--json] classifies every task of every plan and prints a summary with tasks, exact complexity agreement, domain agreement, under-routed (judge lane lower than the label), over-routed, fallbacks, unavailable, the constant-answer baseline (share of the most common label) and the complexity confusion matrix → go test ./cmd/batuta -run TestClassifyBenchSummary; for tasks whose plan slug and task id match a journal delivery, each task line adds the recorded outcome of the first attempt (candidate on first attempt, retried, escalated, failed) and whether the judge lane was lower, equal or higher than the executed lane → go test ./cmd/batuta -run TestClassifyBenchOutcome; tasks without a journal are counted as outcome unknown, never dropped → go test ./cmd/batuta -run TestClassifyBenchOutcomeUnknown; docs/judge.md documents both classify forms and what leaves the machine → grep -q 'judge classify bench' docs/judge.md; the package stays green → go test ./cmd/batuta

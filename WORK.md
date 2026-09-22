@@ -240,6 +240,9 @@
 - [x] Docs state exactly what a v2 claim_evidence request sends → agy (gemini-3.8-flash-low), commit 89b507deaab7 (trail: .batuta/runs/2026-09-21-judge-corpus-fixes-task-4.md, delivery judge-corpus-fixes-20260921-213457, plan judge-corpus-fixes, 2026-09-21)
 - [x] Code settlement runs whenever the decision is on, judge or not → cursor-agent (cursor-grok-4.6-high), commit 2c71b67089a1 (trail: .batuta/runs/2026-09-21-claim-evidence-code-only-task-1.md, delivery claim-evidence-code-only-20260921-232540, plan claim-evidence-code-only, 2026-09-21)
 - [x] Config and docs for code-only claim_evidence → opencode (opencode/glm-5.3-flash), commit 470d92537c59 (trail: .batuta/runs/2026-09-21-claim-evidence-code-only-task-2.md, delivery claim-evidence-code-only-20260921-232540, plan claim-evidence-code-only, 2026-09-21)
+- [x] classify package: request from task text, answer to lane → cursor-agent (cursor-grok-4.6-high), commit d1811790c2fd (trail: .batuta/runs/2026-09-22-judge-classify-task-1.md, delivery judge-classify-20260922-100738, plan judge-classify, 2026-09-22)
+- [x] batuta judge classify: lanes for one plan → opencode (opencode/glm-5.3-flash), commit 9676b90bafa6 (trail: .batuta/runs/2026-09-22-judge-classify-task-2.md, delivery judge-classify-20260922-100738, plan judge-classify, 2026-09-22)
+- [x] batuta judge classify bench: agreement with the label, outcome beside it → opencode (opencode/glm-5.3-flash), 1 retry, commit 2ad59ba5301e (trail: .batuta/runs/2026-09-22-judge-classify-task-3.md, delivery judge-classify-20260922-100738, plan judge-classify, 2026-09-22)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
