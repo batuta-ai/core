@@ -207,8 +207,8 @@ asked.
   `cli/usage_regex`; thousands separators (comma, dot, thin space) are
   parsed away, unmatched counters stay nil, and a CLI that prints only a
   total (e.g. `tokens used\s+(?P<total>[0-9][0-9., ]*)`) sets
-  `reported_total_tokens` without inventing input or output. An adapter may
-  instead declare `output_decoder` naming a known stream decoder
+  `reported_total_tokens` without inventing input or output. An adapter
+  may also declare `output_decoder` naming a known stream decoder
   (`cursor-stream-json`, `agy-stream-json`, `codex-json`,
   `claude-stream-json`, `opencode-json`); an unknown name makes the adapter
   invalid. The run then decodes stdout before the run log, the progress

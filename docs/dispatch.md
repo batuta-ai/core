@@ -54,7 +54,8 @@ launches a fresh managed process with fixed resolved argv, an absolute requested
 workspace, inherited environment and bounded protocol I/O and owned shutdown.
 Prompts travel through the protocol, never a shell command. The factory carries
 one release-owned qualification: OpenCode **1.18.31**, fixed launch
-`opencode acp`, native **macOS arm64** (`darwin/arm64`), and **empty effort**.
+`opencode acp`, native **macOS arm64** (`darwin/arm64`), and effort per the
+[`not_applicable` rule](#qualification-and-permissions).
 `Model: *` matches any model the session advertises and confirms. Executor,
 launch, version, platform and the lifecycle flags still must match exactly; `*`
 does not transfer evidence to another executor, version or platform. All other
@@ -160,9 +161,10 @@ batuta dispatch \
 The session must advertise the requested model among its options and confirm
 it before receiving the prompt; a model that is missing or unconfirmed fails
 explicit ACP and permits `auto` fallback only after verified pre-submission
-shutdown. When the adapter declares no `acp_effort_config`, a requested effort
-is recorded in the receipt as `not_applicable` instead of failing
-qualification. Neither path silently changes the requested model or effort.
+shutdown. When the adapter declares no `acp_effort_config` and the session
+advertises no thought_level option, a requested effort is recorded in the
+receipt as `not_applicable` instead of failing qualification. Neither path
+silently changes the requested model or effort.
 See the
 [qualification evidence](dispatch-measurement.md#native-opencode-qualification)
 for the tested scope and usage gaps.

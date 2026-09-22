@@ -136,6 +136,7 @@ func TestSessionRejectsIncompatibleConfiguration(t *testing.T) {
 		{name: "unknown model", model: "invented", state: configState("small", "low")},
 		{name: "unacknowledged model", model: "large", state: configState("small", "low"), ack: configState("small", "low")},
 		{name: "effort resets model", model: "large", effort: "high", state: configState("large", "low"), ack: configState("small", "high")},
+		{name: "effort not offered", model: "large", effort: "high", state: `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"large","options":[{"value":"large"}]},{"id":"reasoning","category":"thought_level","type":"select","currentValue":"low","options":[{"value":"low"}]}]}`},
 		{name: "empty acknowledgement", model: "large", state: configState("small", "low"), ack: `{}`},
 		{name: "ambiguous category", model: "large", state: `{"configOptions":[{"id":"first","category":"model","type":"select","currentValue":"large","options":[{"value":"large"}]},{"id":"second","category":"model","type":"select","currentValue":"large","options":[{"value":"large"}]}]}`},
 		{name: "unsupported option type", model: "large", state: `{"configOptions":[{"id":"models","category":"model","type":"text","currentValue":"large","options":[{"value":"large"}]}]}`},
@@ -160,6 +161,47 @@ func TestSessionRejectsIncompatibleConfiguration(t *testing.T) {
 				t.Fatalf("unexpected request submitted: %d", conn.nextID)
 			}
 		})
+	}
+}
+
+func TestSessionEffortNotApplicableWithoutThoughtLevel(t *testing.T) {
+	t.Parallel()
+	conn, peer := testConnection(t, Options{})
+	cwd := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high"})
+		if err == nil {
+			var result TurnResult
+			result, err = session.Prompt(context.Background(), "the brief", nil)
+			if err == nil && (!result.Completed || result.StopReason != "end_turn") {
+				err = fmt.Errorf("turn: %+v", result)
+			}
+		}
+		done <- err
+	}()
+	reader := bufio.NewReader(peer)
+	setupPeer(t, peer, reader, cwd, `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"small","options":[{"value":"small"},{"value":"large"}]}]}`)
+	// The only selection is the model: with no thought_level option and no
+	// EffortConfigID, the requested effort is not_applicable.
+	request := expectMethod(t, reader, "session/set_config_option")
+	var params struct {
+		SessionID string `json:"sessionId"`
+		ConfigID  string `json:"configId"`
+		Value     string `json:"value"`
+	}
+	if json.Unmarshal(request["params"], &params) != nil || params.SessionID != "task" || params.ConfigID != "models" || params.Value != "large" {
+		t.Fatalf("config: %s", request["params"])
+	}
+	sessionReply(t, peer, request, `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"large","options":[{"value":"small"},{"value":"large"}]}]}`)
+	request = expectMethod(t, reader, "session/prompt")
+	if string(request["params"]) != `{"sessionId":"task","prompt":[{"type":"text","text":"the brief"}]}` {
+		t.Fatalf("prompt: %s", request["params"])
+	}
+	sessionReply(t, peer, request, `{"stopReason":"end_turn"}`)
+	awaitError(t, done, nil)
+	if conn.nextID > 4 {
+		t.Fatalf("unexpected effort selection submitted: %d", conn.nextID)
 	}
 }
 
