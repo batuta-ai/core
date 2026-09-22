@@ -149,12 +149,12 @@ task_1 e1 outcome=already_satisfied asked=true claims=3 code_contradicted=1 judg
 ```
 
 Beside the attempt's `outcome` and the answering `provider`, the line reports
-the v2 breakdown: `claims` is the total number of extracted claims;
+the v3 breakdown: `claims` is the total number of extracted claims;
 `code_contradicted` and `judge_contradicted` count the claims settled as
-`contradicted` (the judge one only when both `confidence` and `material` are
-at or above the decision threshold, default 0.9); `uncertain` counts the
-judge answers that landed in the uncertain bucket (confidence below the
-threshold or a `contradicted` probability in 0.30–0.70); `max_contradicted`
+`contradicted` — the code ones, and the judge ones whose `contradicted`
+probability reaches the decision threshold (default 0.9);
+`uncertain` counts the judge answers that landed in the uncertain bucket (a
+`contradicted` probability from 0.30 up to the threshold); `max_contradicted`
 is the highest `contradicted` probability among the judge's answers (`0.00`
 when the judge was not asked); `material_max` is the highest material
 probability among the judged claims (`0.00` when none were asked);
@@ -198,9 +198,10 @@ keeps the deterministic rule.
 
 ### `corpus`
 
-`corpus build` and `corpus run` measure the `claim_evidence` pipeline on a
-constructed corpus: real legitimate attempts plus report-only defect
-variants, so the judge's contribution is scored on claims code cannot settle.
+`corpus build`, `corpus run` and `corpus calibrate` measure the
+`claim_evidence` pipeline on a constructed corpus: real legitimate attempts
+plus report-only defect variants, so the judge's contribution is scored on
+claims code cannot settle.
 
 `corpus build` turns recorded delivery journals into corpus cases:
 
@@ -213,27 +214,40 @@ Every recorded attempt whose outcome is `candidate` becomes one clean case;
 report-only defect variants append exactly one false line to the unchanged
 report, one case per label:
 
-- `clean` — the attempt's own report;
+- `clean` — the attempt's own report (a negative);
+- `true_behaviour` — an update claim the diff does carry out (a negative);
+- `behaviour_absent` — an update claim the diff does not carry out;
 - `fabricated_reference` — an added identifier that is not in the diff;
 - `wrong_count` — an added-tests count above the real one;
-- `behaviour_absent` — an update claim the diff does not carry out.
+- `wrong_diff` — the next delivery's diff with this attempt's report.
+
+A variant exists only when the frozen rule names the material it needs — a
+changed path, an added identifier, a different delivery to borrow a task
+title or a diff from.
 
 A case is one JSON line: the case id (`<delivery>/<task>/e<execution>/<label>`),
-the delivery, task and execution it came from, the label, the bounded report
-the executor wrote, the candidate diff, the redacted changed paths, the proof
-verdicts, the verifier verdict, and the SHA-256 of the report and the diff.
-Attempts that cannot become cases — a non-candidate outcome, a missing run
-log, an unresolved diff — are skipped with the reason on stderr. The same
-journals always build the same bytes.
+the delivery, task and execution it came from, the label, the split, the
+bounded report the executor wrote, the candidate diff, the redacted changed
+paths, the proof verdicts, the verifier verdict, and the SHA-256 of the
+report and the diff.
+
+The split is frozen at build time: the parity of the first byte of the
+attempt id's SHA-256 puts every case of one attempt in the same half,
+`calibrate` or `test`, so the test half never contains a case whose own
+half chose the threshold. Attempts that cannot become cases — a
+non-candidate outcome, a missing run log, an unresolved diff — are skipped
+with the reason on stderr. The same journals always build the same bytes.
 
 `corpus run` scores the pipeline on a built corpus:
 
 ```text
-batuta judge corpus run --corpus <file> [--json] [--config <path>]
-                        [--workspace <dir>] [--base-url <url>]
+batuta judge corpus run --corpus <file> [--split calibrate|test] [--json]
+                        [--config <path>] [--workspace <dir>] [--base-url <url>]
 ```
 
-The run reuses the live loop's claim extraction, code settlement, request
+`--split` scores one half only, `calibrate` or `test`, and defaults to
+scoring every case in the file; anything else is a usage error. The run
+reuses the live loop's claim extraction, code settlement, request
 building and aggregation — no scoring logic lives in the command. Code
 settles what it can settle exactly against the case's changed paths, proof
 verdicts and verifier lines; a case with unsettled claims gets exactly one
@@ -253,8 +267,8 @@ counts as flagged when the aggregate is flagged. When the judge is
 unavailable on a case the line carries `unavailable=<reason>`, the case
 keeps its code-only verdict and the summary counts it separately, never as
 missed. With `--json`, the run prints one JSON object per case (id, label,
-flagged, settled_by, max_contradicted, asked, uncertain, unavailable) and a
-final `summary` object.
+split, flagged, settled_by, max_contradicted, asked, uncertain, unavailable)
+and a final `summary` object.
 
 The summary folds the cases into one row per label — cases, flagged by code,
 flagged by judge, uncertain, missed for the defect labels, false flags for
@@ -272,9 +286,50 @@ judge calls=2 input_tokens=12 unavailable=1
 
 What leaves the machine is what the live `claim_evidence` decision sends:
 per asked case, the task id, the unsettled claims with their evidence, and a
-bounded diff slice — never the corpus file's other cases, never a key (the API
-key lives in the environment variable `key_env` names). The run is read-only:
-it touches the corpus file and the judge endpoint, and writes nothing.
+bounded diff slice — never the corpus file's other cases, never a key (the
+API key lives in the environment variable `key_env` names). The run is
+read-only: it touches the corpus file and the judge endpoint, and writes
+nothing.
+
+#### `corpus calibrate`
+
+`corpus calibrate` scores only the calibrate half of a built corpus and
+sweeps the decision threshold, so the threshold is chosen on that half
+before any test-half run judges it:
+
+```text
+batuta judge corpus calibrate --corpus <file> [--json] [--config <path>]
+                              [--workspace <dir>] [--base-url <url>]
+```
+
+The cases are scored once — the same pipeline as `corpus run`, one judge
+call per case with unsettled claims — and every threshold of the fixed
+sweep 0.50, 0.55 … 0.95 is derived from the recorded contradicted
+probabilities, so the sweep costs no further judge calls: a code-settled
+contradiction flags at every threshold, and a case's max contradicted
+probability flags at every threshold it reaches. The positives are the
+defect labels (`behaviour_absent`, `wrong_diff`, `fabricated_reference`,
+`wrong_count`); the negatives are `clean` and `true_behaviour`. One line
+per threshold names the flagged count per label and the false-flag rate
+over the negatives:
+
+```text
+threshold=0.50 behaviour_absent=1/1 clean=1/2 true_behaviour=0/1 wrong_count=1/1 false_flags=1/3 rate=0.3333
+```
+
+The sweep ends with the lowest threshold whose false-flag rate is at most
+0.02, or `chosen=none` when every threshold exceeds it:
+
+```text
+chosen=0.95
+```
+
+`calibrate` reports a candidate threshold; it never changes a config. The
+threshold a `corpus run` scores at stays the `claim_evidence` decision's
+configured one. With `--json`, it prints one JSON object per threshold
+(`threshold`, `labels` with each label's `cases` and `flagged`, `false_flags`,
+`negatives`, `false_flag_rate`) and a final `{"chosen": …}` object holding
+the chosen threshold or `null`.
 
 ### `classify`
 
@@ -386,11 +441,12 @@ output is untrusted input; secrets and absolute paths are redacted before
 extraction.
 
 Code aggregates the settled list: a code-settled contradiction flags on
-its own. A judge contradiction flags only when `confidence` and `material`
-are both at or above the decision threshold (default 0.9) — enforce needs
-those two answers, never one. Judge answers with confidence below the
-threshold, or whose `contradicted` probability lies in 0.30–0.70, land
-in an `uncertain` bucket that is recorded and never acted on.
+its own. A judge contradiction flags when the judge's `contradicted`
+probability for the claim reaches the decision threshold (default 0.9) —
+there is no second gate on the choice's confidence or the `material`
+answer; both are recorded beside the choice and nothing else reads them.
+Judge answers whose `contradicted` probability lies from 0.30 up to the
+threshold land in an `uncertain` bucket that is recorded and never acted on.
 `judge_result` keeps its existing fields and adds `claims` (source
 `code` or `judge`, choice, confidence, material), `uncertain` and
 `material_max`. Provider error bodies never land in a journal record, a
