@@ -2,17 +2,17 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Apply Jev the way its signal showed it works: a claim the judge answers is flagged when the judge's contradicted probability reaches the decision threshold, with no second gate on choice confidence or `material`; one aggregation shared by the live loop, replay and the corpus runner; a corpus that also tests true behaviour claims; and a deterministic calibrate/test split so the threshold is chosen on one half and judged on the other.
-**Created:** 2026-09-22 · **Status:** approved
+**Created:** 2026-09-22 · **Status:** done
 
 ## Tasks
-- [ ] 1. One aggregation, flagged on the contradicted probability — backend/high
+- [x] 1. One aggregation, flagged on the contradicted probability — backend/high
       Scope: loop/judgment.go, loop/judgment_test.go, loop/loop_test.go, cmd/batuta/judge.go, cmd/batuta/judge_test.go, cmd/batuta/judge_corpus.go, cmd/batuta/judge_corpus_test.go
       Accept: an exported loop.AggregateClaimEvidence returns flagged, the per-claim records and the uncertain list, and flags a judge-answered unsettled claim exactly when the summed probability of its defect options is at or above the threshold, whatever the choice confidence and the material answer → go test ./loop -run TestAggregateClaimEvidenceContradictedProbability; a judge-answered claim whose contradicted probability lies in [0.30, threshold) lands in the uncertain list and never flags → go test ./loop -run TestAggregateClaimEvidenceUncertainBand; code-contradicted claims still flag and code-supported claims never do → go test ./loop -run TestAggregateClaimEvidenceCode; the live loop, enforce detail, replay and corpus run all call loop.AggregateClaimEvidence and no other aggregation remains → ! grep -n 'func aggregateReplayClaims\|func aggregateClaimEvidence' loop/judgment.go cmd/batuta/judge.go cmd/batuta/judge_corpus.go; the unverifiable criterion no longer says a short slice is not contradiction → ! grep -n 'a short slice or missing evidence is NOT contradiction' loop/judgment.go; the packages stay green → go test ./loop ./cmd/batuta
-- [ ] 2. Corpus v2: true behaviour claims and a frozen calibrate/test split — backend/medium
+- [x] 2. Corpus v2: true behaviour claims and a frozen calibrate/test split — backend/medium
       Depends on: 1
       Scope: cmd/batuta/judge_corpus.go, cmd/batuta/judge_corpus_test.go
       Accept: corpus build adds a true_behaviour case per source attempt that appends the line Updated `<path>` so that <own task title, first letter lowercased>. with the attempt's real diff, and a wrong_diff case with the same appended own-title line but the diff, changed paths and <path> of the next source case in id order from a different delivery → go test ./cmd/batuta -run TestCorpusBuildBehaviourVariants; every case carries split calibrate or test, computed as calibrate when the first byte of sha256 of <delivery>/<task>/e<execution> is even, so all variants of one attempt share a split → go test ./cmd/batuta -run TestCorpusBuildSplit; the existing variants and the byte-identical build stay unchanged → go test ./cmd/batuta -run 'TestCorpusBuildVariants|TestCorpusBuildCases'; the package stays green → go test ./cmd/batuta
-- [ ] 3. corpus run --split and corpus calibrate — backend/medium
+- [x] 3. corpus run --split and corpus calibrate — backend/medium
       Depends on: 2
       Scope: cmd/batuta/judge_corpus.go, cmd/batuta/judge_corpus_test.go, docs/judge.md
       Accept: corpus run --split calibrate|test scores only that half, and the per-case JSON line carries the case's max contradicted probability and split → go test ./cmd/batuta -run TestCorpusRunSplit; corpus calibrate --corpus <file> [--json] runs the calibrate half once and prints, for each threshold 0.50, 0.55 … 0.95, the flagged count per label and the false-flag rate over clean and true_behaviour, then names the lowest threshold whose false-flag rate is at most 0.02, or none → go test ./cmd/batuta -run TestCorpusCalibrate; the run still takes its threshold only from the judge config → go test ./cmd/batuta -run TestCorpusRunThreshold; docs/judge.md documents the v3 aggregation, the new labels, the split and calibrate → grep -q 'corpus calibrate' docs/judge.md; the package stays green → go test ./cmd/batuta

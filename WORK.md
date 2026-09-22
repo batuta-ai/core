@@ -254,6 +254,9 @@
 - [x] First-attempt outcome sees an escalation after a same-executor retry → opencode (opencode/glm-5.3-flash), commit 965afea693b2 (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-1.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
 - [x] Bench tests prove the requests carry neither label nor journal content → opencode (opencode/glm-5.3-flash), commit db645ee12b0e (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-2.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
 - [x] docs/judge.md describes classify as built → agy (gemini-3.8-flash-low), 1 retry, commit 045a989d1ac5 (trail: .batuta/runs/2026-09-22-judge-classify-fixes-task-3.md, delivery judge-classify-fixes-20260922-112834, plan judge-classify-fixes, 2026-09-22)
+- [x] One aggregation, flagged on the contradicted probability → cursor-agent (cursor-grok-4.6-high), commit 9689a21b5bfd (trail: .batuta/runs/2026-09-22-claim-evidence-v3-task-1.md, delivery claim-evidence-v3-20260922-123213, plan claim-evidence-v3, 2026-09-22)
+- [x] Corpus v2: true behaviour claims and a frozen calibrate/test split → opencode (opencode/glm-5.3-flash), commit 8837542c6a2f (trail: .batuta/runs/2026-09-22-claim-evidence-v3-task-2.md, delivery claim-evidence-v3-20260922-123213, plan claim-evidence-v3, 2026-09-22)
+- [x] corpus run --split and corpus calibrate → opencode (opencode/glm-5.3-flash), 1 retry, commit 6574ade1a480 (trail: .batuta/runs/2026-09-22-claim-evidence-v3-task-3.md, delivery claim-evidence-v3-20260922-123213, plan claim-evidence-v3, 2026-09-22)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
