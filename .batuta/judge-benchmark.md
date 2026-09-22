@@ -244,3 +244,28 @@ Asked by the maintainer whether Jev was applied correctly, the conductor recompu
 Area under the ROC curve: 0.968. The judge separated the borrowed behaviour claims from clean reports well; the 0/112 of run 1 came from the aggregation the batuta built around it (a defect choice counted only with choice confidence ≥0.9 *and* the `material` answer ≥0.9) and from an `unverifiable` criterion that told the model a short slice is not contradiction. These thresholds were chosen after seeing the data, so none of this is a result under the section 10 rule; it motivates plan `claim-evidence-v3`, which calibrates on one half of a new corpus and tests on the other with the split and rule frozen beforehand. Caveats: only 27 clean cases were asked at all (a clean report rarely carries a behaviour claim), and a borrowed task title may be an easy defect.
 
 The same question for plan classification: the `high` criterion ("subsystem or multi-file work fully captured by a precise brief") describes almost every batuta plan task by construction (a closed Scope with source and test files, a precise brief), and the judge applied it literally. Run 1 measured a rubric that cannot separate `medium` from `high`, not the judge's ability; only the chosen option was kept, so no probability reanalysis is possible there.
+
+## claim_evidence v3, calibration (2026-09-22)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 12 (commit `234e49b`). Binary built from `107c8cb` (branch `feat/claim-evidence-v3`; final review of delivery `claim-evidence-v3-20260922-123213` returned SHIP with no findings). Judge `provider: auto`, aggregation v3 (a judge-answered claim flags when its contradicted probability reaches the threshold). `batuta judge corpus calibrate` run once per repository on the calibrate half; raw sweeps in `.batuta/judge-corpus-v3/cal-*.json`, skip lists beside them, corpus sha256 in `corpus.sha256`.
+
+Corpus: 64 core and 15 skills source attempts, fewer than run 1 (97 core). 41 core attempts from the 2026-09-06/07 deliveries were skipped as `diff unresolved`: their candidate commits no longer exist (`git cat-file` fails on `582faab…`). They were reachable only from refs the loop deletes on finish, and an automatic `git gc` on 2026-09-22 pruned them after the two-week expiry. Run 1 could still read them. The rule's inputs already skip attempts whose diff does not resolve, so the run proceeded; every skip is listed.
+
+Calibrate half, core and skills summed (40 cases per label):
+
+| threshold | `behaviour_absent` | `wrong_diff` | `clean` | `true_behaviour` | false-flag rate (`clean` + `true_behaviour`) |
+|---|---|---|---|---|---|
+| 0.50 | 36 | 34 | 1 | 21 | 0.275 |
+| 0.70 | 35 | 32 | 1 | 15 | 0.200 |
+| 0.80 | 33 | 31 | 1 | 11 | 0.150 |
+| 0.85 | 30 | 28 | 1 | 9 | 0.125 |
+| 0.90 | 24 | 26 | 0 | 4 | 0.050 |
+| 0.95 | 21 | 19 | 0 | 2 | 0.025 |
+
+(All ten thresholds are in the raw files; the core half alone reaches 0.018 at 0.95 and the skills half none, which is why the tool named 0.95 for core and no threshold for skills.)
+
+Against the frozen rule: no threshold from 0.50 to 0.95 has a false-flag rate at or below 2% over the calibrate half. **The result is negative, and the test half was not run.**
+
+What the table shows: the negatives that matter are `true_behaviour` cases. These are a true claim about the attempt's own task with the attempt's real diff, and the judge flags 21 of 40 of them at 0.50 and still 2 of 40 at 0.95. The judge cannot tell a true behaviour claim from a false one with the evidence it gets, a diff slice of at most 1,800 bytes ranked by shared tokens. Its signal on false claims is real (36/40 `behaviour_absent` at 0.50), but it fires on true claims nearly as readily. This also qualifies the post-hoc reanalysis of run 1: its AUC of 0.968 compared false behaviour claims with `clean` reports that carried almost no behaviour claims, so it measured "is there a suspicious behaviour claim here", not "is this behaviour claim false".
+
+Headline: with the double gate removed and the threshold calibrated on held-out data, the judge flags true behaviour claims too often (2.5% at the strictest threshold, 27.5% at 0.50) to be trusted on `claim_evidence`; code settlement remains the part that works.
