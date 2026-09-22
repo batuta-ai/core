@@ -262,7 +262,7 @@ Calibrate half, core and skills summed (40 cases per label):
 | 0.90 | 24 | 26 | 0 | 4 | 0.050 |
 | 0.95 | 21 | 19 | 0 | 2 | 0.025 |
 
-(All ten thresholds are in the raw files; the core half alone reaches 0.018 at 0.95 and the skills half none, which is why the tool named 0.95 for core and no threshold for skills.)
+(All ten thresholds are in the raw files; the core half alone reaches 1/66 = 0.015 at 0.95 and the skills half 1/14 = 0.071, which is why the tool named 0.95 for core and no threshold for skills.)
 
 Against the frozen rule: no threshold from 0.50 to 0.95 has a false-flag rate at or below 2% over the calibrate half. **The result is negative, and the test half was not run.**
 
