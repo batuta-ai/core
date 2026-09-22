@@ -1,0 +1,6 @@
+{"event":"init","conversation_id":"289cac78-7c88-454b-bd46-1fdd1b2aa2dd","init":{"model":"gemini-3.8-flash-low","cwd":"/tmp/fixture","tools":[],"permission_mode":"request-review"}}
+{"event":"step_update","step_update":{"conversation_id":"289cac78-7c88-454b-bd46-1fdd1b2aa2dd","step_index":0,"state":"DONE","step_type":"user_input"}}
+{"event":"step_update","step_update":{"conversation_id":"289cac78-7c88-454b-bd46-1fdd1b2aa2dd","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"BATUTA-PROGRESS 1 START\n"}}
+{"event":"step_update","step_update":{"conversation_id":"289cac78-7c88-454b-bd46-1fdd1b2aa2dd","step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"ok"}}
+{"event":"step_update","step_update":{"conversation_id":"289cac78-7c88-454b-bd46-1fdd1b2aa2dd","step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"\n","duration_seconds":3.443497,"usage":{"input_tokens":13492,"output_tokens":9,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":13501}}}
+{"event":"result","result":{"conversation_id":"289cac78-7c88-454b-bd46-1fdd1b2aa2dd","status":"SUCCESS","response":"BATUTA-PROGRESS 1 START\nok\n","duration_seconds":3.596545,"num_turns":1,"usage":{"input_tokens":13492,"output_tokens":9,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":13501}}}

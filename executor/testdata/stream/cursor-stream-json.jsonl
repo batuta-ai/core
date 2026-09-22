@@ -1,0 +1,14 @@
+{"type":"system","subtype":"init","apiKeySource":"login","cwd":"/tmp/fixture","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","model":"Grok 4.6 High","permissionMode":"default"}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"First print the line BATUTA-PROGRESS 1 START, then reply with exactly the word ok."}]},"session_id":"fa2c292a-c579-4361-99c7-b467bf933540"}
+{"type":"thinking","subtype":"delta","text":"I will print \"BATUTA-PROGRESS","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098018189}
+{"type":"thinking","subtype":"delta","text":" 1 START\" and reply ","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098018320}
+{"type":"thinking","subtype":"delta","text":"with \"ok\".","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098018484}
+{"type":"thinking","subtype":"delta","text":"\n\nThis appears to be","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098019658}
+{"type":"thinking","subtype":"delta","text":" a batuta protocol test.","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098019752}
+{"type":"thinking","subtype":"delta","text":" The user's explicit","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098019753}
+{"type":"thinking","subtype":"delta","text":" instructions override","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098019830}
+{"type":"thinking","subtype":"delta","text":" the usual Portuguese","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098019891}
+{"type":"thinking","subtype":"delta","text":" response rule.","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098019967}
+{"type":"thinking","subtype":"completed","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","timestamp_ms":1790098022734}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"BATUTA-PROGRESS 1 START\nok"}]},"session_id":"fa2c292a-c579-4361-99c7-b467bf933540"}
+{"type":"result","subtype":"success","duration_ms":14816,"duration_api_ms":14816,"is_error":false,"result":"BATUTA-PROGRESS 1 START\nok","session_id":"fa2c292a-c579-4361-99c7-b467bf933540","request_id":"ef45a865-0411-4f1d-863a-20ec95440f12","usage":{"inputTokens":18409,"outputTokens":427,"cacheReadTokens":2304,"cacheWriteTokens":0}}

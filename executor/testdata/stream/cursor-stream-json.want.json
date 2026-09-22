@@ -1,0 +1,9 @@
+{
+ "text": "BATUTA-PROGRESS 1 START\nok",
+ "usage": {
+  "input_tokens": 18409,
+  "output_tokens": 427,
+  "cache_read_tokens": 2304,
+  "cache_write_tokens": 0
+ }
+}

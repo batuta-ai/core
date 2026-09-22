@@ -1,0 +1,251 @@
+[0m
+> build · glm-5.3-flash
+[0m
+[0m→ [0mRead loop/attempt.go
+Brief received. Explore first.
+[0m→ [0mRead loop/judgment.go
+[0m✱ [0mGrep "func Tail"[90m in executor · 1 match[0m
+Now look at `executor.Tail` and existing loop tests.
+[0m✱ [0mGlob "loop/*_test.go"[90m in . · 27 matches[0m
+[0m→ [0mRead executor/run.go[90m [offset=180, limit=80][0m
+[0m→ [0mRead loop/attempt_test.go
+Read loop_test.go for fixture/fake executor.
+[0m✱ [0mGrep "func (fake|setup|options|readJournal|kinds|commandRunnerFunc)|RateLimited|ExitCode"[90m in loop/loop_test.go · 70 matches[0m
+[0m→ [0mRead loop/loop_test.go[90m [limit=400, offset=1][0m
+[0m✱ [0mGrep "KindLimitWait|limit-within|TestLoopBlocksRateLimitedWithoutFallback"[90m in loop/loop_test.go · 20 matches[0m
+[0m→ [0mRead loop/loop_test.go[90m [limit=180, offset=1575][0m
+[0m✱ [0mGrep "MaxLimitWaits|LimitHorizon|func (r \*Runner) open|func (r \*Runner) runPreparingWaves|root |type Runner|type Options"[90m in loop/runner.go · 97 matches[0m
+Check runner plumbing: Options defaults, `open`, `runPreparingWaves`, Result fields.
+[0m✱ [0mGrep "type Result|type Execution|type Backend "[90m in executor/run.go · 3 matches[0m
+[0m→ [0mRead executor/run.go[90m [limit=120, offset=1][0m
+[0m✱ [0mGrep "func \(r \*Runner\) (open|runPreparingWaves|locked|record)\(|func New\("[90m in loop/runner.go · 5 matches[0m
+[0m→ [0mRead loop/runner.go[90m [limit=90, offset=910][0m
+[0m✱ [0mGrep "type Record|Kind |Detail |TaskID |Seq "[90m in journal · 19 matches[0m
+[0m✱ [0mGrep "scriptFunc|scriptBackend|tailBytes|uncleanInvocation|outputTailDetail|firstDetail|telemetryPlan|runTelemetry"[90m in loop · 0 matches[0m
+Design clear. Check name collisions for planned test helpers.
+[0m→ [0mRead executor/backend.go
+BATUTA-PROGRESS 1 START
+
+Writing test file, test-first.
+[0m
+[0m← [0mWrite loop/finished_telemetry_test.go
+Wrote file successfully.
+[0m
+[0m$ [0mgo test ./loop -run 'TestFinishedRecordsTailOnUncleanSession|TestLimitWaitRecordsTail|TestFinishedOmitsTailOnCleanSession|TestFinishedTailRedacted' 2>&1 | tail -20
+# github.com/batuta-ai/core/loop [github.com/batuta-ai/core/loop.test]
+loop/finished_telemetry_test.go:24:16: too many arguments in call to f
+	have (context.Context, executor.Execution)
+	want (executor.Execution)
+FAIL	github.com/batuta-ai/core/loop [build failed]
+FAIL
+[0m
+[0m← [0mEdit loop/finished_telemetry_test.go
+Index: /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/finished_telemetry_test.go
+===================================================================
+--- /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/finished_telemetry_test.go
++++ /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/finished_telemetry_test.go
+@@ -19,10 +19,10 @@
+ // function, the way unavailableBackend and the ACP fixtures stand in for a
+ // real executor in the other loop tests.
+ type scriptFunc func(executor.Execution) (executor.Result, error)
+ 
+-func (f scriptFunc) Execute(ctx context.Context, e executor.Execution) (executor.Result, error) {
+-	return f(ctx, e)
++func (f scriptFunc) Execute(_ context.Context, e executor.Execution) (executor.Result, error) {
++	return f(e)
+ }
+ 
+ // telemetryPlan swaps the default plan for a single low task, so scripted
+ // results drive exactly one attempt lineage.
+
+[0m
+[0m$ [0mgo test ./loop -run 'TestFinishedRecordsTailOnUncleanSession|TestLimitWaitRecordsTail|TestFinishedOmitsTailOnCleanSession|TestFinishedTailRedacted' 2>&1 | tail -20
+--- FAIL: TestLimitWaitRecordsTail (1.03s)
+    finished_telemetry_test.go:173: limit_wait lost the output_tail of the rate-limited invocation
+--- FAIL: TestFinishedTailRedacted (1.46s)
+    finished_telemetry_test.go:224: unclean session lost its output_tail
+--- FAIL: TestFinishedRecordsTailOnUncleanSession (1.52s)
+    finished_telemetry_test.go:123: unclean session lost its output_tail
+FAIL
+FAIL	github.com/batuta-ai/core/loop	2.489s
+FAIL
+[0m
+Fail as expected (clean-session test trivially green pre-implementation). Now implement.
+[0m← [0mEdit loop/attempt.go
+Index: /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
+===================================================================
+--- /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
++++ /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
+@@ -332,14 +332,18 @@
+ treeChanged, err := r.treeChangedFromBase(ctx, ac.worktree.Root, ac.base)
+ if err != nil {
+ 	return fmt.Errorf("loop: compare %s against base %s: %w", ac.worktree.Name, ac.base, err)
+ }
+-if err := r.locked(KindFinished, taskID, map[string]any{
++finished := map[string]any{
+ 	"execution": ac.execution, "exit_code": result.ExitCode, "finished": result.Finished, "timed_out": result.TimedOut,
+ 	"rate_limited": result.RateLimited, "duration_ms": result.Duration.Milliseconds(), "question": result.Question,
+ 	"stdout_bytes": len(result.Stdout), "stderr_bytes": len(result.Stderr), "tree_changed": treeChanged,
+ 	"base_head_sha": ac.base, "before": before, "after": after,
+-}, nil); err != nil {
++}
++if uncleanInvocation(result) {
++	finished["output_tail"] = r.outputTailDetail(result)
++}
++if err := r.locked(KindFinished, taskID, finished, nil); err != nil {
+ 	return err
+ }
+ 
+ if result.Finished && result.Question != "" {
+
+[0m
+[0m← [0mEdit loop/attempt.go
+Index: /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
+===================================================================
+--- /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
++++ /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
+@@ -302,9 +302,10 @@
+ 	break
+ }
+ waits++
+ delay := r.limitDelay(result.ResetAt)
+-if err := r.locked(KindLimitWait, taskID, map[string]any{"execution": ac.execution, "wait": waits, "seconds": int(delay.Seconds()), "reset_at": result.ResetAt}, nil); err != nil {
++limitWait := map[string]any{"execution": ac.execution, "wait": waits, "seconds": int(delay.Seconds()), "reset_at": result.ResetAt, "output_tail": r.outputTailDetail(result)}
++if err := r.locked(KindLimitWait, taskID, limitWait, nil); err != nil {
+ 	return err
+ }
+ fmt.Fprintf(r.out, "%s e%d: %s hit a usage limit; waiting %s before re-running the same attempt (%d/%d)\n", taskID, ac.execution, ac.adapter.Name, delay.Round(time.Second), waits, r.opts.MaxLimitWaits)
+ if err := r.sleep(ctx, delay); err != nil {
+
+[0m
+Helpers at the bottom of attempt.go, next to the other redaction helpers:
+[0m← [0mEdit loop/attempt.go
+Index: /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
+===================================================================
+--- /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
++++ /tmp/probe/Projects/batuta/core/.batuta/worktrees/executor-telemetry-task-1-e1/loop/attempt.go
+@@ -1031,8 +1031,48 @@
+ 	}
+ 	return args
+ }
+ 
++// Tail bounds of the output a journal record keeps of an unclean invocation.
++const (
++	outputTailLines = 40
++	outputTailBytes = 4096
++)
++
++// uncleanInvocation reports a session that did not end cleanly: a non-zero
++// exit, a timeout, a rate limit, or a turn that never finished. Only these
++// carry an output_tail in the journal.
++func uncleanInvocation(result executor.Result) bool {
++	return result.ExitCode != 0 || result.TimedOut || result.RateLimited || !result.Finished
++}
++
++// outputTailDetail builds the output_tail of an unclean invocation: the last
++// 40 lines of each stream, each cut to its final 4096 bytes on a UTF-8
++// boundary, redacted and stripped of secret-shaped lines before it reaches
++// the journal.
++func (r *Runner) outputTailDetail(result executor.Result) map[string]any {
++	stream := func(payload []byte) string {
++		return dropSecretLines(redactText(tailBytes(executor.Tail(payload, outputTailLines), outputTailBytes), r.root))
++	}
++	return map[string]any{"stdout": stream(result.Stdout), "stderr": stream(result.Stderr)}
++}
++
++// tailBytes keeps the last max bytes of s, trimming the cut so it does not
++// split a UTF-8 sequence straddling the boundary.
++func tailBytes(s string, max int) string {
++	if max <= 0 {
++		return ""
++	}
++	if len(s) <= max {
++		return s
++	}
++	cut := s[len(s)-max:]
++	for len(cut) > 0 && cut[0]&0xC0 == 0x80 {
++		cut = cut[1:]
++	}
++	return cut
++}
++
+ func (r *Runner) writeLog(taskID string, execution int, result executor.Result) {
+ 	path := r.runLogPath(taskID, execution)
+ 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+ 	var b strings.Builder
+
+[0m
+[0m$ [0mgo test ./loop -run 'TestFinishedRecordsTailOnUncleanSession' -v 2>&1 | tail -8; go test ./loop -run 'TestLimitWaitRecordsTail' -v 2>&1 | tail -6
+=== RUN   TestFinishedRecordsTailOnUncleanSession
+=== PAUSE TestFinishedRecordsTailOnUncleanSession
+=== CONT  TestFinishedRecordsTailOnUncleanSession
+--- PASS: TestFinishedRecordsTailOnUncleanSession (1.09s)
+PASS
+ok  	github.com/batuta-ai/core/loop	1.505s
+=== RUN   TestLimitWaitRecordsTail
+=== PAUSE TestLimitWaitRecordsTail
+=== CONT  TestLimitWaitRecordsTail
+--- PASS: TestLimitWaitRecordsTail (0.84s)
+PASS
+ok  	github.com/batuta-ai/core/loop	1.078s
+[0m
+[0m$ [0mgo test ./loop -run 'TestFinishedOmitsTailOnCleanSession' -v 2>&1 | tail -5; go test ./loop -run 'TestFinishedTailRedacted' -v 2>&1 | tail -5; go test ./loop 2>&1 | tail -3
+=== PAUSE TestFinishedOmitsTailOnCleanSession
+=== CONT  TestFinishedOmitsTailOnCleanSession
+--- PASS: TestFinishedOmitsTailOnCleanSession (1.65s)
+PASS
+ok  	github.com/batuta-ai/core/loop	1.889s
+=== PAUSE TestFinishedTailRedacted
+=== CONT  TestFinishedTailRedacted
+--- PASS: TestFinishedTailRedacted (1.19s)
+PASS
+ok  	github.com/batuta-ai/core/loop	1.420s
+ok  	github.com/batuta-ai/core/loop	276.714s
+[0m
+BATUTA-PROGRESS 1 DONE · 2 DONE · 3 DONE · 4 DONE — full suite now:
+[0m$ [0mgofmt -l loop/ && go vet ./loop && go test ./... 2>&1 | tail -15
+ok  	github.com/batuta-ai/core/cmd/batuta	51.471s
+ok  	github.com/batuta-ai/core/executor	8.714s
+ok  	github.com/batuta-ai/core/executor/acp	1.445s
+ok  	github.com/batuta-ai/core/gates	1.344s
+ok  	github.com/batuta-ai/core/integration	4.270s
+ok  	github.com/batuta-ai/core/inventory	2.262s
+ok  	github.com/batuta-ai/core/inventory/adapters	2.486s
+ok  	github.com/batuta-ai/core/journal	2.002s
+ok  	github.com/batuta-ai/core/judge	0.881s
+ok  	github.com/batuta-ai/core/loop	(cached)
+ok  	github.com/batuta-ai/core/publication	3.519s
+ok  	github.com/batuta-ai/core/repository	2.689s
+ok  	github.com/batuta-ai/core/review	7.506s
+ok  	github.com/batuta-ai/core/routing	3.192s
+ok  	github.com/batuta-ai/core/worktree	5.238s
+[0m
+BATUTA-PROGRESS 5 DONE — gofmt/vet clean, full suite green. Commit:
+[0m$ [0mgit add loop/attempt.go loop/finished_telemetry_test.go && git commit -q -m "feat: record redacted output tail of unclean executor sessions
+
+executor_finished carries output_tail ({stdout, stderr}) only when the
+session exits non-zero, times out, is rate limited or does not finish;
+every limit_wait carries the tail of the rate-limited invocation it
+waits after. Each stream keeps the last 40 lines, cut to its final
+4096 bytes on a UTF-8 boundary, passed through redactText and
+dropSecretLines before the journal write." && git log --oneline -2 && git status --short
+479d734 feat: record redacted output tail of unclean executor sessions
+58fd9dc chore(batuta): executor-telemetry also keeps the tail of rate-limited invocations
+[0m
+Done. Commit `479d734` on the worktree branch.
+
+**Paths touched**
+- `loop/attempt.go` — added `output_tail` to the `KindFinished` detail when `uncleanInvocation(result)` (exit ≠ 0, timed out, rate limited, or not finished) and unconditionally to every `KindLimitWait` detail from the rate-limited `result`; new unexported helpers `uncleanInvocation`, `outputTailDetail` (Tail(…,40) → 4096-byte cut on UTF-8 boundary → `redactText(…, r.root)` → `dropSecretLines`), `tailBytes`; consts `outputTailLines=40`, `outputTailBytes=4096`. `loop/judgment.go` untouched.
+- `loop/finished_telemetry_test.go` — new; four tests driving a scripted backend / the shared fake executor through `Runner.Run`.
+
+**Commands run (real output)**
+- `go test ./loop -run TestFinishedRecordsTailOnUncleanSession` → `ok github.com/batuta-ai/core/loop` (PASS, 1.09s) — failed first, as required, before implementation
+- `go test ./loop -run TestLimitWaitRecordsTail` → PASS (0.84s)
+- `go test ./loop -run TestFinishedOmitsTailOnCleanSession` → PASS (1.65s)
+- `go test ./loop -run TestFinishedTailRedacted` → PASS (1.19s)
+- `gofmt -l loop/ && go vet ./loop` → no output (clean)
+- `go test ./...` → `ok` for all 15 packages, exit 0
+
+**Not verified, declared:** no run against a real (non-fake) executor CLI or ACP transport; the tail behaviour is proven via the scripted/fake backends only. The 4096-cut multibyte case is covered by a constructed 5000-byte stderr line (cut at offset 904 inside `€`), not by fuzzing.
+
+No TODOs, no skipped tests, no scope or boundary files touched.

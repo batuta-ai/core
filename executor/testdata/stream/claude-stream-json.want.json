@@ -1,0 +1,12 @@
+{
+ "text": "BATUTA-PROGRESS 1 START\nok",
+ "usage": {
+  "input_tokens": 2,
+  "output_tokens": 21,
+  "cache_read_tokens": 18531,
+  "cache_write_tokens": 41063,
+  "cost_amount": 0.16916720000000002,
+  "cost_currency": "USD",
+  "cache_semantics": "additive"
+ }
+}
