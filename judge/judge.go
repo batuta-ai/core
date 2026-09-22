@@ -5,6 +5,7 @@ package judge
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -57,9 +58,9 @@ type Question struct {
 }
 
 type Response struct {
-	Model   string
-	Answers map[string]Answer
-	Usage   Usage
+	Model   string            `json:"model"`
+	Answers map[string]Answer `json:"answers"`
+	Usage   Usage             `json:"usage"`
 }
 
 type Answer struct {
@@ -69,6 +70,19 @@ type Answer struct {
 	Score         float64            `json:"score,omitempty"`
 	Confidence    float64            `json:"confidence,omitempty"`
 	Probabilities map[string]float64 `json:"probabilities,omitempty"`
+}
+
+// MarshalJSON always emits noul on a noul answer: the probability is the
+// verdict, so its zero is meaningful and must survive omitempty.
+func (a Answer) MarshalJSON() ([]byte, error) {
+	type wire Answer
+	if a.Type == QuestionNoul {
+		return json.Marshal(struct {
+			wire
+			Noul float64 `json:"noul"`
+		}{wire(a), a.Noul})
+	}
+	return json.Marshal(wire(a))
 }
 
 type Usage struct {

@@ -22,7 +22,7 @@ const (
 	configFileLimit      = 4 << 10
 	minTimeoutMS         = 500
 	maxTimeoutMS         = 30_000
-	defaultTimeoutMS     = 3_000
+	defaultTimeoutMS     = 10_000
 	minMaxStateBytes     = 1 << 10
 	maxMaxStateBytes     = 200 << 10
 	defaultMaxStateBytes = 100_000
@@ -199,9 +199,6 @@ func (c Config) validate() error {
 		}
 		return fmt.Errorf("judge: config provider %q is unknown", c.Provider)
 	}
-	if c.Provider != ProviderAuto && c.Model == "" {
-		return errors.New("judge: config model is required")
-	}
 	if c.KeyEnv != "" && !keyEnvPattern.MatchString(c.KeyEnv) {
 		return fmt.Errorf("judge: config key_env %q must match %s", c.KeyEnv, keyEnvPattern)
 	}
@@ -259,11 +256,29 @@ func (c *Config) applyDefaults() {
 	if c.KeyEnv == "" && c.Provider != ProviderAuto {
 		c.KeyEnv = providerKeyEnv(c.Provider)
 	}
+	if c.Model == "" && c.Provider != ProviderAuto {
+		c.Model = defaultProviderModel(c.Provider)
+	}
 	if c.TimeoutMS == 0 {
 		c.TimeoutMS = defaultTimeoutMS
 	}
 	if c.MaxStateBytes == 0 {
 		c.MaxStateBytes = defaultMaxStateBytes
+	}
+}
+
+// defaultProviderModel names the model each provider documents; the HTTP
+// judge applies the same fallback when no model reaches it.
+func defaultProviderModel(provider Provider) string {
+	switch provider {
+	case ProviderOpenRouter:
+		return defaultOpenRouterModel
+	case ProviderVercel:
+		return defaultVercelModel
+	case ProviderTypesafe:
+		return defaultTypesafeModel
+	default:
+		return ""
 	}
 }
 

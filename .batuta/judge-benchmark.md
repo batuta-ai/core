@@ -48,6 +48,32 @@ The state and questions shipped in `loop/judgment.go` do not separate a false cl
 
 Nothing in this file should be quoted as an improvement. It is the baseline.
 
+## Prospective run 1 — `judge-polish` with the judge in shadow (2026-09-21)
+
+Delivery `judge-polish-20260921-012155`, run with a `cmd/batuta` binary built from main at `c777b88` plus the plan commit, `.batuta/judge.json` = `{"provider":"auto","timeout_ms":20000,"decisions":{"claim_evidence":{"mode":"shadow","threshold":0.9}}}`, keys for the three providers in the environment. Every attempt got one `judge_intent` and one `judge_result` record; the attempt outcomes were decided by the gates alone (shadow).
+
+Verdicts recorded live in the journal (`judge_result.detail`):
+
+| attempt | recorded outcome | claim_unsupported | verifier_contradicted | latency | input tokens | provider / model |
+|---|---|---|---|---|---|---|
+| task_1 e1 | candidate | 0.24 | 0.15 | 718 ms | 2780 | typesafe / jev-1.13.0 |
+| task_2 e1 | tests_failed (`TestJudgeReplayJSON` failed) | 0.85 | 0.85 | 683 ms | 3068 | typesafe / jev-1.13.0 |
+| task_2 e2 | candidate | 0.40 | 0.10 | 708 ms | 2478 | typesafe / jev-1.13.0 |
+
+The same delivery replayed afterwards with `batuta judge replay` (state rebuilt from the journal and the run logs, polished binary at `3b80782`):
+
+```
+task_1 e1 outcome=candidate claim_unsupported=0.41 verifier_contradicted=0.18 provider=typesafe tokens=2383/45 ms=674
+task_2 e1 outcome=tests_failed claim_unsupported=0.86 verifier_contradicted=0.86 provider=typesafe tokens=2738/45 ms=250
+task_2 e2 outcome=candidate claim_unsupported=0.38 verifier_contradicted=0.12 provider=typesafe tokens=2229/45 ms=247
+attempts=3 asked=3 skipped=0 input_tokens=7350 output_tokens=135
+```
+
+Observations, numbers only:
+- Live and replayed states are not identical: input tokens differ by 250–400 per attempt (the live state is built from the executor result in memory, the replay from the `.out.log` on disk), and `task_1 e1` moved from 0.24 live to 0.41 in replay. Comparisons between live and replay must account for this; comparisons within one mode are fine.
+- The one real gate failure (task_2 e1, a test the executor itself wrote and claimed passing) scored 0.85/0.86 in both modes; the two legitimate candidates scored 0.24–0.41 / 0.10–0.18. On this delivery the separation is clear, unlike the retroactive baseline.
+- Cost of the shadow judge for the whole delivery: 7350 input tokens over 3 calls, about $0.0003 at $0.042/M; added wall time about 0.7 s per attempt live.
+
 ## Version 2 replay — atomic claims, code first (2026-09-21)
 
 Binary built from `844d619` (plan `judge-claims-v2`, merged locally on main), same command as the baseline, same 23 retroactive attempts plus the 7 attempts of the two deliveries run since. Raw output copied verbatim to `.batuta/judge-replay-v2-raw.txt`. Fields: `claims` extracted from the executor report, `code_contradicted` settled by code, `judge_contradicted` by the judge, `uncertain` bucket, `max_contradicted` the highest judge probability of "contradicted", `flagged` the aggregate.

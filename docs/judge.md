@@ -23,7 +23,7 @@ is capped at 4 KiB and unknown fields are rejected:
   "model": "jev-latest",
   "base_url": "",
   "key_env": "TYPESAFE_API_KEY",
-  "timeout_ms": 3000,
+  "timeout_ms": 10000,
   "max_state_bytes": 100000,
   "decisions": {
     "claim_evidence": {"mode": "shadow", "threshold": 0.9}
@@ -32,13 +32,15 @@ is capped at 4 KiB and unknown fields are rejected:
 ```
 
 `provider` is required: `typesafe`, `openrouter`, `vercel`, `"auto"` or `off`.
-`model` is required except with `auto`; defaults per provider below.
-`base_url` overrides the provider endpoint. `key_env` names the environment
-variable that holds the API key (defaults per provider below). `timeout_ms` is
-bounded to 500–30 000. `max_state_bytes` bounds the serialized state to
-1 000–204 800 bytes; a larger state is refused, not truncated. `decisions`
-names the mode (`off`, `shadow`, `enforce`) and confidence threshold (0–1) per
-decision point; an unconfigured decision is off.
+`model` is optional for a single provider — each has a documented default (the
+providers table below) — and still rejected with `auto`; an explicit `model`
+always wins. `base_url` overrides the provider endpoint. `key_env` names the
+environment variable that holds the API key (defaults per provider below).
+`timeout_ms` defaults to 10000 and is bounded to 500–30 000; real providers
+need the room on a cold connection. `max_state_bytes` bounds the serialized
+state to 1 000–204 800 bytes; a larger state is refused, not truncated.
+`decisions` names the mode (`off`, `shadow`, `enforce`) and confidence
+threshold (0–1) per decision point; an unconfigured decision is off.
 
 With `"auto"`, `model`, `key_env` and `base_url` are rejected: each provider
 keeps its own defaults. An optional `providers` array names a subset and
@@ -60,11 +62,16 @@ and walks it on every call.
 
 ## Providers
 
-| Route | Model id | Endpoint | Key |
+| Route | Default model | Endpoint | Key |
 |---|---|---|---|
 | `typesafe` | `jev-latest` | `POST https://api.typesafe.ai/v1/systemone` | `TYPESAFE_API_KEY` |
 | `openrouter` | `typesafe/jev-1.13` | `POST https://openrouter.ai/api/alpha/decisions` | `OPENROUTER_API_KEY` |
 | `vercel` | `typesafe-ai/jev` | `POST https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `AI_GATEWAY_API_KEY` |
+
+The model id in the table is the default a single-provider config gets when
+`model` is omitted (and the model the HTTP judge falls back to); an explicit
+`model` overrides it. With `auto`, each provider keeps the default from this
+table.
 
 The native shape posts `{state, model, questions}` and receives
 `{model, answers, usage}`; every question in one call is evaluated against the
@@ -92,7 +99,8 @@ that was skipped, with its reason.
 ## The CLI
 
 `ask` sends one request built from files and prints the `Response` as
-indented JSON on stdout:
+indented JSON on stdout, with the same snake_case keys the API answers in:
+`model`, `answers`, `usage`, `input_tokens`, `output_tokens`.
 
 ```text
 batuta judge ask --state-file <path> --questions-file <path>
@@ -109,10 +117,16 @@ configured provider endpoint.
 
 `probe` validates the configuration and sends a single `noul` question —
 `{"ok": {"type": "noul", "instructions": "The state says the connection
-works."}}` over the state `"connection check"` — printing the answer the same
-way. With `"auto"` it also prints the answering provider on the success line
-(`provider: typesafe`). It is the cheapest way to confirm that a provider,
-model and key work before wiring a decision point.
+works."}}` over the state `"connection check"` — and prints one success line
+with the answering provider, the model that answered, the latency measured
+around the ask and the token usage:
+
+```text
+provider=typesafe model=jev-1.13.0 ms=812 tokens=12/3
+```
+
+It is the cheapest way to confirm that a provider, model and key work before
+wiring a decision point.
 
 `replay` judges a past delivery after the fact:
 
@@ -131,7 +145,7 @@ asks one `choice` per unsettled claim in a single request — and prints one
 line per attempt:
 
 ```text
-task_1 e1 outcome=already_satisfied asked=true claims=3 code_contradicted=1 judge_contradicted=1 uncertain=1 max_contradicted=0.93 material_max=0.95 flagged=true provider=typesafe
+task_1 e1 outcome=already_satisfied asked=true claims=3 code_contradicted=1 judge_contradicted=1 uncertain=1 max_contradicted=0.93 material_max=0.95 flagged=true provider=typesafe tokens=2481/37 ms=812
 ```
 
 Beside the attempt's `outcome` and the answering `provider`, the line reports
@@ -144,13 +158,10 @@ threshold or a `contradicted` probability in 0.30–0.70); `max_contradicted`
 is the highest `contradicted` probability among the judge's answers (`0.00`
 when the judge was not asked); `material_max` is the highest material
 probability among the judged claims (`0.00` when none were asked);
-`flagged` repeats the aggregation the loop applies. `asked=false` marks an
-attempt with no unsettled claims: nothing is sent and no tokens are spent,
-and the breakdown is code-only. With `--json`, replay prints one JSON object
-per attempt instead of the text line, carrying the per-claim `claims` list
-(kind, text, report line, source, choice, confidence, material) and the
-`uncertain` list beside the same fields; a missing run log prints
-`{"task_id":…,"execution":…,"skipped":"<path>"}`.
+`flagged` repeats the aggregation the loop applies. When the judge answered,
+`tokens=<input>/<output>` is the answer's usage and `ms=` the latency measured
+around the ask. `asked=false` marks an attempt with no unsettled claims:
+nothing is sent and no tokens are spent, and the breakdown is code-only.
 
 The outcome is the recorded verdict of the attempt: the `blocker` of the
 following `failure_recorded` record (for example `already_satisfied`),
@@ -159,7 +170,22 @@ The run log is not journaled, so an attempt whose log is missing is reported
 as `task_1 e1 skipped <expected path>` — replay state is built from the
 journal and the log only, so the plan's scope is empty, the criteria are
 recovered from the recorded proof signals, the changed paths only from a
-failed scope verdict, and the progress events carry no timestamps. Replay is
+failed scope verdict, and the progress events carry no timestamps. The
+command ends with a totals line — every attempt is counted, `asked` is how
+many the judge answered and `skipped` how many lacked a run log:
+
+```text
+attempts=2 asked=1 skipped=1 input_tokens=12 output_tokens=3
+```
+
+With `--json`, the text lines are replaced by one JSON object per attempt —
+the same fields as the text line plus the per-claim `claims` list (kind,
+text, report line, source, choice, confidence, material) and the `uncertain`
+list, and, when the judge answered, `model`, `input_tokens`, `output_tokens`
+and `latency_ms`; a skipped attempt carries `task_id`, `execution` and
+`skipped` with the missing path, an unavailable one the `unavailable`
+reason — and a final `{"totals":{...}}` object holding
+`attempts`, `asked`, `skipped`, `input_tokens` and `output_tokens`. Replay is
 read-only: the journal and the run logs are opened for reading and never
 through the journal's append paths. Exit `0` even when attempts are skipped
 or a later ask fails (`unavailable=<reason>` on that line); exit `2` when the
