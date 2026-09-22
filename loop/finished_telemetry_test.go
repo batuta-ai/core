@@ -137,6 +137,48 @@ func TestFinishedRecordsTailOnUncleanSession(t *testing.T) {
 	}
 }
 
+// A 4096-byte cut applied before redaction began mid-line, so a window
+// opening inside a long API_KEY line kept the secret fragment and a window
+// opening inside a workspace path kept half the prefix. Redaction now runs
+// on the whole 40-line tail, and the cut then starts at a line start
+// whenever the window holds a newline.
+func TestFinishedTailRedactedBeforeCut(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	telemetryPlan(t, f)
+	secret := "API_KEY=" + strings.Repeat("topsecret", 600)
+	// The y-run sizes the raw stderr tail so its 4096-byte window opens five
+	// bytes into f.root; after redaction the tail fits whole.
+	ys := strings.Repeat("y", 4081-len(f.root))
+	backend := scriptFunc(func(executor.Execution) (executor.Result, error) {
+		return executor.Result{ExitCode: 1, Finished: true,
+			Stdout: []byte("filler\nfiller\n" + secret + "\n" + strings.Repeat("x", 4074) + "\nend line\n"),
+			Stderr: []byte("scan " + f.root + "/out/1.txt\n" + ys + "\nend line\n"),
+		}, nil
+	})
+	r, state := runTelemetry(t, f, backend)
+	if state != StateBlocked {
+		t.Fatalf("Run() = %s, want blocked", state)
+	}
+	detail := executionDetail(t, readJournal(t, f, r.delivery), KindFinished, 1)
+	stdout, stderr, present := outputTail(t, detail)
+	if !present {
+		t.Fatal("unclean session lost its output_tail")
+	}
+	wantStdout := "filler\n" + strings.Repeat("x", 4074) + "\nend line"
+	wantStderr := "scan out/1.txt\n" + ys + "\nend line"
+	if stdout != wantStdout {
+		t.Fatalf("output_tail.stdout = %d bytes, want the secret line dropped whole and the cut starting at a line start", len(stdout))
+	}
+	if stderr != wantStderr {
+		t.Fatalf("output_tail.stderr = %d bytes, want the workspace path redacted before the cut", len(stderr))
+	}
+	leaked := stdout + stderr
+	if strings.Contains(leaked, "topsecret") || strings.Contains(leaked, f.root) || strings.Contains(leaked, filepath.Base(filepath.Dir(f.root))) {
+		t.Fatalf("output_tail leaked a secret or the workspace prefix")
+	}
+}
+
 func TestLimitWaitRecordsTail(t *testing.T) {
 	t.Parallel()
 	f := setup(t)

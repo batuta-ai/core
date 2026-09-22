@@ -1051,14 +1051,32 @@ func uncleanInvocation(result executor.Result) bool {
 }
 
 // outputTailDetail builds the output_tail of an unclean invocation: the last
-// 40 lines of each stream, each cut to its final 4096 bytes on a UTF-8
-// boundary, redacted and stripped of secret-shaped lines before it reaches
-// the journal.
+// 40 lines of each stream, redacted and stripped of secret-shaped lines
+// whole, and only then cut to the final 4096 bytes on a UTF-8 boundary —
+// cutting first could open mid-line and carry a KEY= fragment or half a
+// workspace path into the journal.
 func (r *Runner) outputTailDetail(result executor.Result) map[string]any {
 	stream := func(payload []byte) string {
-		return dropSecretLines(redactText(tailBytes(executor.Tail(payload, outputTailLines), outputTailBytes), r.root))
+		return tailWindow(dropSecretLines(redactText(executor.Tail(payload, outputTailLines), r.root)), outputTailBytes)
 	}
 	return map[string]any{"stdout": stream(result.Stdout), "stderr": stream(result.Stderr)}
+}
+
+// tailWindow keeps the last max bytes of s, trimming the cut so it does not
+// split a UTF-8 sequence straddling the boundary. A cut that opens mid-line
+// still starts at a line start when the window holds a newline.
+func tailWindow(s string, max int) string {
+	cut := tailBytes(s, max)
+	if len(cut) == 0 || len(cut) == len(s) {
+		return cut
+	}
+	if s[len(s)-len(cut)-1] == '\n' {
+		return cut
+	}
+	if index := strings.IndexByte(cut, '\n'); index >= 0 {
+		return cut[index+1:]
+	}
+	return cut
 }
 
 // tailBytes keeps the last max bytes of s, trimming the cut so it does not
