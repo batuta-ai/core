@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.1.0-beta.33](https://github.com/batuta-ai/core/compare/v1.1.0-beta.32...v1.1.0-beta.33) (2026-09-22)
+
+
+### Features
+
+* batuta judge corpus build: clean cases and report-only defect ([b57fa7b](https://github.com/batuta-ai/core/commit/b57fa7bf435f6d2bc0ead1a5fabd17befc1aea66))
+* batuta judge corpus run: score the pipeline per label, frozen ([c733c8c](https://github.com/batuta-ai/core/commit/c733c8c2e4e9c19cc47040003984659ab33a6ab7))
+* candidate diff in the claim_evidence input, live and in replay ([06affa7](https://github.com/batuta-ai/core/commit/06affa752ec266995b7bd07eec2e320b5eb2d4c0))
+* change claims: identifier, count and behaviour claims settled by ([ea3298a](https://github.com/batuta-ai/core/commit/ea3298a29ce2ca90f65ca34ac2e3b8ccbb4c785f))
+* identifier on an added line matches the exact token ([6f4b9b1](https://github.com/batuta-ai/core/commit/6f4b9b1e24e4a8860e559f4d447298895949af32))
+* **judge:** constructed corpus for claim_evidence, diff evidence and change claims ([c15303d](https://github.com/batuta-ai/core/commit/c15303dec098b2e9367c140c49b391ff606fa95c))
+* live diff covers the same files as the candidate, and a failed diff ([656c62d](https://github.com/batuta-ai/core/commit/656c62dabee7753915557e22f3930fefc5d38405))
+* replay settlement receives the diff ([1f467c1](https://github.com/batuta-ai/core/commit/1f467c18bf931a2dfc3b12f3dd02c27b9c50332f))
+
+## [1.1.0-beta.32](https://github.com/batuta-ai/core/compare/v1.1.0-beta.31...v1.1.0-beta.32) (2026-09-21)
+
+
+### Features
+
+* **loop:** claim_evidence v2.2/v2.3 — precise edit-statement claims, concrete-defect choices, material gate; Tempo retrospective and Jev survey ([ea424a6](https://github.com/batuta-ai/core/commit/ea424a6ae891e5bef890d115a5cdc26ac16b3a82))
+* path claims only from edit statements about existing files ([862bde1](https://github.com/batuta-ai/core/commit/862bde1941f8505783b64c54933b34639ba654ee))
+* touched-file headings in either order and Markdown-link items ([de604eb](https://github.com/batuta-ai/core/commit/de604eb0115df762470c61c8aadda26773331759))
+* untrusted-data note, key-pointing questions, positive-evidence ([1fdb0ca](https://github.com/batuta-ai/core/commit/1fdb0ca8b334521439acd30c6ba38bae2875a1ff))
+
+## [1.1.0-beta.31](https://github.com/batuta-ai/core/compare/v1.1.0-beta.30...v1.1.0-beta.31) (2026-09-21)
+
+
+### Features
+
+* changed paths recorded live and recovered in replay ([d2f1fb9](https://github.com/batuta-ai/core/commit/d2f1fb93d1b64be043971041a51b7c71d2e5c6dc))
+* claim extraction and code settlement ([f3dd121](https://github.com/batuta-ai/core/commit/f3dd121cb3cf33849bd254d8ea651daaca31e522))
+* **loop:** claim_evidence v2/v2.1 — atomic claims settled by code, one choice per claim, replay with real changed paths ([4883203](https://github.com/batuta-ai/core/commit/488320311690c2b369a27ac6fda1f06be83f19c9))
+* one choice per unsettled claim with structured instructions ([5a33201](https://github.com/batuta-ai/core/commit/5a332016bc1431341237ecaa883ce3e926c5748a))
+* path claims only for repository paths, criterion claims with their ([f9454c0](https://github.com/batuta-ai/core/commit/f9454c0064677da821826f973fe616e669e8df75))
+* replay prints the v2 breakdown ([844d619](https://github.com/batuta-ai/core/commit/844d619901b190beb417afd314746fd485dbe254))
+
+## [1.1.0-beta.30](https://github.com/batuta-ai/core/compare/v1.1.0-beta.29...v1.1.0-beta.30) (2026-09-21)
+
+
+### Features
+
+* batuta judge replay over a delivery journal ([366c681](https://github.com/batuta-ai/core/commit/366c681970d6d90c90d91472e338531e03f45478))
+* judgment state, questions and journal records ([ce72d29](https://github.com/batuta-ai/core/commit/ce72d29eac2c05c6959e4a8500886495937c79c1))
+* **loop:** judge decision 1, claim versus evidence in shadow, with replay and baseline ([c777b88](https://github.com/batuta-ai/core/commit/c777b889a483a4e6076d76a114066329791f82c8))
+* shadow and enforce in runAttempt ([1f9b86c](https://github.com/batuta-ai/core/commit/1f9b86cbcd8edce3b318c23c2bb835b67047ed74))
+
 ## [1.1.0-beta.29](https://github.com/batuta-ai/core/compare/v1.1.0-beta.28...v1.1.0-beta.29) (2026-09-20)
 
 

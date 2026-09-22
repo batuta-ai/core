@@ -403,7 +403,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "not evaluated"}
 	}
 	report.Decide()
-	if r.opts.Judge != nil && r.opts.JudgeConfig.Decision(claimEvidenceDecision).Mode != judge.ModeOff && !result.RateLimited {
+	if r.opts.JudgeConfig.Decision(claimEvidenceDecision).Mode != judge.ModeOff && !result.RateLimited {
 		if _, err := r.judgeClaimEvidence(ctx, ac, &report, result, treeChanged, changedPaths); err != nil {
 			return err
 		}

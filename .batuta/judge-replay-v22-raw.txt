@@ -1,0 +1,52 @@
+## core research-ladder-20260920-001419.jsonl
+task_1 e1 outcome=candidate asked=false claims=0 changed_paths=2 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_3 e1 outcome=already_satisfied asked=false claims=1 changed_paths=0 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_2 e2 outcome=candidate asked=true claims=7 changed_paths=3 code_contradicted=0 judge_contradicted=0 uncertain=5 max_contradicted=0.01 material_max=0.79 flagged=false provider=typesafe
+## core silent-proofs-20260920-105706.jsonl
+task_1 e1 outcome=candidate asked=false claims=0 changed_paths=2 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+## core cursor-models-ansi-20260920-112641.jsonl
+task_1 e1 outcome=candidate asked=true claims=28 changed_paths=3 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.47 flagged=false provider=typesafe
+## core judge-package-20260920-124734.jsonl
+task_1 e1 outcome=candidate asked=true claims=12 changed_paths=3 code_contradicted=0 judge_contradicted=0 uncertain=6 max_contradicted=0.01 material_max=0.77 flagged=false provider=typesafe
+task_2 e1 outcome=candidate asked=true claims=21 changed_paths=2 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.01 material_max=0.54 flagged=false provider=typesafe
+task_3 e1 outcome=candidate asked=true claims=13 changed_paths=2 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.02 material_max=0.53 flagged=false provider=typesafe
+task_4 e1 outcome=candidate asked=false claims=0 changed_paths=4 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe
+## core judge-vercel-auto-20260920-142856.jsonl
+task_1 e1 outcome=scope_violation asked=true claims=29 changed_paths=6 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.58 flagged=false provider=typesafe
+## core judge-vercel-auto-20260920-144937.jsonl
+task_1 e1 outcome=candidate asked=true claims=29 changed_paths=5 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.58 flagged=false provider=typesafe
+task_2 e1 outcome=scope_violation asked=false claims=0 changed_paths=9 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe
+## core judge-vercel-auto-20260920-152219.jsonl
+task_2 e2 outcome=candidate asked=true claims=27 changed_paths=9 code_contradicted=0 judge_contradicted=0 uncertain=8 max_contradicted=0.02 material_max=0.82 flagged=false provider=typesafe
+## core judge-claim-evidence-20260920-235929.jsonl
+task_1 e1 outcome=candidate asked=true claims=14 changed_paths=5 code_contradicted=0 judge_contradicted=0 uncertain=6 max_contradicted=0.03 material_max=0.75 flagged=false provider=typesafe
+task_2 e1 outcome=candidate asked=false claims=17 changed_paths=5 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe
+task_3 e1 outcome=candidate asked=true claims=18 changed_paths=5 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.01 material_max=0.60 flagged=false provider=typesafe
+## core judge-polish-20260921-012155.jsonl
+task_1 e1 outcome=candidate asked=false claims=17 changed_paths=6 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_2 e1 outcome=tests_failed asked=true claims=21 changed_paths=3 code_contradicted=15 judge_contradicted=0 uncertain=1 max_contradicted=0.02 material_max=0.73 flagged=true provider=typesafe
+task_2 e2 outcome=candidate asked=true claims=17 changed_paths=3 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.31 flagged=false provider=typesafe
+## core judge-claims-v2-20260921-094157.jsonl
+task_1 e1 outcome=candidate asked=false claims=21 changed_paths=2 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_2 e1 outcome=candidate asked=false claims=4 changed_paths=4 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_3 e1 outcome=scope_violation asked=true claims=15 changed_paths=4 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.05 material_max=0.64 flagged=false provider=typesafe
+task_3 e2 outcome=candidate asked=true claims=1 changed_paths=3 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.56 flagged=false provider=typesafe
+## core judge-claims-v21-20260921-111251.jsonl
+task_1 e1 outcome=candidate asked=true claims=6 changed_paths=5 code_contradicted=0 judge_contradicted=0 uncertain=1 max_contradicted=0.02 material_max=0.55 flagged=false provider=typesafe
+task_2 e1 outcome=candidate asked=false claims=9 changed_paths=4 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe
+task_3 e1 outcome=no_changes asked=false claims=0 changed_paths=0 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe
+## core judge-claims-v22-20260921-131403.jsonl
+## core judge-claims-v22-20260921-133330.jsonl
+task_1 e1 outcome=tests_failed asked=false claims=20 changed_paths=3 code_contradicted=20 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=true provider=auto
+## core judge-claims-v22-20260921-140512.jsonl
+task_1 e1 outcome=candidate asked=false claims=20 changed_paths=4 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_2 e1 outcome=candidate asked=false claims=21 changed_paths=6 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+## skills research-ladder-20260920-001419.jsonl
+task_1 e1 outcome=tests_failed asked=false claims=0 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_1 e2 outcome=candidate asked=false claims=0 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_2 e1 outcome=candidate asked=true claims=1 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=1 max_contradicted=0.04 material_max=0.34 flagged=false provider=typesafe
+task_3 e1 outcome=candidate asked=true claims=3 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=3 max_contradicted=0.04 material_max=0.69 flagged=false provider=typesafe
+task_4 e1 outcome=already_satisfied asked=false claims=0 changed_paths=0 code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe
+## skills hidden-scope-rule-20260920-105745.jsonl
+task_1 e1 outcome=tests_failed asked=false claims=0 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto
+task_1 e2 outcome=candidate asked=false claims=0 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=auto

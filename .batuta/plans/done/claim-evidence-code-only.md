@@ -1,0 +1,22 @@
+# Plan — claim_evidence runs its code settlement without a judge
+<!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
+
+**Goal:** Let the claim_evidence decision settle claims in code and act on them (shadow records, enforce fails the attempt) when no judge is available or the provider is off, so the part that measured well (2/2 false closures in the v2.3 replay, 112/112 fabricated identifiers and 92/92 wrong test counts in the constructed corpus) can be used without an API key. The judge stays optional and is asked only when one is built.
+**Created:** 2026-09-21 · **Status:** done
+
+## Tasks
+- [x] 1. Code settlement runs whenever the decision is on, judge or not — backend/high
+      Scope: loop/attempt.go, loop/judgment.go, loop/judgment_test.go, loop/loop_test.go
+      Accept: with claim_evidence in shadow and no judge (Options.Judge nil), an attempt whose report claims a path that the tree did not change records the settled claims in the journal and keeps its outcome → go test ./loop -run TestClaimEvidenceCodeOnlyShadow; with claim_evidence in enforce and no judge, the same attempt fails with a judge proof naming the code-contradicted claim → go test ./loop -run TestClaimEvidenceCodeOnlyEnforce; with no judge, unsettled claims are recorded as not asked and never flag the attempt → go test ./loop -run TestClaimEvidenceCodeOnlyLeavesUnsettled; with claim_evidence off, nothing is extracted, recorded or enforced, judge or not → go test ./loop -run TestClaimEvidenceOffSkips; the existing judge-backed shadow and enforce tests stay green → go test ./loop -run 'TestClaimEvidence|TestJudgeClaimEvidence'; the package stays green → go test ./loop
+- [x] 2. Config and docs for code-only claim_evidence — backend/medium
+      Depends on: 1
+      Scope: judge/config.go, judge/config_test.go, docs/judge.md
+      Accept: a config with provider off still validates the mode and threshold of every decision and keeps them, so {"provider":"off","decisions":{"claim_evidence":{"mode":"enforce","threshold":0.9}}} loads with claim_evidence in enforce and an unknown mode is rejected → go test ./judge -run TestConfigProviderOffKeepsDecisions; BATUTA_JUDGE=off still turns every decision off → go test ./judge -run TestLoadConfigEnvOff; docs/judge.md documents code-only claim_evidence with that exact config, says no request leaves the machine in that mode, and records the constructed-corpus result that motivated it → grep -q '"provider":"off","decisions":{"claim_evidence":{"mode":"enforce"' docs/judge.md; the package stays green → go test ./judge
+
+## Decisions and context
+
+Go standard library only, frozen exported signatures, conventional commits, no real judge calls in tests (use the existing fake judge). The judge may only make a verdict stricter; unavailability changes nothing. Background: `.batuta/judge-benchmark.md` "Constructed corpus, run 1" — the judge flagged 0/112 behaviour_absent cases; every useful flag came from code settlement.
+
+**Task 1.** Two guards skip the decision when no judge is built: `loop/attempt.go` line 406 calls `judgeClaimEvidence` only when `r.opts.Judge != nil`, and `judgeClaimEvidence` in `loop/judgment.go` returns before extracting claims when `r.opts.Judge == nil`. In `loop/attempt.go` drop only the `r.opts.Judge != nil` term and keep the mode and `RateLimited` terms. Move that check: return early only when the decision mode is off; build the input, extract and settle claims as now; when `r.opts.Judge == nil` or the request has no questions, take the existing no-questions branch (aggregate with nil answers, `recordSettledClaimEvidence`, enforce on code-contradicted claims). Unsettled claims with no judge are recorded with source `code`, status `unsettled`, and are never counted as flags. `loop/loop_test.go` holds `claimEvidenceJudgeConfig` and the judge-backed loop tests; keep them passing and add the code-only cases next to them.
+
+**Task 2.** In `judge/config.go`, `validate` returns early for `ProviderOff` before the decisions loop; run the decisions validation for every provider. `LoadConfig` with `BATUTA_JUDGE=off` keeps returning a config with no decisions (the kill switch). In `docs/judge.md`, add a "Code-only claim_evidence" subsection under `claim_evidence` with the exact JSON `{"provider":"off","decisions":{"claim_evidence":{"mode":"enforce","threshold":0.9}}}` on one line, state that no request leaves the machine, and summarise the corpus result in two sentences with a pointer to `.batuta/judge-benchmark.md`.

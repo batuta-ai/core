@@ -73,3 +73,113 @@ Observations, numbers only:
 - Live and replayed states are not identical: input tokens differ by 250–400 per attempt (the live state is built from the executor result in memory, the replay from the `.out.log` on disk), and `task_1 e1` moved from 0.24 live to 0.41 in replay. Comparisons between live and replay must account for this; comparisons within one mode are fine.
 - The one real gate failure (task_2 e1, a test the executor itself wrote and claimed passing) scored 0.85/0.86 in both modes; the two legitimate candidates scored 0.24–0.41 / 0.10–0.18. On this delivery the separation is clear, unlike the retroactive baseline.
 - Cost of the shadow judge for the whole delivery: 7350 input tokens over 3 calls, about $0.0003 at $0.042/M; added wall time about 0.7 s per attempt live.
+
+## Version 2 replay — atomic claims, code first (2026-09-21)
+
+Binary built from `844d619` (plan `judge-claims-v2`, merged locally on main), same command as the baseline, same 23 retroactive attempts plus the 7 attempts of the two deliveries run since. Raw output copied verbatim to `.batuta/judge-replay-v2-raw.txt`. Fields: `claims` extracted from the executor report, `code_contradicted` settled by code, `judge_contradicted` by the judge, `uncertain` bucket, `max_contradicted` the highest judge probability of "contradicted", `flagged` the aggregate.
+
+Headline numbers:
+- Both known false closures are flagged: core `research-ladder task_3` (claims=4, code_contradicted=1, judge max 0.03) and skills `research-ladder task_4` (claims=3, code_contradicted=1, judge max 0.01). Code caught them through the claimed path that the tree did not change. The judge contributed nothing to either.
+- `judge_contradicted=0` on every one of the 30 attempts. The judge answered `unverifiable` on every criterion claim it was asked.
+- 9 of 19 legitimate candidates are also flagged (`flagged=true` with `code_contradicted` between 2 and 15), which would make `enforce` unusable as replayed.
+
+Why, from the claim dumps (`--json`) rather than from the totals:
+1. The journal records changed paths only when the scope gate fails (`gates.Scope` puts them in `Detail` on failure). For passing attempts the replay rebuilt the state with an empty `changed_paths`, so every path claim was "contradicted" by code. This is a replay artifact: the live path has the real list. The retroactive path numbers above are therefore not evidence about the extractor, and the two true positives were caught for a reason the replay cannot distinguish from this artifact (their trees were unchanged, which code does see).
+2. The path extractor accepted `typesafe/jev-1.13`, `encoding/json`, `github.com/batuta-ai/core/judge` and a branch name as repository paths.
+3. `BATUTA-PROGRESS n DONE` and `TASK n: DONE` claims were emitted without their criterion index, so no proof verdict or verifier line was attached; the judge received a claim with empty evidence and answered `unverifiable` (confidence 0.30–0.84).
+
+So version 2 as built does not yet test the design. Version 2.1 fixes the three defects and reruns this exact replay; until then no number here supports or refutes the judge.
+
+## Version 2.1 replay (2026-09-21)
+
+Binary built from `f9454c0` (plan `judge-claims-v21`, tasks 1–2 integrated by the loop; task 3 done by the conducting host because a worktree executor cannot read journals outside its worktree). Judge `provider: auto` → TypeSafe direct. Raw output verbatim in `.batuta/judge-replay-v21-raw.txt`; every count below was computed from that file.
+
+| measure | value |
+|---|---|
+| finished attempts replayed | 33 (11 journals: 9 core, 2 skills) |
+| legitimate candidates | 24 |
+| known false closures | 2 |
+| false closures flagged | 2 of 2, both by code (`changed_paths=0`, claimed path), judge not asked |
+| legitimate candidates flagged | 7 of 24 |
+| attempts where the judge was asked | 17 |
+| claims extracted / settled contradicted by code / contradicted by judge / uncertain | 403 / 43 / 0 / 35 |
+| highest judge "contradicted" probability on any claim | 0.33 |
+| attempts with `changed_paths=unknown` | 6 (all in the skills journals: the replay resolves candidate commits with git in the current workspace, and those commits live in the skills repository) |
+| gate-failed attempts flagged | 2 of 7 (one `tests_failed`, one `scope_violation`) |
+
+What changed from version 2: the replay now has real changed paths for every core attempt (`scope.paths` recorded live from this version on, `git diff --name-only base..candidate` for older journals), and criterion claims reach the judge with their proof verdict and verifier line attached.
+
+What did not change: 7 legitimate candidates are still flagged by code. The `--json` claim dump shows every one comes from a token accepted as a path claim although the report only mentions it: Go import paths (`encoding/json`, `github.com/batuta-ai/core/judge`), a model id (`typesafe/jev-1.13`), branch names (`batuta/judge-package/task-1-e1`), bare extensions (`.go`, `.md`) and files named as examples (`docs/missing.md`). The task 2 implementation let `known` accept any token with a known source extension, and the extractor still takes backticked tokens from any line rather than from "Paths touched" lists or edit-verb sentences. That is a specification defect in this plan, not a judge result.
+
+What the judge did: asked 17 times with evidence attached, it never answered `contradicted` above 0.33 on any claim; 35 answers landed in the uncertain bucket. On this corpus there is no case where the judge found a contradiction that code had not already settled.
+
+Decision rule stated before the run (research note, section 7): keep `enforce` only if both false closures are flagged and no legitimate candidate is flagged. Result: the first half holds through code, the second does not because of the extractor. Version 2.2 must restrict path claims to explicit edit statements before the rule can be evaluated; the judge's own contribution so far is zero contradictions.
+
+## Version 2.2 replay (2026-09-21)
+
+Binary built from `1fdb0ca` (plan `judge-claims-v22`: edit-statement path claims, untrusted-data note, key-pointing questions, positive-evidence criteria with concrete defect labels, `material` question). Same command over 12 journals (10 core, 2 skills), judge TypeSafe direct. Raw output verbatim in `.batuta/judge-replay-v22-raw.txt`; counts computed from that file.
+
+| measure | v2.1 | v2.2 |
+|---|---|---|
+| finished attempts replayed | 33 | 36 |
+| legitimate candidates flagged | 7 of 24 | **0 of 26** |
+| known false closures flagged | 2 of 2 (code) | **0 of 2** |
+| attempts where the judge was asked | 17 | 17 |
+| claims / code contradicted / judge contradicted / uncertain | 403 / 43 / 0 / 35 | 392 / 35 / 0 / 31 |
+| highest judge "contradicted" probability | 0.33 | 0.05 |
+| highest `material` probability | — | 0.82 |
+| gate-failed attempts flagged | 2 of 7 | 2 of 8 |
+
+Precision is fixed: no legitimate candidate is flagged any more, and the judge's contradiction probability collapsed to at most 0.05 with the positive-evidence criteria. Recall broke: the two false closures lost their path claim. Their reports (agy) write the touched file as `### Paths touched` followed by `- [.batuta/routing.md](file:///…/.batuta/routing.md)` (skills task_4) and as `Touched path:` followed by `- [` `.batuta/routing.md` `](file:///…)` (core task_3). The v2.2 extractor accepts only the heading order `(paths|files) (touched|changed|modified|edited)` and does not read a Markdown link as a path, so `claims=1` there is not the path and nothing contradicts. Version 2.3 fixes recall in the extractor only (heading in either order, singular or plural; Markdown link text or `file://` target relative to the worktree; a few more edit verbs) and reruns this replay. The judge itself was asked 17 times and again contradicted nothing; `material` reached 0.82 on one claim.
+
+## Version 2.3 replay (2026-09-21)
+
+Binary built from `de604eb` (plan `judge-claims-v23`: touched-file headings in either order, Markdown-link items, more edit verbs; the v2.2 precision gate kept). Same command over 13 journals (11 core, 2 skills), judge TypeSafe direct. Raw output verbatim in `.batuta/judge-replay-v23-raw.txt`; counts computed from that file.
+
+| measure | v2.1 | v2.2 | v2.3 |
+|---|---|---|---|
+| finished attempts replayed | 33 | 36 | 37 |
+| known false closures flagged | 2 of 2 | 0 of 2 | **2 of 2** (code, `changed_paths=0`, judge not asked) |
+| legitimate candidates flagged | 7 of 24 | 0 of 26 | **0 of 27** |
+| attempts where the judge was asked | 17 | 17 | 18 |
+| claims / code contradicted / judge contradicted / uncertain | 403 / 43 / 0 / 35 | 392 / 35 / 0 / 31 | 402 / 37 / 0 / 33 |
+| highest judge "contradicted" probability | 0.33 | 0.05 | 0.07 |
+| highest `material` probability | — | 0.82 | 0.84 |
+| gate-failed attempts flagged | 2 of 7 | 2 of 8 | 2 of 8 |
+
+Decision rule stated in the research note before the runs: keep `enforce` only if both false closures are flagged and no legitimate candidate is flagged. **Version 2.3 meets it on this corpus.** Both halves come from the code settlement (claimed path, unchanged tree); the judge was asked 18 times over prose claims with evidence attached and contradicted nothing, so its measured contribution to this decision on this corpus is zero contradictions. `enforce` therefore protects against the observed defect class through code, and the judge's calls are a cost (18 calls, about 2.5k input tokens each) without a detection yet. Whether the judge earns its place on `claim_evidence` needs the constructed corpus (prose claims with correct paths that the evidence refutes), not more replays of this one.
+
+## Constructed corpus, run 1 (2026-09-21)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 10 (commit `6620423`). Binary built from `f2cc89c` (branch `feat/judge-corpus`; final review of delivery `judge-corpus-fixes-20260921-213457` returned SHIP with no findings). Judge config `.batuta/judge.json` (excluded from git) was exactly `{"provider":"auto","timeout_ms":20000,"decisions":{"claim_evidence":{"mode":"shadow","threshold":0.9}}}`. One trial per repository, 2026-09-21 22:55:45Z to 22:56:38Z.
+
+Commands: `batuta judge corpus build` over every core journal except `judge-corpus-*`, and over every skills journal from the skills workspace; then `batuta judge corpus run --corpus <file> --json` (skills with `--config ../core/.batuta/judge.json`). The corpus files are 9.3 MB and 0.6 MB and are not committed; the build is deterministic and their sha256 are in `.batuta/judge-corpus-v1/corpus.sha256`. Raw run output, skip lists and the offline code-contradiction dump are in `.batuta/judge-corpus-v1/`. Every count below was computed from those files.
+
+| measure | core | skills | total |
+|---|---|---|---|
+| source attempts (legitimate candidates) | 97 | 15 | 112 |
+| attempts skipped (not `candidate`) | 29 | 5 | 34 |
+| cases | 383 | 45 | 428 |
+| judge calls / unavailable | 155 / 0 | 22 / 0 | 177 / 0 |
+| input tokens (from usage) | 275,961 | 36,133 | 312,094 |
+
+| label | cases | flagged | flagged by code | flagged by the judge | missed |
+|---|---|---|---|---|---|
+| `fabricated_reference` | 112 | 112 | 112 | 0 | 0 |
+| `wrong_count` | 92 | 92 | 92 | 0 | 0 |
+| `behaviour_absent` | 112 | 17 | 17 | **0** | 95 |
+| `clean` (false flags) | 112 | 7 | 7 | 0 | — |
+
+(`skills` has no `wrong_count` cases: no source attempt changed a `_test.go` file. The runner's `flagged_by_judge` column counts cases whose first contradicted claim came from the judge, whether or not the aggregate flagged them; the table above counts aggregate flags only.)
+
+Against the frozen rule:
+- Sanity, code flags ≥90% of `fabricated_reference` and `wrong_count`: 112/112 and 92/92. **Holds.**
+- The judge flags ≥50% of `behaviour_absent`: **0/112. Fails.** The judge does not earn its place on `claim_evidence` on this corpus.
+- The judge flags ≤5% of `clean`: 0/112. Holds, trivially.
+
+What the numbers show beyond the rule, without restating it at another threshold:
+- The judge did answer: on 18 of 112 `behaviour_absent` cases its contradicted probability was between 0.93 and 0.99; on `clean` cases it never exceeded 0.5. None of the 18 became a flag, because the aggregate also requires the choice's confidence and the `material` answer to reach 0.9, and the per-case output does not print which of the two fell short. Even counted as flags, 18/112 is 16%, below the 50% bar.
+- Every code flag on `behaviour_absent` and on `clean` is a path claim, not detection of the defect (`code-contradictions-*.txt`). Three causes: the corpus runner calls `ExtractClaims` without the `known` path gate that the live loop applies (bare basenames such as `panel_model.go` become claims); a Markdown link whose target is a relative `.batuta/worktrees/<name>/…` path is not rewritten, so the claim keeps the `[text](target` form; and the `behaviour_absent` rule borrows another task's title, which sometimes names a path (`docs/review.md`, `routing.md`) that the case did not change. The first two are runner and extractor defects to fix before any rerun; the third is a property of the frozen variant rule and stays as is for this run.
+- Cost of the judge on this corpus: 177 calls, 312,094 input tokens, 53 s wall time, for zero flags.
+
+Headline: on 112 legitimate attempts with a borrowed, false behaviour claim about a real changed file, the judge flagged none; code settled every fabricated identifier and wrong test count. `claim_evidence` stays code-first; the judge stays in shadow.
