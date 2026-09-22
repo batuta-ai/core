@@ -2,13 +2,13 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Record in the journal what later decisions need and the batuta does not keep today. First, the bounded, redacted output tail of every executor session that does not end cleanly, which is the data a provider-limit classifier would be tested on. Second, the token usage a CLI reports at the end of a session, declared per adapter, so lane and cost comparisons stop reading "unknown" for every worker.
-**Created:** 2026-09-22 · **Status:** approved
+**Created:** 2026-09-22 · **Status:** done
 
 ## Tasks
-- [ ] 1. executor_finished and limit_wait carry the output tail of an unclean invocation — backend/medium
+- [x] 1. executor_finished and limit_wait carry the output tail of an unclean invocation — backend/medium
       Scope: loop/attempt.go, loop/finished_telemetry_test.go
       Accept: when a session exits non-zero, times out, is rate limited or does not finish, the executor_finished record carries output_tail with the last 40 lines of stdout and of stderr, each stream bounded to 4096 bytes keeping the end, labelled stdout and stderr → go test ./loop -run TestFinishedRecordsTailOnUncleanSession; every limit_wait record carries the output_tail of the rate-limited invocation it waits after, built the same way, so a limit message is kept even when the attempt later succeeds → go test ./loop -run TestLimitWaitRecordsTail; a clean session (exit 0, finished, not timed out, not rate limited) records no output_tail → go test ./loop -run TestFinishedOmitsTailOnCleanSession; the tail has absolute workspace paths redacted and secret-shaped lines dropped with the loop's existing redactText and dropSecretLines → go test ./loop -run TestFinishedTailRedacted; the package stays green → go test ./loop
-- [ ] 2. Adapters may declare usage_regex, and executor_finished records the usage — backend/medium
+- [x] 2. Adapters may declare usage_regex, and executor_finished records the usage — backend/medium
       Depends on: 1
       Scope: executor/adapter.go, executor/adapter_test.go, executor/run.go, executor/usage.go, executor/usage_test.go, loop/attempt.go, loop/finished_telemetry_test.go, docs/loop.md
       Accept: an adapter may declare usage_regex, a case-insensitive pattern with any of the named groups input, output, cached, total, which must compile and name at least one of them or the adapter is invalid → go test ./executor -run TestAdapterUsageRegex; Outcome applies it to the last 20 lines of stdout and stderr and fills Result.Usage with provenance cli/usage_regex, parsing digits with thousands separators (comma, dot, thin space) and leaving every unmatched counter nil → go test ./executor -run TestOutcomeUsageFromTail; a total-only report such as the two lines tokens used and 292.834 sets a reported total without inventing input or output → go test ./executor -run TestOutcomeUsageTotalOnly; executor_finished carries usage when Result.Usage is set and usage_unknown true otherwise → go test ./loop -run TestFinishedRecordsUsage; docs/loop.md documents usage_regex and output_tail → grep -q 'usage_regex' docs/loop.md && grep -q 'output_tail' docs/loop.md; the packages stay green → go test ./executor ./loop
