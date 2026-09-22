@@ -7,29 +7,66 @@ import (
 	"strings"
 )
 
+// CacheSemantics says how a provider counts cached tokens against the
+// input counters. Additive providers report cache reads and writes on top
+// of InputTokens; subset providers report them as part of InputTokens.
+type CacheSemantics string
+
+const (
+	CacheSemanticsAdditive CacheSemantics = "additive"
+	CacheSemanticsSubset   CacheSemantics = "subset"
+)
+
 // Usage reports provider-supplied token counters. Nil counters are unknown;
-// they are never estimated from byte counts. CachedInputTokens is the cached
-// subset of InputTokens and must not be added to it. ReportedTotalTokens
-// carries a total a CLI printed without separating input from output; it is
-// never summed into TotalTokens.
+// they are never estimated from byte counts. CachedInputTokens stays for
+// compatibility and means cache read under subset semantics, so it is
+// already inside InputTokens and must not be added to it; CacheReadTokens
+// and CacheWriteTokens carry the cache counters of an additive provider.
+// ReasoningTokens counts the reasoning part of the output.
+// ReportedTotalTokens carries a total a CLI printed without separating
+// input from output; it is never summed into TotalTokens. CostAmount with
+// CostCurrency is copied from the provider, never computed and never part
+// of TotalTokens.
 type Usage struct {
-	InputTokens         *int64 `json:"input_tokens,omitempty"`
-	CachedInputTokens   *int64 `json:"cached_input_tokens,omitempty"`
-	OutputTokens        *int64 `json:"output_tokens,omitempty"`
-	ReportedTotalTokens *int64 `json:"reported_total_tokens,omitempty"`
-	Provenance          string `json:"provenance"`
+	InputTokens         *int64         `json:"input_tokens,omitempty"`
+	CachedInputTokens   *int64         `json:"cached_input_tokens,omitempty"`
+	OutputTokens        *int64         `json:"output_tokens,omitempty"`
+	CacheReadTokens     *int64         `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens    *int64         `json:"cache_write_tokens,omitempty"`
+	ReasoningTokens     *int64         `json:"reasoning_tokens,omitempty"`
+	ReportedTotalTokens *int64         `json:"reported_total_tokens,omitempty"`
+	CostAmount          *float64       `json:"cost_amount,omitempty"`
+	CostCurrency        string         `json:"cost_currency,omitempty"`
+	CacheSemantics      CacheSemantics `json:"cache_semantics,omitempty"`
+	Provenance          string         `json:"provenance"`
 }
 
-// TotalTokens returns the provider total when both additive counters are
-// known. Cached input is already included in input and is not counted twice.
+// TotalTokens returns the provider total when both input and output are
+// known: input plus output plus the reported cache reads and writes under
+// additive semantics, input plus output under subset semantics (the
+// default, where CachedInputTokens is already inside input). Reported
+// totals and cost never enter the sum.
 func (u Usage) TotalTokens() (int64, bool) {
 	if u.InputTokens == nil || u.OutputTokens == nil || *u.InputTokens < 0 || *u.OutputTokens < 0 {
 		return 0, false
 	}
-	if *u.OutputTokens > math.MaxInt64-*u.InputTokens {
+	total := *u.InputTokens
+	if *u.OutputTokens > math.MaxInt64-total {
 		return 0, false
 	}
-	return *u.InputTokens + *u.OutputTokens, true
+	total += *u.OutputTokens
+	if u.CacheSemantics == CacheSemanticsAdditive {
+		for _, counter := range []*int64{u.CacheReadTokens, u.CacheWriteTokens} {
+			if counter == nil {
+				continue
+			}
+			if *counter < 0 || *counter > math.MaxInt64-total {
+				return 0, false
+			}
+			total += *counter
+		}
+	}
+	return total, true
 }
 
 // usageFromTail extracts the token counters a CLI printed in its output
