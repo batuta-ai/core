@@ -37,6 +37,7 @@ type Result struct {
 	RateLimited bool      // the adapter's limit_regex matched the output tail
 	ResetAt     time.Time // when the limit lifts, if the output said; zero otherwise
 	Question    string    // a BATUTA-QUESTION line, when the executor asked one
+	Usage       *Usage    // CLI-reported token counters, when the adapter's usage_regex matched
 	Progress    []ProgressEvent
 	Receipt     *Receipt // optional structured execution metadata
 }
@@ -176,6 +177,11 @@ func (a Adapter) Outcome(result *Result) {
 		if pattern, err := regexp.Compile("(?i)" + a.LimitRegex); err == nil && pattern.MatchString(output) {
 			result.RateLimited = true
 			result.ResetAt = ResetTime(output, time.Now())
+		}
+	}
+	if a.UsageRegex != "" {
+		if pattern, err := regexp.Compile("(?i)" + a.UsageRegex); err == nil {
+			result.Usage = usageFromTail(pattern, output)
 		}
 	}
 	if question, asked := Question(result.Stdout); asked {

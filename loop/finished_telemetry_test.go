@@ -205,6 +205,59 @@ func TestFinishedOmitsTailOnCleanSession(t *testing.T) {
 	}
 }
 
+func TestFinishedRecordsUsage(t *testing.T) {
+	t.Parallel()
+	run := func(withUsage bool) map[string]any {
+		f := setup(t)
+		telemetryPlan(t, f)
+		backend := scriptFunc(func(e executor.Execution) (executor.Result, error) {
+			if err := os.MkdirAll(filepath.Join(e.Request.Cwd, "out"), 0o755); err != nil {
+				return executor.Result{}, err
+			}
+			if err := os.WriteFile(filepath.Join(e.Request.Cwd, "out", "1.txt"), []byte("ok\n"), 0o644); err != nil {
+				return executor.Result{}, err
+			}
+			result := executor.Result{ExitCode: 0, Finished: true, Stdout: []byte("done\n")}
+			if withUsage {
+				input, output := int64(1200), int64(345)
+				result.Usage = &executor.Usage{InputTokens: &input, OutputTokens: &output, Provenance: "cli/usage_regex"}
+			}
+			return result, nil
+		})
+		r, state := runTelemetry(t, f, backend)
+		if state != StateDone {
+			t.Fatalf("Run() = %s, want done", state)
+		}
+		return executionDetail(t, readJournal(t, f, r.delivery), KindFinished, 1)
+	}
+
+	detail := run(true)
+	usage, ok := detail["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("executor_finished lost the usage: %v", detail)
+	}
+	if usage["provenance"] != "cli/usage_regex" {
+		t.Fatalf("usage provenance = %v", usage["provenance"])
+	}
+	if input, ok := usage["input_tokens"].(float64); !ok || input != 1200 {
+		t.Fatalf("usage input_tokens = %v, want 1200", usage["input_tokens"])
+	}
+	if output, ok := usage["output_tokens"].(float64); !ok || output != 345 {
+		t.Fatalf("usage output_tokens = %v, want 345", usage["output_tokens"])
+	}
+	if _, unknown := detail["usage_unknown"]; unknown {
+		t.Fatal("usage_unknown set while usage was reported")
+	}
+
+	detail = run(false)
+	if _, reported := detail["usage"]; reported {
+		t.Fatalf("usage reported without a Usage: %v", detail["usage"])
+	}
+	if unknown, ok := detail["usage_unknown"].(bool); !ok || !unknown {
+		t.Fatalf("usage_unknown = %v, want true", detail["usage_unknown"])
+	}
+}
+
 func TestFinishedTailRedacted(t *testing.T) {
 	t.Parallel()
 	f := setup(t)

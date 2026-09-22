@@ -340,6 +340,11 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		"stdout_bytes": len(result.Stdout), "stderr_bytes": len(result.Stderr), "tree_changed": treeChanged,
 		"base_head_sha": ac.base, "before": before, "after": after,
 	}
+	if result.Usage != nil {
+		finished["usage"] = result.Usage
+	} else {
+		finished["usage_unknown"] = true
+	}
 	if uncleanInvocation(result) {
 		finished["output_tail"] = r.outputTailDetail(result)
 	}
