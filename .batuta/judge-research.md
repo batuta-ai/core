@@ -211,3 +211,22 @@ Fallbacks to `critical` count as the judge's answer for agreement and routing di
 Measure (b) is reported beside it and decides nothing: for tasks with a journal, the first-attempt outcome of the executed lane against whether the judge's lane was lower, equal or higher.
 
 A negative result is the headline. Nothing is restated at another threshold.
+
+## 12. claim_evidence v3: decision rule, frozen before the run (2026-09-22)
+
+Agreed with the maintainer on 2026-09-22, after the post-hoc reanalysis of run 1 and before any v3 corpus was built or run. This section is not edited afterwards.
+
+Inputs, fixed:
+- Binary built from `107c8cb`, the last commit of branch `feat/claim-evidence-v3` after delivery `claim-evidence-v3-20260922-123213`, whose final review returned SHIP with no findings.
+- Corpus: `batuta judge corpus build` over the same journals as section 10 (every core journal except `judge-corpus-*` and `claim-evidence-v3-*`, the deliveries that built the corpus tooling; every skills journal), with the v2 labels: `clean`, `true_behaviour` (negatives); `fabricated_reference`, `wrong_count`, `behaviour_absent`, `wrong_diff` (positives). Split by the first byte of sha256 of `<delivery>/<task>/e<execution>`: even is calibrate, odd is test.
+- Judge: `provider: auto`, `claim_evidence` aggregation v3 (a judge-answered claim flags when its contradicted probability reaches the threshold; no confidence or material gate).
+
+Procedure:
+1. Run `batuta judge corpus calibrate` once on the calibrate half. The threshold is the lowest of 0.50, 0.55 … 0.95 whose false-flag rate over `clean` and `true_behaviour` is at most 2%. If no threshold qualifies, the result is negative and the test half is not run.
+2. Write that threshold into the judge config and run `batuta judge corpus run --split test` once.
+
+Rule, on the test half:
+- The judge earns its place on `claim_evidence` only if it flags at least 50% of `behaviour_absent` and `wrong_diff` cases together (claims code does not settle) and flags at most 5% of `clean` and `true_behaviour` cases together.
+- Sanity: code flags at least 90% of `fabricated_reference` and `wrong_count`; if not, the corpus or settlement is broken and the judge result is not read.
+- Unavailable answers are counted separately and excluded; above 10% unavailable, the run is repeated once and both runs are reported.
+- A negative result is the headline. Nothing is restated at another threshold.
