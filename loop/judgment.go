@@ -993,9 +993,6 @@ func (r *Runner) claimAttemptDiff(ctx context.Context, ac attemptContext) (strin
 }
 
 func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, report *gates.Report, result executor.Result, treeChanged bool, changedPaths []string) (judgment, error) {
-	if r.opts.Judge == nil {
-		return judgment{}, nil
-	}
 	decision := r.opts.JudgeConfig.Decision(claimEvidenceDecision)
 	if decision.Mode == judge.ModeOff {
 		return judgment{}, nil
@@ -1021,7 +1018,7 @@ func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, repo
 	req := BuildClaimEvidenceRequest(input, claims)
 	out := judgment{}
 
-	if len(req.Questions) == 0 {
+	if r.opts.Judge == nil || len(req.Questions) == 0 {
 		flagged, records, uncertain := aggregateClaimEvidence(claims, nil, threshold)
 		out.Flagged = flagged
 		out.Claims = records
@@ -1135,6 +1132,9 @@ func aggregateClaimEvidence(claims []Claim, answers map[string]judge.Answer, thr
 			}
 		} else {
 			record.Source = string(claim.Source)
+			if record.Source == "" {
+				record.Source = string(ClaimSourceCode)
+			}
 			record.Choice = string(claim.Status)
 			if claim.Source == ClaimSourceCode {
 				record.Confidence = 1

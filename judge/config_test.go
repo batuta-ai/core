@@ -108,6 +108,53 @@ func TestLoadConfigEnv(t *testing.T) {
 	}
 }
 
+func TestConfigProviderOffKeepsDecisions(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), `{"provider":"off","decisions":{"claim_evidence":{"mode":"enforce","threshold":0.9}}}`)
+	config, err := LoadConfig(root, testGetenv(nil))
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if config.Provider != ProviderOff {
+		t.Fatalf("Provider = %q, want off", config.Provider)
+	}
+	if decision := config.Decision("claim_evidence"); decision.Mode != ModeEnforce || decision.Threshold != 0.9 {
+		t.Fatalf("Decision(claim_evidence) = %#v, want enforce at 0.9", decision)
+	}
+
+	writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), `{"provider":"off","decisions":{"claim_evidence":{"mode":"yolo","threshold":0.9}}}`)
+	if _, err := LoadConfig(root, testGetenv(nil)); err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("LoadConfig(unknown mode) error = %v, want containing %q", err, "mode")
+	}
+
+	writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), `{"provider":"off","decisions":{"claim_evidence":{"mode":"enforce","threshold":1.5}}}`)
+	if _, err := LoadConfig(root, testGetenv(nil)); err == nil || !strings.Contains(err.Error(), "threshold") {
+		t.Fatalf("LoadConfig(bad threshold) error = %v, want containing %q", err, "threshold")
+	}
+}
+
+func TestLoadConfigEnvOff(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	writeJudgeConfig(t, filepath.Join(root, ".batuta", "judge.json"), validConfig)
+
+	config, err := LoadConfig(root, testGetenv(map[string]string{"BATUTA_JUDGE": "off"}))
+	if err != nil {
+		t.Fatalf("LoadConfig(off) error = %v", err)
+	}
+	if config.Provider != ProviderOff {
+		t.Fatalf("Provider = %q, want off", config.Provider)
+	}
+	if decision := config.Decision("claim_evidence"); decision != (DecisionConfig{Mode: ModeOff}) {
+		t.Fatalf("Decision(claim_evidence) = %#v, want off", decision)
+	}
+	_, err = config.Judge(testGetenv(map[string]string{"TYPESAFE_API_KEY": "sk-test"}))
+	requireUnavailable(t, err, ReasonJudgeOff)
+}
+
 func TestLoadConfigRejects(t *testing.T) {
 	t.Parallel()
 

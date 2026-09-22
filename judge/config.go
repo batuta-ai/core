@@ -175,7 +175,7 @@ func (c Config) validate() error {
 		if len(c.Providers) > 0 {
 			return errors.New("judge: config providers is only valid with provider auto")
 		}
-		return nil
+		return validateDecisions(c.Decisions)
 	case ProviderAuto:
 		if c.Model != "" {
 			return errors.New("judge: config model is not allowed with provider auto")
@@ -211,7 +211,11 @@ func (c Config) validate() error {
 	if c.MaxStateBytes != 0 && (c.MaxStateBytes < minMaxStateBytes || c.MaxStateBytes > maxMaxStateBytes) {
 		return fmt.Errorf("judge: config max_state_bytes %d must be between %d and %d", c.MaxStateBytes, minMaxStateBytes, maxMaxStateBytes)
 	}
-	for name, decision := range c.Decisions {
+	return validateDecisions(c.Decisions)
+}
+
+func validateDecisions(decisions map[string]DecisionConfig) error {
+	for name, decision := range decisions {
 		switch decision.Mode {
 		case ModeOff, ModeShadow, ModeEnforce:
 		default:

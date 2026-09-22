@@ -3716,6 +3716,181 @@ func TestJudgeUnavailableKeepsRule(t *testing.T) {
 	}
 }
 
+func TestClaimEvidenceCodeOnlyShadow(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("claim-false-path", &out)
+	opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeShadow, 0.9)
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+
+	var sawContradicted bool
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind == KindFailure && strings.Contains(string(record.Detail), blockerClaimUnsupported) {
+			t.Fatalf("shadow with no judge changed the outcome: %s", record.Detail)
+		}
+		if record.Kind != KindJudgeResult || record.TaskID != "task_1" {
+			continue
+		}
+		var detail claimEvidenceResultRecord
+		if err := json.Unmarshal(record.Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if detail.UnavailableReason != "" {
+			t.Fatalf("result = %+v, want a settled record", detail)
+		}
+		for _, claim := range detail.Claims {
+			if claim.Source != string(ClaimSourceCode) || claim.Choice == "" {
+				t.Fatalf("claim missing code source or choice: %+v", claim)
+			}
+			if strings.Contains(claim.Text, "shared.txt") && claim.Choice == string(ClaimStatusContradicted) {
+				sawContradicted = true
+			}
+		}
+	}
+	if !sawContradicted {
+		t.Fatal("shadow with no judge did not record the code-contradicted path claim")
+	}
+}
+
+func TestClaimEvidenceCodeOnlyEnforce(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("claim-false-path", &out)
+	opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeEnforce, 0.9)
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if state == StateDone {
+		t.Fatalf("Run() = %s, want a blocked delivery\n%s", state, out.String())
+	}
+
+	var first struct {
+		Blocker  string   `json:"blocker"`
+		Feedback []string `json:"feedback"`
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind != KindFailure || record.TaskID != "task_1" {
+			continue
+		}
+		if err := json.Unmarshal(record.Detail, &first); err != nil {
+			t.Fatal(err)
+		}
+		break
+	}
+	if first.Blocker != blockerClaimUnsupported {
+		t.Fatalf("first task_1 blocker = %q, want %s\n%s", first.Blocker, blockerClaimUnsupported, out.String())
+	}
+	joined := strings.Join(first.Feedback, "\n")
+	if !strings.Contains(joined, "Paths touched: shared.txt") || !strings.Contains(joined, "shared.txt") {
+		t.Fatalf("retry feedback does not quote the contradicted claim and report line:\n%s", joined)
+	}
+	if !strings.Contains(joined, "claim_evidence: claim_unsupported") {
+		t.Fatalf("retry feedback missing judge signal:\n%s", joined)
+	}
+}
+
+func TestClaimEvidenceCodeOnlyLeavesUnsettled(t *testing.T) {
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("claim-commit", &out)
+	opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeEnforce, 0.9)
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+
+	var sawUnsettled bool
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind == KindFailure && strings.Contains(string(record.Detail), blockerClaimUnsupported) {
+			t.Fatalf("unsettled claim without a judge flagged the attempt: %s", record.Detail)
+		}
+		switch record.Kind {
+		case KindJudgeIntent:
+			var intent judge.IntentRecord
+			if err := json.Unmarshal(record.Detail, &intent); err != nil {
+				t.Fatal(err)
+			}
+			if len(intent.QuestionKeys) != 0 {
+				t.Fatalf("%s intent asked the judge: %+v", record.TaskID, intent)
+			}
+		case KindJudgeResult:
+			var detail claimEvidenceResultRecord
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if len(detail.QuestionKeys) != 0 || detail.UnavailableReason != "" || detail.Answers != nil {
+				t.Fatalf("%s result was asked or marked unavailable: %+v", record.TaskID, detail)
+			}
+			for _, claim := range detail.Claims {
+				if claim.Choice != string(ClaimStatusUnsettled) {
+					continue
+				}
+				if claim.Source != string(ClaimSourceCode) {
+					t.Fatalf("%s unsettled claim source = %q, want code: %+v", record.TaskID, claim.Source, claim)
+				}
+				sawUnsettled = true
+			}
+		}
+	}
+	if !sawUnsettled {
+		t.Fatal("no unsettled claim was recorded")
+	}
+}
+
+func TestClaimEvidenceOffSkips(t *testing.T) {
+	run := func(t *testing.T, fake *fakeLoopJudge) {
+		t.Helper()
+		f := setup(t)
+		var out bytes.Buffer
+		opts := f.options("claim-false-path", &out)
+		if fake != nil {
+			opts.Judge = fake
+		}
+		opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeOff, 0.9)
+		r, err := New(context.Background(), opts)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+		state, err := r.Run(context.Background())
+		if err != nil || state != StateDone {
+			t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+		}
+		if fake != nil && fake.Asks() != 0 {
+			t.Fatalf("decision off asked the judge %d time(s)", fake.Asks())
+		}
+		for _, record := range readJournal(t, f, r.Delivery()) {
+			if record.Kind == KindJudgeIntent || record.Kind == KindJudgeResult {
+				t.Fatalf("decision off journaled %s", record.Kind)
+			}
+			if record.Kind == KindFailure && strings.Contains(string(record.Detail), blockerClaimUnsupported) {
+				t.Fatalf("decision off enforced claim_evidence: %s", record.Detail)
+			}
+		}
+	}
+	t.Run("judge present", func(t *testing.T) {
+		run(t, &fakeLoopJudge{choice: "contradicted", confidence: 0.99})
+	})
+	t.Run("judge nil", func(t *testing.T) {
+		run(t, nil)
+	})
+}
+
 func TestJudgeOffNeverAsks(t *testing.T) {
 	t.Run("decision off", func(t *testing.T) {
 		f := setup(t)
@@ -3747,7 +3922,7 @@ func TestJudgeOffNeverAsks(t *testing.T) {
 		f := setup(t)
 		var out bytes.Buffer
 		opts := f.options("default", &out)
-		opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeShadow, 0.9)
+		opts.JudgeConfig = claimEvidenceJudgeConfig(judge.ModeOff, 0.9)
 		r, err := New(context.Background(), opts)
 		if err != nil {
 			t.Fatalf("New() error = %v", err)

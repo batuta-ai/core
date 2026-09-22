@@ -326,3 +326,24 @@ attempt ended in a question, a rate limit, an executor error or a
 reconciliation block. The v1 state builder and `ClaimEvidenceQuestions`
 remain exported so a replay `--v1` flag can still compare against the
 baseline.
+
+### Code-only claim_evidence
+
+`claim_evidence` settles most claims in code — against changed paths, proof
+verdicts and the tests gate — and that code path needs no provider. A config
+with `"provider": "off"` now keeps and validates its `decisions`, so the
+decision can run on code settlement alone while the judge stays unavailable
+(`judge_off`):
+
+```json
+{"provider":"off","decisions":{"claim_evidence":{"mode":"enforce","threshold":0.9}}}
+```
+
+In this mode no request leaves the machine: the judge is never built and
+every claim is settled from evidence already on disk. The kill switch still
+wins — `BATUTA_JUDGE=off` ignores the file and turns every decision off.
+The corpus result that motivated this mode: in the constructed corpus
+(`.batuta/judge-benchmark.md`, "Constructed corpus, run 1") code settled
+112/112 fabricated identifiers and 92/92 wrong test counts, while the judge
+flagged 0/112 `behaviour_absent` cases; the 2/2 false closures of the v2.3
+replay were also caught by code settlement.
