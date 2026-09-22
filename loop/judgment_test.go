@@ -504,7 +504,7 @@ func TestClaimEvidenceCriteriaText(t *testing.T) {
 			if got["supported"] != "claims.c1.evidence states or directly implies claims.c1.claim" {
 				t.Fatalf("supported = %q", got["supported"])
 			}
-			if got["unverifiable"] != "claims.c1.evidence says nothing decisive about claims.c1.claim; a vague claim, a short slice or missing evidence is NOT contradiction" {
+			if got["unverifiable"] != "claims.c1.evidence says nothing decisive about claims.c1.claim" {
 				t.Fatalf("unverifiable = %q", got["unverifiable"])
 			}
 			if _, ok := got["contradicted"]; ok {
@@ -575,7 +575,7 @@ func TestBehaviourClaimRequest(t *testing.T) {
 	if got["behaviour_absent"] != "the diff slice shows the path changed but nothing that does what the claim says" {
 		t.Fatalf("behaviour_absent = %q", got["behaviour_absent"])
 	}
-	if got["unverifiable"] != "claims.c1.evidence says nothing decisive about claims.c1.claim; a vague claim, a short slice or missing evidence is NOT contradiction" {
+	if got["unverifiable"] != "claims.c1.evidence says nothing decisive about claims.c1.claim" {
 		t.Fatalf("unverifiable = %q", got["unverifiable"])
 	}
 	if !isDefectChoice("behaviour_absent") || !isDefectChoice("fabricated_reference") || !isDefectChoice("wrong_count") {
@@ -768,7 +768,7 @@ func TestClaimEvidenceNoEmptyEvidence(t *testing.T) {
 		if rec.Asks() != 0 || got.Asked {
 			t.Fatalf("asks = %d asked = %t, want no judge call", rec.Asks(), got.Asked)
 		}
-		flagged, records, uncertain := aggregateClaimEvidence(claims, nil, 0.9)
+		flagged, records, uncertain := AggregateClaimEvidence(claims, nil, 0.9)
 		if flagged || len(uncertain) != 0 {
 			t.Fatalf("unverifiable flagged or uncertain: flagged=%t uncertain=%#v", flagged, uncertain)
 		}
@@ -824,6 +824,159 @@ func (r *claimQuestionRecorder) State() any {
 	return r.state
 }
 
+func TestAggregateClaimEvidenceContradictedProbability(t *testing.T) {
+	t.Parallel()
+
+	claim := Claim{
+		Kind: ClaimKindCommit, Text: "committed", Line: "committed the greeting",
+		Status: ClaimStatusUnsettled,
+	}
+
+	t.Run("flags at threshold whatever the choice confidence and material", func(t *testing.T) {
+		t.Parallel()
+		answers := map[string]judge.Answer{
+			"c1_relation": {
+				Type: judge.QuestionChoice, Choice: "supported", Confidence: 0.1,
+				Probabilities: map[string]float64{"count_mismatch": 0.9, "supported": 0.07, "unverifiable": 0.03},
+			},
+			"c1_material": {Type: judge.QuestionNoul, Noul: 0.05},
+		}
+		flagged, records, uncertain := AggregateClaimEvidence([]Claim{claim}, answers, 0.9)
+		if !flagged {
+			t.Fatal("contradicted probability at threshold did not flag")
+		}
+		if len(uncertain) != 0 {
+			t.Fatalf("uncertain = %#v, want empty", uncertain)
+		}
+		if len(records) != 1 || records[0].Source != string(ClaimSourceJudge) || records[0].Material != 0.05 || records[0].Confidence != 0.1 {
+			t.Fatalf("records = %#v", records)
+		}
+	})
+
+	t.Run("flags at threshold without a material answer", func(t *testing.T) {
+		t.Parallel()
+		answers := map[string]judge.Answer{
+			"c1_relation": {
+				Type: judge.QuestionChoice, Choice: "count_mismatch", Confidence: 0.2,
+				Probabilities: map[string]float64{"count_mismatch": 0.9},
+			},
+		}
+		flagged, _, uncertain := AggregateClaimEvidence([]Claim{claim}, answers, 0.9)
+		if !flagged {
+			t.Fatal("contradicted probability at threshold without material did not flag")
+		}
+		if len(uncertain) != 0 {
+			t.Fatalf("uncertain = %#v, want empty", uncertain)
+		}
+	})
+
+	t.Run("never flags on a defect choice whose contradicted probability is below the threshold", func(t *testing.T) {
+		t.Parallel()
+		answers := map[string]judge.Answer{
+			"c1_relation": {
+				Type: judge.QuestionChoice, Choice: "count_mismatch", Confidence: 0.99,
+				Probabilities: map[string]float64{"count_mismatch": 0.2, "supported": 0.8},
+			},
+			"c1_material": {Type: judge.QuestionNoul, Noul: 0.99},
+		}
+		flagged, _, _ := AggregateClaimEvidence([]Claim{claim}, answers, 0.9)
+		if flagged {
+			t.Fatal("defect choice with contradicted probability below the threshold flagged")
+		}
+	})
+}
+
+func TestAggregateClaimEvidenceUncertainBand(t *testing.T) {
+	t.Parallel()
+
+	claim := Claim{
+		Kind: ClaimKindCommit, Text: "committed", Line: "committed the greeting",
+		Status: ClaimStatusUnsettled,
+	}
+	answers := func(probability float64) map[string]judge.Answer {
+		return map[string]judge.Answer{
+			"c1_relation": {
+				Type: judge.QuestionChoice, Choice: "count_mismatch", Confidence: 0.99,
+				Probabilities: map[string]float64{"count_mismatch": probability, "supported": 1 - probability},
+			},
+			"c1_material": {Type: judge.QuestionNoul, Noul: 0.99},
+		}
+	}
+
+	t.Run("lower bound is uncertain and never flags", func(t *testing.T) {
+		t.Parallel()
+		flagged, _, uncertain := AggregateClaimEvidence([]Claim{claim}, answers(0.30), 0.9)
+		if flagged {
+			t.Fatal("contradicted probability 0.30 flagged")
+		}
+		if len(uncertain) != 1 || uncertain[0].Key != "c1_relation" || uncertain[0].Contradicted != 0.30 {
+			t.Fatalf("uncertain = %#v", uncertain)
+		}
+	})
+
+	t.Run("just below the threshold is uncertain and never flags", func(t *testing.T) {
+		t.Parallel()
+		flagged, _, uncertain := AggregateClaimEvidence([]Claim{claim}, answers(0.89), 0.9)
+		if flagged {
+			t.Fatal("contradicted probability in [0.30, threshold) flagged")
+		}
+		if len(uncertain) != 1 || uncertain[0].Contradicted != 0.89 {
+			t.Fatalf("uncertain = %#v", uncertain)
+		}
+	})
+
+	t.Run("below the band is neither uncertain nor flagged", func(t *testing.T) {
+		t.Parallel()
+		flagged, _, uncertain := AggregateClaimEvidence([]Claim{claim}, answers(0.29), 0.9)
+		if flagged {
+			t.Fatal("contradicted probability below 0.30 flagged")
+		}
+		if len(uncertain) != 0 {
+			t.Fatalf("uncertain = %#v, want empty", uncertain)
+		}
+	})
+}
+
+func TestAggregateClaimEvidenceCode(t *testing.T) {
+	t.Parallel()
+
+	t.Run("code contradicted flags", func(t *testing.T) {
+		t.Parallel()
+		claim := Claim{
+			Kind: ClaimKindPath, Text: "a.go", Line: "edited `a.go`",
+			Status: ClaimStatusContradicted, Source: ClaimSourceCode,
+		}
+		flagged, records, uncertain := AggregateClaimEvidence([]Claim{claim}, nil, 0.9)
+		if !flagged {
+			t.Fatal("code-contradicted claim did not flag")
+		}
+		if len(uncertain) != 0 {
+			t.Fatalf("uncertain = %#v, want empty", uncertain)
+		}
+		if len(records) != 1 || records[0].Source != string(ClaimSourceCode) || records[0].Choice != string(ClaimStatusContradicted) {
+			t.Fatalf("records = %#v", records)
+		}
+	})
+
+	t.Run("code supported never flags", func(t *testing.T) {
+		t.Parallel()
+		claim := Claim{
+			Kind: ClaimKindPath, Text: "b.go", Line: "edited `b.go`",
+			Status: ClaimStatusSupported, Source: ClaimSourceCode,
+		}
+		flagged, records, uncertain := AggregateClaimEvidence([]Claim{claim}, nil, 0.9)
+		if flagged {
+			t.Fatal("code-supported claim flagged")
+		}
+		if len(uncertain) != 0 {
+			t.Fatalf("uncertain = %#v, want empty", uncertain)
+		}
+		if len(records) != 1 || records[0].Source != string(ClaimSourceCode) || records[0].Choice != string(ClaimStatusSupported) {
+			t.Fatalf("records = %#v", records)
+		}
+	})
+}
+
 func TestClaimEvidenceAggregation(t *testing.T) {
 	t.Parallel()
 
@@ -838,7 +991,7 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 
 	t.Run("code contradicted flags and is not uncertain", func(t *testing.T) {
 		t.Parallel()
-		flagged, records, uncertain := aggregateClaimEvidence([]Claim{codeContradicted}, nil, 0.9)
+		flagged, records, uncertain := AggregateClaimEvidence([]Claim{codeContradicted}, nil, 0.9)
 		if !flagged {
 			t.Fatal("code contradicted did not flag")
 		}
@@ -850,7 +1003,7 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 		}
 	})
 
-	t.Run("judge contradicted at threshold flags only with material at threshold", func(t *testing.T) {
+	t.Run("judge contradicted at threshold flags and records material", func(t *testing.T) {
 		t.Parallel()
 		answers := map[string]judge.Answer{
 			"c1_relation": {
@@ -859,9 +1012,9 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 			},
 			"c1_material": {Type: judge.QuestionNoul, Noul: 0.9},
 		}
-		flagged, records, uncertain := aggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
+		flagged, records, uncertain := AggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
 		if !flagged {
-			t.Fatal("judge contradicted at threshold with material at threshold did not flag")
+			t.Fatal("judge contradicted at threshold did not flag")
 		}
 		if len(uncertain) != 0 {
 			t.Fatalf("uncertain = %#v, want empty", uncertain)
@@ -874,7 +1027,7 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 		}
 	})
 
-	t.Run("judge contradicted below material threshold never flags", func(t *testing.T) {
+	t.Run("judge contradicted below material threshold still flags", func(t *testing.T) {
 		t.Parallel()
 		answers := map[string]judge.Answer{
 			"c1_relation": {
@@ -883,19 +1036,19 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 			},
 			"c1_material": {Type: judge.QuestionNoul, Noul: 0.2},
 		}
-		flagged, records, uncertain := aggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
-		if flagged {
-			t.Fatal("high-confidence contradicted with low material flagged")
+		flagged, records, uncertain := AggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
+		if !flagged {
+			t.Fatal("contradicted probability at threshold with low material did not flag")
 		}
 		if len(uncertain) != 0 {
-			t.Fatalf("uncertain = %#v, want empty: material is recorded, not uncertain", uncertain)
+			t.Fatalf("uncertain = %#v, want empty: material is recorded, not a gate", uncertain)
 		}
 		if records[0].Material != 0.2 || records[0].Choice != "contradicted" {
 			t.Fatalf("records = %#v", records)
 		}
 	})
 
-	t.Run("judge contradicted without a material answer never flags", func(t *testing.T) {
+	t.Run("judge contradicted without a material answer still flags", func(t *testing.T) {
 		t.Parallel()
 		answers := map[string]judge.Answer{
 			"c1_relation": {
@@ -903,13 +1056,13 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 				Probabilities: map[string]float64{"count_mismatch": 0.92},
 			},
 		}
-		flagged, _, _ := aggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
-		if flagged {
-			t.Fatal("contradicted without material flagged")
+		flagged, _, _ := AggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
+		if !flagged {
+			t.Fatal("contradicted probability at threshold without material did not flag")
 		}
 	})
 
-	t.Run("confidence below threshold is uncertain and never flags", func(t *testing.T) {
+	t.Run("contradicted probability in the uncertain band never flags", func(t *testing.T) {
 		t.Parallel()
 		answers := map[string]judge.Answer{
 			"c1_relation": {
@@ -918,16 +1071,16 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 			},
 			"c1_material": {Type: judge.QuestionNoul, Noul: 0.99},
 		}
-		flagged, _, uncertain := aggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
+		flagged, _, uncertain := AggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
 		if flagged {
-			t.Fatal("low-confidence contradicted flagged")
+			t.Fatal("contradicted probability in [0.30, threshold) flagged")
 		}
 		if len(uncertain) != 1 || uncertain[0].Key != "c1_relation" || uncertain[0].Choice != "count_mismatch" {
 			t.Fatalf("uncertain = %#v", uncertain)
 		}
 	})
 
-	t.Run("contradicted probability in 0.30-0.70 is uncertain and never flags", func(t *testing.T) {
+	t.Run("contradicted probability in 0.30-threshold is uncertain and never flags", func(t *testing.T) {
 		t.Parallel()
 		answers := map[string]judge.Answer{
 			"c1_relation": {
@@ -936,7 +1089,7 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 			},
 			"c1_material": {Type: judge.QuestionNoul, Noul: 0.99},
 		}
-		flagged, _, uncertain := aggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
+		flagged, _, uncertain := AggregateClaimEvidence([]Claim{unsettledCommit}, answers, 0.9)
 		if flagged {
 			t.Fatal("mid-probability contradicted flagged")
 		}
@@ -954,7 +1107,7 @@ func TestClaimEvidenceAggregation(t *testing.T) {
 			},
 			"c2_material": {Type: judge.QuestionNoul, Noul: 0.99},
 		}
-		flagged, _, uncertain := aggregateClaimEvidence([]Claim{codeContradicted, unsettledCommit}, answers, 0.9)
+		flagged, _, uncertain := AggregateClaimEvidence([]Claim{codeContradicted, unsettledCommit}, answers, 0.9)
 		if !flagged {
 			t.Fatal("code contradicted did not flag when a judge answer was uncertain")
 		}

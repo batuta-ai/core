@@ -688,7 +688,7 @@ func TestCorpusRunSummary(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
 	wantTail := []string{
-		"behaviour_absent 1 0 0 1 1 0 0",
+		"behaviour_absent 1 0 1 0 0 0 0",
 		"clean 1 0 1 0 0 1 0",
 		"wrong_count 1 1 0 0 0 0 0",
 		"judge calls=2 input_tokens=24",

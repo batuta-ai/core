@@ -538,7 +538,7 @@ func corpusRunCases(ctx context.Context, j judge.Judge, buildReason string, thre
 	var totals corpusRunTotals
 	for _, item := range cases {
 		request, claims := corpusClaimEvidenceRequest(item)
-		outcome := corpusRunCase{item: item, judgment: aggregateReplayClaims(claims, nil, threshold)}
+		outcome := corpusRunCase{item: item, judgment: replayJudgmentFrom(claims, nil, threshold)}
 		if len(request.Questions) > 0 {
 			outcome.asked = true
 			switch {
@@ -554,7 +554,7 @@ func corpusRunCases(ctx context.Context, j judge.Judge, buildReason string, thre
 						totals.sawUsage = true
 					}
 					totals.inputTokens += response.Usage.InputTokens
-					outcome.judgment = aggregateReplayClaims(claims, response.Answers, threshold)
+					outcome.judgment = replayJudgmentFrom(claims, response.Answers, threshold)
 				}
 			}
 		}
