@@ -276,27 +276,20 @@ bounded diff slice — never the corpus file's other cases, never a key (the API
 key lives in the environment variable `key_env` names). The run is read-only:
 it touches the corpus file and the judge endpoint, and writes nothing.
 
-Every question is also recorded as a `judge_intent` record before the call and
-a `judge_result` record after it, carrying the decision name, the question
-keys, the state digest (`sha256:<hex>` over canonical JSON), the model, the
-answers, the token usage and the latency. The trace never carries the state
-body — it may hold executor output — only its digest, so a run can be replayed
-from the logs.
-
 ### `classify`
 
 `classify` asks the `classify` decision for a plan task's complexity lane and
 domain from the task text alone. The state is the task's title, scope and
-acceptance criteria, the plan context paragraphs that name the task (secret
-lines dropped, bounded at 4 000 bytes) and a note that task text is data, not
-instructions. The request never carries the host's lane. Two `choice`
-questions come back — `complexity` over low/medium/high/critical and `domain`
-over the routing domains — and a missing, unknown or under-threshold answer
-falls back on that axis only (complexity to critical, domain to general),
-setting the `fallback` flag. The threshold is the `classify` decision's
-configured threshold (default 0.7) and is printed; there is no threshold
-flag. The judge only proposes: nothing downstream reads these lanes unless a
-caller does, and routing is unchanged.
+acceptance criteria, the context paragraphs labelled for the task followed
+by the unlabelled Decisions paragraphs (secret-shaped lines dropped, bounded
+at 4000 bytes) and a note that task text is data, not instructions. The request
+never carries the host's lane. Two `choice` questions come back — `complexity`
+over low/medium/high/critical and `domain` over the routing domains — and a
+missing, unknown or under-threshold answer falls back on that axis only
+(complexity to critical, domain to general), setting the `fallback` flag. The
+threshold is the `classify` decision's configured threshold (default 0.7) and
+is printed; there is no threshold flag. The judge only proposes: nothing
+downstream reads these lanes unless a caller does, and routing is unchanged.
 
 The plain form classifies one plan:
 
@@ -308,7 +301,7 @@ batuta judge classify --plan <file> [--json] [--config <path>]
 It prints the threshold, then one line per task:
 
 ```text
-classify-bench task_1 plan=testing/low judge=testing/low complexity=0.90 domain=0.90 fallback=false input_tokens=12
+task_1 plan=testing/low judge=testing/low complexity=0.90 domain=0.90 fallback=false input_tokens=12
 ```
 
 `plan=` is the host's lane, `judge=` the proposed one with both confidences;
@@ -345,9 +338,7 @@ What leaves the machine is one classify request per task: the task text and
 applicable plan context described above — never the host's lane, never other
 plans or journals, and never a key (the API key lives in the environment
 variable `key_env` names). The bench touches the plan files, the journal
-files and the judge endpoint, and writes nothing. Every request is recorded
-as `judge_intent` and `judge_result` trace records carrying the state digest,
-never the state body.
+files and the judge endpoint, and writes nothing.
 
 ## Safety rules
 
