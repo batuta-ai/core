@@ -183,3 +183,50 @@ What the numbers show beyond the rule, without restating it at another threshold
 - Cost of the judge on this corpus: 177 calls, 312,094 input tokens, 53 s wall time, for zero flags.
 
 Headline: on 112 legitimate attempts with a borrowed, false behaviour claim about a real changed file, the judge flagged none; code settled every fabricated identifier and wrong test count. `claim_evidence` stays code-first; the judge stays in shadow.
+
+## Plan classification, run 1 (2026-09-22)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 11 (commit `eba9c19`). Binary built from `7ba6ead` (branch `feat/judge-classify`; final review of delivery `judge-classify-fixes-20260922-112834` returned SHIP with no findings). Judge config `.batuta/judge-classify-v1/judge-classify.json`: `provider: auto`, `classify` threshold 0.7. One trial, 2026-09-22 12:04:47Z to 12:05:49Z. Command: `batuta judge classify bench` with one `--plan` per finished plan, `--journals` for the core and skills journals, `--json`. Raw output in `.batuta/judge-classify-v1/run.jsonl`; every count below was computed from it.
+
+Deviation from the frozen inputs, stated before reading the result: the first launch stopped before any judge call because `core/.batuta/plans/done/supervision-fixes.md` (2 tasks) has a free-text `Status` line the plan parser rejects (`.batuta/judge-classify-v1/parse.txt`). That plan was excluded; the run covers the other 51 plans and 181 tasks (`plans-run.txt`). Nothing else changed between the two launches.
+
+| measure | value |
+|---|---|
+| tasks | 181 (labels: 84 high, 84 medium, 13 low, 0 critical) |
+| judge answers | 171 high, 10 critical, 0 medium, 0 low |
+| exact complexity agreement | 80 / 181 = 44.2% |
+| constant-answer baseline | 84 / 181 = 46.4% (most common label; high and medium tie) |
+| under-routed (judge lower than label) | 0 |
+| over-routed (judge higher than label) | 101 / 181 = 55.8% |
+| domain agreement | 131 / 181 = 72.4% |
+| fallbacks (a confidence below 0.7) | 55: 10 on complexity (to critical), 46 on domain (to general) |
+| complexity confidence | median 0.93, min 0.32, max 0.99 |
+| judge calls / unavailable | 181 / 0 |
+| input tokens (from usage) | 281,129 |
+
+Confusion matrix, label (rows) against judge (columns):
+
+| label \ judge | low | medium | high | critical |
+|---|---|---|---|---|
+| low (13) | 0 | 0 | 9 | 4 |
+| medium (84) | 0 | 0 | 82 | 2 |
+| high (84) | 0 | 0 | 80 | 4 |
+
+Against the frozen rule:
+1. Exact agreement ≥80%: 44.2%. **Fails.**
+2. At least 20 points above the constant-answer baseline: 44.2% against 46.4%, which is 2.2 points *below* it. **Fails.**
+3. Under-routed ≤10%: 0%. Holds, because the judge never chose a lane below `high`.
+
+The judge is not fit to classify plan tasks on this corpus. It answered `high` for 171 of 181 tasks with a median confidence of 0.93, including 82 of 84 tasks the host labelled `medium` and 9 of 13 labelled `low`. Confident and uniform, not uncertain.
+
+Measure (b), reported only, for tasks whose delivery journal was found (131 of 181):
+
+| judge vs executed lane | first attempt candidate | retried | failed | escalated | no journal |
+|---|---|---|---|---|---|
+| equal | 26 | 11 | 9 | 0 | 34 |
+| higher | 59 | 18 | 8 | 0 | 16 |
+| lower | 0 | 0 | 0 | 0 | 0 |
+
+Of the 85 over-routed tasks with a journal, 59 succeeded on the first attempt at the host's lower lane. Following the judge would have sent them to a more expensive executor with no need shown by the outcome.
+
+Headline: asked to pick a lane from the task text with the skills' own rubric, Jev answered `high` for 94% of tasks and agreed with the host less often than a constant answer would.
