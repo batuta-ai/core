@@ -110,7 +110,9 @@ func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*S
 		return nil, err
 	}
 	if err := session.selectOption(ctx, "thought_level", config.EffortConfigID, config.Effort); err != nil {
-		return nil, err
+		if !session.effortNotApplicable(err) {
+			return nil, err
+		}
 	}
 	if err := session.checkConfiguration(); err != nil {
 		return nil, err
@@ -197,11 +199,30 @@ func (s *Session) checkOption(category, id, value string) error {
 	return nil
 }
 
+func (s *Session) hasOption(category, id string) bool {
+	for _, option := range s.options {
+		if (id != "" && option.ID == id) || (id == "" && option.Category == category) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) effortNotApplicable(err error) bool {
+	return err != nil && s.config.EffortConfigID == "" && !s.hasOption("thought_level", s.config.EffortConfigID)
+}
+
 func (s *Session) checkConfiguration() error {
 	if err := s.checkOption("model", s.config.ModelConfigID, s.config.Model); err != nil {
 		return err
 	}
-	return s.checkOption("thought_level", s.config.EffortConfigID, s.config.Effort)
+	if err := s.checkOption("thought_level", s.config.EffortConfigID, s.config.Effort); err != nil {
+		if s.effortNotApplicable(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // Prompt may be called once, even if submission fails. A transport failure in

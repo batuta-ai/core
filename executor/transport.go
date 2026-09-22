@@ -61,10 +61,12 @@ func (a Adapter) acpCommand() (Invocation, error) {
 }
 
 // ACPQualification is trusted release evidence supplied by the owner of ACP.Open,
-// for that exact launch, version, platform, model and effort. Adapter frontmatter
-// cannot grant eligibility. No provider is universally qualified: OpenCode and
-// Cursor remain pilots; Codex permission/cleanup and Claude authenticated task
-// evidence are gates. Native Windows tests are required for a Windows record.
+// for that exact launch, version, platform, model and effort. Model "*" matches
+// any requested model; executor, run, version, platform and lifecycle flags
+// still must match exactly. Adapter frontmatter cannot grant eligibility. No
+// provider is universally qualified: OpenCode and Cursor remain pilots; Codex
+// permission/cleanup and Claude authenticated task evidence are gates. Native
+// Windows tests are required for a Windows record.
 type ACPQualification struct {
 	Executor          string
 	Run               string
@@ -77,6 +79,28 @@ type ACPQualification struct {
 	Cleanup           bool
 	AuthenticatedTask bool
 	Platform          bool
+}
+
+func (q ACPQualification) matches(e Execution) bool {
+	if e.Adapter.ACP == nil {
+		return false
+	}
+	if q.Executor != e.Adapter.Name || q.Run != e.Adapter.ACP.Run || q.Version != e.Adapter.ACP.Version {
+		return false
+	}
+	if q.GOOS != runtime.GOOS || q.GOARCH != runtime.GOARCH {
+		return false
+	}
+	if !q.Permissions || !q.Cleanup || !q.AuthenticatedTask || !q.Platform {
+		return false
+	}
+	if q.Model != "*" && q.Model != e.Request.Model {
+		return false
+	}
+	if q.Effort == e.Request.Effort {
+		return true
+	}
+	return q.Effort == "" && e.Adapter.ACP.EffortConfigID == ""
 }
 
 // TransportBackend selects transport per execution without changing provider or
@@ -141,6 +165,9 @@ func (b TransportBackend) Execute(ctx context.Context, e Execution) (result Resu
 		return open(ctx, execution)
 	}
 	result, err = backend.Execute(runCtx, e)
+	if result.Receipt != nil && e.Adapter.ACP != nil && e.Adapter.ACP.EffortConfigID == "" && e.Request.Effort != "" {
+		result.Receipt.Effort = "not_applicable"
+	}
 	var incompatible *acpCompatibilityError
 	if b.Mode == "auto" && runCtx.Err() == nil && errors.As(err, &incompatible) {
 		return cli.Execute(runCtx, e)
@@ -174,7 +201,7 @@ func (b TransportBackend) prepare(ctx context.Context, e Execution) (Invocation,
 	}
 	qualified := false
 	for _, q := range b.Qualifications {
-		if q.Executor == e.Adapter.Name && q.Run == e.Adapter.ACP.Run && q.Version == e.Adapter.ACP.Version && q.GOOS == runtime.GOOS && q.GOARCH == runtime.GOARCH && q.Model == e.Request.Model && q.Effort == e.Request.Effort && q.Permissions && q.Cleanup && q.AuthenticatedTask && q.Platform {
+		if q.matches(e) {
 			qualified = true
 			break
 		}

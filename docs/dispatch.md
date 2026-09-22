@@ -54,10 +54,13 @@ launches a fresh managed process with fixed resolved argv, an absolute requested
 workspace, inherited environment and bounded protocol I/O and owned shutdown.
 Prompts travel through the protocol, never a shell command. The factory carries
 one release-owned qualification: OpenCode **1.18.31**, fixed launch
-`opencode acp`, native **macOS arm64** (`darwin/arm64`), model
-`opencode/big-pickle`, and **empty effort**. All other combinations remain
-unavailable for explicit ACP; `auto` uses CLI before submission. This describes
-the source constructor, not ACP availability in an installed beta23 binary.
+`opencode acp`, native **macOS arm64** (`darwin/arm64`), and **empty effort**.
+`Model: *` matches any model the session advertises and confirms. Executor,
+launch, version, platform and the lifecycle flags still must match exactly; `*`
+does not transfer evidence to another executor, version or platform. All other
+combinations remain unavailable for explicit ACP; `auto` uses CLI before
+submission. This describes the source constructor, not ACP availability in an
+installed beta23 binary.
 
 The command writes one compact JSON report to stdout and puts its brief,
 pre-submission intent, complete evidence and bounded stdout/stderr in a new
@@ -117,16 +120,19 @@ remains visible and points at complete caller-owned evidence.
 Adapter metadata only describes a possible ACP launch. It cannot qualify one.
 A qualification is specific to executor ID, exact launch and version, operating
 system and architecture, model, effort, permission handling, authenticated
-task execution, platform coverage and verified cleanup. Evidence from one
-executor, version, model or platform does not transfer to another.
+task execution, platform coverage and verified cleanup. Model `*` matches any
+requested model at the qualification gate; the session must still advertise
+that model among its options and confirm it before the prompt. Evidence from
+one executor, version or platform does not transfer to another.
 
 The known launch families are Codex's dedicated `codex-acp` wrapper, Claude's
 dedicated `claude-agent-acp` wrapper, `opencode acp`, and `cursor-agent acp`.
 Only the exact OpenCode tuple above has accepted native qualification evidence.
-Other OpenCode versions, models, efforts and platforms, as well as Cursor,
-Codex, Claude and Agy, remain on CLI. Linux and Windows require their own native
-evidence; Windows also requires native lifecycle ownership and teardown before
-launch. No wrapper is downloaded automatically.
+Other OpenCode versions, efforts that require an `acp_effort_config`, and
+platforms, as well as Cursor, Codex, Claude and Agy, remain on CLI. Linux and
+Windows require their own native evidence; Windows also requires native
+lifecycle ownership and teardown before launch. No wrapper is downloaded
+automatically.
 
 For the qualified tuple, add these existing fields to an operator-owned
 `opencode` adapter's frontmatter, retaining its required CLI fields:
@@ -151,11 +157,13 @@ batuta dispatch \
   --timeout 45m
 ```
 
-Leave `--effort` unset. A different requested model or any nonempty effort
-fails qualification before launch. The session must also acknowledge the exact
-model before receiving the prompt; incompatible configuration fails explicit
-ACP and permits `auto` fallback only after verified pre-submission shutdown.
-Neither path silently changes the requested model or effort. See the
+The session must advertise the requested model among its options and confirm
+it before receiving the prompt; a model that is missing or unconfirmed fails
+explicit ACP and permits `auto` fallback only after verified pre-submission
+shutdown. When the adapter declares no `acp_effort_config`, a requested effort
+is recorded in the receipt as `not_applicable` instead of failing
+qualification. Neither path silently changes the requested model or effort.
+See the
 [qualification evidence](dispatch-measurement.md#native-opencode-qualification)
 for the tested scope and usage gaps.
 

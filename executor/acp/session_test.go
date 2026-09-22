@@ -99,12 +99,41 @@ func TestSessionAcknowledgesConfigurationBeforePrompt(t *testing.T) {
 	awaitError(t, done, nil)
 }
 
+func TestSessionRefusesUnconfirmedModel(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, model, state, ack string }{
+		{name: "not advertised", model: "invented", state: configState("small", "low")},
+		{name: "unconfirmed before prompt", model: "large", state: configState("small", "low"), ack: configState("small", "low")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			conn, peer := testConnection(t, Options{})
+			cwd := t.TempDir()
+			done := make(chan error, 1)
+			go func() {
+				_, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: tt.model})
+				done <- err
+			}()
+			reader := bufio.NewReader(peer)
+			setupPeer(t, peer, reader, cwd, tt.state)
+			if tt.ack != "" {
+				request := expectMethod(t, reader, "session/set_config_option")
+				sessionReply(t, peer, request, tt.ack)
+			}
+			awaitError(t, done, ErrConfiguration)
+			if conn.nextID > 4 {
+				t.Fatalf("unexpected request submitted: %d", conn.nextID)
+			}
+		})
+	}
+}
+
 func TestSessionRejectsIncompatibleConfiguration(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ name, model, effort, state, ack string }{
 		{name: "missing model", model: "large", state: `{}`},
 		{name: "unknown model", model: "invented", state: configState("small", "low")},
-		{name: "missing effort", effort: "high", state: `{}`},
 		{name: "unacknowledged model", model: "large", state: configState("small", "low"), ack: configState("small", "low")},
 		{name: "effort resets model", model: "large", effort: "high", state: configState("large", "low"), ack: configState("small", "high")},
 		{name: "empty acknowledgement", model: "large", state: configState("small", "low"), ack: `{}`},
