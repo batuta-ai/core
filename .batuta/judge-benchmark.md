@@ -230,3 +230,17 @@ Measure (b), reported only, for tasks whose delivery journal was found (131 of 1
 Of the 85 over-routed tasks with a journal, 59 succeeded on the first attempt at the host's lower lane. Following the judge would have sent them to a more expensive executor with no need shown by the outcome.
 
 Headline: asked to pick a lane from the task text with the skills' own rubric, Jev answered `high` for 94% of tasks and agreed with the host less often than a constant answer would.
+
+## Reanalysis of constructed-corpus run 1 — post hoc, not a result (2026-09-22)
+
+Asked by the maintainer whether Jev was applied correctly, the conductor recomputed from `.batuta/judge-corpus-v1/run-*.jsonl` the judge's own contradicted probability (`max_contradicted`) instead of the aggregate flag. Over the cases where the judge was asked (103 `behaviour_absent`, 27 `clean`):
+
+| threshold on `max_contradicted` | `behaviour_absent` at or above | `clean` at or above |
+|---|---|---|
+| 0.5 | 92 / 103 | 0 / 27 |
+| 0.7 | 76 / 103 | 0 / 27 |
+| 0.9 | 33 / 103 | 0 / 27 |
+
+Area under the ROC curve: 0.968. The judge separated the borrowed behaviour claims from clean reports well; the 0/112 of run 1 came from the aggregation the batuta built around it (a defect choice counted only with choice confidence ≥0.9 *and* the `material` answer ≥0.9) and from an `unverifiable` criterion that told the model a short slice is not contradiction. These thresholds were chosen after seeing the data, so none of this is a result under the section 10 rule; it motivates plan `claim-evidence-v3`, which calibrates on one half of a new corpus and tests on the other with the split and rule frozen beforehand. Caveats: only 27 clean cases were asked at all (a clean report rarely carries a behaviour claim), and a borrowed task title may be an easy defect.
+
+The same question for plan classification: the `high` criterion ("subsystem or multi-file work fully captured by a precise brief") describes almost every batuta plan task by construction (a closed Scope with source and test files, a precise brief), and the judge applied it literally. Run 1 measured a rubric that cannot separate `medium` from `high`, not the judge's ability; only the chosen option was kept, so no probability reanalysis is possible there.
