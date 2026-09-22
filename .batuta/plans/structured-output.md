@@ -5,18 +5,18 @@
 **Created:** 2026-09-22 · **Status:** approved
 
 ## Tasks
-- [ ] 1. Usage record: cache read and write, reasoning, reported total, cost, cache semantics — backend/medium
+- [x] 1. Usage record: cache read and write, reasoning, reported total, cost, cache semantics — backend/medium
       Scope: executor/usage.go, executor/usage_test.go
       Accept: executor.Usage gains CacheReadTokens, CacheWriteTokens, ReasoningTokens and ReportedTotalTokens as *int64, CostAmount as *float64 with CostCurrency, and CacheSemantics set to additive or subset, every new field omitempty and nil when not reported → go test ./executor -run TestUsageExtendedFieldsUnknownByDefault; TotalTokens returns input plus output plus cache read and write when CacheSemantics is additive, input plus output when subset, and unknown when input or output is missing, never adding cost → go test ./executor -run TestUsageTotalBySemantics; the existing usage tests stay green → go test ./executor -run TestUsage
-- [ ] 2. Stream decoders for codex, claude, cursor, agy and opencode JSON output — backend/high
+- [x] 2. Stream decoders for codex, claude, cursor, agy and opencode JSON output — backend/high
       Depends on: 1
       Scope: executor/decode.go, executor/decode_test.go, executor/testdata/stream/*
       Accept: executor.Decoder turns one output line into the text it carries and, at the end, returns the usage of the session; decoders exist for cursor-stream-json, agy-stream-json, codex-json, claude-stream-json and opencode-json and are looked up by name → go test ./executor -run TestDecoderLookup; replaying each recorded fixture under executor/testdata/stream yields exactly the agent text of that fixture, including the line BATUTA-PROGRESS 1 START where present, and the usage values written in the fixture's .want.json → go test ./executor -run TestDecodersReplayFixtures; a line that is not JSON passes through unchanged and a JSON line of an unknown event type yields no text → go test ./executor -run TestDecoderUnknownLines; the package stays green → go test ./executor
-- [ ] 3. Adapters may declare output_decoder; the run decodes stdout before the log, progress and outcome — backend/high
+- [x] 3. Adapters may declare output_decoder; the run decodes stdout before the log, progress and outcome — backend/high
       Depends on: 2
       Scope: executor/adapter.go, executor/adapter_test.go, executor/run.go, executor/run_test.go, docs/loop.md
       Accept: an adapter may declare output_decoder naming a known decoder, and an unknown name makes the adapter invalid → go test ./executor -run TestAdapterOutputDecoder; with a decoder, the stdout written to the run log and to the progress observer is the decoded text, Result.Stdout holds the decoded text, Result.RawStdout the raw bytes, and Result.Usage the decoder's usage with provenance cli/<decoder> → go test ./executor -run TestRunDecodesStreamOutput; a BATUTA-PROGRESS line inside an event is reported while the process is still running, and a BATUTA-QUESTION line inside the final text is found by Outcome → go test ./executor -run TestRunDecodedProgressAndQuestion; limit_regex and usage_regex apply to the decoded text → go test ./executor -run TestRunDecodedLimitRegex; without output_decoder nothing changes → go test ./executor -run TestRunWithoutDecoderUnchanged; docs/loop.md documents output_decoder → grep -q 'output_decoder' docs/loop.md; the package stays green → go test ./executor
-- [ ] 4. ACP usage keeps every counter and the cost the agent sends — backend/medium
+- [x] 4. ACP usage keeps every counter and the cost the agent sends — backend/medium
       Depends on: 1
       Scope: executor/acp/session.go, executor/acp/session_test.go, executor/acp_backend.go, executor/acp_backend_test.go
       Accept: the ACP usage decoder keeps inputTokens, outputTokens, cachedReadTokens, cachedWriteTokens, thoughtTokens and totalTokens, and a usage_update session update with cost {amount, currency} sets CostAmount and CostCurrency, each nil when absent → go test ./executor/acp -run TestDecodeUsageAllCounters; ACP usage is recorded with CacheSemantics additive → go test ./executor/acp -run TestDecodeUsageAllCounters; the receipt copies every field into executor.Usage → go test ./executor -run TestACPReceiptCarriesFullUsage; the packages stay green → go test ./executor ./executor/acp
