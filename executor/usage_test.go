@@ -57,6 +57,10 @@ func TestOutcomeUsageFromTail(t *testing.T) {
 	t.Parallel()
 	adapter := Adapter{UsageRegex: "input:\\s*(?P<input>[0-9][0-9,. ]*)\\s+output:\\s*(?P<output>[0-9][0-9,. ]*)\\s+cached:\\s*(?P<cached>[0-9][0-9,. \u2009]*)"}
 	var stdout strings.Builder
+	// A decoy with different counters sits in the prefix the 20-line tail
+	// drops: the leftmost match wins, so extracting the decoy's counters
+	// means more than the tail was read.
+	stdout.WriteString("USAGE — INPUT: 1 OUTPUT: 1 CACHED: 1\n")
 	for line := 1; line <= 25; line++ {
 		fmt.Fprintf(&stdout, "noise %d\n", line)
 	}
@@ -88,7 +92,7 @@ func TestOutcomeUsageFromTail(t *testing.T) {
 
 	// The regex also sees the last 20 lines of stderr.
 	errorsTail := Adapter{UsageRegex: `total:\s*(?P<total>[0-9][0-9,.]*)`}
-	result = Result{ExitCode: 1, Stderr: []byte(strings.Repeat("noise\n", 22) + "total: 9,999\n")}
+	result = Result{ExitCode: 1, Stderr: []byte("total: 1\n" + strings.Repeat("noise\n", 22) + "total: 9,999\n")}
 	errorsTail.Outcome(&result)
 	if result.Usage == nil || result.Usage.ReportedTotalTokens == nil || *result.Usage.ReportedTotalTokens != 9999 {
 		t.Fatalf("stderr tail usage = %#v", result.Usage)
