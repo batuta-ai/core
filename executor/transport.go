@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -64,10 +65,11 @@ func (a Adapter) acpCommand() (Invocation, error) {
 }
 
 // ACPQualification is trusted release evidence supplied by the owner of ACP.Open,
-// for that exact launch, version, platform, model and effort. Model "*" matches
-// any requested model, and an empty qualification Effort matches any requested effort
-// when the adapter declares no acp_effort_config; executor, run, version,
-// platform and lifecycle flags still must match exactly. Adapter frontmatter
+// for that exact launch, version, platform, model, effort, mode and session meta.
+// Model "*" matches any requested model, and an empty qualification Effort matches
+// any requested effort when the adapter declares no acp_effort_config; executor, run,
+// version, platform and lifecycle flags still must match exactly. An empty Mode or
+// SessionMeta matches only an adapter that declares none. Adapter frontmatter
 // cannot grant eligibility. No provider is universally qualified: OpenCode and
 // Cursor remain pilots; Codex permission/cleanup and Claude authenticated task
 // evidence are gates. Native Windows tests are required for a Windows record.
@@ -79,6 +81,8 @@ type ACPQualification struct {
 	GOARCH            string
 	Model             string
 	Effort            string
+	Mode              string
+	SessionMeta       json.RawMessage
 	Permissions       bool
 	Cleanup           bool
 	AuthenticatedTask bool
@@ -90,6 +94,12 @@ func (q ACPQualification) matches(e Execution) bool {
 		return false
 	}
 	if q.Executor != e.Adapter.Name || q.Run != e.Adapter.ACP.Run || q.Version != e.Adapter.ACP.Version {
+		return false
+	}
+	if q.Mode != e.Adapter.ACP.Mode {
+		return false
+	}
+	if !compactedJSONEqual(q.SessionMeta, e.Adapter.ACP.SessionMeta) {
 		return false
 	}
 	if q.GOOS != runtime.GOOS || q.GOARCH != runtime.GOARCH {
@@ -105,6 +115,17 @@ func (q ACPQualification) matches(e Execution) bool {
 		return true
 	}
 	return q.Effort == "" && e.Adapter.ACP.EffortConfigID == ""
+}
+
+func compactedJSONEqual(left, right json.RawMessage) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return len(left) == 0 && len(right) == 0
+	}
+	var leftBuf, rightBuf bytes.Buffer
+	if json.Compact(&leftBuf, left) != nil || json.Compact(&rightBuf, right) != nil {
+		return false
+	}
+	return bytes.Equal(leftBuf.Bytes(), rightBuf.Bytes())
 }
 
 // TransportBackend selects transport per execution without changing provider or

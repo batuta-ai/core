@@ -2,7 +2,9 @@ package executor
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -133,7 +135,7 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 					GOOS: "darwin", GOARCH: "arm64", Model: "*", Effort: "",
 					Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
 				}
-				if len(backend.Qualifications) != 1 || backend.Qualifications[0] != wantQualification {
+				if len(backend.Qualifications) == 0 || !sameACPQualification(backend.Qualifications[0], wantQualification) {
 					t.Fatalf("release qualification changed: %+v", backend.Qualifications)
 				}
 				if scenario.syntheticHost {
@@ -221,6 +223,59 @@ func boolCount(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func TestNativeTransportBridgeRecords(t *testing.T) {
+	t.Parallel()
+	backend := NewNativeTransport("acp")
+	want := []ACPQualification{
+		{
+			Executor: "opencode", Run: "opencode acp", Version: "1.18.31",
+			GOOS: "darwin", GOARCH: "arm64", Model: "*", Effort: "",
+			Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
+		},
+		{
+			Executor: "codex", Run: "codex-acp", Version: "@agentclientprotocol/codex-acp 1.13.1",
+			GOOS: "darwin", GOARCH: "arm64", Model: "*", Effort: "", Mode: "read-only",
+			Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
+		},
+		{
+			Executor: "claude", Run: "claude-agent-acp", Version: "0.81.1",
+			GOOS: "darwin", GOARCH: "arm64", Model: "*", Effort: "", Mode: "acceptEdits",
+			SessionMeta: json.RawMessage(`{"claudeCode":{"options":{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}}}`),
+			Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
+		},
+	}
+	if len(backend.Qualifications) != len(want) {
+		t.Fatalf("release qualifications changed: %+v", backend.Qualifications)
+	}
+	for i := range want {
+		if !sameACPQualification(backend.Qualifications[i], want[i]) {
+			t.Fatalf("qualification %d: %+v", i, backend.Qualifications[i])
+		}
+	}
+	codex := backend.Qualifications[1]
+	codex.GOOS, codex.GOARCH = runtime.GOOS, runtime.GOARCH
+	codexLaunch := &ACPLaunch{Run: "codex-acp", Version: "@agentclientprotocol/codex-acp 1.13.1"}
+	codexExec := Execution{Adapter: Adapter{Name: "codex", ACP: codexLaunch}, Request: Request{Model: "gpt"}}
+	if codex.matches(codexExec) {
+		t.Fatal("codex without acp_mode is qualified")
+	}
+	claude := backend.Qualifications[2]
+	claude.GOOS, claude.GOARCH = runtime.GOOS, runtime.GOARCH
+	claudeLaunch := &ACPLaunch{Run: "claude-agent-acp", Version: "0.81.1", Mode: "acceptEdits"}
+	claudeExec := Execution{Adapter: Adapter{Name: "claude", ACP: claudeLaunch}, Request: Request{Model: "haiku"}}
+	if claude.matches(claudeExec) {
+		t.Fatal("claude without session meta is qualified")
+	}
+}
+
+func sameACPQualification(got, want ACPQualification) bool {
+	return got.Executor == want.Executor && got.Run == want.Run && got.Version == want.Version &&
+		got.GOOS == want.GOOS && got.GOARCH == want.GOARCH && got.Model == want.Model && got.Effort == want.Effort &&
+		got.Mode == want.Mode && bytes.Equal(got.SessionMeta, want.SessionMeta) &&
+		got.Permissions == want.Permissions && got.Cleanup == want.Cleanup &&
+		got.AuthenticatedTask == want.AuthenticatedTask && got.Platform == want.Platform
 }
 
 func TestNativeTransportDefaultDenialNeverFallsBack(t *testing.T) {
@@ -610,6 +665,56 @@ func TestQualificationAnyModel(t *testing.T) {
 				t.Fatalf("mismatch %s: %+v / %v opens=%d calls=%d", mismatch, result, err, opens, *calls)
 			}
 		})
+	}
+}
+
+func TestQualificationPinsModeAndMeta(t *testing.T) {
+	t.Parallel()
+	pinned := ACPQualification{
+		Executor: "codex", Run: "codex-acp", Version: "1.13.1",
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Model: "*", Effort: "",
+		Mode: "read-only", SessionMeta: json.RawMessage(`{"sandbox":{"enabled":true}}`),
+		Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
+	}
+	execution := func(mode string, meta json.RawMessage) Execution {
+		return Execution{
+			Adapter: Adapter{Name: "codex", ACP: &ACPLaunch{Run: "codex-acp", Version: "1.13.1", Mode: mode, SessionMeta: meta}},
+			Request: Request{Model: "any"},
+		}
+	}
+	compact := json.RawMessage(`{"sandbox":{"enabled":true}}`)
+	spaced := json.RawMessage(`{ "sandbox": { "enabled": true } }`)
+	if !pinned.matches(execution("read-only", compact)) {
+		t.Fatal("pinned mode and meta did not match")
+	}
+	if !pinned.matches(execution("read-only", spaced)) {
+		t.Fatal("compacted session meta did not match")
+	}
+	if pinned.matches(execution("acceptEdits", compact)) {
+		t.Fatal("mode mismatch qualified")
+	}
+	if pinned.matches(execution("", compact)) {
+		t.Fatal("empty adapter mode matched pinned mode")
+	}
+	if pinned.matches(execution("read-only", nil)) {
+		t.Fatal("empty adapter meta matched pinned meta")
+	}
+	if pinned.matches(execution("read-only", json.RawMessage(`{"sandbox":{"enabled":false}}`))) {
+		t.Fatal("different session meta qualified")
+	}
+	empty := pinned
+	empty.Mode, empty.SessionMeta = "", nil
+	if !empty.matches(execution("", nil)) {
+		t.Fatal("empty pins did not match adapter that declares none")
+	}
+	if empty.matches(execution("read-only", nil)) {
+		t.Fatal("empty mode matched adapter mode")
+	}
+	if empty.matches(execution("", compact)) {
+		t.Fatal("empty meta matched adapter meta")
+	}
+	if empty.matches(execution("", json.RawMessage(`{}`))) {
+		t.Fatal("empty meta matched empty object")
 	}
 }
 
