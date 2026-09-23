@@ -1,10 +1,10 @@
 # WORK — core
 
-## Current status — 2026-09-22 evening: structured-output running
-- [ ] Merged 2026-09-22: core#118 (executor telemetry), core#119 (probes, fixtures, plans), skills#60 (opencode limit_regex).
-- [ ] Loop `structured-output` launched on `feat/structured-output-impl` with `--transport auto`; then `verifier-coverage`.
+## Current status — 2026-09-23: structured-output and verifier-coverage in review
+- [ ] Open PRs, not merged: **core#121** `feat/structured-output-impl` (plan `structured-output` plus four review-fix plans, final review SHIP, CI green) and **core#122** `feat/verifier-coverage` stacked on #121 (review SHIP). Merge #121 first.
+- [ ] Known minors listed in both PR bodies; agy's sandbox once could not read `~/.gitconfig`; `TestNativeTransportProcessOutcomes/disconnect` and `TestLimitWaitRecordsTail` flaked once under loop load.
 - [ ] Transport: ACP for codex, claude, opencode; CLI JSON for cursor and agy (their ACP sends no usage). Bridges come from the ACP registry `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`, which the host installer should read instead of a hand-kept list; the codex bridge is `@agentclientprotocol/codex-acp` (the `@zed-industries` one stops at gpt-5.5).
-- [ ] After the plans: qualify the codex and claude ACP bridges with real lifecycle probes, then the loop defaults to `--transport auto`.
+- [ ] Next: qualify the codex and claude ACP bridges with real lifecycle probes, then the loop defaults to `--transport auto`; skills PR for adapters (`output_decoder`, `acp_run`, stream-json).
 
 ## Current status — 2026-09-22 pause: telemetry shipped, transport decided
 - [ ] Open PRs, all CI green at pause: **core#118** `feat/executor-telemetry` (output tail of unclean sessions and `limit_wait`, adapter `usage_regex`; both plans reviewed SHIP), **core#119** `feat/structured-output` (evidence and the next two plans, no production code), **skills#60** `fix/opencode-limit-regex`. None merged.
