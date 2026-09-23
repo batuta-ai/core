@@ -378,7 +378,8 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		changedPaths = changed
 		report.Scope = gates.Scope(changed, ac.plan.Scope)
 		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
-		if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution) && len(criteria) > 0 {
+		proofless := slices.ContainsFunc(criteria, func(criterion gates.Criterion) bool { return criterion.Proof == "" })
+		if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution, proofless) && len(criteria) > 0 {
 			verdict, err := r.verify(ctx, &ac, criteria, report.Proofs)
 			if err != nil {
 				return err

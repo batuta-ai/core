@@ -463,9 +463,10 @@ func Verifier(output string, criteria int, proofs []Verdict) Verdict {
 }
 
 // NeedsVerifier says when gate 3 dispatches the independent verifier:
-// high or critical lanes, a silent tree, or any retry.
-func NeedsVerifier(complexity string, treeSilent bool, execution int) bool {
-	return complexity == "high" || complexity == "critical" || treeSilent || execution > 1
+// high or critical lanes, a silent tree, any retry, or any criterion
+// without a proof command — the case `Proofs` leaves to the verifier.
+func NeedsVerifier(complexity string, treeSilent bool, execution int, proofless bool) bool {
+	return complexity == "high" || complexity == "critical" || treeSilent || execution > 1 || proofless
 }
 
 // Decide fills Passed from the individual verdicts.
