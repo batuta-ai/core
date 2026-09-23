@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0-beta.38](https://github.com/batuta-ai/core/compare/v1.1.0-beta.37...v1.1.0-beta.38) (2026-09-23)
+
+
+### Features
+
+* A qualification pins the session mode and meta, and the stock ([381a646](https://github.com/batuta-ai/core/commit/381a646be0ce1733f101f5aff3e555b6521a13db))
+* adapters may declare acp_mode and acp_session_meta; the session ([923c44b](https://github.com/batuta-ai/core/commit/923c44b666600ba6f2dfc93576e5664840416e02))
+* **executor:** worktree-scoped ACP permissions and qualified codex/claude bridges ([194d7ec](https://github.com/batuta-ai/core/commit/194d7ecf2ee3a17212ed5bf3602f68de4bd0e297))
+* the stock factory's permission policy allows requests confined to ([2e3f6d6](https://github.com/batuta-ai/core/commit/2e3f6d667f2f65c74bf626599daa4942ef35965b))
+* the worktree policy rejects a `..` element split on every platform ([6af152b](https://github.com/batuta-ai/core/commit/6af152b75b31bf4f521d98e98f0a237c7a405205))
+* the worktree policy skips only components that do not exist and ([9166381](https://github.com/batuta-ai/core/commit/9166381f1f98f50cb1ba5362410cfedad81a8db0))
+
 ## [1.1.0-beta.37](https://github.com/batuta-ai/core/compare/v1.1.0-beta.36...v1.1.0-beta.37) (2026-09-23)
 
 
