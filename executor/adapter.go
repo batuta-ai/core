@@ -8,6 +8,7 @@
 package executor
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -116,9 +117,16 @@ func ParseAdapter(payload []byte) (Adapter, error) {
 		UsageRegex: fields["usage_regex"], OutputDecoder: fields["output_decoder"],
 		CwdFlag: fields["cwd_flag"], BriefLimitLines: 100, Fields: fields,
 	}
-	for _, key := range []string{"acp_run", "acp_version", "acp_model_config", "acp_effort_config"} {
+	for _, key := range []string{"acp_run", "acp_version", "acp_model_config", "acp_effort_config", "acp_mode", "acp_session_meta"} {
 		if _, present := fields[key]; present {
-			adapter.ACP = &ACPLaunch{Run: fields["acp_run"], Version: fields["acp_version"], ModelConfigID: fields["acp_model_config"], EffortConfigID: fields["acp_effort_config"]}
+			adapter.ACP = &ACPLaunch{Run: fields["acp_run"], Version: fields["acp_version"], ModelConfigID: fields["acp_model_config"], EffortConfigID: fields["acp_effort_config"], Mode: fields["acp_mode"]}
+			if raw, ok := fields["acp_session_meta"]; ok {
+				var value json.RawMessage
+				if json.Unmarshal([]byte(raw), &value) != nil || len(value) == 0 || value[0] != '{' {
+					return Adapter{}, fmt.Errorf("%w: acp_session_meta must be a JSON object", ErrAdapterInvalid)
+				}
+				adapter.ACP.SessionMeta = json.RawMessage(raw)
+			}
 			if _, err := adapter.acpCommand(); err != nil {
 				return Adapter{}, fmt.Errorf("%w: invalid ACP launch metadata", ErrAdapterInvalid)
 			}

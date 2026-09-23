@@ -254,3 +254,28 @@ func TestAdapterOptionalACPMetadata(t *testing.T) {
 		}
 	}
 }
+
+func TestAdapterACPModeAndSessionMeta(t *testing.T) {
+	t.Parallel()
+	payload := strings.Replace(codexAdapter, "name: codex", "name: codex\nacp_run: codex-acp\nacp_version: 1.11.0\nacp_mode: read-only\nacp_session_meta: {\"claudeCode\":{\"options\":{\"sandbox\":{\"enabled\":true}}}}", 1)
+	adapter, err := ParseAdapter([]byte(payload))
+	if err != nil || adapter.ACP == nil {
+		t.Fatalf("metadata: %+v / %v", adapter.ACP, err)
+	}
+	if adapter.ACP.Mode != "read-only" || string(adapter.ACP.SessionMeta) != `{"claudeCode":{"options":{"sandbox":{"enabled":true}}}}` {
+		t.Fatalf("ACP: %+v", adapter.ACP)
+	}
+	for _, meta := range []string{
+		`acp_session_meta: []`,
+		`acp_session_meta: "object"`,
+		`acp_session_meta: null`,
+		`acp_session_meta: true`,
+		`acp_session_meta: 1`,
+		`acp_session_meta: {`,
+	} {
+		bad := strings.Replace(codexAdapter, "name: codex", "name: codex\nacp_run: codex-acp\nacp_version: 1.11.0\n"+meta, 1)
+		if _, err := ParseAdapter([]byte(bad)); err == nil {
+			t.Errorf("accepted invalid acp_session_meta: %s", meta)
+		}
+	}
+}

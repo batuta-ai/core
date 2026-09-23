@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os/exec"
 	"path/filepath"
@@ -25,6 +26,8 @@ type ACPLaunch struct {
 	Version        string
 	ModelConfigID  string
 	EffortConfigID string
+	Mode           string
+	SessionMeta    json.RawMessage
 }
 
 func (a Adapter) acpCommand() (Invocation, error) {
