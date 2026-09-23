@@ -301,6 +301,7 @@
 - [x] The stock factory's permission policy allows requests confined to the worktree and rejects the rest → cursor-agent (cursor-grok-4.6-high), commit fc308bf87c9e (trail: .batuta/runs/2026-09-23-acp-worktree-permissions-task-2.md, delivery acp-worktree-permissions-20260923-142155, plan acp-worktree-permissions, 2026-09-23)
 - [x] The permission docs state the worktree model → opencode (opencode/glm-5.3-flash), commit b0c99d146ca3 (trail: .batuta/runs/2026-09-23-acp-worktree-permissions-task-3.md, delivery acp-worktree-permissions-20260923-142155, plan acp-worktree-permissions, 2026-09-23)
 - [x] The worktree policy skips only components that do not exist and rejects `..` and unresolvable links → cursor-agent (cursor-grok-4.6-high), commit 1cdac8fc5c7b (trail: .batuta/runs/2026-09-23-acp-worktree-permissions-fixes-task-1.md, delivery acp-worktree-permissions-fixes-20260923-172322, plan acp-worktree-permissions-fixes, 2026-09-23)
+- [x] The worktree policy rejects a `..` element split on every platform path separator → opencode (opencode/glm-5.3-flash), commit 15a950eb2483 (trail: .batuta/runs/2026-09-23-acp-worktree-permissions-fixes-2-task-1.md, delivery acp-worktree-permissions-fixes-2-20260923-182609, plan acp-worktree-permissions-fixes-2, 2026-09-23)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
