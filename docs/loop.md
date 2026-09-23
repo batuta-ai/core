@@ -215,8 +215,9 @@ asked.
   observer and the outcome, so `BATUTA-PROGRESS` and `BATUTA-QUESTION` lines
   inside events, and `limit_regex` / `usage_regex`, apply to the decoded
   text. `Result.Stdout` is that text, `Result.RawStdout` the bounded raw
-  bytes, and `Result.Usage` the decoder's counters with provenance
-  `cli/<decoder>`. A session with
+  bytes, and `Result.Usage` holds the decoder counters (`cli/<decoder>`)
+  when the decoder reports usage; otherwise `usage_regex` may fill it
+  from the decoded text (`cli/usage_regex`). A session with
   no reported usage records `usage_unknown` instead.
 - **Conflicts keep the same runtime.** A conflicting candidate re-executes on
   the new base with the same executor, model, and reasoning; escalation is

@@ -11,7 +11,8 @@ import (
 
 // NewNativeTransport wires the managed-group lifecycle and the exact OpenCode
 // macOS arm64 qualification supported by release-owned native evidence. Model
-// "*" matches any model the session advertises and confirms. Adapter metadata
+// "*" matches any requested model at launch matching; advertising and
+// confirming the model are session checks after launch. Adapter metadata
 // cannot qualify other launches; see docs/dispatch-measurement.md.
 func NewNativeTransport(mode string) TransportBackend {
 	return TransportBackend{

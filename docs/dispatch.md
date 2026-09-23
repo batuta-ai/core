@@ -54,8 +54,8 @@ launches a fresh managed process with fixed resolved argv, an absolute requested
 workspace, inherited environment and bounded protocol I/O and owned shutdown.
 Prompts travel through the protocol, never a shell command. The factory carries
 one release-owned qualification: OpenCode **1.18.31**, fixed launch
-`opencode acp`, native **macOS arm64** (`darwin/arm64`), and effort per the
-[`not_applicable` rule](#qualification-and-permissions).
+`opencode acp`, native **macOS arm64** (`darwin/arm64`), empty effort, and effort
+recorded per the [`not_applicable` rule](#qualification-and-permissions).
 Launch matching checks only the qualification fields: `Model: *` matches any
 requested model, and an empty qualification effort matches any requested effort
 when the adapter declares no `acp_effort_config`. It does not inspect session options.
@@ -166,7 +166,7 @@ it before receiving the prompt; a model that is missing or unconfirmed fails
 explicit ACP and permits `auto` fallback only after verified pre-submission
 shutdown. The receipt records `not_applicable` only when the session skipped
 the effort. When the adapter declares no `acp_effort_config` and the session
-advertises no thought_level option, a requested effort is recorded that way
+advertises no thought_level option, the session records `not_applicable` after launch
 instead of failing qualification. Neither path
 silently changes the requested model or effort.
 See the
