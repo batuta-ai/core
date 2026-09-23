@@ -2,13 +2,13 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:1615c7990def -->
 
 **Goal:** Close the findings of the fourth review of branch `feat/structured-output-impl` (verdict FIX_BEFORE_SHIP, `.batuta/reviews/2026-09-22-structured-output-fixes-3/`): the pending-line cap added in fixes-3 must not drop complete lines or block later events, the usage total tests must fail on a wrong sum, and the docs and comments say which checks happen at launch matching and which in the session, and who fills `Result.Usage`.
-**Created:** 2026-09-22 · **Status:** approved
+**Created:** 2026-09-22 · **Status:** done
 
 ## Tasks
 - [x] 1. The decode writer emits complete lines before capping, resyncs at the next newline, and the usage tests discriminate — backend/high
       Scope: executor/run.go, executor/run_test.go, executor/usage_test.go
       Accept: one Write whose payload exceeds outputLimit but holds several newline-terminated events emits every one of those events → go test ./executor -run TestDecodeWriterEmitsCompleteLinesBeyondCap; after an unterminated line exceeds outputLimit, its excess is dropped with truncated set, the bytes up to the next newline are skipped, and a following complete event is decoded and written → go test ./executor -run TestDecodeWriterBoundsPendingLine; the pending buffer never exceeds outputLimit → go test ./executor -run TestDecodeWriterBoundsPendingLine; TestUsageTotalBySemantics uses a cost whose integer part is non-zero (50.0) and sets CacheReadTokens 40 and CacheWriteTokens 10 on the subset and unset fixtures while their expected total stays 125 → go test ./executor -run TestUsageTotalBySemantics; the package stays green → go test ./executor
-- [ ] 2. Docs and comments state launch matching, session checks and usage provenance exactly — docs/low
+- [x] 2. Docs and comments state launch matching, session checks and usage provenance exactly — docs/low
       Scope: docs/dispatch.md, docs/loop.md, executor/acp_native.go
       Accept: the NewNativeTransport comment in executor/acp_native.go says Model "*" matches any requested model at launch matching and that advertising and confirming the model are session checks after launch → grep -q 'at launch matching' executor/acp_native.go; docs/dispatch.md states the factory qualification's effort is empty, matching any requested effort when the adapter declares no acp_effort_config, and that the session records not_applicable after launch → grep -q 'records `not_applicable` after launch' docs/dispatch.md; docs/loop.md says Result.Usage holds the decoder counters (cli/<decoder>) when the decoder reports usage and that usage_regex may otherwise fill it from the decoded text (cli/usage_regex) → grep -q 'otherwise `usage_regex` may fill it' docs/loop.md; the package stays green → go test ./executor
 
