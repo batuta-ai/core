@@ -35,11 +35,27 @@ func WorktreePermissionPolicy(_ context.Context, execution Execution, request ac
 	return ""
 }
 
-func resolveWorktreeLocation(path string) (string, bool) {
-	for _, elem := range strings.Split(path, string(filepath.Separator)) {
-		if elem == ".." {
-			return "", false
+// worktreeLocationHasDotDot reports whether the path has a ".." element
+// between separators the platform accepts: '/' is one on every platform Go
+// supports, '\\' only on Windows, so splitting on filepath.Separator alone
+// would let a slash-written ".." reach filepath.Clean.
+func worktreeLocationHasDotDot(path string) bool {
+	for start := 0; start <= len(path); {
+		end := start
+		for end < len(path) && !os.IsPathSeparator(path[end]) {
+			end++
 		}
+		if path[start:end] == ".." {
+			return true
+		}
+		start = end + 1
+	}
+	return false
+}
+
+func resolveWorktreeLocation(path string) (string, bool) {
+	if worktreeLocationHasDotDot(path) {
+		return "", false
 	}
 	cleaned := filepath.Clean(path)
 	if !filepath.IsAbs(cleaned) {

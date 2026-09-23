@@ -126,6 +126,28 @@ func TestWorktreePolicyRejects(t *testing.T) {
 	}
 }
 
+func TestWorktreeLocationHasDotDot(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"dot dot between slashes", "dir/missing/../file.txt", true},
+		{"dot dot between platform separators", "dir" + string(filepath.Separator) + ".." + string(filepath.Separator) + "file.txt", true},
+		{"leading dot dot", ".." + string(filepath.Separator) + "file.txt", true},
+		{"partial element", filepath.Join("dir", "..etc", "file.txt"), false},
+		{"no dot dot", filepath.Join("dir", "file.txt"), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := worktreeLocationHasDotDot(tc.path); got != tc.want {
+				t.Fatalf("worktreeLocationHasDotDot(%q) = %v, want %v", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
 func resolvedCwd(t *testing.T) string {
 	t.Helper()
 	dir, err := filepath.EvalSymlinks(t.TempDir())
