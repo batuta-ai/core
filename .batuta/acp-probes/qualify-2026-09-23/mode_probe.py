@@ -50,9 +50,13 @@ def answer(msg):
     decisions.append({"kind": tc.get("kind"), "locations": locs, "allowed": bool(allow)})
     send({"jsonrpc": "2.0", "id": msg["id"], "result": {"outcome": outcome}})
 
+def redact(line):
+    # _auth/status_update carries the signed-in account; never keep it.
+    return line if '"_auth/status_update"' not in line else '{"method":"_auth/status_update","params":"redacted"}\n'
+
 def reader():
     for line in p.stdout:
-        out.write("<< " + line); out.flush()
+        out.write("<< " + redact(line)); out.flush()
         try: msg = json.loads(line)
         except ValueError: continue
         if "method" in msg and "id" in msg:
@@ -62,30 +66,35 @@ def reader():
             results[msg["id"]] = msg; pending.pop(msg["id"]).set()
 
 threading.Thread(target=reader, daemon=True).start()
-started = time.time()
-call("initialize", {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "batuta-probe", "version": "1"}})
-new = {"cwd": cwd, "mcpServers": []}
-if os.environ.get("CLAUDE_SANDBOX") == "meta":
-    new["_meta"] = {"claudeCode": {"options": {"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True}}}}
-sid = call("session/new", new)["result"]["sessionId"]
-modeset = call("session/set_config_option", {"sessionId": sid, "configId": "mode", "value": mode})
-current = [o.get("currentValue") for o in modeset.get("result", {}).get("configOptions", []) if o.get("id") == "mode"]
-cheap = {"codex-acp": [("model", "gpt-5.6-sol"), ("reasoning_effort", "low")], "claude-agent-acp": [("model", "haiku")]}
-for cid, val in cheap.get(os.path.basename(cmd), []):
-    call("session/set_config_option", {"sessionId": sid, "configId": cid, "value": val})
-res = call("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": prompts[case].replace("OUTSIDE", outside)}]}, timeout=150)
-time.sleep(0.5)
-report = {
-    "bridge": cmd, "mode_requested": mode, "mode_confirmed": current, "policy": policy, "case": case,
-    "elapsed_ms": int((time.time() - started) * 1000), "stop": res.get("result", {}).get("stopReason"), "error": res.get("error"),
-    "decisions": decisions,
-    "artifact": open(os.path.join(cwd, "artifact.txt")).read() if os.path.exists(os.path.join(cwd, "artifact.txt")) else None,
-    "shell": open(os.path.join(cwd, "shell.txt")).read() if os.path.exists(os.path.join(cwd, "shell.txt")) else None,
-    "outside_written": os.path.exists(os.path.join(outside, "denied.txt")),
-}
-print(json.dumps(report))
-out.write("## " + json.dumps(report) + "\n")
-p.terminate()
-try: p.wait(5)
-except subprocess.TimeoutExpired: p.kill()
-subprocess.run(["rm", "-rf", outside, cwd])
+try:
+    started = time.time()
+    call("initialize", {"protocolVersion": 1, "clientCapabilities": {}, "clientInfo": {"name": "batuta-probe", "version": "1"}})
+    new = {"cwd": cwd, "mcpServers": []}
+    if os.environ.get("CLAUDE_SANDBOX") == "meta":
+        new["_meta"] = {"claudeCode": {"options": {"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True}}}}
+    sid = call("session/new", new)["result"]["sessionId"]
+    modeset = call("session/set_config_option", {"sessionId": sid, "configId": "mode", "value": mode})
+    current = [o.get("currentValue") for o in modeset.get("result", {}).get("configOptions", []) if o.get("id") == "mode"]
+    cheap = {"codex-acp": [("model", "gpt-5.6-sol"), ("reasoning_effort", "low")], "claude-agent-acp": [("model", "haiku")]}
+    for cid, val in cheap.get(os.path.basename(cmd), []):
+        call("session/set_config_option", {"sessionId": sid, "configId": cid, "value": val})
+    res = call("session/prompt", {"sessionId": sid, "prompt": [{"type": "text", "text": prompts[case].replace("OUTSIDE", outside)}]}, timeout=150)
+    time.sleep(0.5)
+    report = {
+        "bridge": cmd, "mode_requested": mode, "mode_confirmed": current, "policy": policy, "case": case,
+        "elapsed_ms": int((time.time() - started) * 1000), "stop": res.get("result", {}).get("stopReason"), "error": res.get("error"),
+        "decisions": decisions,
+        "artifact": open(os.path.join(cwd, "artifact.txt")).read() if os.path.exists(os.path.join(cwd, "artifact.txt")) else None,
+        "shell": open(os.path.join(cwd, "shell.txt")).read() if os.path.exists(os.path.join(cwd, "shell.txt")) else None,
+        "outside_written": os.path.exists(os.path.join(outside, "denied.txt")),
+    }
+    print(json.dumps(report))
+    out.write("## " + json.dumps(report) + "\n")
+finally:
+    p.terminate()
+    try:
+        p.wait(5)
+    except subprocess.TimeoutExpired:
+        p.kill()
+    out.close()
+    subprocess.run(["rm", "-rf", outside, cwd])
