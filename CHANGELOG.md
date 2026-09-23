@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.0-beta.37](https://github.com/batuta-ai/core/compare/v1.1.0-beta.36...v1.1.0-beta.37) (2026-09-23)
+
+
+### Features
+
+* ACP usage keeps every counter and the cost the agent sends ([d856133](https://github.com/batuta-ai/core/commit/d8561335ed9edad86fd811c6cc9568c9ae22ee23))
+* adapters may declare output_decoder; the run decodes stdout before ([7d26881](https://github.com/batuta-ai/core/commit/7d268812b077fa9b3034996a279cf782e9677efe))
+* **executor:** structured executor output — stream decoders, full usage, ACP usage, any-model opencode qualification ([4d8bfde](https://github.com/batuta-ai/core/commit/4d8bfdeca6d3339b946e85b69c25cf68d108b552))
+* opencode ACP qualifies for any model the session advertises and ([e186a65](https://github.com/batuta-ai/core/commit/e186a65c8ea9d4093aa6342616a2082cd4529508))
+* session effort is not_applicable only when no acp_effort_config is ([79f2612](https://github.com/batuta-ai/core/commit/79f2612ccc4235e0368f893911e9c86afae4070e))
+* stream decoders for codex, claude, cursor, agy and opencode JSON ([d8196e9](https://github.com/batuta-ai/core/commit/d8196e9b9c41aa8ed7accf06a1f94250663c6466))
+* the decode writer emits complete lines before capping, resyncs at ([4f0d4e2](https://github.com/batuta-ai/core/commit/4f0d4e23b0f5314ebf499defd010e52e85ef345e))
+* the decode writer is bounded and drops a line whose write failed ([d5c9bd9](https://github.com/batuta-ai/core/commit/d5c9bd9f38281012272b5c679befdaed2416c757))
+* the receipt's not_applicable effort comes from the session, never ([142befb](https://github.com/batuta-ai/core/commit/142befbb280b39188fd6987331ecf74ea4552332))
+* the session records whether it skipped the effort; drift during the ([bb18f3b](https://github.com/batuta-ai/core/commit/bb18f3ba372ef5e3eecf57b2054624962faab4a0))
+* usage record: cache read and write, reasoning, reported total, cost ([76fabbd](https://github.com/batuta-ai/core/commit/76fabbd590b4405b02aac16be5938cd8e69d9755))
+
 ## [1.1.0-beta.36](https://github.com/batuta-ai/core/compare/v1.1.0-beta.35...v1.1.0-beta.36) (2026-09-22)
 
 
