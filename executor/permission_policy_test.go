@@ -70,7 +70,16 @@ func TestWorktreePolicyRejects(t *testing.T) {
 	if err := os.Mkdir(evil, 0700); err != nil {
 		t.Fatal(err)
 	}
+	danglingOutside := filepath.Join(cwd, "dangling-out")
+	if err := os.Symlink(filepath.Join(outside, "missing-target"), danglingOutside); err != nil {
+		t.Fatal(err)
+	}
+	danglingInside := filepath.Join(cwd, "dangling-in")
+	if err := os.Symlink(filepath.Join(cwd, "missing-target"), danglingInside); err != nil {
+		t.Fatal(err)
+	}
 	dotdot := cwd + string(filepath.Separator) + ".." + string(filepath.Separator) + filepath.Base(outside) + string(filepath.Separator) + "secret"
+	dotDotComponent := cwd + string(filepath.Separator) + "missing" + string(filepath.Separator) + ".." + string(filepath.Separator) + "file.txt"
 	request := func(kind string, paths ...string) acp.PermissionRequest {
 		var req acp.PermissionRequest
 		if kind != "" {
@@ -98,7 +107,10 @@ func TestWorktreePolicyRejects(t *testing.T) {
 		{"empty path", cwd, request("allow_once", "")},
 		{"outside location", cwd, request("allow_once", filepath.Join(outside, "file"))},
 		{"symlink escape", cwd, request("allow_once", filepath.Join(escape, "file"))},
+		{"dangling_symlink_outside", cwd, request("allow_once", filepath.Join(danglingOutside, "file"))},
+		{"dangling_symlink_inside", cwd, request("allow_once", filepath.Join(danglingInside, "file"))},
 		{"dot-dot escape", cwd, request("allow_once", dotdot)},
+		{"dot_dot_component", cwd, request("allow_once", dotDotComponent)},
 		{"no allow_once", cwd, onlyAlways},
 		{"empty options", cwd, request("", inside)},
 		{"prefix sibling", work, request("allow_once", filepath.Join(evil, "file"))},

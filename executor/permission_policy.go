@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -34,6 +36,11 @@ func WorktreePermissionPolicy(_ context.Context, execution Execution, request ac
 }
 
 func resolveWorktreeLocation(path string) (string, bool) {
+	for _, elem := range strings.Split(path, string(filepath.Separator)) {
+		if elem == ".." {
+			return "", false
+		}
+	}
 	cleaned := filepath.Clean(path)
 	if !filepath.IsAbs(cleaned) {
 		return "", false
@@ -41,16 +48,24 @@ func resolveWorktreeLocation(path string) (string, bool) {
 	var rest []string
 	current := cleaned
 	for {
-		resolved, err := filepath.EvalSymlinks(current)
-		if err == nil {
-			return filepath.Join(append([]string{resolved}, rest...)...), true
+		_, err := os.Lstat(current)
+		if err != nil {
+			if !errors.Is(err, os.ErrNotExist) {
+				return "", false
+			}
+			parent := filepath.Dir(current)
+			if parent == current {
+				return "", false
+			}
+			rest = append([]string{filepath.Base(current)}, rest...)
+			current = parent
+			continue
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err != nil {
 			return "", false
 		}
-		rest = append([]string{filepath.Base(current)}, rest...)
-		current = parent
+		return filepath.Join(append([]string{resolved}, rest...)...), true
 	}
 }
 
