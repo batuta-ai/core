@@ -69,6 +69,39 @@ func backendSetup(t *testing.T, reader *bufio.Reader, peer net.Conn) map[string]
 	return backendRead(t, reader, "session/prompt")
 }
 
+func TestACPBackendPassesModeAndMeta(t *testing.T) {
+	meta := json.RawMessage(`{"claudeCode":{"options":{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}}}`)
+	execution := Execution{
+		Request: Request{Cwd: t.TempDir(), Brief: "brief"},
+		Adapter: Adapter{ACP: &ACPLaunch{Mode: "acceptEdits", SessionMeta: meta}},
+	}
+	backend := backendPeer(t, execution, func(reader *bufio.Reader, peer net.Conn) {
+		backendReply(peer, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+		request := backendRead(t, reader, "session/new")
+		var params map[string]json.RawMessage
+		if json.Unmarshal(request["params"], &params) != nil || !bytes.Equal(params["_meta"], meta) {
+			t.Errorf("session/new: %s", request["params"])
+		}
+		backendReply(peer, request, `{"sessionId":"task","configOptions":[{"id":"session-mode","category":"mode","type":"select","currentValue":"default","options":[{"value":"default"},{"value":"acceptEdits"}]}]}`)
+		request = backendRead(t, reader, "session/set_config_option")
+		var option struct {
+			ConfigID string `json:"configId"`
+			Value    string `json:"value"`
+		}
+		if json.Unmarshal(request["params"], &option) != nil || option.ConfigID != "session-mode" || option.Value != "acceptEdits" {
+			t.Errorf("mode: %s", request["params"])
+		}
+		backendReply(peer, request, `{"configOptions":[{"id":"session-mode","category":"mode","type":"select","currentValue":"acceptEdits","options":[{"value":"default"},{"value":"acceptEdits"}]}]}`)
+		request = backendRead(t, reader, "session/prompt")
+		backendReply(peer, request, `{"stopReason":"end_turn"}`)
+		io.Copy(io.Discard, reader)
+	})
+	result, err := backend.Execute(context.Background(), execution)
+	if err != nil || !result.Finished || result.ExitCode != 0 {
+		t.Fatalf("result: %+v / %v", result, err)
+	}
+}
+
 func TestACPBackendMapsStopReasonsAndStreams(t *testing.T) {
 	for _, reason := range []string{"end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled", "credential-canary"} {
 		t.Run(reason, func(t *testing.T) {

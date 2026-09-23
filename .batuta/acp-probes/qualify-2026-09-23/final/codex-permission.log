@@ -1,0 +1,43 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "",
+  "artifact_present": false,
+  "bridge": "codex-acp",
+  "cancel_ms": 0,
+  "case": "permission",
+  "child_alive_after": false,
+  "child_pid": 0,
+  "child_seen_ms": 0,
+  "denied_present": false,
+  "effort": "low",
+  "elapsed_ms": 13319,
+  "error": "acp: permission requires an explicit policy",
+  "executor": "codex",
+  "expired_marker": false,
+  "finished": false,
+  "meta": "",
+  "mode": "read-only",
+  "model": "gpt-5.6-sol",
+  "outside_present": true,
+  "permission_requests": [
+    "{\"toolCallId\":\"exec-b31ab581-99cf-4919-a751-9411e32eb896\",\"kind\":\"execute\",\"rawInput\":{\"command\":\"mkdir -p /tmp/probe/.batuta-qualify-1173838299 \\u0026\\u0026 printf denied \\u003e /tmp/probe/.batuta-qualify-1173838299/denied.txt\",\"cwd\":\"/tmp/probe/T/TestBridgeQualify3645988307/001\"},\"locations\":null}"
+  ],
+  "receipt": {
+    "submission": {
+      "state": "uncertain"
+    },
+    "transport": {
+      "outcome": "failed",
+      "failure": "permission_denied"
+    },
+    "worker": {
+      "outcome": "unknown"
+    }
+  },
+  "rejected_callbacks": 1,
+  "stdout_tail": "",
+  "version": "@agentclientprotocol/codex-acp 1.13.1"
+}
+--- PASS: TestBridgeQualify (13.88s)
+PASS
+ok  	github.com/batuta-ai/core/executor	14.030s

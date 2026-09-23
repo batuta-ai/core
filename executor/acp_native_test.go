@@ -289,6 +289,36 @@ func TestNativeTransportFreshOwnedConnection(t *testing.T) {
 	}
 }
 
+func TestNativeTransportUsesWorktreePolicy(t *testing.T) {
+	t.Parallel()
+	dir := tempDir(t)
+	outside := tempDir(t)
+	execution := Execution{Request: Request{Cwd: dir}}
+	inside := acp.PermissionRequest{Options: []acp.PermissionOption{
+		{OptionID: "always", Kind: "allow_always"},
+		{OptionID: "yes", Kind: "allow_once"},
+	}}
+	inside.ToolCall.Locations = []struct {
+		Path string `json:"path"`
+	}{{Path: filepath.Join(dir, "inside.txt")}}
+	escape := inside
+	escape.ToolCall.Locations = []struct {
+		Path string `json:"path"`
+	}{{Path: filepath.Join(outside, "outside.txt")}}
+	backend := NewNativeTransport("acp")
+	if backend.ACP.PermissionPolicy == nil {
+		t.Fatal("native constructor lost permission policy")
+	}
+	allowed := backend.ACP.PermissionPolicy(context.Background(), execution, inside)
+	if allowed != "yes" || allowed != WorktreePermissionPolicy(context.Background(), execution, inside) {
+		t.Fatalf("inside worktree: %q", allowed)
+	}
+	denied := backend.ACP.PermissionPolicy(context.Background(), execution, escape)
+	if denied != "" || denied != WorktreePermissionPolicy(context.Background(), execution, escape) {
+		t.Fatalf("outside worktree: %q", denied)
+	}
+}
+
 func TestNativeTransportRejectsInvalidStartup(t *testing.T) {
 	t.Parallel()
 	for _, scenario := range []string{"relative executable", "relative workspace", "wrong directory", "missing", "canceled"} {

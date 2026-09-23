@@ -2,6 +2,7 @@ package acp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -59,6 +60,106 @@ func setupPeer(t *testing.T, peer io.ReadWriter, reader *bufio.Reader, cwd, stat
 		t.Fatal(err)
 	}
 	sessionReply(t, peer, request, string(encoded))
+}
+
+func TestSessionNewCarriesMeta(t *testing.T) {
+	t.Parallel()
+	meta := json.RawMessage(`{"claudeCode":{"options":{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}}}`)
+	for _, tt := range []struct {
+		name string
+		meta json.RawMessage
+	}{
+		{name: "present", meta: meta},
+		{name: "absent"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			conn, peer := testConnection(t, Options{})
+			cwd := t.TempDir()
+			done := make(chan error, 1)
+			go func() {
+				_, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Meta: tt.meta})
+				done <- err
+			}()
+			reader := bufio.NewReader(peer)
+			request := expectMethod(t, reader, "initialize")
+			sessionReply(t, peer, request, `{"protocolVersion":1,"agentCapabilities":{}}`)
+			request = expectMethod(t, reader, "session/new")
+			params := map[string]json.RawMessage{}
+			if json.Unmarshal(request["params"], &params) != nil || string(params["cwd"]) != fmt.Sprintf("%q", cwd) {
+				t.Fatalf("session/new: %s", request["params"])
+			}
+			got, ok := params["_meta"]
+			if tt.meta == nil {
+				if ok {
+					t.Fatalf("unexpected _meta: %s", got)
+				}
+			} else if !ok || !bytes.Equal(got, tt.meta) {
+				t.Fatalf("_meta = %s, want %s", got, tt.meta)
+			}
+			sessionReply(t, peer, request, `{"sessionId":"task"}`)
+			awaitError(t, done, nil)
+		})
+	}
+}
+
+func TestSessionSelectsMode(t *testing.T) {
+	t.Parallel()
+	modeState := func(current string) string {
+		return fmt.Sprintf(`{"configOptions":[{"id":"session-mode","category":"mode","type":"select","currentValue":%q,"options":[{"value":"agent"},{"value":"read-only"}]}]}`, current)
+	}
+	tests := []struct {
+		name, mode, state, ack string
+		want                   error
+	}{
+		{name: "confirmed", mode: "read-only", state: modeState("agent"), ack: modeState("read-only")},
+		{name: "not offered", mode: "read-only", state: configState("small", "low"), want: ErrConfiguration},
+		{name: "not confirmed", mode: "read-only", state: modeState("agent"), ack: modeState("agent"), want: ErrConfiguration},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			conn, peer := testConnection(t, Options{})
+			cwd := t.TempDir()
+			done := make(chan error, 1)
+			go func() {
+				session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Mode: tt.mode})
+				if err == nil {
+					var result TurnResult
+					result, err = session.Prompt(context.Background(), "the brief", nil)
+					if err == nil && (!result.Completed || result.StopReason != "end_turn") {
+						err = fmt.Errorf("turn: %+v", result)
+					}
+				}
+				done <- err
+			}()
+			reader := bufio.NewReader(peer)
+			setupPeer(t, peer, reader, cwd, tt.state)
+			if tt.ack != "" {
+				request := expectMethod(t, reader, "session/set_config_option")
+				var params struct {
+					SessionID string `json:"sessionId"`
+					ConfigID  string `json:"configId"`
+					Value     string `json:"value"`
+				}
+				if json.Unmarshal(request["params"], &params) != nil || params.SessionID != "task" || params.ConfigID != "session-mode" || params.Value != tt.mode {
+					t.Fatalf("config: %s", request["params"])
+				}
+				sessionReply(t, peer, request, tt.ack)
+			}
+			if tt.want == nil {
+				request := expectMethod(t, reader, "session/prompt")
+				if string(request["params"]) != `{"sessionId":"task","prompt":[{"type":"text","text":"the brief"}]}` {
+					t.Fatalf("prompt: %s", request["params"])
+				}
+				sessionReply(t, peer, request, `{"stopReason":"end_turn"}`)
+			}
+			awaitError(t, done, tt.want)
+			if tt.want != nil && conn.nextID > 4 {
+				t.Fatalf("unexpected request submitted: %d", conn.nextID)
+			}
+		})
+	}
 }
 
 func TestSessionAcknowledgesConfigurationBeforePrompt(t *testing.T) {
@@ -230,8 +331,12 @@ func TestSessionSelectsExplicitIDsAndGroupedValues(t *testing.T) {
 
 func TestSessionRejectsConfigurationDriftDuringPrompt(t *testing.T) {
 	modelOnly := `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"large","options":[{"value":"small"},{"value":"large"}]}]}`
+	modeState := func(model, effort, mode string) string {
+		return fmt.Sprintf(`{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":%q,"options":[{"value":"small"},{"value":"large"}]},{"id":"reasoning","category":"thought_level","type":"select","currentValue":%q,"options":[{"value":"low"},{"value":"high"}]},{"id":"session-mode","category":"mode","type":"select","currentValue":%q,"options":[{"value":"agent"},{"value":"read-only"}]}]}`, model, effort, mode)
+	}
 	tests := []struct {
 		name   string
+		mode   string
 		state  string
 		update string
 		want   error
@@ -239,6 +344,7 @@ func TestSessionRejectsConfigurationDriftDuringPrompt(t *testing.T) {
 		{name: "model drifted", state: configState("large", "high"), update: configState("small", "high"), want: ErrConfiguration},
 		{name: "effort_option_dropped", state: configState("large", "high"), update: modelOnly, want: ErrConfiguration},
 		{name: "skipped_effort_stays_skipped", state: modelOnly, update: modelOnly},
+		{name: "mode_changed", mode: "read-only", state: modeState("large", "high", "read-only"), update: modeState("large", "high", "agent"), want: ErrConfiguration},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -246,7 +352,7 @@ func TestSessionRejectsConfigurationDriftDuringPrompt(t *testing.T) {
 			cwd := t.TempDir()
 			done := make(chan error, 1)
 			go func() {
-				session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high"})
+				session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high", Mode: tt.mode})
 				if err == nil {
 					var result TurnResult
 					result, err = session.Prompt(context.Background(), "brief", nil)

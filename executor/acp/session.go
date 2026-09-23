@@ -23,6 +23,8 @@ type SessionConfig struct {
 	Cwd              string
 	Model            string
 	Effort           string
+	Mode             string
+	Meta             json.RawMessage
 	ModelConfigID    string
 	EffortConfigID   string
 	ClientInfo       Implementation
@@ -93,9 +95,10 @@ func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*S
 	session := &Session{conn: conn, config: config}
 	var state sessionState
 	params, _ := json.Marshal(struct {
-		Cwd        string     `json:"cwd"`
-		MCPServers []struct{} `json:"mcpServers"`
-	}{config.Cwd, []struct{}{}})
+		Cwd        string          `json:"cwd"`
+		MCPServers []struct{}      `json:"mcpServers"`
+		Meta       json.RawMessage `json:"_meta,omitempty"`
+	}{config.Cwd, []struct{}{}, config.Meta})
 	_, err := session.call(ctx, "session/new", params, nil, nil, func(raw json.RawMessage) error {
 		if json.Unmarshal(raw, &state) != nil || strings.TrimSpace(state.SessionID) == "" {
 			return ErrProtocol
@@ -115,6 +118,9 @@ func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*S
 			return nil, err
 		}
 		session.skippedEffort = true
+	}
+	if err := session.selectOption(ctx, "mode", "", config.Mode); err != nil {
+		return nil, err
 	}
 	if err := session.checkConfiguration(); err != nil {
 		return nil, err
@@ -220,6 +226,9 @@ func (s *Session) EffortNotApplicable() bool {
 
 func (s *Session) checkConfiguration() error {
 	if err := s.checkOption("model", s.config.ModelConfigID, s.config.Model); err != nil {
+		return err
+	}
+	if err := s.checkOption("mode", "", s.config.Mode); err != nil {
 		return err
 	}
 	if err := s.checkOption("thought_level", s.config.EffortConfigID, s.config.Effort); err != nil {

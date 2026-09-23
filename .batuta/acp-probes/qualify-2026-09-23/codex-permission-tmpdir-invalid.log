@@ -1,0 +1,47 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "",
+  "artifact_present": false,
+  "bridge": "codex-acp",
+  "cancel_ms": 0,
+  "case": "permission",
+  "child_alive_after": false,
+  "child_pid": 0,
+  "child_seen_ms": 0,
+  "denied_present": true,
+  "effort": "low",
+  "elapsed_ms": 21209,
+  "error": "\u003cnil\u003e",
+  "executor": "codex",
+  "expired_marker": false,
+  "finished": true,
+  "model": "gpt-5.6-sol",
+  "permission_requests": null,
+  "receipt": {
+    "submission": {
+      "state": "submitted"
+    },
+    "transport": {
+      "outcome": "completed"
+    },
+    "worker": {
+      "outcome": "success",
+      "detail": "end_turn"
+    },
+    "usage": {
+      "input_tokens": 304,
+      "output_tokens": 119,
+      "cache_read_tokens": 22272,
+      "reasoning_tokens": 68,
+      "reported_total_tokens": 22695,
+      "cache_semantics": "additive",
+      "provenance": "acp/session-prompt/usage (draft)"
+    }
+  },
+  "rejected_callbacks": 0,
+  "stdout_tail": "I’ll create exactly that file with the requested contents.Created `/private/var/folders/6_/5gwd7t493h90hs9bqd_1tth40000gn/T/TestBridgeQualify2371175040/002/denied.txt`.",
+  "version": "@agentclientprotocol/codex-acp 1.13.1"
+}
+--- PASS: TestBridgeQualify (21.78s)
+PASS
+ok  	github.com/batuta-ai/core/executor	21.947s

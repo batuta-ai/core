@@ -53,12 +53,17 @@ Stock dispatch and loop task attempts use the native transport factory. It
 launches a fresh managed process with fixed resolved argv, an absolute requested
 workspace, inherited environment and bounded protocol I/O and owned shutdown.
 Prompts travel through the protocol, never a shell command. The factory carries
-one release-owned qualification: OpenCode **1.18.31**, fixed launch
-`opencode acp`, native **macOS arm64** (`darwin/arm64`), empty effort, and effort
+three release-owned qualifications, all native **macOS arm64** (`darwin/arm64`):
+OpenCode **1.18.31**, fixed launch `opencode acp`; Codex **1.13.1**, launch
+`codex-acp`, session mode `read-only`; and Claude **0.81.1**, launch
+`claude-agent-acp`, session mode `acceptEdits` with the sandbox
+`acp_session_meta`. All three pin model `*` and empty effort, with effort
 recorded per the [`not_applicable` rule](#qualification-and-permissions).
 Launch matching checks only the qualification fields: `Model: *` matches any
-requested model, and an empty qualification effort matches any requested effort
-when the adapter declares no `acp_effort_config`. It does not inspect session options.
+requested model, an empty qualification effort matches any requested effort
+when the adapter declares no `acp_effort_config`, and the adapter must declare
+exactly the qualification's `acp_mode` and `acp_session_meta`. It does not
+inspect session options.
 Advertising and confirming the model and skipping the effort happen
 in the session after launch (`acp.NewSession`). Executor, launch, version, platform
 and the lifecycle flags still must match exactly; `*` does not transfer evidence
@@ -131,9 +136,12 @@ one executor, version or platform does not transfer to another.
 
 The known launch families are Codex's dedicated `codex-acp` wrapper, Claude's
 dedicated `claude-agent-acp` wrapper, `opencode acp`, and `cursor-agent acp`.
-Only the exact OpenCode tuple above has accepted native qualification evidence.
+Three tuples have accepted native qualification evidence: the exact OpenCode
+tuple above, the codex `codex-acp` tuple, and the claude `claude-agent-acp`
+tuple, all on `darwin/arm64` (see the
+[bridge qualification evidence](dispatch-measurement.md#codex-and-claude-bridge-qualification)).
 Other OpenCode versions, efforts that require an `acp_effort_config`, and
-platforms, as well as Cursor, Codex, Claude and Agy, remain on CLI. Linux and
+platforms, as well as Cursor and Agy, remain on CLI. Linux and
 Windows require their own native evidence; Windows also requires native
 lifecycle ownership and teardown before launch. No wrapper is downloaded
 automatically.
@@ -150,6 +158,12 @@ acp_model_config: model
 Metadata does not grant qualification. The resolved executable must still
 return exactly `1.18.31` from `opencode --version` before
 every ACP launch. No install, authentication or global configuration is changed.
+
+Beside `acp_model_config` and `acp_effort_config`, an adapter may declare two
+further frontmatter fields: `acp_mode` names the session mode the factory
+selects from the session's advertised modes, and `acp_session_meta` is a JSON
+object sent as the `session/new` `_meta` for provider-specific options such as
+sandbox settings. Neither field grants qualification.
 
 ```text
 batuta dispatch \
@@ -173,13 +187,19 @@ See the
 [qualification evidence](dispatch-measurement.md#native-opencode-qualification)
 for the tested scope and usage gaps.
 
-ACP permission requests are structured control messages. The stock factory
-denies every new permission request, even when the prompt claims approval or
-the worker also reports `end_turn`. A denial remains non-success. Unsupported
-client methods are rejected. Existing provider-side permissions and configuration
-are inherited unchanged; the factory injects no approval, install or auth flags.
-This callback policy is not an OS sandbox and does not restrict actions the
-provider can already perform without requesting permission.
+ACP permission requests are structured control messages. The provider's own
+sandbox or session mode keeps the executor inside its worktree; the stock
+factory allows a permission request only when
+every location it names resolves inside the worktree,
+and rejects every other request. A rejection stays
+terminal and non-success, even when the prompt claims approval or the worker
+also reports `end_turn`. Requests that name no location are rejected too.
+Unsupported client methods are rejected. Existing provider-side permissions
+and configuration are inherited unchanged; the factory injects no approval,
+install or auth flags. This callback policy is not an OS sandbox and does not
+restrict actions the provider can already perform without requesting
+permission. Adapters select the provider session mode with `acp_mode` and pass
+provider options with `acp_session_meta`; neither field grants qualification.
 Cancellation acknowledgement and verified worker shutdown are separate
 facts; cleanup must be verified before the worktree can be discarded or an
 `auto` compatibility fallback can run.

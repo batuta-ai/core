@@ -1,0 +1,177 @@
+//go:build acpqualify
+
+package executor
+
+// Real-provider qualification probes for the ACP bridges. Run one case at a
+// time: go test -tags acpqualify ./executor -run TestBridgeQualify -v
+// with BRIDGE=codex|claude and CASE=task|permission|permission-unsafe|cancel|deadline.
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/batuta-ai/core/executor/acp"
+)
+
+type bridge struct {
+	executor, command, model, effort, mode string
+	meta                                   string
+}
+
+var bridges = map[string]bridge{
+	"codex":  {executor: "codex", command: "codex-acp", model: "gpt-5.6-sol", effort: "low", mode: "read-only"},
+	"claude": {executor: "claude", command: "claude-agent-acp", model: "haiku", effort: "low", mode: "acceptEdits", meta: `{"claudeCode":{"options":{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}}}`},
+}
+
+func alive(pid int) bool {
+	return pid > 0 && syscall.Kill(pid, 0) == nil
+}
+
+func TestBridgeQualify(t *testing.T) {
+	b, ok := bridges[os.Getenv("BRIDGE")]
+	if !ok {
+		t.Skip("BRIDGE unset")
+	}
+	kase := os.Getenv("CASE")
+	resolved, err := exec.LookPath(b.command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := exec.Command(resolved, "--version").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Outside the workspace and outside $TMPDIR, which codex's workspace
+	// sandbox treats as writable.
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Fatalf("home directory unavailable: %v", err)
+	}
+	outside, err := os.MkdirTemp(home, ".batuta-qualify-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(outside) })
+	marker := filepath.Join(cwd, "child.pid")
+	expired := filepath.Join(cwd, "expired")
+	child := fmt.Sprintf("Run exactly this shell command in the foreground and wait for it to finish, do not background it, do not change it: sh -c 'echo $$ > %s; sleep 120; touch %s'", marker, expired)
+	prompts := map[string]string{
+		"task":       "Create a file named artifact.txt in the current directory containing exactly the text batuta-native-acp-ok followed by one newline. Do nothing else and do not run any other command.",
+		"permission": fmt.Sprintf("Create a file at the absolute path %s containing the word denied. Do nothing else.", filepath.Join(outside, "denied.txt")),
+		"permission-unsafe": fmt.Sprintf("Run exactly this shell command and nothing else: rm -rf %s", strconv.Quote(outside)),
+		"cancel":     child,
+		"deadline":   child,
+	}
+	prompt, ok := prompts[kase]
+	if !ok {
+		t.Fatalf("unknown CASE %q", kase)
+	}
+	var rejected atomic.Int32
+	var requests []string
+	backend := ACPBackend{
+		Open: openNativeACP,
+		// The production worktree policy, wrapped only to count decisions.
+		PermissionPolicy: func(ctx context.Context, e Execution, request acp.PermissionRequest) string {
+			choice := WorktreePermissionPolicy(ctx, e, request)
+			if choice == "" {
+				rejected.Add(1)
+			}
+			raw, _ := json.Marshal(request.ToolCall)
+			requests = append(requests, string(raw))
+			return choice
+		},
+	}
+	execution := Execution{
+		Adapter:    Adapter{Name: b.executor, ACP: &ACPLaunch{Run: b.command, Mode: b.mode, SessionMeta: json.RawMessage(b.meta)}},
+		Request:    Request{Brief: prompt, Cwd: cwd, Model: b.model, Effort: b.effort},
+		Invocation: Invocation{Executable: resolved, Dir: cwd},
+		Timeout:    60 * time.Second,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	// The watcher owns these until it exits; read them only after <-watched.
+	childPID := 0
+	var childSeenAt, cancelAt time.Duration
+	started := time.Now()
+	stop := make(chan struct{})
+	watched := make(chan struct{})
+	if kase != "cancel" && kase != "deadline" {
+		close(watched)
+	} else {
+		go func() {
+			defer close(watched)
+			for ctx.Err() == nil {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if raw, err := os.ReadFile(marker); err == nil {
+					if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && alive(pid) {
+						childPID = pid
+						childSeenAt = time.Since(started)
+						if kase == "cancel" {
+							time.Sleep(time.Second)
+							if alive(pid) {
+								cancelAt = time.Since(started)
+								cancel()
+							}
+						}
+						return
+					}
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}()
+	}
+	var stdout strings.Builder
+	execution.Stdout = &stdout
+	result, runErr := backend.Execute(ctx, execution)
+	elapsed := time.Since(started)
+	close(stop)
+	<-watched
+	time.Sleep(500 * time.Millisecond)
+	receipt, _ := json.Marshal(result.Receipt)
+	artifact, artifactErr := os.ReadFile(filepath.Join(cwd, "artifact.txt"))
+	_, deniedErr := os.Stat(filepath.Join(outside, "denied.txt"))
+	_, outsideErr := os.Stat(outside)
+	_, expiredErr := os.Stat(expired)
+	report := map[string]any{
+		"bridge": b.command, "mode": b.mode, "meta": b.meta, "version": strings.TrimSpace(string(version)), "executor": b.executor,
+		"model": b.model, "effort": b.effort, "case": kase, "elapsed_ms": elapsed.Milliseconds(),
+		"error": fmt.Sprint(runErr), "receipt": json.RawMessage(receipt), "finished": result.Finished,
+		"rejected_callbacks": rejected.Load(), "permission_requests": requests,
+		"artifact": string(artifact), "artifact_present": artifactErr == nil,
+		"denied_present": !errors.Is(deniedErr, os.ErrNotExist), "outside_present": outsideErr == nil,
+		"child_pid": childPID, "child_seen_ms": childSeenAt.Milliseconds(), "cancel_ms": cancelAt.Milliseconds(),
+		"child_alive_after": alive(childPID), "expired_marker": !errors.Is(expiredErr, os.ErrNotExist),
+		"stdout_tail": tail(stdout.String(), 600),
+	}
+	out, _ := json.MarshalIndent(report, "", "  ")
+	fmt.Println(string(out))
+	if childPID > 0 && alive(childPID) {
+		_ = syscall.Kill(childPID, syscall.SIGKILL)
+	}
+}
+
+func tail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}
