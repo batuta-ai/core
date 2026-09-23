@@ -5,7 +5,7 @@
 **Created:** 2026-09-22 · **Status:** approved
 
 ## Tasks
-- [ ] 1. The decode writer emits complete lines before capping, resyncs at the next newline, and the usage tests discriminate — backend/high
+- [x] 1. The decode writer emits complete lines before capping, resyncs at the next newline, and the usage tests discriminate — backend/high
       Scope: executor/run.go, executor/run_test.go, executor/usage_test.go
       Accept: one Write whose payload exceeds outputLimit but holds several newline-terminated events emits every one of those events → go test ./executor -run TestDecodeWriterEmitsCompleteLinesBeyondCap; after an unterminated line exceeds outputLimit, its excess is dropped with truncated set, the bytes up to the next newline are skipped, and a following complete event is decoded and written → go test ./executor -run TestDecodeWriterBoundsPendingLine; the pending buffer never exceeds outputLimit → go test ./executor -run TestDecodeWriterBoundsPendingLine; TestUsageTotalBySemantics uses a cost whose integer part is non-zero (50.0) and sets CacheReadTokens 40 and CacheWriteTokens 10 on the subset and unset fixtures while their expected total stays 125 → go test ./executor -run TestUsageTotalBySemantics; the package stays green → go test ./executor
 - [ ] 2. Docs and comments state launch matching, session checks and usage provenance exactly — docs/low

@@ -291,6 +291,7 @@
 - [x] The receipt's not_applicable effort comes from the session, never from the adapter alone → cursor-agent (cursor-grok-4.6-high), commit 142befbb280b (trail: .batuta/runs/2026-09-22-structured-output-fixes-2-task-2.md, delivery structured-output-fixes-2-20260922-211728, plan structured-output-fixes-2, 2026-09-22)
 - [x] The decode writer is bounded and drops a line whose write failed → opencode (opencode/glm-5.3-flash), commit d5c9bd9f3828 (trail: .batuta/runs/2026-09-22-structured-output-fixes-3-task-1.md, delivery structured-output-fixes-3-20260922-222124, plan structured-output-fixes-3, 2026-09-22)
 - [x] Qualification docs separate launch matching from session checks → agy (gemini-3.8-flash-low), 1 retry, commit 81117ce3b112 (trail: .batuta/runs/2026-09-22-structured-output-fixes-3-task-2.md, delivery structured-output-fixes-3-20260922-222124, plan structured-output-fixes-3, 2026-09-22)
+- [x] The decode writer emits complete lines before capping, resyncs at the next newline, and the usage tests discriminate → cursor-agent (cursor-grok-4.6-high), commit 4f0d4e23b0f5 (trail: .batuta/runs/2026-09-23-structured-output-fixes-4-task-1.md, delivery structured-output-fixes-4-20260923-011518, plan structured-output-fixes-4, 2026-09-23)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
