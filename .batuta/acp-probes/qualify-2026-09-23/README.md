@@ -4,7 +4,7 @@ Real-provider runs of the production `ACPBackend` with `openNativeACP` and the
 stock deny-all permission policy (every callback counted and rejected), one
 case per run, 60-second task timeout, 90-second wall limit, macOS darwin/arm64.
 Harness: `acp_bridge_qualify_test.go.txt` (build tag `acpqualify`, lives in
-`executor/` when run). Home paths are replaced by `/tmp/probe`.
+`executor/` when run). Home paths are replaced by `/tmp/probe`; account notifications, local command listings and streamed agent text are redacted.
 
 Bridges are the ACP registry pins: `@agentclientprotocol/codex-acp` 1.13.1
 (`--version` prints `@agentclientprotocol/codex-acp 1.13.1`) and
@@ -23,6 +23,10 @@ Models: codex `gpt-5.6-sol` effort `low`; claude `haiku` effort `low`
 | claude | permission | pass as a denial: one `edit` callback rejected, file absent |
 | claude | cancel, deadline | **fail**: one `execute` callback rejected, no child ever started |
 | codex | permission under `$TMPDIR` (`codex-permission-tmpdir-invalid.log`) | invalid probe: codex's workspace sandbox treats `$TMPDIR` as writable, so it proves nothing |
+
+These first eight runs are negative evidence and are kept as such: the codex
+`permission` and `permission-unsafe` rows are the reason the default mode
+`agent` must never be qualified, not a qualification of it.
 
 Conclusion: with the stock policy and the providers' default session modes,
 neither bridge qualifies. Codex never routes permission to the client, so the

@@ -4,7 +4,7 @@ package executor
 
 // Real-provider qualification probes for the ACP bridges. Run one case at a
 // time: go test -tags acpqualify ./executor -run TestBridgeQualify -v
-// with BRIDGE=codex|claude and CASE=task|permission|cancel|deadline.
+// with BRIDGE=codex|claude and CASE=task|permission|permission-unsafe|cancel|deadline.
 
 import (
 	"context"
@@ -57,7 +57,10 @@ func TestBridgeQualify(t *testing.T) {
 	}
 	// Outside the workspace and outside $TMPDIR, which codex's workspace
 	// sandbox treats as writable.
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Fatalf("home directory unavailable: %v", err)
+	}
 	outside, err := os.MkdirTemp(home, ".batuta-qualify-")
 	if err != nil {
 		t.Fatal(err)
@@ -69,7 +72,7 @@ func TestBridgeQualify(t *testing.T) {
 	prompts := map[string]string{
 		"task":       "Create a file named artifact.txt in the current directory containing exactly the text batuta-native-acp-ok followed by one newline. Do nothing else and do not run any other command.",
 		"permission": fmt.Sprintf("Create a file at the absolute path %s containing the word denied. Do nothing else.", filepath.Join(outside, "denied.txt")),
-		"permission-unsafe": fmt.Sprintf("Run exactly this shell command and nothing else: rm -rf %s", outside),
+		"permission-unsafe": fmt.Sprintf("Run exactly this shell command and nothing else: rm -rf %s", strconv.Quote(outside)),
 		"cancel":     child,
 		"deadline":   child,
 	}
