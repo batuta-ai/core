@@ -131,6 +131,53 @@ There was no matched CLI/native-host baseline, no completed matched-pair
 cohort, and no aggregate consumption estimate. The protocol below still
 governs any future pilot; qualification does not satisfy its acceptance targets.
 
+## Codex and Claude bridge qualification
+
+Parent review accepted eight fresh bridge cases on **2026-09-23** at revision
+`7283fb4` of `feat/acp-bridge-qualification`, using macOS **26.6.2**,
+`darwin/arm64`, and Go **1.26.4**. The production `ACPBackend` ran with
+`openNativeACP` and the production worktree permission policy, wrapped only to
+count decisions. Each case ran once with a 60-second task timeout and a
+90-second wall limit; there were no retries and no evidence gaps. Paths are
+redacted to `/tmp/probe`.
+
+### Exact tuples
+
+| Bridge | Exact tuple |
+|---|---|
+| codex | launch `codex-acp`; `--version` output `@agentclientprotocol/codex-acp 1.13.1`; entry SHA-256 `4c1f6c00e67c2ace5a96f0e0fe6e812502a48827a403014d4b68373464f55fce`; `acp_mode: read-only`; no `acp_session_meta`; platform `darwin/arm64` |
+| claude | launch `claude-agent-acp`; `--version` output `0.81.1`; entry SHA-256 `ecfa6ff948a4241090934979179a5ba035bb0a7c3ef543752f4a304d44a267fb`; `acp_mode: acceptEdits`; `acp_session_meta` `{"claudeCode":{"options":{"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":true}}}}`; platform `darwin/arm64` |
+
+The runs used model `gpt-5.6-sol` for codex and `haiku` for claude, each with
+`low` effort; the claude effort was recorded `not_applicable`. Both
+qualifications pin model `*` and empty effort because the evidence is about
+the bridge process and not the model; the session must still advertise and
+confirm the requested model.
+
+### Accepted cases
+
+| Accepted case | Required observation and result | Duration |
+|---|---|---|
+| codex task | `artifact.txt` exact; submitted, completed, worker success; usage reported | 9,675 ms |
+| codex permission (write under `$HOME`, outside the worktree) | One callback rejected by the policy; `denied.txt` absent; `permission_denied`, uncertain submission | 13,319 ms |
+| codex cancel | Live marked child seen at 9,551 ms, canceled after it; canceled transport, uncertain submission; child absent afterward, no expiry marker | 10,718 ms |
+| codex deadline | Live marked child seen at 9,849 ms; 60-second deadline; failed transport with timeout; child absent afterward, no expiry marker | 60,163 ms |
+| claude task | `artifact.txt` exact; submitted, completed, worker success; usage reported | 7,919 ms |
+| claude permission | One `edit` callback outside the worktree rejected; `denied.txt` absent; `permission_denied` | 4,689 ms |
+| claude cancel | Live marked child seen at 6,631 ms, canceled after it; child absent afterward, no expiry marker | 7,896 ms |
+| claude deadline | Live marked child seen at 6,928 ms; 60-second deadline; timeout; child absent afterward, no expiry marker | 60,276 ms |
+
+### Limits
+
+All eight cases were first attempts. Managed-group shutdown was verified by
+the backend (no `shutdown` failure), and the marked children were absent
+before their 120-second lifetime could expire. This covers the managed-group
+contract, not containment of arbitrary escaped descendants.
+
+The qualifications pin model `*` and empty effort: the evidence is about the
+bridge process and not the model. They do not cover the Cursor and Agy
+executors, whose CLI JSON adapters remain unchanged.
+
 ## Cohorts
 
 Use three bounded representative tasks:

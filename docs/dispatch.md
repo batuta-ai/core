@@ -53,12 +53,17 @@ Stock dispatch and loop task attempts use the native transport factory. It
 launches a fresh managed process with fixed resolved argv, an absolute requested
 workspace, inherited environment and bounded protocol I/O and owned shutdown.
 Prompts travel through the protocol, never a shell command. The factory carries
-one release-owned qualification: OpenCode **1.18.31**, fixed launch
-`opencode acp`, native **macOS arm64** (`darwin/arm64`), empty effort, and effort
+three release-owned qualifications, all native **macOS arm64** (`darwin/arm64`):
+OpenCode **1.18.31**, fixed launch `opencode acp`; Codex **1.13.1**, launch
+`codex-acp`, session mode `read-only`; and Claude **0.81.1**, launch
+`claude-agent-acp`, session mode `acceptEdits` with the sandbox
+`acp_session_meta`. All three pin model `*` and empty effort, with effort
 recorded per the [`not_applicable` rule](#qualification-and-permissions).
 Launch matching checks only the qualification fields: `Model: *` matches any
-requested model, and an empty qualification effort matches any requested effort
-when the adapter declares no `acp_effort_config`. It does not inspect session options.
+requested model, an empty qualification effort matches any requested effort
+when the adapter declares no `acp_effort_config`, and the adapter must declare
+exactly the qualification's `acp_mode` and `acp_session_meta`. It does not
+inspect session options.
 Advertising and confirming the model and skipping the effort happen
 in the session after launch (`acp.NewSession`). Executor, launch, version, platform
 and the lifecycle flags still must match exactly; `*` does not transfer evidence
@@ -131,9 +136,12 @@ one executor, version or platform does not transfer to another.
 
 The known launch families are Codex's dedicated `codex-acp` wrapper, Claude's
 dedicated `claude-agent-acp` wrapper, `opencode acp`, and `cursor-agent acp`.
-Only the exact OpenCode tuple above has accepted native qualification evidence.
+Three tuples have accepted native qualification evidence: the exact OpenCode
+tuple above, the codex `codex-acp` tuple, and the claude `claude-agent-acp`
+tuple, all on `darwin/arm64` (see the
+[bridge qualification evidence](dispatch-measurement.md#codex-and-claude-bridge-qualification)).
 Other OpenCode versions, efforts that require an `acp_effort_config`, and
-platforms, as well as Cursor, Codex, Claude and Agy, remain on CLI. Linux and
+platforms, as well as Cursor and Agy, remain on CLI. Linux and
 Windows require their own native evidence; Windows also requires native
 lifecycle ownership and teardown before launch. No wrapper is downloaded
 automatically.
