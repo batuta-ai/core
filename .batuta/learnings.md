@@ -43,3 +43,5 @@
 - A `limit_regex` alternative as broad as `rate limit` matches an executor's own report and makes the loop wait and re-run a finished attempt. Match provider error shapes, never prose (skills#60; the run log is kept as evidence).
 - `git gc` prunes candidate commits about two weeks after the loop deletes their refs; that cost 41 corpus attempts their diffs on 2026-09-22. Keep candidate commits reachable (for example `refs/batuta/corpus/*`) when a corpus must stay rebuildable.
 - ACP cache semantics differ by source: additive for the codex bridge and for claude, subset for `codex exec --json`. Never sum a total without knowing which.
+- 2026-09-22 structured-output and verifier-coverage: both plans stopped once on a Scope that missed a test asserting the old behaviour the task changes on purpose (`cmd/batuta/main_test.go`, `loop/attempt_test.go`). Before writing Scope, grep the tests for the behaviour being changed, not only for the symbols.
+- 2026-09-22: a conductor-added "while you are there" fix (pending-line cap in fixes-3) introduced the regression the next review caught. Keep fix plans to the findings.

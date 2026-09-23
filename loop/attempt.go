@@ -142,6 +142,33 @@ func (r *Runner) dispatchExecution(ctx context.Context, taskID string, detail *d
 	return
 }
 
+// gatesReportDetail is the gates_reported record's detail. On an attempt the
+// tests gate, the scope gate or a criterion proof already rejected,
+// VerifierSkipped names those failing gates and explains why the report
+// carries no verifier verdict.
+type gatesReportDetail struct {
+	gates.Report
+	VerifierSkipped string `json:"verifier_skipped,omitempty"`
+}
+
+// rejectedGates names the gates that already failed the attempt: the tests
+// gate, the scope gate or any criterion proof. Empty when none did.
+func rejectedGates(report gates.Report) string {
+	var names []string
+	if !report.Tests.Pass {
+		names = append(names, report.Tests.Name)
+	}
+	if !report.Scope.Pass {
+		names = append(names, report.Scope.Name)
+	}
+	for _, proof := range report.Proofs {
+		if !proof.Pass {
+			names = append(names, proof.Name)
+		}
+	}
+	return strings.Join(names, ", ")
+}
+
 // runAttempt drives one attempt of one task from worktree to candidate or
 // failure. Graph mutations and journal writes happen under r.mu; the
 // executor and the gates run outside it so parallel tasks overlap.
@@ -357,6 +384,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	}
 
 	report := gates.Report{TaskID: taskID, Execution: ac.execution}
+	verifierSkipped := ""
 	finishedDetail := executor.Tail(append(result.Stdout, result.Stderr...), 30)
 	if result.Receipt != nil {
 		relativeLog, err := filepath.Rel(r.root, logPath)
@@ -378,7 +406,12 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		changedPaths = changed
 		report.Scope = gates.Scope(changed, ac.plan.Scope)
 		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
-		if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution) && len(criteria) > 0 {
+		proofless := slices.ContainsFunc(criteria, func(criterion gates.Criterion) bool { return criterion.Proof == "" })
+		if rejected := rejectedGates(report); rejected != "" {
+			// The attempt is already failing; a verifier session would only
+			// restate what the gates proved, so none is dispatched.
+			verifierSkipped = rejected
+		} else if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution, proofless) && len(criteria) > 0 {
 			verdict, err := r.verify(ctx, &ac, criteria, report.Proofs)
 			if err != nil {
 				return err
@@ -418,7 +451,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 			return err
 		}
 	}
-	if err := r.locked(KindGates, taskID, report, nil); err != nil {
+	if err := r.locked(KindGates, taskID, gatesReportDetail{Report: report, VerifierSkipped: verifierSkipped}, nil); err != nil {
 		return err
 	}
 	trailNote := ""

@@ -821,7 +821,8 @@ func TestACPAttemptHonorsIndependentGates(t *testing.T) {
 					}
 				}
 			}
-			if report.TaskID != "task_1" || !report.Finished.Pass || !report.Tree.Pass || report.Verifier == nil {
+			wantVerifier := gate == "cli-verifier" || gate == "verifier"
+			if report.TaskID != "task_1" || !report.Finished.Pass || !report.Tree.Pass || (report.Verifier != nil) != wantVerifier {
 				t.Fatalf("missing gate evidence: %+v", report)
 			}
 			wantPass := gate == "cli-verifier"

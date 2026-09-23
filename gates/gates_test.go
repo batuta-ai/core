@@ -60,6 +60,16 @@ func TestParseCriteriaSplitsTextFromProof(t *testing.T) {
 	}
 }
 
+func TestNeedsVerifierProoflessCriterion(t *testing.T) {
+	t.Parallel()
+	if !NeedsVerifier("low", false, 1, true) || !NeedsVerifier("medium", false, 1, true) || !NeedsVerifier("critical", true, 3, true) {
+		t.Fatal("a criterion without a proof always gets the verifier, whatever the lane and execution")
+	}
+	if NeedsVerifier("low", false, 1, false) || NeedsVerifier("medium", false, 1, false) {
+		t.Fatal("with proofs everywhere the lane, silent-tree and retry rules stand")
+	}
+}
+
 func TestVerifierParsesOneLinePerCriterion(t *testing.T) {
 	if v := Verifier("chatter\nTASK 1: DONE\nTASK 2: DONE\n", 2, nil); !v.Pass || v.Signal != "2/2 DONE" {
 		t.Fatalf("all done = %#v", v)
@@ -76,7 +86,7 @@ func TestVerifierParsesOneLinePerCriterion(t *testing.T) {
 	if v := Verifier("I looked and it seems fine.", 1, nil); v.Pass || !strings.Contains(v.Signal, "no TASK") {
 		t.Fatalf("no lines = %#v", v)
 	}
-	if !NeedsVerifier("high", false, 1) || !NeedsVerifier("low", true, 1) || !NeedsVerifier("low", false, 2) || NeedsVerifier("medium", false, 1) {
+	if !NeedsVerifier("high", false, 1, false) || !NeedsVerifier("low", true, 1, false) || !NeedsVerifier("low", false, 2, false) || NeedsVerifier("medium", false, 1, false) {
 		t.Fatal("NeedsVerifier rules")
 	}
 	prompt := VerifierPrompt("Retry the payment", ParseCriteria([]string{"x → npm test"}), nil, "abc")

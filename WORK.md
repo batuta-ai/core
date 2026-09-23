@@ -1,10 +1,10 @@
 # WORK — core
 
-## Current status — 2026-09-22 evening: structured-output running
-- [ ] Merged 2026-09-22: core#118 (executor telemetry), core#119 (probes, fixtures, plans), skills#60 (opencode limit_regex).
-- [ ] Loop `structured-output` launched on `feat/structured-output-impl` with `--transport auto`; then `verifier-coverage`.
+## Current status — 2026-09-23: structured-output and verifier-coverage in review
+- [ ] Open PRs, not merged: **core#121** `feat/structured-output-impl` (plan `structured-output` plus four review-fix plans, final review SHIP, CI green) and **core#122** `feat/verifier-coverage` stacked on #121 (review SHIP). Merge #121 first.
+- [ ] Known minors listed in both PR bodies; agy's sandbox once could not read `~/.gitconfig`; `TestNativeTransportProcessOutcomes/disconnect` and `TestLimitWaitRecordsTail` flaked once under loop load.
 - [ ] Transport: ACP for codex, claude, opencode; CLI JSON for cursor and agy (their ACP sends no usage). Bridges come from the ACP registry `https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json`, which the host installer should read instead of a hand-kept list; the codex bridge is `@agentclientprotocol/codex-acp` (the `@zed-industries` one stops at gpt-5.5).
-- [ ] After the plans: qualify the codex and claude ACP bridges with real lifecycle probes, then the loop defaults to `--transport auto`.
+- [ ] Next: qualify the codex and claude ACP bridges with real lifecycle probes, then the loop defaults to `--transport auto`; skills PR for adapters (`output_decoder`, `acp_run`, stream-json).
 
 ## Current status — 2026-09-22 pause: telemetry shipped, transport decided
 - [ ] Open PRs, all CI green at pause: **core#118** `feat/executor-telemetry` (output tail of unclean sessions and `limit_wait`, adapter `usage_regex`; both plans reviewed SHIP), **core#119** `feat/structured-output` (evidence and the next two plans, no production code), **skills#60** `fix/opencode-limit-regex`. None merged.
@@ -294,6 +294,9 @@
 - [x] The decode writer emits complete lines before capping, resyncs at the next newline, and the usage tests discriminate → cursor-agent (cursor-grok-4.6-high), commit 4f0d4e23b0f5 (trail: .batuta/runs/2026-09-23-structured-output-fixes-4-task-1.md, delivery structured-output-fixes-4-20260923-011518, plan structured-output-fixes-4, 2026-09-23)
 - [x] The decode writer emits complete lines before capping, resyncs at the next newline, and the usage tests discriminate → ticked in the plan before the run, commit 2fec2a98a8b4 (trail: .batuta/runs/2026-09-23-structured-output-fixes-4-task-1.md, delivery structured-output-fixes-4-20260923-015012, plan structured-output-fixes-4, 2026-09-23)
 - [x] Docs and comments state launch matching, session checks and usage provenance exactly → agy (gemini-3.8-flash-low), commit 2f2106d3f837 (trail: .batuta/runs/2026-09-23-structured-output-fixes-4-task-2.md, delivery structured-output-fixes-4-20260923-015012, plan structured-output-fixes-4, 2026-09-23)
+- [x] A criterion without a proof always gets the verifier → opencode (opencode/glm-5.3-flash), commit c82db9c5d31f (trail: .batuta/runs/2026-09-23-verifier-coverage-task-1.md, delivery verifier-coverage-20260923-021113, plan verifier-coverage, 2026-09-23)
+- [x] A criterion without a proof always gets the verifier → ticked in the plan before the run, commit b115784370d9 (trail: .batuta/runs/2026-09-23-verifier-coverage-task-1.md, delivery verifier-coverage-20260923-092216, plan verifier-coverage, 2026-09-23)
+- [x] No verifier session on an attempt already rejected by tests, scope or a proof → opencode (opencode/glm-5.3-flash), commit 33eaa482ab4d (trail: .batuta/runs/2026-09-23-verifier-coverage-task-2.md, delivery verifier-coverage-20260923-092216, plan verifier-coverage, 2026-09-23)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

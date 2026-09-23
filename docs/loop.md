@@ -342,7 +342,11 @@ asked.
   Invoked through the adapter's `readonly` line with the headless contract
   (no background work, quick synchronous commands only, `TASK n:
   DONE|INCOMPLETE` mandatory). Any tree change during the verifier round
-  invalidates it.
+  invalidates it. It runs on high or critical lanes, a silent tree, any
+  retry, and any criterion without a proof. An attempt the tests gate, the
+  scope gate or a criterion proof already rejected gets no verifier session:
+  the `gates_reported` detail records `verifier_skipped` with the failing
+  gate names (`tests`, `scope`, `proof N`) and `Report.Verifier` stays nil.
 - **Unsigned child sessions.** Executor and verifier sessions receive
   `commit.gpgsign=false` through Git's command-line configuration environment.
   The loop's integration commit does not receive that override and therefore
