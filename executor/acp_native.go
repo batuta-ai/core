@@ -18,10 +18,8 @@ func NewNativeTransport(mode string) TransportBackend {
 	return TransportBackend{
 		Mode: mode,
 		ACP: ACPBackend{
-			Open: openNativeACP,
-			PermissionPolicy: func(context.Context, Execution, acp.PermissionRequest) string {
-				return ""
-			},
+			Open:             openNativeACP,
+			PermissionPolicy: WorktreePermissionPolicy,
 		},
 		Qualifications: []ACPQualification{{
 			Executor: "opencode", Run: "opencode acp", Version: "1.18.31",
