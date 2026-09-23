@@ -59,7 +59,7 @@ func TestUsageTotalDoesNotDoubleCountCachedInput(t *testing.T) {
 func TestUsageTotalBySemantics(t *testing.T) {
 	t.Parallel()
 	input, output, cacheRead, cacheWrite := int64(100), int64(25), int64(40), int64(10)
-	cost := 0.75
+	cost := 50.0
 	additive := Usage{
 		InputTokens:      &input,
 		OutputTokens:     &output,
@@ -96,6 +96,8 @@ func TestUsageTotalBySemantics(t *testing.T) {
 		InputTokens:       &input,
 		CachedInputTokens: &cacheRead,
 		OutputTokens:      &output,
+		CacheReadTokens:   &cacheRead,
+		CacheWriteTokens:  &cacheWrite,
 		CostAmount:        &cost,
 		CacheSemantics:    CacheSemanticsSubset,
 		Provenance:        "worker/final-result",

@@ -288,15 +288,33 @@ func TestDecodeWriterDropsLineAfterWriteError(t *testing.T) {
 	}
 }
 
+func TestDecodeWriterEmitsCompleteLinesBeyondCap(t *testing.T) {
+	t.Parallel()
+	dest := &bytes.Buffer{}
+	w := newDecodeWriter(LookupDecoder("cursor-stream-json"), dest)
+	padding := strings.Repeat("x", outputLimit/2)
+	var payload []byte
+	for _, text := range []string{"one", "two", "three"} {
+		payload = append(payload, `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"`+text+`"}]},"padding":"`+padding+`"}`+"\n"...)
+	}
+	if len(payload) <= outputLimit {
+		t.Fatalf("payload length = %d, want > %d so the write exceeds the cap", len(payload), outputLimit)
+	}
+	if _, err := w.Write(payload); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if got, want := dest.String(), "onetwothree"; got != want {
+		t.Fatalf("destination received %q, want %q", got, want)
+	}
+}
+
 func TestDecodeWriterBoundsPendingLine(t *testing.T) {
 	t.Parallel()
 	dest := &bytes.Buffer{}
 	w := newDecodeWriter(LookupDecoder("cursor-stream-json"), dest)
-	chunk := bytes.Repeat([]byte{'x'}, outputLimit/2+1)
-	for i := 0; i < 2; i++ {
-		if _, err := w.Write(chunk); err != nil {
-			t.Fatalf("Write() error = %v", err)
-		}
+	overlong := bytes.Repeat([]byte{'x'}, outputLimit+1)
+	if _, err := w.Write(overlong); err != nil {
+		t.Fatalf("Write() error = %v", err)
 	}
 	if len(w.pending) > outputLimit {
 		t.Fatalf("pending length = %d, want <= %d", len(w.pending), outputLimit)
@@ -305,10 +323,29 @@ func TestDecodeWriterBoundsPendingLine(t *testing.T) {
 		t.Fatal("truncated = false, want true once pending drops its excess")
 	}
 	if err := w.flush(); err != nil {
+		t.Fatalf("flush() after the overlong line error = %v", err)
+	}
+	if got := dest.String(); got != "" {
+		t.Fatalf("destination received %q after dropping the overlong line, want empty", got)
+	}
+
+	text := "ok"
+	event := `{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"` + text + `"}]}}` + "\n"
+	follow := append([]byte("dropped-tail\n"), event...)
+	if _, err := w.Write(follow); err != nil {
+		t.Fatalf("Write() follow-on error = %v", err)
+	}
+	if len(w.pending) > outputLimit {
+		t.Fatalf("pending length = %d after follow-on, want <= %d", len(w.pending), outputLimit)
+	}
+	if got := dest.String(); got != text {
+		t.Fatalf("destination received %q, want %q", got, text)
+	}
+	if err := w.flush(); err != nil {
 		t.Fatalf("flush() error = %v", err)
 	}
-	if got := dest.String(); len(got) > outputLimit {
-		t.Fatalf("destination received %d bytes, want <= %d", len(got), outputLimit)
+	if got := dest.String(); got != text {
+		t.Fatalf("after flush destination received %q, want %q", got, text)
 	}
 }
 

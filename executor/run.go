@@ -291,6 +291,7 @@ type decodeWriter struct {
 	pending   []byte
 	decoded   []byte
 	truncated bool
+	skipping  bool
 }
 
 func newDecodeWriter(decoder Decoder, dest io.Writer) *decodeWriter {
@@ -299,14 +300,15 @@ func newDecodeWriter(decoder Decoder, dest io.Writer) *decodeWriter {
 
 func (w *decodeWriter) Write(payload []byte) (int, error) {
 	written := len(payload)
-	w.pending = append(w.pending, payload...)
-	// A line that never terminates would otherwise buffer without limit;
-	// the excess is real output the decoded stream loses, so it counts as
-	// truncation.
-	if len(w.pending) > outputLimit {
-		w.pending = w.pending[:outputLimit]
-		w.truncated = true
+	if w.skipping {
+		newline := bytes.IndexByte(payload, '\n')
+		if newline < 0 {
+			return written, nil
+		}
+		payload = payload[newline+1:]
+		w.skipping = false
 	}
+	w.pending = append(w.pending, payload...)
 	for {
 		newline := bytes.IndexByte(w.pending, '\n')
 		if newline < 0 {
@@ -317,6 +319,14 @@ func (w *decodeWriter) Write(payload []byte) (int, error) {
 		if err := w.emit(line); err != nil {
 			return written, err
 		}
+	}
+	// An unterminated leftover longer than outputLimit is dropped; later
+	// bytes stay discarded until the next newline so a later complete
+	// event can decode.
+	if len(w.pending) > outputLimit {
+		w.pending = nil
+		w.truncated = true
+		w.skipping = true
 	}
 	return written, nil
 }
