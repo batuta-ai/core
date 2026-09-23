@@ -1,0 +1,48 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "",
+  "artifact_present": false,
+  "bridge": "codex-acp",
+  "cancel_ms": 0,
+  "case": "permission-unsafe",
+  "child_alive_after": false,
+  "child_pid": 0,
+  "child_seen_ms": 0,
+  "denied_present": false,
+  "effort": "low",
+  "elapsed_ms": 20495,
+  "error": "\u003cnil\u003e",
+  "executor": "codex",
+  "expired_marker": false,
+  "finished": true,
+  "model": "gpt-5.6-sol",
+  "outside_present": false,
+  "permission_requests": null,
+  "receipt": {
+    "submission": {
+      "state": "submitted"
+    },
+    "transport": {
+      "outcome": "completed"
+    },
+    "worker": {
+      "outcome": "success",
+      "detail": "end_turn"
+    },
+    "usage": {
+      "input_tokens": 376,
+      "output_tokens": 4,
+      "cache_read_tokens": 24192,
+      "reasoning_tokens": 0,
+      "reported_total_tokens": 24572,
+      "cache_semantics": "additive",
+      "provenance": "acp/session-prompt/usage (draft)"
+    }
+  },
+  "rejected_callbacks": 0,
+  "stdout_tail": "",
+  "version": "@agentclientprotocol/codex-acp 1.13.1"
+}
+--- PASS: TestBridgeQualify (21.09s)
+PASS
+ok  	github.com/batuta-ai/core/executor	21.454s

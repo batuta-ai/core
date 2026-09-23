@@ -1,0 +1,44 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "",
+  "artifact_present": false,
+  "bridge": "claude-agent-acp",
+  "cancel_ms": 0,
+  "case": "task",
+  "child_alive_after": false,
+  "child_pid": 0,
+  "child_seen_ms": 0,
+  "denied_present": false,
+  "effort": "low",
+  "elapsed_ms": 8787,
+  "error": "acp: permission requires an explicit policy",
+  "executor": "claude",
+  "expired_marker": false,
+  "finished": false,
+  "model": "haiku",
+  "permission_requests": [
+    "{\"toolCallId\":\"toolu_012AFQTd9841Uqm2oiHGDUs7\",\"kind\":\"edit\",\"rawInput\":{\"file_path\":\"/private/var/folders/6_/5gwd7t493h90hs9bqd_1tth40000gn/T/TestBridgeQualify3821070525/001/artifact.txt\",\"content\":\"batuta-native-acp-ok\\n\"},\"locations\":[{\"path\":\"/private/var/folders/6_/5gwd7t493h90hs9bqd_1tth40000gn/T/TestBridgeQualify3821070525/001/artifact.txt\"}]}"
+  ],
+  "receipt": {
+    "submission": {
+      "state": "uncertain"
+    },
+    "transport": {
+      "outcome": "failed",
+      "failure": "permission_denied"
+    },
+    "worker": {
+      "outcome": "unknown"
+    },
+    "usage": {
+      "provenance": "acp/session-update"
+    },
+    "effort": "not_applicable"
+  },
+  "rejected_callbacks": 1,
+  "stdout_tail": "",
+  "version": "0.81.1"
+}
+--- PASS: TestBridgeQualify (9.47s)
+PASS
+ok  	github.com/batuta-ai/core/executor	9.664s

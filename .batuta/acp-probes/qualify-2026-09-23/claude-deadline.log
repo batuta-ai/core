@@ -1,0 +1,44 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "",
+  "artifact_present": false,
+  "bridge": "claude-agent-acp",
+  "cancel_ms": 0,
+  "case": "deadline",
+  "child_alive_after": false,
+  "child_pid": 0,
+  "child_seen_ms": 0,
+  "denied_present": false,
+  "effort": "low",
+  "elapsed_ms": 6992,
+  "error": "acp: permission requires an explicit policy",
+  "executor": "claude",
+  "expired_marker": false,
+  "finished": false,
+  "model": "haiku",
+  "permission_requests": [
+    "{\"toolCallId\":\"toolu_01QVZn39Uk1D2EgG8kGvBTiQ\",\"kind\":\"execute\",\"rawInput\":{\"command\":\"sh -c 'echo $$ \\u003e /private/var/folders/6_/5gwd7t493h90hs9bqd_1tth40000gn/T/TestBridgeQualify166820284/001/child.pid; sleep 120; touch /private/var/folders/6_/5gwd7t493h90hs9bqd_1tth40000gn/T/TestBridgeQualify166820284/001/expired'\",\"timeout\":150000,\"description\":\"Run shell command: write PID, sleep 120 seconds, create expired file\"},\"locations\":null}"
+  ],
+  "receipt": {
+    "submission": {
+      "state": "uncertain"
+    },
+    "transport": {
+      "outcome": "failed",
+      "failure": "permission_denied"
+    },
+    "worker": {
+      "outcome": "unknown"
+    },
+    "usage": {
+      "provenance": "acp/session-update"
+    },
+    "effort": "not_applicable"
+  },
+  "rejected_callbacks": 1,
+  "stdout_tail": "",
+  "version": "0.81.1"
+}
+--- PASS: TestBridgeQualify (7.63s)
+PASS
+ok  	github.com/batuta-ai/core/executor	7.798s
