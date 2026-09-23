@@ -294,6 +294,7 @@
 - [x] The decode writer emits complete lines before capping, resyncs at the next newline, and the usage tests discriminate → cursor-agent (cursor-grok-4.6-high), commit 4f0d4e23b0f5 (trail: .batuta/runs/2026-09-23-structured-output-fixes-4-task-1.md, delivery structured-output-fixes-4-20260923-011518, plan structured-output-fixes-4, 2026-09-23)
 - [x] The decode writer emits complete lines before capping, resyncs at the next newline, and the usage tests discriminate → ticked in the plan before the run, commit 2fec2a98a8b4 (trail: .batuta/runs/2026-09-23-structured-output-fixes-4-task-1.md, delivery structured-output-fixes-4-20260923-015012, plan structured-output-fixes-4, 2026-09-23)
 - [x] Docs and comments state launch matching, session checks and usage provenance exactly → agy (gemini-3.8-flash-low), commit 2f2106d3f837 (trail: .batuta/runs/2026-09-23-structured-output-fixes-4-task-2.md, delivery structured-output-fixes-4-20260923-015012, plan structured-output-fixes-4, 2026-09-23)
+- [x] A criterion without a proof always gets the verifier → opencode (opencode/glm-5.3-flash), commit c82db9c5d31f (trail: .batuta/runs/2026-09-23-verifier-coverage-task-1.md, delivery verifier-coverage-20260923-021113, plan verifier-coverage, 2026-09-23)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

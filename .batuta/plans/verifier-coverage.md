@@ -5,7 +5,7 @@
 **Created:** 2026-09-22 · **Status:** approved
 
 ## Tasks
-- [ ] 1. A criterion without a proof always gets the verifier — backend/medium
+- [x] 1. A criterion without a proof always gets the verifier — backend/medium
       Scope: gates/gates.go, gates/gates_test.go, loop/attempt.go, loop/verifier_policy_test.go
       Accept: gates.NeedsVerifier takes a fourth argument, whether any criterion has no proof command, and returns true when it does, whatever the lane and execution → go test ./gates -run TestNeedsVerifierProoflessCriterion; the existing lane, silent-tree and retry cases keep their answers → go test ./gates -run TestNeedsVerifier; on a medium-lane first execution whose plan has one criterion without a proof, the loop dispatches the verifier and the report carries its verdict → go test ./loop -run TestProoflessCriterionDispatchesVerifier; on a medium-lane first execution where every criterion has a proof, no verifier runs → go test ./loop -run TestAllProvenCriteriaSkipVerifierOnMedium; the packages stay green → go test ./gates ./loop
 - [ ] 2. No verifier session on an attempt already rejected by tests, scope or a proof — backend/medium
