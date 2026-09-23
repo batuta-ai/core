@@ -5,9 +5,12 @@
 
 ### Features
 
+* A criterion without a proof always gets the verifier ([c82db9c](https://github.com/batuta-ai/core/commit/c82db9c5d31fd5ab2d16b7d267a8718c8f86a6ae))
 * ACP usage keeps every counter and the cost the agent sends ([d856133](https://github.com/batuta-ai/core/commit/d8561335ed9edad86fd811c6cc9568c9ae22ee23))
 * adapters may declare output_decoder; the run decodes stdout before ([7d26881](https://github.com/batuta-ai/core/commit/7d268812b077fa9b3034996a279cf782e9677efe))
 * **executor:** structured executor output — stream decoders, full usage, ACP usage, any-model opencode qualification ([4d8bfde](https://github.com/batuta-ai/core/commit/4d8bfdeca6d3339b946e85b69c25cf68d108b552))
+* **loop:** verifier covers proofless criteria and skips attempts already rejected ([1a33fa4](https://github.com/batuta-ai/core/commit/1a33fa46c7c0ba8f5ae212e411c6629f6678595d))
+* no verifier session on an attempt already rejected by tests, scope ([33eaa48](https://github.com/batuta-ai/core/commit/33eaa482ab4d512bfdccf4ea29bbd754821d97a9))
 * opencode ACP qualifies for any model the session advertises and ([e186a65](https://github.com/batuta-ai/core/commit/e186a65c8ea9d4093aa6342616a2082cd4529508))
 * session effort is not_applicable only when no acp_effort_config is ([79f2612](https://github.com/batuta-ai/core/commit/79f2612ccc4235e0368f893911e9c86afae4070e))
 * stream decoders for codex, claude, cursor, agy and opencode JSON ([d8196e9](https://github.com/batuta-ai/core/commit/d8196e9b9c41aa8ed7accf06a1f94250663c6466))
