@@ -1,0 +1,45 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "",
+  "artifact_present": false,
+  "bridge": "claude-agent-acp",
+  "cancel_ms": 0,
+  "case": "deadline",
+  "child_alive_after": false,
+  "child_pid": 73503,
+  "child_seen_ms": 6928,
+  "denied_present": false,
+  "effort": "low",
+  "elapsed_ms": 60276,
+  "error": "context deadline exceeded",
+  "executor": "claude",
+  "expired_marker": false,
+  "finished": false,
+  "meta": "{\"claudeCode\":{\"options\":{\"sandbox\":{\"enabled\":true,\"autoAllowBashIfSandboxed\":true}}}}",
+  "mode": "acceptEdits",
+  "model": "haiku",
+  "outside_present": true,
+  "permission_requests": null,
+  "receipt": {
+    "submission": {
+      "state": "uncertain"
+    },
+    "transport": {
+      "outcome": "failed",
+      "failure": "timeout"
+    },
+    "worker": {
+      "outcome": "unknown"
+    },
+    "usage": {
+      "provenance": "acp/session-update"
+    },
+    "effort": "not_applicable"
+  },
+  "rejected_callbacks": 0,
+  "stdout_tail": "",
+  "version": "0.81.1"
+}
+--- PASS: TestBridgeQualify (60.91s)
+PASS
+ok  	github.com/batuta-ai/core/executor	61.083s

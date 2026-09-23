@@ -1,0 +1,53 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "batuta-native-acp-ok\n",
+  "artifact_present": true,
+  "bridge": "claude-agent-acp",
+  "cancel_ms": 0,
+  "case": "task",
+  "child_alive_after": false,
+  "child_pid": 0,
+  "child_seen_ms": 0,
+  "denied_present": false,
+  "effort": "low",
+  "elapsed_ms": 7919,
+  "error": "\u003cnil\u003e",
+  "executor": "claude",
+  "expired_marker": false,
+  "finished": true,
+  "meta": "{\"claudeCode\":{\"options\":{\"sandbox\":{\"enabled\":true,\"autoAllowBashIfSandboxed\":true}}}}",
+  "mode": "acceptEdits",
+  "model": "haiku",
+  "outside_present": true,
+  "permission_requests": null,
+  "receipt": {
+    "submission": {
+      "state": "submitted"
+    },
+    "transport": {
+      "outcome": "completed"
+    },
+    "worker": {
+      "outcome": "success",
+      "detail": "end_turn"
+    },
+    "usage": {
+      "input_tokens": 18,
+      "output_tokens": 374,
+      "cache_read_tokens": 52497,
+      "cache_write_tokens": 34928,
+      "reported_total_tokens": 87817,
+      "cost_amount": 0.0779917,
+      "cost_currency": "USD",
+      "cache_semantics": "additive",
+      "provenance": "acp/session-prompt/usage (draft)"
+    },
+    "effort": "not_applicable"
+  },
+  "rejected_callbacks": 0,
+  "stdout_tail": "Done.",
+  "version": "0.81.1"
+}
+--- PASS: TestBridgeQualify (8.64s)
+PASS
+ok  	github.com/batuta-ai/core/executor	8.850s
