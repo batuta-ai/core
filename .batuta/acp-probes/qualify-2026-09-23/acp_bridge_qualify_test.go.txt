@@ -96,12 +96,23 @@ func TestBridgeQualify(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	// The watcher owns these until it exits; read them only after <-watched.
 	childPID := 0
 	var childSeenAt, cancelAt time.Duration
 	started := time.Now()
-	if kase == "cancel" || kase == "deadline" {
+	stop := make(chan struct{})
+	watched := make(chan struct{})
+	if kase != "cancel" && kase != "deadline" {
+		close(watched)
+	} else {
 		go func() {
+			defer close(watched)
 			for ctx.Err() == nil {
+				select {
+				case <-stop:
+					return
+				default:
+				}
 				if raw, err := os.ReadFile(marker); err == nil {
 					if pid, err := strconv.Atoi(strings.TrimSpace(string(raw))); err == nil && alive(pid) {
 						childPID = pid
@@ -124,6 +135,8 @@ func TestBridgeQualify(t *testing.T) {
 	execution.Stdout = &stdout
 	result, runErr := backend.Execute(ctx, execution)
 	elapsed := time.Since(started)
+	close(stop)
+	<-watched
 	time.Sleep(500 * time.Millisecond)
 	receipt, _ := json.Marshal(result.Receipt)
 	artifact, artifactErr := os.ReadFile(filepath.Join(cwd, "artifact.txt"))

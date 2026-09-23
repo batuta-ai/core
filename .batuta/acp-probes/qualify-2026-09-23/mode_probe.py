@@ -36,8 +36,28 @@ def call(method, params, timeout=120):
     return results.pop(i)
 
 def inside(path):
-    real = os.path.realpath(path)
-    return real == cwd or real.startswith(cwd + os.sep)
+    # Same walk as executor.resolveWorktreeLocation: no "..", absolute only,
+    # skip only components that do not exist, fail closed on unresolvable links.
+    if ".." in path.replace("\\", "/").split("/") or not os.path.isabs(path):
+        return False
+    current, rest = os.path.normpath(path), []
+    while True:
+        try:
+            os.lstat(current)
+        except FileNotFoundError:
+            parent = os.path.dirname(current)
+            if parent == current:
+                return False
+            rest.insert(0, os.path.basename(current)); current = parent
+            continue
+        except OSError:
+            return False
+        try:
+            real = os.path.realpath(current, strict=True)
+        except OSError:
+            return False
+        real = os.path.join(real, *rest)
+        return real == cwd or real.startswith(cwd + os.sep)
 
 def answer(msg):
     tc = msg["params"].get("toolCall", {})
@@ -52,7 +72,12 @@ def answer(msg):
 
 def redact(line):
     # _auth/status_update carries the signed-in account; never keep it.
-    return line if '"_auth/status_update"' not in line else '{"method":"_auth/status_update","params":"redacted"}\n'
+    if '"_auth/status_update"' in line:
+        return '{"method":"_auth/status_update","params":"redacted"}\n'
+    # The command list carries the host's local skills and commands.
+    if '"available_commands_update"' in line:
+        return '{"method":"session/update","params":{"update":{"sessionUpdate":"available_commands_update","availableCommands":"redacted"}}}\n'
+    return line
 
 def reader():
     for line in p.stdout:
