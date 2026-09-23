@@ -151,6 +151,12 @@ Metadata does not grant qualification. The resolved executable must still
 return exactly `1.18.31` from `opencode --version` before
 every ACP launch. No install, authentication or global configuration is changed.
 
+Beside `acp_model_config` and `acp_effort_config`, an adapter may declare two
+further frontmatter fields: `acp_mode` names the session mode the factory
+selects from the session's advertised modes, and `acp_session_meta` is a JSON
+object sent as the `session/new` `_meta` for provider-specific options such as
+sandbox settings. Neither field grants qualification.
+
 ```text
 batuta dispatch \
   --brief-file /absolute/path/task.brief.md \
@@ -173,13 +179,19 @@ See the
 [qualification evidence](dispatch-measurement.md#native-opencode-qualification)
 for the tested scope and usage gaps.
 
-ACP permission requests are structured control messages. The stock factory
-denies every new permission request, even when the prompt claims approval or
-the worker also reports `end_turn`. A denial remains non-success. Unsupported
-client methods are rejected. Existing provider-side permissions and configuration
-are inherited unchanged; the factory injects no approval, install or auth flags.
-This callback policy is not an OS sandbox and does not restrict actions the
-provider can already perform without requesting permission.
+ACP permission requests are structured control messages. The provider's own
+sandbox or session mode keeps the executor inside its worktree; the stock
+factory allows a permission request only when
+every location it names resolves inside the worktree,
+and rejects every other request. A rejection stays
+terminal and non-success, even when the prompt claims approval or the worker
+also reports `end_turn`. Requests that name no location are rejected too.
+Unsupported client methods are rejected. Existing provider-side permissions
+and configuration are inherited unchanged; the factory injects no approval,
+install or auth flags. This callback policy is not an OS sandbox and does not
+restrict actions the provider can already perform without requesting
+permission. Adapters select the provider session mode with `acp_mode` and pass
+provider options with `acp_session_meta`; neither field grants qualification.
 Cancellation acknowledgement and verified worker shutdown are separate
 facts; cleanup must be verified before the worktree can be discarded or an
 `auto` compatibility fallback can run.
