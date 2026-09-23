@@ -22,6 +22,23 @@ func TestUsageMissingCountersRemainUnknown(t *testing.T) {
 	}
 }
 
+func TestUsageExtendedFieldsUnknownByDefault(t *testing.T) {
+	t.Parallel()
+	usage := Usage{Provenance: "acp/session-update"}
+	payload, err := json.Marshal(usage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(payload) != `{"provenance":"acp/session-update"}` {
+		t.Fatalf("json.Marshal() = %s", payload)
+	}
+	if usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil || usage.ReasoningTokens != nil ||
+		usage.ReportedTotalTokens != nil || usage.CostAmount != nil || usage.CostCurrency != "" ||
+		usage.CacheSemantics != "" {
+		t.Fatalf("extended usage fields set by default: %#v", usage)
+	}
+}
+
 func TestUsageTotalDoesNotDoubleCountCachedInput(t *testing.T) {
 	t.Parallel()
 	input, cached, output := int64(100), int64(40), int64(25)
@@ -36,6 +53,69 @@ func TestUsageTotalDoesNotDoubleCountCachedInput(t *testing.T) {
 	}
 	if usage.Provenance != "worker/final-result" {
 		t.Fatalf("provenance changed: %q", usage.Provenance)
+	}
+}
+
+func TestUsageTotalBySemantics(t *testing.T) {
+	t.Parallel()
+	input, output, cacheRead, cacheWrite := int64(100), int64(25), int64(40), int64(10)
+	cost := 50.0
+	additive := Usage{
+		InputTokens:      &input,
+		OutputTokens:     &output,
+		CacheReadTokens:  &cacheRead,
+		CacheWriteTokens: &cacheWrite,
+		CostAmount:       &cost,
+		CostCurrency:     "USD",
+		CacheSemantics:   CacheSemanticsAdditive,
+		Provenance:       "acp/session-update",
+	}
+	if total, known := additive.TotalTokens(); !known || total != 175 {
+		t.Fatalf("additive TotalTokens() = %d, %t; want 175, true", total, known)
+	}
+
+	// An additive total adds only the cache counters it was given.
+	partial := additive
+	partial.CacheWriteTokens = nil
+	if total, known := partial.TotalTokens(); !known || total != 165 {
+		t.Fatalf("additive partial TotalTokens() = %d, %t; want 165, true", total, known)
+	}
+
+	// A negative cache counter leaves the additive total unknown.
+	negative := cacheWrite
+	negative = -negative
+	partial = additive
+	partial.CacheWriteTokens = &negative
+	if total, known := partial.TotalTokens(); known || total != 0 {
+		t.Fatalf("additive negative TotalTokens() = %d, %t; want unknown", total, known)
+	}
+
+	// Subset and unset semantics never add the cached counters, and cost
+	// never enters the total.
+	subset := Usage{
+		InputTokens:       &input,
+		CachedInputTokens: &cacheRead,
+		OutputTokens:      &output,
+		CacheReadTokens:   &cacheRead,
+		CacheWriteTokens:  &cacheWrite,
+		CostAmount:        &cost,
+		CacheSemantics:    CacheSemanticsSubset,
+		Provenance:        "worker/final-result",
+	}
+	for _, usage := range []Usage{subset, func() Usage { unset := subset; unset.CacheSemantics = ""; return unset }()} {
+		if total, known := usage.TotalTokens(); !known || total != 125 {
+			t.Fatalf("subset TotalTokens() = %d, %t for %#v; want 125, true", total, known, usage)
+		}
+	}
+
+	// A missing input or output leaves the total unknown under both
+	// semantics.
+	orphan := additive
+	orphan.InputTokens = nil
+	for _, usage := range []Usage{orphan, func() Usage { noOut := additive; noOut.OutputTokens = nil; return noOut }(), func() Usage { noIn := subset; noIn.InputTokens = nil; return noIn }()} {
+		if total, known := usage.TotalTokens(); known || total != 0 {
+			t.Fatalf("missing counter TotalTokens() = %d, %t for %#v; want unknown", total, known, usage)
+		}
 	}
 }
 

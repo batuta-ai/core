@@ -10,8 +10,10 @@ import (
 )
 
 // NewNativeTransport wires the managed-group lifecycle and the exact OpenCode
-// macOS arm64 qualification supported by release-owned native evidence. Adapter
-// metadata cannot qualify other launches; see docs/dispatch-measurement.md.
+// macOS arm64 qualification supported by release-owned native evidence. Model
+// "*" matches any requested model at launch matching; advertising and
+// confirming the model are session checks after launch. Adapter metadata
+// cannot qualify other launches; see docs/dispatch-measurement.md.
 func NewNativeTransport(mode string) TransportBackend {
 	return TransportBackend{
 		Mode: mode,
@@ -23,7 +25,7 @@ func NewNativeTransport(mode string) TransportBackend {
 		},
 		Qualifications: []ACPQualification{{
 			Executor: "opencode", Run: "opencode acp", Version: "1.18.31",
-			GOOS: "darwin", GOARCH: "arm64", Model: "opencode/big-pickle", Effort: "",
+			GOOS: "darwin", GOARCH: "arm64", Model: "*", Effort: "",
 			Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
 		}},
 	}

@@ -67,6 +67,7 @@ type Receipt struct {
 	Transport    Transport          `json:"transport"`
 	Worker       WorkerClaim        `json:"worker"`
 	Usage        *Usage             `json:"usage,omitempty"`
+	Effort       string             `json:"effort,omitempty"`
 	Evidence     *ArtifactReference `json:"evidence,omitempty"`
 	Overflow     bool               `json:"overflow,omitempty"`
 	OmittedBytes int                `json:"omitted_bytes,omitempty"`

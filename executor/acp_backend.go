@@ -88,6 +88,9 @@ func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Re
 		}
 	}
 	session, sessionErr := acp.NewSession(runCtx, conn, acp.SessionConfig{Cwd: execution.Request.Cwd, Model: execution.Request.Model, Effort: execution.Request.Effort, ModelConfigID: b.ModelConfigID, EffortConfigID: b.EffortConfigID, ClientInfo: b.ClientInfo, PermissionPolicy: policy})
+	if session != nil && session.EffortNotApplicable() {
+		receipt.Effort = "not_applicable"
+	}
 	turn := acp.TurnResult{}
 	sink := &progressSink{callback: execution.Progress}
 	observer := &progressObserver{sink: sink}
@@ -126,7 +129,18 @@ func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Re
 		receipt.Submission.State = SubmissionSubmitted
 	}
 	if turn.Usage != nil {
-		receipt.Usage = &Usage{InputTokens: turn.Usage.InputTokens, CachedInputTokens: turn.Usage.CachedInputTokens, OutputTokens: turn.Usage.OutputTokens, Provenance: turn.Usage.Provenance}
+		receipt.Usage = &Usage{
+			InputTokens:         turn.Usage.InputTokens,
+			OutputTokens:        turn.Usage.OutputTokens,
+			CacheReadTokens:     turn.Usage.CacheReadTokens,
+			CacheWriteTokens:    turn.Usage.CacheWriteTokens,
+			ReasoningTokens:     turn.Usage.ReasoningTokens,
+			ReportedTotalTokens: turn.Usage.ReportedTotalTokens,
+			CostAmount:          turn.Usage.CostAmount,
+			CostCurrency:        turn.Usage.CostCurrency,
+			CacheSemantics:      CacheSemantics(turn.Usage.CacheSemantics),
+			Provenance:          turn.Usage.Provenance,
+		}
 	}
 	if sessionErr != nil {
 		receipt.Transport = acpFailure(sessionErr)

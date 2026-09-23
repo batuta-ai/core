@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -37,9 +38,10 @@ type Result struct {
 	RateLimited bool      // the adapter's limit_regex matched the output tail
 	ResetAt     time.Time // when the limit lifts, if the output said; zero otherwise
 	Question    string    // a BATUTA-QUESTION line, when the executor asked one
-	Usage       *Usage    // CLI-reported token counters, when the adapter's usage_regex matched
+	Usage       *Usage    // CLI-reported token counters, from output_decoder or usage_regex
 	Progress    []ProgressEvent
 	Receipt     *Receipt // optional structured execution metadata
+	RawStdout   []byte   // process stdout before output_decoder, bounded like Stdout
 }
 
 // Subprocess runs invocations through the publication runner, resolving
@@ -77,7 +79,15 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 	stdoutObserver := &progressObserver{sink: sink}
 	stderrObserver := &progressObserver{sink: sink}
 	var stdoutWriter io.Writer = stdoutObserver
-	if s.Stdout != nil {
+	var decoderWriter *decodeWriter
+	if decoder := LookupDecoder(adapter.OutputDecoder); decoder != nil {
+		decodedDest := io.Writer(stdoutObserver)
+		if s.Stdout != nil {
+			decodedDest = io.MultiWriter(stdoutObserver, s.Stdout)
+		}
+		decoderWriter = newDecodeWriter(decoder, decodedDest)
+		stdoutWriter = decoderWriter
+	} else if s.Stdout != nil {
 		stdoutWriter = io.MultiWriter(stdoutObserver, s.Stdout)
 	}
 	var stderrWriter io.Writer = stderrObserver
@@ -93,12 +103,21 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 		Environment: environment, StdoutLimit: outputLimit, StderrLimit: outputLimit,
 		Observer: stdoutWriter, StderrObserver: stderrWriter,
 	})
+	if decoderWriter != nil {
+		_ = decoderWriter.flush()
+	}
 	stdoutObserver.flush()
 	stderrObserver.flush()
 	result := Result{
 		ExitCode: raw.ExitCode, Stdout: raw.Stdout, Stderr: raw.Stderr,
 		Truncated: raw.StdoutTruncated || raw.StderrTruncated, Duration: time.Since(started),
 		Progress: sink.events,
+	}
+	if decoderWriter != nil {
+		rawStdout, rawTruncated := boundCopy(raw.Stdout)
+		result.RawStdout = rawStdout
+		result.Stdout = decoderWriter.bytes()
+		result.Truncated = result.Truncated || rawTruncated || decoderWriter.truncated
 	}
 	if runErr != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) && ctx.Err() == nil {
@@ -111,6 +130,13 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 		}
 	}
 	adapter.Outcome(&result)
+	if decoderWriter != nil {
+		if usage := decoderWriter.decoder.Usage(); usage != nil {
+			copied := *usage
+			copied.Provenance = "cli/" + adapter.OutputDecoder
+			result.Usage = &copied
+		}
+	}
 	return result, nil
 }
 
@@ -257,4 +283,106 @@ func ResetTime(output string, now time.Time) time.Time {
 		return reset
 	}
 	return time.Time{}
+}
+
+type decodeWriter struct {
+	decoder   Decoder
+	dest      io.Writer
+	pending   []byte
+	decoded   []byte
+	truncated bool
+	skipping  bool
+}
+
+func newDecodeWriter(decoder Decoder, dest io.Writer) *decodeWriter {
+	return &decodeWriter{decoder: decoder, dest: dest}
+}
+
+func (w *decodeWriter) Write(payload []byte) (int, error) {
+	written := len(payload)
+	if w.skipping {
+		newline := bytes.IndexByte(payload, '\n')
+		if newline < 0 {
+			return written, nil
+		}
+		payload = payload[newline+1:]
+		w.skipping = false
+	}
+	w.pending = append(w.pending, payload...)
+	for {
+		newline := bytes.IndexByte(w.pending, '\n')
+		if newline < 0 {
+			break
+		}
+		line := string(w.pending[:newline])
+		w.pending = w.pending[newline+1:]
+		if err := w.emit(line); err != nil {
+			return written, err
+		}
+	}
+	// An unterminated leftover longer than outputLimit is dropped; later
+	// bytes stay discarded until the next newline so a later complete
+	// event can decode.
+	if len(w.pending) > outputLimit {
+		w.pending = nil
+		w.truncated = true
+		w.skipping = true
+	}
+	return written, nil
+}
+
+func (w *decodeWriter) flush() error {
+	if len(w.pending) == 0 {
+		return nil
+	}
+	err := w.emit(string(w.pending))
+	w.pending = nil
+	return err
+}
+
+func (w *decodeWriter) emit(line string) error {
+	text := w.decoder.Decode(line)
+	if text == "" {
+		return nil
+	}
+	payload := []byte(text)
+	w.retain(payload)
+	if w.dest == nil {
+		return nil
+	}
+	n, err := w.dest.Write(payload)
+	if err != nil {
+		return err
+	}
+	if n != len(payload) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
+func (w *decodeWriter) retain(payload []byte) {
+	remaining := outputLimit - len(w.decoded)
+	if remaining <= 0 {
+		if len(payload) > 0 {
+			w.truncated = true
+		}
+		return
+	}
+	if len(payload) > remaining {
+		w.decoded = append(w.decoded, payload[:remaining]...)
+		w.truncated = true
+		return
+	}
+	w.decoded = append(w.decoded, payload...)
+}
+
+func (w *decodeWriter) bytes() []byte {
+	return w.decoded
+}
+
+func boundCopy(payload []byte) ([]byte, bool) {
+	if len(payload) <= outputLimit {
+		return payload, false
+	}
+	return append([]byte(nil), payload[:outputLimit]...), true
 }

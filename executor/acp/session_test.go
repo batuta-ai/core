@@ -99,14 +99,44 @@ func TestSessionAcknowledgesConfigurationBeforePrompt(t *testing.T) {
 	awaitError(t, done, nil)
 }
 
+func TestSessionRefusesUnconfirmedModel(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ name, model, state, ack string }{
+		{name: "not advertised", model: "invented", state: configState("small", "low")},
+		{name: "unconfirmed before prompt", model: "large", state: configState("small", "low"), ack: configState("small", "low")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			conn, peer := testConnection(t, Options{})
+			cwd := t.TempDir()
+			done := make(chan error, 1)
+			go func() {
+				_, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: tt.model})
+				done <- err
+			}()
+			reader := bufio.NewReader(peer)
+			setupPeer(t, peer, reader, cwd, tt.state)
+			if tt.ack != "" {
+				request := expectMethod(t, reader, "session/set_config_option")
+				sessionReply(t, peer, request, tt.ack)
+			}
+			awaitError(t, done, ErrConfiguration)
+			if conn.nextID > 4 {
+				t.Fatalf("unexpected request submitted: %d", conn.nextID)
+			}
+		})
+	}
+}
+
 func TestSessionRejectsIncompatibleConfiguration(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ name, model, effort, state, ack string }{
 		{name: "missing model", model: "large", state: `{}`},
 		{name: "unknown model", model: "invented", state: configState("small", "low")},
-		{name: "missing effort", effort: "high", state: `{}`},
 		{name: "unacknowledged model", model: "large", state: configState("small", "low"), ack: configState("small", "low")},
 		{name: "effort resets model", model: "large", effort: "high", state: configState("large", "low"), ack: configState("small", "high")},
+		{name: "effort not offered", model: "large", effort: "high", state: `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"large","options":[{"value":"large"}]},{"id":"reasoning","category":"thought_level","type":"select","currentValue":"low","options":[{"value":"low"}]}]}`},
 		{name: "empty acknowledgement", model: "large", state: configState("small", "low"), ack: `{}`},
 		{name: "ambiguous category", model: "large", state: `{"configOptions":[{"id":"first","category":"model","type":"select","currentValue":"large","options":[{"value":"large"}]},{"id":"second","category":"model","type":"select","currentValue":"large","options":[{"value":"large"}]}]}`},
 		{name: "unsupported option type", model: "large", state: `{"configOptions":[{"id":"models","category":"model","type":"text","currentValue":"large","options":[{"value":"large"}]}]}`},
@@ -134,6 +164,50 @@ func TestSessionRejectsIncompatibleConfiguration(t *testing.T) {
 	}
 }
 
+func TestSessionEffortNotApplicableWithoutThoughtLevel(t *testing.T) {
+	t.Parallel()
+	conn, peer := testConnection(t, Options{})
+	cwd := t.TempDir()
+	done := make(chan error, 1)
+	go func() {
+		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high"})
+		if err == nil && !session.EffortNotApplicable() {
+			err = fmt.Errorf("EffortNotApplicable() = false, want true")
+		}
+		if err == nil {
+			var result TurnResult
+			result, err = session.Prompt(context.Background(), "the brief", nil)
+			if err == nil && (!result.Completed || result.StopReason != "end_turn") {
+				err = fmt.Errorf("turn: %+v", result)
+			}
+		}
+		done <- err
+	}()
+	reader := bufio.NewReader(peer)
+	setupPeer(t, peer, reader, cwd, `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"small","options":[{"value":"small"},{"value":"large"}]}]}`)
+	// The only selection is the model: with no thought_level option and no
+	// EffortConfigID, the requested effort is not_applicable.
+	request := expectMethod(t, reader, "session/set_config_option")
+	var params struct {
+		SessionID string `json:"sessionId"`
+		ConfigID  string `json:"configId"`
+		Value     string `json:"value"`
+	}
+	if json.Unmarshal(request["params"], &params) != nil || params.SessionID != "task" || params.ConfigID != "models" || params.Value != "large" {
+		t.Fatalf("config: %s", request["params"])
+	}
+	sessionReply(t, peer, request, `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"large","options":[{"value":"small"},{"value":"large"}]}]}`)
+	request = expectMethod(t, reader, "session/prompt")
+	if string(request["params"]) != `{"sessionId":"task","prompt":[{"type":"text","text":"the brief"}]}` {
+		t.Fatalf("prompt: %s", request["params"])
+	}
+	sessionReply(t, peer, request, `{"stopReason":"end_turn"}`)
+	awaitError(t, done, nil)
+	if conn.nextID > 4 {
+		t.Fatalf("unexpected effort selection submitted: %d", conn.nextID)
+	}
+}
+
 func TestSessionSelectsExplicitIDsAndGroupedValues(t *testing.T) {
 	conn, peer := testConnection(t, Options{})
 	cwd := t.TempDir()
@@ -155,25 +229,47 @@ func TestSessionSelectsExplicitIDsAndGroupedValues(t *testing.T) {
 }
 
 func TestSessionRejectsConfigurationDriftDuringPrompt(t *testing.T) {
-	conn, peer := testConnection(t, Options{})
-	cwd := t.TempDir()
-	done := make(chan error, 1)
-	go func() {
-		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high"})
-		if err == nil {
-			var result TurnResult
-			result, err = session.Prompt(context.Background(), "brief", nil)
-			if result.Completed || !result.SubmissionAttempted {
-				err = fmt.Errorf("configuration drift turn: %+v / %v", result, err)
+	modelOnly := `{"configOptions":[{"id":"models","category":"model","type":"select","currentValue":"large","options":[{"value":"small"},{"value":"large"}]}]}`
+	tests := []struct {
+		name   string
+		state  string
+		update string
+		want   error
+	}{
+		{name: "model drifted", state: configState("large", "high"), update: configState("small", "high"), want: ErrConfiguration},
+		{name: "effort_option_dropped", state: configState("large", "high"), update: modelOnly, want: ErrConfiguration},
+		{name: "skipped_effort_stays_skipped", state: modelOnly, update: modelOnly},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, peer := testConnection(t, Options{})
+			cwd := t.TempDir()
+			done := make(chan error, 1)
+			go func() {
+				session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd, Model: "large", Effort: "high"})
+				if err == nil {
+					var result TurnResult
+					result, err = session.Prompt(context.Background(), "brief", nil)
+					if tt.want != nil {
+						if result.Completed || !result.SubmissionAttempted {
+							err = fmt.Errorf("configuration drift turn: %+v / %v", result, err)
+						}
+					} else if err == nil && (!result.Completed || result.StopReason != "end_turn") {
+						err = fmt.Errorf("turn: %+v", result)
+					}
+				}
+				done <- err
+			}()
+			reader := bufio.NewReader(peer)
+			setupPeer(t, peer, reader, cwd, tt.state)
+			request := expectMethod(t, reader, "session/prompt")
+			writeMessage(t, peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"config_option_update",`+strings.TrimPrefix(tt.update, "{")+`}}`)
+			if tt.want == nil {
+				sessionReply(t, peer, request, `{"stopReason":"end_turn"}`)
 			}
-		}
-		done <- err
-	}()
-	reader := bufio.NewReader(peer)
-	setupPeer(t, peer, reader, cwd, configState("large", "high"))
-	expectMethod(t, reader, "session/prompt")
-	writeMessage(t, peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"config_option_update",`+strings.TrimPrefix(configState("small", "high"), "{")+`}}`)
-	awaitError(t, done, ErrConfiguration)
+			awaitError(t, done, tt.want)
+		})
+	}
 }
 
 func TestSessionRejectsOversizedPromptBeforeSubmission(t *testing.T) {
@@ -240,9 +336,77 @@ func TestSessionStreamsOnlyAgentTextAndCannotReplay(t *testing.T) {
 	}
 	sessionReply(t, peer, request, `{"stopReason":"end_turn","usage":{"inputTokens":100,"outputTokens":20,"cachedReadTokens":40}}`)
 	got := <-done
-	if got.err != nil || got.text != "hello world" || !got.result.Completed || !got.result.SubmissionAttempted || got.result.Usage == nil || *got.result.Usage.InputTokens != 100 || *got.result.Usage.CachedInputTokens != 40 {
+	if got.err != nil || got.text != "hello world" || !got.result.Completed || !got.result.SubmissionAttempted || got.result.Usage == nil || *got.result.Usage.InputTokens != 100 || *got.result.Usage.CacheReadTokens != 40 {
 		t.Fatalf("turn: %+v", got)
 	}
+}
+
+func runUsageTurn(t *testing.T, update, response string) TurnResult {
+	t.Helper()
+	conn, peer := testConnection(t, Options{})
+	cwd := t.TempDir()
+	type outcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd})
+		var result TurnResult
+		if err == nil {
+			result, err = session.Prompt(context.Background(), "brief", nil)
+		}
+		done <- outcome{result, err}
+	}()
+	reader := bufio.NewReader(peer)
+	setupPeer(t, peer, reader, cwd, `{}`)
+	request := expectMethod(t, reader, "session/prompt")
+	writeMessage(t, peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":`+update+`}}`)
+	sessionReply(t, peer, request, response)
+	got := <-done
+	if got.err != nil || !got.result.Completed {
+		t.Fatalf("turn: %+v / %v", got.result, got.err)
+	}
+	return got.result
+}
+
+func TestDecodeUsageAllCounters(t *testing.T) {
+	t.Run("keeps every counter with the reported cost", func(t *testing.T) {
+		t.Parallel()
+		usage := runUsageTurn(t,
+			`{"sessionUpdate":"usage_update","used":300,"size":1000,"cost":{"amount":0.25,"currency":"EUR"}}`,
+			`{"stopReason":"end_turn","usage":{"inputTokens":100,"outputTokens":20,"cachedReadTokens":40,"cachedWriteTokens":5,"thoughtTokens":8,"totalTokens":173}}`).Usage
+		if usage == nil {
+			t.Fatal("no usage recorded")
+		}
+		if usage.InputTokens == nil || *usage.InputTokens != 100 || usage.OutputTokens == nil || *usage.OutputTokens != 20 ||
+			usage.CacheReadTokens == nil || *usage.CacheReadTokens != 40 || usage.CacheWriteTokens == nil || *usage.CacheWriteTokens != 5 ||
+			usage.ReasoningTokens == nil || *usage.ReasoningTokens != 8 || usage.ReportedTotalTokens == nil || *usage.ReportedTotalTokens != 173 {
+			t.Fatalf("counters: %+v", usage)
+		}
+		if usage.CostAmount == nil || *usage.CostAmount != 0.25 || usage.CostCurrency != "EUR" {
+			t.Fatalf("cost: %+v", usage)
+		}
+		if usage.CacheSemantics != CacheSemanticsAdditive {
+			t.Fatalf("cache semantics: %q", usage.CacheSemantics)
+		}
+		if usage.Provenance != "acp/session-prompt/usage (draft)" {
+			t.Fatalf("provenance: %q", usage.Provenance)
+		}
+	})
+	t.Run("absent cost and unusable counters stay nil", func(t *testing.T) {
+		t.Parallel()
+		usage := runUsageTurn(t,
+			`{"sessionUpdate":"usage_update","used":300,"size":1000}`,
+			`{"stopReason":"end_turn","usage":{"inputTokens":-1,"outputTokens":1.5,"cachedReadTokens":"credential-canary","cachedWriteTokens":null,"thoughtTokens":-2,"totalTokens":false}}`).Usage
+		if usage == nil {
+			t.Fatal("no usage recorded")
+		}
+		if usage.InputTokens != nil || usage.OutputTokens != nil || usage.CacheReadTokens != nil || usage.CacheWriteTokens != nil ||
+			usage.ReasoningTokens != nil || usage.ReportedTotalTokens != nil || usage.CostAmount != nil || usage.CostCurrency != "" {
+			t.Fatalf("invented accounting: %+v", usage)
+		}
+	})
 }
 
 func TestSessionCancellationNotifiesAndRejectsLateResult(t *testing.T) {

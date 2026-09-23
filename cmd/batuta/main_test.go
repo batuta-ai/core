@@ -308,7 +308,7 @@ esac
 			}
 			calls, callsErr := os.ReadFile(filepath.Join(root, "native-calls"))
 			input, inputErr := os.ReadFile(filepath.Join(root, "native-input"))
-			if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" && model == "opencode/big-pickle" {
+			if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
 				if report.Backend != "acp" || report.Receipt.Transport.Failure != "protocol" || callsErr != nil || string(calls) != "--version\nacp\n" || inputErr != nil {
 					t.Fatalf("native route did not reach fixture protocol failure: %+v / %v; calls=%q / %v input=%q / %v", report, err, calls, callsErr, input, inputErr)
 				}

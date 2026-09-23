@@ -32,19 +32,42 @@ type SessionConfig struct {
 // Session is one configured attempt. It neither authenticates nor owns the
 // worker process. The owner must close the connection and verify worker exit.
 type Session struct {
-	conn      *Connection
-	id        string
-	config    SessionConfig
-	options   []ConfigOption
-	prompted  atomic.Bool
-	enforcing bool
+	conn          *Connection
+	id            string
+	config        SessionConfig
+	options       []ConfigOption
+	prompted      atomic.Bool
+	enforcing     bool
+	skippedEffort bool
 }
 
 type TurnResult struct {
 	SubmissionAttempted bool
 	Completed           bool
 	StopReason          string
-	Usage               *TokenUsage
+	Usage               *Usage
+}
+
+// CacheSemantics says how cached counters relate to the input counter.
+type CacheSemantics string
+
+// ACP reports cached reads and writes on top of the input counter.
+const CacheSemanticsAdditive CacheSemantics = "additive"
+
+// Usage is optional peer-reported accounting. Nil counters are unknown;
+// context occupancy is not token consumption, and cost is copied from the
+// agent, never computed.
+type Usage struct {
+	InputTokens         *int64
+	OutputTokens        *int64
+	CacheReadTokens     *int64
+	CacheWriteTokens    *int64
+	ReasoningTokens     *int64
+	ReportedTotalTokens *int64
+	CostAmount          *float64
+	CostCurrency        string
+	CacheSemantics      CacheSemantics
+	Provenance          string
 }
 
 func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*Session, error) {
@@ -88,7 +111,10 @@ func NewSession(ctx context.Context, conn *Connection, config SessionConfig) (*S
 		return nil, err
 	}
 	if err := session.selectOption(ctx, "thought_level", config.EffortConfigID, config.Effort); err != nil {
-		return nil, err
+		if !session.effortNotApplicable(err) {
+			return nil, err
+		}
+		session.skippedEffort = true
 	}
 	if err := session.checkConfiguration(); err != nil {
 		return nil, err
@@ -175,11 +201,40 @@ func (s *Session) checkOption(category, id, value string) error {
 	return nil
 }
 
+func (s *Session) hasOption(category, id string) bool {
+	for _, option := range s.options {
+		if (id != "" && option.ID == id) || (id == "" && option.Category == category) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Session) effortNotApplicable(err error) bool {
+	return err != nil && s.config.EffortConfigID == "" && !s.hasOption("thought_level", s.config.EffortConfigID)
+}
+
+func (s *Session) EffortNotApplicable() bool {
+	return s.skippedEffort
+}
+
 func (s *Session) checkConfiguration() error {
 	if err := s.checkOption("model", s.config.ModelConfigID, s.config.Model); err != nil {
 		return err
 	}
-	return s.checkOption("thought_level", s.config.EffortConfigID, s.config.Effort)
+	if err := s.checkOption("thought_level", s.config.EffortConfigID, s.config.Effort); err != nil {
+		if s.enforcing {
+			if s.skippedEffort && !s.hasOption("thought_level", s.config.EffortConfigID) {
+				return nil
+			}
+			return err
+		}
+		if s.effortNotApplicable(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // Prompt may be called once, even if submission fails. A transport failure in
@@ -236,6 +291,11 @@ func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) e
 		result.StopReason = "unknown"
 	}
 	if usage := decodeUsage(response.Usage); usage != nil {
+		// The cost a usage_update reported survives the decoded response usage.
+		if result.Usage != nil {
+			usage.CostAmount = result.Usage.CostAmount
+			usage.CostCurrency = result.Usage.CostCurrency
+		}
 		result.Usage = usage
 	}
 	return result, nil
@@ -387,16 +447,35 @@ func (s *Session) update(notification Notification, text func(string) error, res
 			return s.checkConfiguration()
 		}
 	case "usage_update":
-		if result != nil && result.Usage == nil {
-			result.Usage = &TokenUsage{Provenance: "acp/session-update"}
+		var state struct {
+			Cost *struct {
+				Amount   *float64 `json:"amount"`
+				Currency *string  `json:"currency"`
+			} `json:"cost"`
+		}
+		// The draft usage surface is informational: a cost the agent does not
+		// express as {amount, currency} is absent, never invented.
+		if json.Unmarshal(params.Update, &state) != nil {
+			state.Cost = nil
+		}
+		if result != nil {
+			if result.Usage == nil {
+				result.Usage = &Usage{Provenance: "acp/session-update"}
+			}
+			if state.Cost != nil {
+				result.Usage.CostAmount = state.Cost.Amount
+				if state.Cost.Currency != nil {
+					result.Usage.CostCurrency = *state.Cost.Currency
+				}
+			}
 		}
 	}
 	return nil
 }
 
-func decodeUsage(raw json.RawMessage) *TokenUsage {
+func decodeUsage(raw json.RawMessage) *Usage {
 	// This optional draft field is not a negotiated stable ACP capability.
-	// Retain only explicit non-negative counters, never context size or totals.
+	// Retain only explicit non-negative counters, never context occupancy.
 	var fields map[string]json.RawMessage
 	if json.Unmarshal(raw, &fields) != nil || fields == nil {
 		return nil
@@ -408,5 +487,14 @@ func decodeUsage(raw json.RawMessage) *TokenUsage {
 		}
 		return value
 	}
-	return &TokenUsage{InputTokens: counter("inputTokens"), CachedInputTokens: counter("cachedReadTokens"), OutputTokens: counter("outputTokens"), Provenance: "acp/session-prompt/usage (draft)"}
+	return &Usage{
+		InputTokens:         counter("inputTokens"),
+		OutputTokens:        counter("outputTokens"),
+		CacheReadTokens:     counter("cachedReadTokens"),
+		CacheWriteTokens:    counter("cachedWriteTokens"),
+		ReasoningTokens:     counter("thoughtTokens"),
+		ReportedTotalTokens: counter("totalTokens"),
+		CacheSemantics:      CacheSemanticsAdditive,
+		Provenance:          "acp/session-prompt/usage (draft)",
+	}
 }

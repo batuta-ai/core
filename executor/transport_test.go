@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -108,8 +109,8 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 		{name: "qualified", wantLookup: true, wantProbe: true, wantACP: true},
 		{name: "synthetic host qualification", syntheticHost: true, wantLookup: true, wantProbe: true, wantACP: true},
 		{name: "version", syntheticHost: true},
-		{name: "model", syntheticHost: true},
-		{name: "effort", syntheticHost: true},
+		{name: "model", syntheticHost: true, wantLookup: true, wantProbe: true, wantACP: true},
+		{name: "effort", syntheticHost: true, wantLookup: true, wantProbe: true, wantACP: true},
 		{name: "launch", syntheticHost: true},
 		{name: "codex", syntheticHost: true},
 		{name: "claude", syntheticHost: true},
@@ -129,7 +130,7 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 				backend := NewNativeTransport(mode)
 				wantQualification := ACPQualification{
 					Executor: "opencode", Run: "opencode acp", Version: "1.18.31",
-					GOOS: "darwin", GOARCH: "arm64", Model: "opencode/big-pickle", Effort: "",
+					GOOS: "darwin", GOARCH: "arm64", Model: "*", Effort: "",
 					Permissions: true, Cleanup: true, AuthenticatedTask: true, Platform: true,
 				}
 				if len(backend.Qualifications) != 1 || backend.Qualifications[0] != wantQualification {
@@ -183,7 +184,7 @@ func TestNativeTransportExactReleaseSelection(t *testing.T) {
 				})
 				peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
 					backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
-					backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"model","category":"model","type":"select","currentValue":"opencode/big-pickle","options":[{"value":"opencode/big-pickle"}]}]}`)
+					backendReply(conn, backendRead(t, reader, "session/new"), fmt.Sprintf(`{"sessionId":"task","configOptions":[{"id":"model","category":"model","type":"select","currentValue":%q,"options":[{"value":%q}]}]}`, execution.Request.Model, execution.Request.Model))
 					backendReply(conn, backendRead(t, reader, "session/prompt"), `{"stopReason":"end_turn"}`)
 					io.Copy(io.Discard, reader)
 				})
@@ -473,6 +474,140 @@ func TestTransportVersionProbeIsBoundedAndFailClosed(t *testing.T) {
 			result, err := backend.Execute(context.Background(), execution)
 			if !errors.Is(err, ErrACPUnavailable) || strings.Contains(err.Error(), "canary") || *calls != 0 || result.Finished {
 				t.Fatalf("result=%+v err=%v calls=%d", result, err, *calls)
+			}
+		})
+	}
+}
+
+func TestQualificationEffortNotApplicable(t *testing.T) {
+	t.Parallel()
+	backend, execution, calls := transportFixture(t)
+	backend.Mode = "acp"
+	backend.Qualifications[0].Effort = ""
+	execution.Request.Effort = "high"
+	opens := 0
+	peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+		backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+		backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]}]}`)
+		backendReply(conn, backendRead(t, reader, "session/prompt"), `{"stopReason":"end_turn"}`)
+		io.Copy(io.Discard, reader)
+	})
+	backend.ACP.Open = func(ctx context.Context, got Execution) (*acp.Connection, func() error, error) {
+		opens++
+		return peer.Open(ctx, got)
+	}
+	result, err := backend.Execute(context.Background(), execution)
+	if err != nil || *calls != 0 || opens != 1 || !result.Finished || result.Receipt == nil || result.Receipt.Submission.State != SubmissionSubmitted {
+		t.Fatalf("effort blocked qualification: %+v / %v opens=%d calls=%d", result, err, opens, *calls)
+	}
+	if result.Receipt.Effort != "not_applicable" {
+		t.Fatalf("effort disposition: %q", result.Receipt.Effort)
+	}
+}
+
+func TestACPReceiptEffortSelectedByCategory(t *testing.T) {
+	t.Parallel()
+	backend, execution, calls := transportFixture(t)
+	backend.Mode = "acp"
+	backend.Qualifications[0].Effort = ""
+	execution.Request.Effort = "high"
+	opens := 0
+	peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+		backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+		backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"high"}]}]}`)
+		backendReply(conn, backendRead(t, reader, "session/prompt"), `{"stopReason":"end_turn"}`)
+		io.Copy(io.Discard, reader)
+	})
+	backend.ACP.Open = func(ctx context.Context, got Execution) (*acp.Connection, func() error, error) {
+		opens++
+		return peer.Open(ctx, got)
+	}
+	result, err := backend.Execute(context.Background(), execution)
+	if err != nil || *calls != 0 || opens != 1 || !result.Finished || result.Receipt == nil || result.Receipt.Submission.State != SubmissionSubmitted {
+		t.Fatalf("selected effort: %+v / %v opens=%d calls=%d", result, err, opens, *calls)
+	}
+	if result.Receipt.Effort == "not_applicable" {
+		t.Fatalf("effort disposition: %q", result.Receipt.Effort)
+	}
+}
+
+func TestACPReceiptEffortRejectedNotStamped(t *testing.T) {
+	t.Parallel()
+	backend, execution, calls := transportFixture(t)
+	backend.Mode = "acp"
+	backend.Qualifications[0].Effort = ""
+	execution.Request.Effort = "high"
+	opens := 0
+	peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+		backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+		backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"model","options":[{"value":"model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"low","options":[{"value":"low"}]}]}`)
+		line, _ := reader.ReadBytes('\n')
+		if len(line) != 0 {
+			t.Errorf("prompt after rejection: %s", line)
+		}
+	})
+	backend.ACP.Open = func(ctx context.Context, got Execution) (*acp.Connection, func() error, error) {
+		opens++
+		return peer.Open(ctx, got)
+	}
+	result, err := backend.Execute(context.Background(), execution)
+	if !errors.Is(err, acp.ErrConfiguration) || *calls != 0 || opens != 1 || result.Finished || result.Receipt == nil {
+		t.Fatalf("rejected effort: %+v / %v opens=%d calls=%d", result, err, opens, *calls)
+	}
+	if result.Receipt.Effort == "not_applicable" {
+		t.Fatalf("effort disposition: %q", result.Receipt.Effort)
+	}
+}
+
+func TestQualificationAnyModel(t *testing.T) {
+	t.Parallel()
+	for _, mismatch := range []string{"match", "executor", "run", "version", "os", "arch", "permissions", "cleanup", "task", "platform"} {
+		t.Run(mismatch, func(t *testing.T) {
+			t.Parallel()
+			backend, execution, calls := transportFixture(t)
+			backend.Mode = "acp"
+			backend.Qualifications[0].Model = "*"
+			execution.Request.Model = "requested-model"
+			switch mismatch {
+			case "executor":
+				backend.Qualifications[0].Executor = "other"
+			case "run":
+				backend.Qualifications[0].Run = "other-acp"
+			case "version":
+				backend.Qualifications[0].Version = "other"
+			case "os":
+				backend.Qualifications[0].GOOS = "other"
+			case "arch":
+				backend.Qualifications[0].GOARCH = "other"
+			case "permissions":
+				backend.Qualifications[0].Permissions = false
+			case "cleanup":
+				backend.Qualifications[0].Cleanup = false
+			case "task":
+				backend.Qualifications[0].AuthenticatedTask = false
+			case "platform":
+				backend.Qualifications[0].Platform = false
+			}
+			opens := 0
+			peer := backendPeer(t, execution, func(reader *bufio.Reader, conn net.Conn) {
+				backendReply(conn, backendRead(t, reader, "initialize"), `{"protocolVersion":1,"agentCapabilities":{}}`)
+				backendReply(conn, backendRead(t, reader, "session/new"), `{"sessionId":"task","configOptions":[{"id":"m","category":"model","type":"select","currentValue":"requested-model","options":[{"value":"requested-model"}]},{"id":"e","category":"thought_level","type":"select","currentValue":"medium","options":[{"value":"medium"}]}]}`)
+				backendReply(conn, backendRead(t, reader, "session/prompt"), `{"stopReason":"end_turn"}`)
+				io.Copy(io.Discard, reader)
+			})
+			backend.ACP.Open = func(ctx context.Context, got Execution) (*acp.Connection, func() error, error) {
+				opens++
+				return peer.Open(ctx, got)
+			}
+			result, err := backend.Execute(context.Background(), execution)
+			if mismatch == "match" {
+				if err != nil || *calls != 0 || opens != 1 || !result.Finished || result.Receipt == nil || result.Receipt.Submission.State != SubmissionSubmitted {
+					t.Fatalf("wildcard model: %+v / %v opens=%d calls=%d", result, err, opens, *calls)
+				}
+				return
+			}
+			if !errors.Is(err, ErrACPUnavailable) || *calls != 0 || opens != 0 || result.Finished || result.Receipt == nil || result.Receipt.Submission.State != SubmissionNotSubmitted {
+				t.Fatalf("mismatch %s: %+v / %v opens=%d calls=%d", mismatch, result, err, opens, *calls)
 			}
 		})
 	}
