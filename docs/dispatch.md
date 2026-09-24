@@ -204,6 +204,17 @@ Cancellation acknowledgement and verified worker shutdown are separate
 facts; cleanup must be verified before the worktree can be discarded or an
 `auto` compatibility fallback can run.
 
+**CLI executors.** On the CLI path, containment comes from each CLI's own
+sandbox and flags in its adapter, not from a batuta callback. codex
+(`--sandbox workspace-write`), claude (`acceptEdits` with sandbox settings and
+an in-worktree edit allow rule) and cursor-agent (`--sandbox enabled`, no
+`--force`) are free inside the worktree and blocked outside it. opencode and
+agy are not contained outside the worktree: opencode blocks file edits there
+but writes through the shell, and agy writes both ways. They are kept by the
+maintainer's decision of 2026-09-23. The
+[probe evidence](../.batuta/cli-probes/2026-09-23/README.md) records each
+configuration; the adapter change is batuta-ai/skills#64.
+
 On native macOS, `acp.Process` owns a dedicated process group. Shutdown closes
 its transport for cooperative EOF, then sends TERM and KILL to that group as
 needed, with bounded waits. Once group disappearance is observed, no further
