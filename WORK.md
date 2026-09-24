@@ -304,6 +304,7 @@
 - [x] The worktree policy rejects a `..` element split on every platform path separator → opencode (opencode/glm-5.3-flash), commit 15a950eb2483 (trail: .batuta/runs/2026-09-23-acp-worktree-permissions-fixes-2-task-1.md, delivery acp-worktree-permissions-fixes-2-20260923-182609, plan acp-worktree-permissions-fixes-2, 2026-09-23)
 - [x] A qualification pins the session mode and meta, and the stock factory carries the codex and claude records → cursor-agent (cursor-grok-4.6-high), commit 381a646be0ce (trail: .batuta/runs/2026-09-23-acp-bridge-records-task-1.md, delivery acp-bridge-records-20260923-192746, plan acp-bridge-records, 2026-09-23)
 - [x] The measurement doc records the bridge qualifications → opencode (opencode/glm-5.3-flash), commit ba85be7d7d90 (trail: .batuta/runs/2026-09-23-acp-bridge-records-task-2.md, delivery acp-bridge-records-20260923-192746, plan acp-bridge-records, 2026-09-23)
+- [x] docs/dispatch.md gains a CLI containment paragraph → claude (sonnet), commit 1049d9c476f5 (trail: .batuta/runs/2026-09-24-cli-containment-docs-task-1.md, delivery cli-containment-docs-20260924-132906, plan cli-containment-docs, 2026-09-24)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
