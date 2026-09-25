@@ -313,6 +313,7 @@
 - [x] Complete-message events end with a newline; streamed deltas are joined as they are → codex (gpt-6-sol), commit ce19f3e2174d (trail: .batuta/runs/2026-09-25-decoder-message-boundaries-task-1.md, delivery decoder-message-boundaries-20260925-210129, plan decoder-message-boundaries, 2026-09-25)
 - [x] Decoders count dropped lines; review and verifier fall back to raw stdout when the decoded text has no framing → codex (gpt-6-sol), 1 retry, commit 1b95fac2b0c0 (trail: .batuta/runs/2026-09-25-decoder-fallback-telemetry-task-1.md, delivery decoder-fallback-telemetry-20260925-220556, plan decoder-fallback-telemetry, 2026-09-25)
 - [x] A failed verifier and an uncovered review cohort keep a redacted output tail → codex (gpt-6-sol), commit c1372fd55aac (trail: .batuta/runs/2026-09-25-decoder-fallback-telemetry-task-2.md, delivery decoder-fallback-telemetry-20260925-220556, plan decoder-fallback-telemetry, 2026-09-25)
+- [x] Only unknown event types count as dropped; tail files are authorized, pruned and redacted like the loop → claude (sonnet), 1 retry, commit 74b1c2a8b9f4 (trail: .batuta/runs/2026-09-25-decoder-fallback-telemetry-fixes-task-1.md, delivery decoder-fallback-telemetry-fixes-20260925-230852, plan decoder-fallback-telemetry-fixes, 2026-09-25)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
