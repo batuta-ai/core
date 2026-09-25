@@ -38,6 +38,7 @@ type Session struct {
 	id            string
 	config        SessionConfig
 	options       []ConfigOption
+	denials       []DeniedPermission
 	prompted      atomic.Bool
 	enforcing     bool
 	skippedEffort bool
@@ -48,6 +49,14 @@ type TurnResult struct {
 	Completed           bool
 	StopReason          string
 	Usage               *Usage
+	DeniedPermissions   []DeniedPermission
+}
+
+type DeniedPermission struct {
+	Kind      string   `json:"kind"`
+	Title     string   `json:"title"`
+	Command   string   `json:"command"`
+	Locations []string `json:"locations"`
 }
 
 // CacheSemantics says how cached counters relate to the input counter.
@@ -285,6 +294,7 @@ func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) e
 	}
 	result.SubmissionAttempted = true
 	raw, err := s.call(ctx, "session/prompt", params, text, &result, nil)
+	result.DeniedPermissions = s.denials
 	if err != nil {
 		return result, err
 	}

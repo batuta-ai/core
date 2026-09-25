@@ -15,6 +15,7 @@ type PermissionRequest struct {
 	ToolCall  struct {
 		ToolCallID string          `json:"toolCallId"`
 		Kind       string          `json:"kind"`
+		Title      string          `json:"title"`
 		RawInput   json.RawMessage `json:"rawInput"`
 		Locations  []struct {
 			Path string `json:"path"`
@@ -50,9 +51,9 @@ func (s *Session) permission(ctx context.Context, request Request, prompting boo
 		}
 	}
 	selected := ""
+	options := slices.Clone(params.Options)
 	if valid && prompting && s.config.PermissionPolicy != nil && ctx.Err() == nil && s.conn.Err() == nil {
 		// The callback cannot mutate the offered options used to validate its answer.
-		options := slices.Clone(params.Options)
 		policyCtx, cancel := context.WithTimeout(ctx, s.conn.options.RequestTimeout)
 		choice := s.config.PermissionPolicy(policyCtx, params)
 		if policyCtx.Err() == nil && s.conn.Err() == nil {
@@ -64,6 +65,17 @@ func (s *Session) permission(ctx context.Context, request Request, prompting boo
 			}
 		}
 		cancel()
+	}
+	if selected == "" {
+		s.recordDenial(params)
+		if valid && prompting {
+			for _, option := range options {
+				if option.Kind == "reject_once" {
+					selected = option.OptionID
+					break
+				}
+			}
+		}
 	}
 	if selected == "" {
 		// Rejection is terminal even if the peer races a success reply or disconnects
@@ -82,4 +94,23 @@ func (s *Session) permission(ctx context.Context, request Request, prompting boo
 		OptionID string `json:"optionId"`
 	}{"selected", selected}})
 	return s.conn.Respond(ctx, request.ID, response, nil)
+}
+
+func (s *Session) recordDenial(params PermissionRequest) {
+	if len(s.denials) == 16 {
+		return
+	}
+	var input struct {
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(params.ToolCall.RawInput, &input)
+	denial := DeniedPermission{
+		Kind:    params.ToolCall.Kind,
+		Title:   params.ToolCall.Title[:min(len(params.ToolCall.Title), 200)],
+		Command: input.Command[:min(len(input.Command), 200)],
+	}
+	for _, location := range params.ToolCall.Locations[:min(len(params.ToolCall.Locations), 8)] {
+		denial.Locations = append(denial.Locations, location.Path[:min(len(location.Path), 200)])
+	}
+	s.denials = append(s.denials, denial)
 }

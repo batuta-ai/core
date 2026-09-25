@@ -428,6 +428,40 @@ func TestACPBackendPermissionPolicyAndUnsupportedMethods(t *testing.T) {
 	}
 }
 
+func TestACPReceiptRecordsDeniedPermissions(t *testing.T) {
+	execution := Execution{Request: Request{Cwd: t.TempDir(), Brief: "brief"}}
+	backend := backendPeer(t, execution, func(reader *bufio.Reader, peer net.Conn) {
+		prompt := backendSetup(t, reader, peer)
+		for i := range 2 {
+			fmt.Fprintf(peer, `{"jsonrpc":"2.0","id":"p-%d","method":"session/request_permission","params":{"sessionId":"task","toolCall":{"toolCallId":"call-%d","kind":"execute","title":"Git commit","rawInput":{"command":"git commit"},"locations":[{"path":"/worktree"}]},"options":[{"optionId":"no","kind":"reject_once"}]}}`+"\n", i, i)
+			line, err := reader.ReadString('\n')
+			if err != nil || !strings.Contains(line, `"optionId":"no"`) {
+				t.Errorf("denial %d response: %s / %v", i, line, err)
+				return
+			}
+		}
+		backendReply(peer, prompt, `{"stopReason":"end_turn"}`)
+		io.Copy(io.Discard, reader)
+	})
+	result, err := backend.Execute(context.Background(), execution)
+	if err != nil || !result.Finished || result.Receipt.Transport.Outcome != TransportCompleted || result.Receipt.Transport.Failure != "" || result.Receipt.Submission.State != SubmissionSubmitted {
+		t.Fatalf("turn: %+v / %v", result, err)
+	}
+	denied := result.Receipt.DeniedPermissions
+	if len(denied) != 2 {
+		t.Fatalf("denied permissions: %+v", denied)
+	}
+	for _, entry := range denied {
+		if entry.Kind != "execute" || entry.Title != "Git commit" || entry.Command != "git commit" || len(entry.Locations) != 1 || entry.Locations[0] != "/worktree" {
+			t.Fatalf("denied permission: %+v", entry)
+		}
+	}
+	encoded, err := MarshalReceipt(*result.Receipt)
+	if err != nil || !bytes.Contains(encoded, []byte(`"denied_permissions"`)) {
+		t.Fatalf("receipt: %s / %v", encoded, err)
+	}
+}
+
 func TestACPBackendProcessFixture(t *testing.T) {
 	mode := os.Getenv("BATUTA_BACKEND_FIXTURE")
 	if mode == "" {
