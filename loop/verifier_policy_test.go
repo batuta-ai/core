@@ -65,6 +65,29 @@ func TestVerifierPrefersDecoded(t *testing.T) {
 	}
 }
 
+func TestVerifierFailureKeepsOutputTail(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result executor.Result
+	}{
+		{"incomplete execution", executor.Result{ExitCode: 2, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nlast stdout\n"), Stderr: []byte("last stderr\n"), DecoderDroppedLines: 3}},
+		{"no task lines", executor.Result{Finished: true, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nlast stdout\n"), Stderr: []byte("last stderr\n"), DecoderDroppedLines: 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			verdict := verifyOutput(t, tc.result)
+			for _, want := range []string{"secret.txt", "last stdout", "last stderr", "decoder_dropped_lines: 3"} {
+				if !strings.Contains(verdict.Detail, want) {
+					t.Errorf("detail = %q, missing %q", verdict.Detail, want)
+				}
+			}
+			if strings.Contains(verdict.Detail, "API_KEY") || strings.Contains(verdict.Detail, "hidden") || strings.Contains(verdict.Detail, "/private/secret.txt") {
+				t.Fatalf("detail leaked secret or path: %q", verdict.Detail)
+			}
+		})
+	}
+}
+
 // oneMediumTaskPlan swaps the default plan for a single medium task with the
 // given title, Scope line and Accept line, whose criteria may carry proofs.
 func oneMediumTaskPlan(t *testing.T, f fixture, title, scope, accept string) {

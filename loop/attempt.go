@@ -752,19 +752,31 @@ func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gate
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: executor.Tail(result.Stdout, 10)}, nil
 	}
 	if execErr != nil {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not complete: " + execErr.Error()}, nil
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not complete: " + execErr.Error(), Detail: r.verifierOutputTail(result)}, nil
 	}
 	finished := gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, "")
 	if !finished.Pass || result.Truncated || ac.verifierDispatch.ReconciliationRequired {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete"}, nil
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete", Detail: r.verifierOutputTail(result)}, nil
 	}
 	output := string(result.Stdout)
 	if !verifierTaskLine.MatchString(output) && len(result.RawStdout) > 0 {
 		output = string(result.RawStdout)
 	}
 	verdict := gates.Verifier(output, len(criteria), proofs)
+	if verdict.Signal == "the verifier printed no TASK n: DONE|INCOMPLETE lines" {
+		verdict.Detail = r.verifierOutputTail(result)
+	}
 	verdict.Signal = name + "/" + model + ": " + verdict.Signal
 	return verdict, nil
+}
+
+func (r *Runner) verifierOutputTail(result executor.Result) string {
+	tail := r.outputTailDetail(result)
+	detail := fmt.Sprintf("stdout:\n%s\nstderr:\n%s", tail["stdout"], tail["stderr"])
+	if result.DecoderDroppedLines > 0 {
+		detail += fmt.Sprintf("\ndecoder_dropped_lines: %d", result.DecoderDroppedLines)
+	}
+	return detail
 }
 
 func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result executor.Result, treeChanged bool) error {

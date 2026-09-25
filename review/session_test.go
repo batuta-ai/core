@@ -310,6 +310,71 @@ func TestUncoveredCohortReported(t *testing.T) {
 	}
 }
 
+func TestUncoveredCohortWritesTail(t *testing.T) {
+	t.Parallel()
+	for _, covered := range []bool{false, true} {
+		name := "uncovered"
+		if covered {
+			name = "covered"
+		}
+		t.Run(name, func(t *testing.T) {
+			manifest, runtime, opts := sessionFixture(t, 1)
+			calls := 0
+			useReviewRunner(&opts, func(context.Context, publication.Command) (publication.CommandResult, error) {
+				calls++
+				if covered {
+					return cleanReview(), nil
+				}
+				if calls == 1 {
+					return publication.CommandResult{ExitCode: 2, Stdout: []byte("first attempt only\n")}, nil
+				}
+				return publication.CommandResult{ExitCode: 2,
+					Stdout: []byte(strings.Repeat("long stdout "+strings.Repeat("x", 300)+"\n", 400) + "API_KEY=hidden\nlast stdout " + opts.Root + "/file0.go\n"),
+					Stderr: []byte(strings.Repeat("long stderr "+strings.Repeat("y", 300)+"\n", 400) + "TOKEN=hidden\nlast stderr /private/secret.txt\n"),
+				}, nil
+			})
+			results, err := RunCohorts(t.Context(), manifest, runtime, opts)
+			if err != nil || len(results) != 1 || results[0].Covered != covered {
+				t.Fatalf("RunCohorts() = %+v, %v", results, err)
+			}
+			out := filepath.Join(t.TempDir(), "artifacts")
+			if err := WriteArtifacts(out, BuildReport(manifest, results, nil), IncrementalState{}); err != nil {
+				t.Fatal(err)
+			}
+			name := filepath.Join(out, "cohort-1.tail.txt")
+			payload, err := os.ReadFile(name)
+			if covered {
+				if !os.IsNotExist(err) {
+					t.Fatalf("covered cohort tail = %q, %v", payload, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			tail := string(payload)
+			for _, want := range []string{"last stdout file0.go", "last stderr secret.txt"} {
+				if !strings.Contains(tail, want) {
+					t.Errorf("tail missing %q", want)
+				}
+			}
+			for _, forbidden := range []string{"first attempt only", "API_KEY", "TOKEN=", "hidden", opts.Root, "/private/secret.txt"} {
+				if strings.Contains(tail, forbidden) {
+					t.Errorf("tail contains %q", forbidden)
+				}
+			}
+			stdout, stderr, found := strings.Cut(strings.TrimPrefix(tail, "stdout:\n"), "\nstderr:\n")
+			if !found || len(stdout) > 4096 || len(stderr) > 4097 {
+				t.Errorf("tail stream sizes = %d, %d; separator found = %t", len(stdout), len(stderr), found)
+			}
+			review, err := os.ReadFile(filepath.Join(out, "review.md"))
+			if err != nil || !strings.Contains(string(review), "uncovered:") || !strings.Contains(string(review), "cohort-1.tail.txt") {
+				t.Fatalf("review.md = %q, %v", review, err)
+			}
+		})
+	}
+}
+
 func TestRunCohortsFindingBounds(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

@@ -7,10 +7,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/batuta-ai/core/executor"
 )
 
 // Report is the deterministic reduction of cohort and optional spec results.
@@ -78,6 +81,9 @@ func PrintReport(w io.Writer, report Report) error {
 		status := "covered"
 		if !cohort.Covered {
 			status = "uncovered: " + cleanReportText(cohort.Reason)
+			if len(cohort.Attempts) > 0 {
+				status += fmt.Sprintf(" (tail: cohort-%d.tail.txt)", cohort.Cohort+1)
+			}
 		}
 		names := make([]string, len(cohort.Files))
 		for i, name := range cohort.Files {
@@ -178,7 +184,52 @@ func WriteArtifacts(directory string, report Report, state IncrementalState) err
 			return fmt.Errorf("review: write %s: %w", artifact.name, err)
 		}
 	}
+	for _, cohort := range report.Cohorts {
+		if cohort.Covered || len(cohort.Attempts) == 0 {
+			continue
+		}
+		last := cohort.Attempts[len(cohort.Attempts)-1].Result
+		payload := []byte("stdout:\n" + reviewOutputTail(last.Stdout) + "\nstderr:\n" + reviewOutputTail(last.Stderr) + "\n")
+		name := fmt.Sprintf("cohort-%d.tail.txt", cohort.Cohort+1)
+		if err := writeArtifact(directory, name, payload); err != nil {
+			return fmt.Errorf("review: write %s: %w", name, err)
+		}
+	}
 	return nil
+}
+
+var (
+	reviewSecretLine   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
+	reviewAbsolutePath = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/|\\)[^\s"'=]+`)
+)
+
+func reviewOutputTail(payload []byte) string {
+	lines := strings.Split(executor.Tail(payload, 40), "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if reviewSecretLine.MatchString(strings.TrimSpace(line)) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	redacted := strings.Join(kept, "\n")
+	redacted = reviewAbsolutePath.ReplaceAllStringFunc(redacted, func(match string) string {
+		cleaned := strings.TrimRight(match, ".,;:)")
+		return filepath.Base(cleaned) + match[len(cleaned):]
+	})
+	if len(redacted) <= 4096 {
+		return redacted
+	}
+	cut := redacted[len(redacted)-4096:]
+	for len(cut) > 0 && cut[0]&0xc0 == 0x80 {
+		cut = cut[1:]
+	}
+	if redacted[len(redacted)-len(cut)-1] != '\n' {
+		if index := strings.IndexByte(cut, '\n'); index >= 0 {
+			cut = cut[index+1:]
+		}
+	}
+	return cut
 }
 
 func writeArtifact(directory, name string, payload []byte) error {
