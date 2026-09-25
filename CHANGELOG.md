@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.40](https://github.com/batuta-ai/core/compare/v1.1.0-beta.39...v1.1.0-beta.40) (2026-09-25)
+
+
+### Bug Fixes
+
+* **acp:** a denied permission request no longer ends the session; denials are recorded ([3ac1d36](https://github.com/batuta-ai/core/commit/3ac1d364aed06270fc360f4a4841f6cd1395ce02))
+
 ## [1.1.0-beta.39](https://github.com/batuta-ai/core/compare/v1.1.0-beta.38...v1.1.0-beta.39) (2026-09-25)
 
 
