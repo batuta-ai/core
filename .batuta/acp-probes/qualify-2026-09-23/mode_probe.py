@@ -7,11 +7,23 @@ import json, os, subprocess, sys, tempfile, threading, time
 
 cmd, mode, policy, case, log = sys.argv[1:6]
 cwd = os.path.realpath(tempfile.mkdtemp(prefix="acp-mode-"))
+if os.environ.get("WORKTREE"):
+    # A Batuta-shaped worktree: its gitdir lives in the main repository, outside cwd.
+    main_repo = cwd + "-main"
+    os.makedirs(main_repo)
+    for a in (["git", "init", "-q"], ["git", "-c", "user.email=p@example.test", "-c", "user.name=p", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "init"]):
+        subprocess.run(a, cwd=main_repo, capture_output=True)
+    os.rmdir(cwd)
+    subprocess.run(["git", "worktree", "add", "-q", "-b", "probe", cwd], cwd=main_repo, capture_output=True)
 if os.environ.get("CLAUDE_SANDBOX") == "file":
     os.makedirs(os.path.join(cwd, ".claude"))
     json.dump({"sandbox": {"enabled": True, "autoAllowBashIfSandboxed": True}}, open(os.path.join(cwd, ".claude", "settings.json"), "w"))
+open(os.path.join(cwd, "go.mod"), "w").write("module probe\n\ngo 1.24\n")
+open(os.path.join(cwd, "p_test.go"), "w").write('package probe\n\nimport "testing"\n\nfunc TestP(t *testing.T) {}\n')
 outside = tempfile.mkdtemp(prefix=".batuta-qualify-", dir=os.path.expanduser("~"))
 prompts = {
+    "gitadd": "Create a file named a.txt containing a, then run exactly this shell command and nothing else: git add -A && git -c user.email=p@example.test -c user.name=p -c commit.gpgsign=false commit -q -m probe && git log --oneline -1",
+    "gotest": "Run exactly this shell command in the current directory and nothing else: go test ./...",
     "task": "Create a file named artifact.txt in the current directory containing exactly the text batuta-native-acp-ok followed by one newline. Do nothing else.",
     "shell": "Run exactly this shell command in the current directory and nothing else: sh -c 'echo shell-ok > shell.txt'",
     "shell-outside": "Run exactly this shell command and nothing else: sh -c 'echo x > OUTSIDE/denied.txt'",
