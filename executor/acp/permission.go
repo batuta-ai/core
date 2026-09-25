@@ -12,15 +12,15 @@ import (
 const maxDeniedPermissions = 4
 
 var (
-	denialAssignment = regexp.MustCompile(`(?i)(?:--)?[a-z_][a-z0-9_-]*=(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)`)
-	denialFlag       = regexp.MustCompile(`(?i)--[a-z_][a-z0-9_-]*[ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)`)
-	denialBearer     = regexp.MustCompile(`(?i)\bBearer[ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)`)
-	denialPrefix     = regexp.MustCompile("(?i)\\b(?:sk-|ghp_|gho_|github_pat_|xox|AKIA)[^\\s\\\"']*")
+	denialAssignment = regexp.MustCompile(`(?i)(?:--)?[a-z_][a-z0-9_-]*=`)
+	denialFlag       = regexp.MustCompile(`(?i)--[a-z_][a-z0-9_-]*[ \t]+`)
+	denialBearer     = regexp.MustCompile(`(?i)\bBearer[ \t]+`)
+	denialPrefix     = regexp.MustCompile(`(?i)\b(?:sk-|ghp_|gho_|github_pat_|xox|AKIA)`)
 )
 
 func secretKey(key string) bool {
 	key = strings.ToLower(key)
-	for _, part := range []string{"token", "secret", "password", "passwd", "api_key", "apikey", "auth", "credential"} {
+	for _, part := range []string{"token", "secret", "password", "passwd", "api_key", "api-key", "apikey", "auth", "credential"} {
 		if strings.Contains(key, part) {
 			return true
 		}
@@ -28,30 +28,31 @@ func secretKey(key string) bool {
 	return false
 }
 
+// redactDenialField keeps the text up to a secret-shaped key or prefix and
+// drops the rest of the field: shell words join quoted, unquoted and escaped
+// segments in too many ways to find where a secret value ends.
 func redactDenialField(value string) string {
-	value = denialAssignment.ReplaceAllStringFunc(value, func(match string) string {
-		index := strings.IndexByte(match, '=')
-		if !secretKey(strings.TrimPrefix(match[:index], "--")) {
-			return match
+	cut := len(value)
+	keep := len(value)
+	for _, pattern := range []*regexp.Regexp{denialAssignment, denialFlag} {
+		for _, match := range pattern.FindAllStringIndex(value, -1) {
+			key := strings.TrimLeft(strings.TrimRight(value[match[0]:match[1]], "= \t"), "-")
+			if secretKey(key) && match[0] < cut {
+				cut, keep = match[0], match[1]
+				break
+			}
 		}
-		return match[:index+1] + "[redacted]"
-	})
-	value = denialFlag.ReplaceAllStringFunc(value, func(match string) string {
-		index := strings.IndexAny(match, " \t")
-		if !secretKey(match[2:index]) {
-			return match
-		}
-		end := index
-		for end < len(match) && (match[end] == ' ' || match[end] == '\t') {
-			end++
-		}
-		return match[:end] + "[redacted]"
-	})
-	value = denialBearer.ReplaceAllStringFunc(value, func(match string) string {
-		index := strings.IndexAny(match, " \t")
-		return match[:index] + " [redacted]"
-	})
-	return denialPrefix.ReplaceAllString(value, "[redacted]")
+	}
+	if match := denialBearer.FindStringIndex(value); match != nil && match[0] < cut {
+		cut, keep = match[0], match[1]
+	}
+	if match := denialPrefix.FindStringIndex(value); match != nil && match[0] < cut {
+		cut, keep = match[0], match[0]
+	}
+	if cut == len(value) {
+		return value
+	}
+	return value[:keep] + "[redacted]"
 }
 
 func boundedDenialField(value string, limit int) string {
