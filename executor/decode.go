@@ -2,6 +2,7 @@ package executor
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -63,6 +64,10 @@ func textFromBlocks(blocks []textBlock) string {
 	return text.String()
 }
 
+func providerLine(message string) string {
+	return strings.Join(strings.Fields(message), " ") + "\n"
+}
+
 func decodeCursor(d *streamDecoder, raw json.RawMessage) string {
 	var event struct {
 		Type    string `json:"type"`
@@ -104,7 +109,9 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 			TextDelta string `json:"text_delta"`
 		} `json:"step_update"`
 		Result struct {
-			Usage *struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+			Usage  *struct {
 				InputTokens     *int64 `json:"input_tokens"`
 				OutputTokens    *int64 `json:"output_tokens"`
 				ThinkingTokens  *int64 `json:"thinking_tokens"`
@@ -129,6 +136,9 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 				ReportedTotalTokens: event.Result.Usage.TotalTokens,
 			}
 		}
+		if event.Result.Status == "ERROR" {
+			return providerLine("provider error: " + event.Result.Error)
+		}
 		return ""
 	default:
 		return ""
@@ -137,10 +147,15 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 
 func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 	var event struct {
-		Type string `json:"type"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+		Error   struct {
+			Message string `json:"message"`
+		} `json:"error"`
 		Item struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type    string `json:"type"`
+			Text    string `json:"text"`
+			Message string `json:"message"`
 		} `json:"item"`
 		Usage *struct {
 			InputTokens           *int64 `json:"input_tokens"`
@@ -155,10 +170,17 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 	}
 	switch event.Type {
 	case "item.completed":
+		if event.Item.Type == "error" {
+			return providerLine("provider notice: " + event.Item.Message)
+		}
 		if event.Item.Type != "agent_message" {
 			return ""
 		}
 		return event.Item.Text
+	case "error":
+		return providerLine("provider error: " + event.Message)
+	case "turn.failed":
+		return providerLine("provider error: " + event.Error.Message)
 	case "turn.completed":
 		if event.Usage != nil {
 			d.usage = &Usage{
@@ -178,7 +200,15 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 
 func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 	var event struct {
-		Type    string `json:"type"`
+		Type           string `json:"type"`
+		IsError        bool   `json:"is_error"`
+		APIErrorStatus int    `json:"api_error_status"`
+		Result         string `json:"result"`
+		RateLimitInfo  struct {
+			Status        string `json:"status"`
+			RateLimitType string `json:"rateLimitType"`
+			ResetsAt      int64  `json:"resetsAt"`
+		} `json:"rate_limit_info"`
 		Message struct {
 			Content []textBlock `json:"content"`
 		} `json:"message"`
@@ -196,22 +226,29 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 	switch event.Type {
 	case "assistant":
 		return textFromBlocks(event.Message.Content)
-	case "result":
-		if event.Usage == nil && event.TotalCostUSD == nil {
+	case "rate_limit_event":
+		if event.RateLimitInfo.Status == "allowed" {
 			return ""
 		}
-		usage := &Usage{CacheSemantics: CacheSemanticsAdditive}
-		if event.Usage != nil {
-			usage.InputTokens = event.Usage.InputTokens
-			usage.OutputTokens = event.Usage.OutputTokens
-			usage.CacheWriteTokens = event.Usage.CacheCreationInputTokens
-			usage.CacheReadTokens = event.Usage.CacheReadInputTokens
+		return providerLine(fmt.Sprintf("provider limit: %s %s resetsAt %d", event.RateLimitInfo.RateLimitType, event.RateLimitInfo.Status, event.RateLimitInfo.ResetsAt))
+	case "result":
+		if event.Usage != nil || event.TotalCostUSD != nil {
+			usage := &Usage{CacheSemantics: CacheSemanticsAdditive}
+			if event.Usage != nil {
+				usage.InputTokens = event.Usage.InputTokens
+				usage.OutputTokens = event.Usage.OutputTokens
+				usage.CacheWriteTokens = event.Usage.CacheCreationInputTokens
+				usage.CacheReadTokens = event.Usage.CacheReadInputTokens
+			}
+			if event.TotalCostUSD != nil {
+				usage.CostAmount = event.TotalCostUSD
+				usage.CostCurrency = "USD"
+			}
+			d.usage = usage
 		}
-		if event.TotalCostUSD != nil {
-			usage.CostAmount = event.TotalCostUSD
-			usage.CostCurrency = "USD"
+		if event.IsError {
+			return providerLine(fmt.Sprintf("provider error: api_error_status %d: %s", event.APIErrorStatus, event.Result))
 		}
-		d.usage = usage
 		return ""
 	default:
 		return ""
@@ -220,7 +257,14 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 
 func decodeOpencode(d *streamDecoder, raw json.RawMessage) string {
 	var event struct {
-		Type string `json:"type"`
+		Type  string `json:"type"`
+		Error struct {
+			Name string `json:"name"`
+			Data struct {
+				StatusCode *int64 `json:"statusCode"`
+				Message    string `json:"message"`
+			} `json:"data"`
+		} `json:"error"`
 		Part struct {
 			Text   string `json:"text"`
 			Tokens *struct {
@@ -242,6 +286,12 @@ func decodeOpencode(d *streamDecoder, raw json.RawMessage) string {
 	switch event.Type {
 	case "text":
 		return event.Part.Text
+	case "error":
+		status := ""
+		if event.Error.Data.StatusCode != nil {
+			status = fmt.Sprintf(" %d", *event.Error.Data.StatusCode)
+		}
+		return providerLine("provider error: " + event.Error.Name + status + ": " + event.Error.Data.Message)
 	case "step_finish":
 		if event.Part.Tokens == nil && event.Part.Cost == nil {
 			return ""

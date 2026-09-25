@@ -1,0 +1,16 @@
+# Plan — stream decoders surface provider errors and limits
+<!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
+
+**Goal:** The stream decoders (`executor/decode.go`, core#121) keep only agent text and usage, so a provider error or usage limit inside a JSON event never reaches `limit_regex`, which runs on the decoded text. Before any adapter switches its `run` line to a JSON mode, each decoder must turn the error and limit events of its format into one stable text line, recorded from real outputs in `.batuta/stream-errors-2026-09-25/`.
+**Created:** 2026-09-25 · **Status:** done
+
+## Tasks
+- [x] 1. Decoders emit one text line per provider error or limit event — backend/high
+      Scope: executor/decode.go, executor/decode_test.go, executor/testdata/stream/errors/*
+      Accept: the six real outputs are copied byte for byte into executor/testdata/stream/errors/ with a `.want.json` each holding the exact decoded text → test -f executor/testdata/stream/errors/opencode-zen-glm.jsonl && test -f executor/testdata/stream/errors/codex-invalid-model.jsonl; replaying each errors fixture through its decoder yields exactly its want text → go test ./executor -run TestDecodersReplayErrorFixtures; claude: a `result` event with `is_error: true` yields `provider error: api_error_status <n>: <result>` and a `rate_limit_event` whose `rate_limit_info.status` is not `allowed` yields `provider limit: <rateLimitType> <status> resetsAt <resetsAt>`, while an `allowed` one yields nothing → go test ./executor -run TestClaudeDecoderErrorsAndLimits; codex: an `error` event yields `provider error: <message>` and `turn.failed` yields `provider error: <error.message>`, an `item.completed` whose item type is `error` yields `provider notice: <message>` → go test ./executor -run TestCodexDecoderErrors; opencode: an `error` event yields `provider error: <error.name> <statusCode>: <data.message>`, omitting the status when absent → go test ./executor -run TestOpencodeDecoderErrors; agy: a `result` event whose `result.status` is `ERROR` yields `provider error: <result.error>` → go test ./executor -run TestAgyDecoderErrors; the existing replay of the success fixtures is unchanged → go test ./executor -run TestDecodersReplayFixtures; the package stays green → go test ./executor
+
+## Decisions and context
+
+Go standard library only, conventional commits. The line formats are fixed here so the skills adapters can write `limit_regex` against them. Each emitted line ends with a newline and is the only text an error event produces. Do not change usage extraction.
+
+**Task 1.** Source files are in `.batuta/stream-errors-2026-09-25/` (read its README). Copy the six `.jsonl` files unchanged into `executor/testdata/stream/errors/`; worktree executors can read `.batuta/` files that are committed on the branch. For the claude limit case there is no real rejected event: the test builds one by copying the real `rate_limit_event` line from `claude-ok-haiku.jsonl` and changing only `status` to `rejected`; say so in a comment. The claude `result` event already repeats the synthetic assistant text; emitting both is expected. Decoders live in `executor/decode.go` (`decodeClaude` ~120, `decodeCodex` ~79, `decodeOpencode` ~162, `decodeAgy` ~41); agy events use the key `event`, not `type`.

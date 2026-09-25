@@ -309,6 +309,7 @@
 - [x] The docs state the continuing denial → claude (sonnet), commit de073eefe4e2 (trail: .batuta/runs/2026-09-25-acp-soft-deny-task-2.md, delivery acp-soft-deny-20260925-142341, plan acp-soft-deny, 2026-09-25)
 - [x] Denial records are redacted and bounded so the receipt always fits → codex (gpt-6-sol), commit 05548ab5c06b (trail: .batuta/runs/2026-09-25-acp-soft-deny-fixes-task-1.md, delivery acp-soft-deny-fixes-20260925-150706, plan acp-soft-deny-fixes, 2026-09-25)
 - [x] Once a secret-shaped key or prefix appears, everything after it in the field is redacted → claude (sonnet), commit f76306665177 (trail: .batuta/runs/2026-09-25-acp-soft-deny-fixes-2-task-1.md, delivery acp-soft-deny-fixes-2-20260925-152505, plan acp-soft-deny-fixes-2, 2026-09-25)
+- [x] Decoders emit one text line per provider error or limit event → codex (gpt-6-sol), commit 85244ca714fc (trail: .batuta/runs/2026-09-25-decoder-errors-task-1.md, delivery decoder-errors-20260925-145538, plan decoder-errors, 2026-09-25)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
@@ -360,3 +361,5 @@
 - [ ] Automatic provider selection with a fallback chain → cursor-agent (cursor-grok-4.6-high), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-20-judge-vercel-auto-task-2.md, delivery judge-vercel-auto-20260920-144937, plan judge-vercel-auto, 2026-09-20)
 - [ ] Path claims only from edit statements about existing files → cursor-agent (cursor-grok-4.6-high), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-21-judge-claims-v22-task-1.md, delivery judge-claims-v22-20260921-133330, plan judge-claims-v22, 2026-09-21)
 - [ ] docs/dispatch.md gains a CLI containment paragraph → cursor-agent (cursor-grok-4.6-high), escalated from opencode after 2 fails, aborted: verifier_incomplete (trail: .batuta/runs/2026-09-23-cli-containment-docs-task-1.md, delivery cli-containment-docs-20260923-221352, plan cli-containment-docs, 2026-09-23)
+- [ ] Decoders emit one text line per provider error or limit event → codex (gpt-6-sol), aborted: submission_uncertain (trail: .batuta/runs/2026-09-25-decoder-errors-task-1.md, delivery decoder-errors-20260925-101331, plan decoder-errors, 2026-09-25)
+- [ ] Decoders emit one text line per provider error or limit event → codex (gpt-6-sol), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-25-decoder-errors-task-1.md, delivery decoder-errors-20260925-142228, plan decoder-errors, 2026-09-25)
