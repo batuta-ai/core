@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -696,6 +697,8 @@ func (r *Runner) attach(ac *attemptContext, wt attemptWorktree) error {
 // verify dispatches the independent read-only verifier on a research row
 // at or below the task's lane, falling back to the implementation low row
 // or the task's own adapter and model.
+var verifierTaskLine = regexp.MustCompile(`(?m)^[ \t]*TASK[ \t]+[0-9]+[ \t]*:`)
+
 func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gates.Criterion, proofs []gates.Verdict) (gates.Verdict, error) {
 	name, model := ac.adapter.Name, ac.runtime.Model
 	lanes := []routing.Complexity{routing.ComplexityLow, routing.ComplexityMedium, routing.ComplexityHigh, routing.ComplexityCritical}
@@ -755,7 +758,11 @@ func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gate
 	if !finished.Pass || result.Truncated || ac.verifierDispatch.ReconciliationRequired {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete"}, nil
 	}
-	verdict := gates.Verifier(string(result.Stdout), len(criteria), proofs)
+	output := string(result.Stdout)
+	if !verifierTaskLine.MatchString(output) && len(result.RawStdout) > 0 {
+		output = string(result.RawStdout)
+	}
+	verdict := gates.Verifier(output, len(criteria), proofs)
 	verdict.Signal = name + "/" + model + ": " + verdict.Signal
 	return verdict, nil
 }

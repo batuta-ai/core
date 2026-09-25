@@ -12,6 +12,7 @@ import (
 type Decoder interface {
 	Decode(line string) string
 	Usage() *Usage
+	DroppedLines() int
 }
 
 type streamDecoder struct {
@@ -19,13 +20,19 @@ type streamDecoder struct {
 	parse     func(*streamDecoder, json.RawMessage) string
 	lastByte  byte
 	hasOutput bool
+	usageSeen bool
+	dropped   int
 }
 
 func (d *streamDecoder) Decode(line string) string {
 	var raw json.RawMessage
 	output := line
 	if json.Unmarshal([]byte(line), &raw) == nil {
+		d.usageSeen = false
 		output = d.parse(d, raw)
+		if output == "" && !d.usageSeen {
+			d.dropped++
+		}
 	}
 	if output != "" {
 		d.lastByte = output[len(output)-1]
@@ -36,6 +43,10 @@ func (d *streamDecoder) Decode(line string) string {
 
 func (d *streamDecoder) Usage() *Usage {
 	return d.usage
+}
+
+func (d *streamDecoder) DroppedLines() int {
+	return d.dropped
 }
 
 // LookupDecoder returns a fresh decoder for a recorded CLI format name.
@@ -103,6 +114,7 @@ func decodeCursor(d *streamDecoder, raw json.RawMessage) string {
 		return completeMessage(textFromBlocks(event.Message.Content))
 	case "result":
 		if event.Usage != nil {
+			d.usageSeen = true
 			d.usage = &Usage{
 				InputTokens:      event.Usage.InputTokens,
 				OutputTokens:     event.Usage.OutputTokens,
@@ -151,6 +163,7 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 		return text
 	case "result":
 		if event.Result.Usage != nil {
+			d.usageSeen = true
 			d.usage = &Usage{
 				InputTokens:         event.Result.Usage.InputTokens,
 				OutputTokens:        event.Result.Usage.OutputTokens,
@@ -206,6 +219,7 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 		return providerLine("provider error: " + event.Error.Message)
 	case "turn.completed":
 		if event.Usage != nil {
+			d.usageSeen = true
 			d.usage = &Usage{
 				InputTokens:      event.Usage.InputTokens,
 				CacheReadTokens:  event.Usage.CachedInputTokens,
@@ -256,6 +270,7 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 		return providerLine(fmt.Sprintf("provider limit: %s %s resetsAt %d", event.RateLimitInfo.RateLimitType, event.RateLimitInfo.Status, event.RateLimitInfo.ResetsAt))
 	case "result":
 		if event.Usage != nil || event.TotalCostUSD != nil {
+			d.usageSeen = true
 			usage := &Usage{CacheSemantics: CacheSemanticsAdditive}
 			if event.Usage != nil {
 				usage.InputTokens = event.Usage.InputTokens
@@ -343,6 +358,7 @@ func (d *streamDecoder) addUsage(next *Usage) {
 	if next == nil {
 		return
 	}
+	d.usageSeen = true
 	if d.usage == nil {
 		d.usage = next
 		return

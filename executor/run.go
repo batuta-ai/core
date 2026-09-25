@@ -28,20 +28,21 @@ const (
 
 // Result is what one executor run produced.
 type Result struct {
-	ExitCode    int
-	Stdout      []byte
-	Stderr      []byte
-	Truncated   bool
-	TimedOut    bool
-	Duration    time.Duration
-	Finished    bool      // gate 0: the executor ended on its own terms
-	RateLimited bool      // the adapter's limit_regex matched the output tail
-	ResetAt     time.Time // when the limit lifts, if the output said; zero otherwise
-	Question    string    // a BATUTA-QUESTION line, when the executor asked one
-	Usage       *Usage    // CLI-reported token counters, from output_decoder or usage_regex
-	Progress    []ProgressEvent
-	Receipt     *Receipt // optional structured execution metadata
-	RawStdout   []byte   // process stdout before output_decoder, bounded like Stdout
+	ExitCode            int
+	Stdout              []byte
+	Stderr              []byte
+	Truncated           bool
+	TimedOut            bool
+	Duration            time.Duration
+	Finished            bool      // gate 0: the executor ended on its own terms
+	RateLimited         bool      // the adapter's limit_regex matched the output tail
+	ResetAt             time.Time // when the limit lifts, if the output said; zero otherwise
+	Question            string    // a BATUTA-QUESTION line, when the executor asked one
+	Usage               *Usage    // CLI-reported token counters, from output_decoder or usage_regex
+	Progress            []ProgressEvent
+	Receipt             *Receipt // optional structured execution metadata
+	RawStdout           []byte   // process stdout before output_decoder, bounded like Stdout
+	DecoderDroppedLines int      // JSON lines the decoder mapped to neither text nor usage
 }
 
 // Subprocess runs invocations through the publication runner, resolving
@@ -117,6 +118,7 @@ func (s Subprocess) Execute(ctx context.Context, adapter Adapter, invocation Inv
 		rawStdout, rawTruncated := boundCopy(raw.Stdout)
 		result.RawStdout = rawStdout
 		result.Stdout = decoderWriter.bytes()
+		result.DecoderDroppedLines = decoderWriter.decoder.DroppedLines()
 		result.Truncated = result.Truncated || rawTruncated || decoderWriter.truncated
 	}
 	if runErr != nil {

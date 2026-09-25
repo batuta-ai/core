@@ -103,6 +103,34 @@ func TestRunDecodesStreamOutput(t *testing.T) {
 	assertProgressEvents(t, result.Progress, []ProgressEvent{{Criterion: 1, State: "START"}})
 }
 
+func TestRunCountsDroppedDecoderLines(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, text, usage string
+	}{
+		{"cursor-stream-json", `{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}`, `{"type":"result","usage":{"inputTokens":1}}`},
+		{"agy-stream-json", `{"event":"step_update","step_update":{"text_delta":"hello"}}`, `{"event":"result","result":{"usage":{"input_tokens":1}}}`},
+		{"codex-json", `{"type":"item.completed","item":{"type":"agent_message","text":"hello"}}`, `{"type":"turn.completed","usage":{"input_tokens":1}}`},
+		{"claude-stream-json", `{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}`, `{"type":"result","usage":{"input_tokens":1}}`},
+		{"opencode-json", `{"type":"text","part":{"text":"hello"}}`, `{"type":"step_finish","part":{"tokens":{"input":1}}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			payload := []byte(tc.text + "\n" + `{"type":"unknown","event":"unknown"}` + "\n" + tc.usage + "\n" + "plain text\n" + `{"type":"unknown","event":"unknown"}` + "\n")
+			result := executeDecoded(t, Adapter{OutputDecoder: tc.name}, splitStreamRunner{chunks: [][]byte{payload[:len(payload)/2], payload[len(payload)/2:]}, stdout: payload}, nil)
+			if result.DecoderDroppedLines != 2 {
+				t.Fatalf("DecoderDroppedLines = %d, want 2", result.DecoderDroppedLines)
+			}
+			if result.Usage == nil {
+				t.Fatal("usage event was lost")
+			}
+			if !strings.Contains(string(result.Stdout), "hello") || !strings.Contains(string(result.Stdout), "plain text") {
+				t.Fatalf("decoded stdout = %q", result.Stdout)
+			}
+		})
+	}
+}
+
 func TestRunDecodedOutputBounded(t *testing.T) {
 	t.Parallel()
 	text := strings.Repeat("x", 120)

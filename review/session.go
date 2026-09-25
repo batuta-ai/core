@@ -267,7 +267,11 @@ func runCohort(ctx context.Context, manifest Manifest, diagnostics []LinterFindi
 			result.Reason = "reviewer output was truncated or requested human input"
 			return
 		}
-		result.Findings, result.Rejected = ParseFindings(string(outcome.Stdout))
+		output := string(outcome.Stdout)
+		if !hasFindingsOpeningMarker(output) && len(outcome.RawStdout) > 0 {
+			output = string(outcome.RawStdout)
+		}
+		result.Findings, result.Rejected = ParseFindings(output)
 		accepted := result.Findings[:0]
 		for _, finding := range result.Findings {
 			if !findingInCohort(finding, manifest, result.Files) {
@@ -288,6 +292,15 @@ func runCohort(ctx context.Context, manifest Manifest, diagnostics []LinterFindi
 		result.Reason = ""
 		return
 	}
+}
+
+func hasFindingsOpeningMarker(output string) bool {
+	for _, line := range strings.Split(output, "\n") {
+		if strings.TrimSpace(line) == "<<<FINDINGS" {
+			return true
+		}
+	}
+	return false
 }
 
 func findingInCohort(finding Finding, manifest Manifest, files []string) bool {
