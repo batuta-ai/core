@@ -1,0 +1,14 @@
+# Plan — decoded agent messages keep their line boundaries
+<!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
+
+**Goal:** The stream decoders (core#121) return each complete agent message's text without a trailing newline, so consecutive messages join: `I will read the diff.` followed by a message starting `<<<FINDINGS` decodes to `I will read the diff.<<<FINDINGS`. Markers that must start a line (`<<<FINDINGS`, `<<<REPORT`, `<<<CRITERIA`, `BATUTA-QUESTION`, `BATUTA-PROGRESS`) are then lost, which broke `batuta review` in an end-to-end check with the skills adapters on JSON streams ("reviewer output contains rejected findings or invalid framing" with codex as reviewer; reproduced by decoding two codex `agent_message` items and two claude `assistant` events).
+**Created:** 2026-09-25 · **Status:** approved
+
+## Tasks
+- [ ] 1. Complete-message events end with a newline; streamed deltas are joined as they are — backend/high
+      Scope: executor/decode.go, executor/decode_test.go, executor/testdata/stream/*.want.json
+      Accept: for codex `item.completed` `agent_message`, claude `assistant`, cursor `assistant` and opencode `text` events, the decoded text of each message ends with exactly one newline (one is appended only when the text does not already end with one) → go test ./executor -run TestDecoderMessageBoundaries; two consecutive messages where the second starts with `<<<FINDINGS` decode so that `<<<FINDINGS` starts a line, for codex, claude, cursor and opencode → go test ./executor -run TestDecoderMessageBoundaries; agy `step_update` `text_delta` pieces are still joined unchanged, and when an `agent_response` step reaches state `DONE` and the text emitted so far does not end with a newline, one newline is emitted → go test ./executor -run TestAgyDecoderStepBoundary; provider error and limit lines (core#128) are unchanged → go test ./executor -run 'TestDecodersReplayErrorFixtures|Decoder.*Errors'; the success fixtures' `.want.json` texts are updated only by the added trailing newline and still replay exactly → go test ./executor -run TestDecodersReplayFixtures; the package stays green → go test ./executor
+
+## Decisions and context
+
+Go standard library only, conventional commits. Usage extraction does not change. Track the last emitted byte in the decoder state (`streamDecoder` in `executor/decode.go`) for the agy step boundary. Sandbox note for the executor: `/bin/ps`, loopback listeners and scratch directories outside the worktree are blocked; run the named tests and let the conductor's gate run `go test ./...`.
