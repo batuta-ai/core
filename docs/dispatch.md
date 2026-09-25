@@ -191,9 +191,13 @@ ACP permission requests are structured control messages. The provider's own
 sandbox or session mode keeps the executor inside its worktree; the stock
 factory allows a permission request only when
 every location it names resolves inside the worktree,
-and rejects every other request. A rejection stays
-terminal and non-success, even when the prompt claims approval or the worker
-also reports `end_turn`. Requests that name no location are rejected too.
+and denies every other request. Requests that name no location are denied too.
+A denied request is answered with the agent's `reject_once` option and the
+session continues, so the agent can carry on as it does on the CLI path. The
+denial is recorded in the receipt's `denied_permissions`, and the action never
+runs. A request that offers no `reject_once` option still ends the session
+with `permission_denied`, even when the prompt claims approval or the worker
+also reports `end_turn`.
 Unsupported client methods are rejected. Existing provider-side permissions
 and configuration are inherited unchanged; the factory injects no approval,
 install or auth flags. This callback policy is not an OS sandbox and does not
