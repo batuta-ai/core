@@ -1,0 +1,63 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "",
+  "artifact_present": false,
+  "bridge": "codex-acp",
+  "cancel_ms": 0,
+  "case": "permission",
+  "child_alive_after": false,
+  "child_pid": 0,
+  "child_seen_ms": 0,
+  "denied_present": false,
+  "effort": "low",
+  "elapsed_ms": 9970,
+  "error": "\u003cnil\u003e",
+  "executor": "codex",
+  "expired_marker": false,
+  "finished": false,
+  "meta": "",
+  "mode": "read-only",
+  "model": "gpt-5.6-sol",
+  "outside_present": true,
+  "permission_requests": [
+    "{\"toolCallId\":\"exec-9e61123b-b934-4821-94ac-5b19d5a684c8\",\"kind\":\"edit\",\"title\":\"Edit files\",\"rawInput\":null,\"locations\":[{\"path\":\"/tmp/probe/.batuta-qualify-931105238/denied.txt\"}]}"
+  ],
+  "receipt": {
+    "submission": {
+      "state": "submitted"
+    },
+    "transport": {
+      "outcome": "completed"
+    },
+    "worker": {
+      "outcome": "failure",
+      "detail": "cancelled"
+    },
+    "usage": {
+      "input_tokens": 16265,
+      "output_tokens": 211,
+      "cache_read_tokens": 8448,
+      "reasoning_tokens": 134,
+      "reported_total_tokens": 24924,
+      "cache_semantics": "additive",
+      "provenance": "acp/session-prompt/usage (draft)"
+    },
+    "denied_permissions": [
+      {
+        "kind": "edit",
+        "title": "Edit files",
+        "command": "",
+        "locations": [
+          "/tmp/probe/.batuta-qualify-931105238/denied.txt"
+        ]
+      }
+    ],
+    "denied_permissions_total": 1
+  },
+  "rejected_callbacks": 1,
+  "stdout_tail": "I’ll create that file with exactly the requested content.",
+  "version": "@agentclientprotocol/codex-acp 1.13.1"
+}
+--- PASS: TestBridgeQualify (10.59s)
+PASS
+ok  	github.com/batuta-ai/core/executor	10.921s
