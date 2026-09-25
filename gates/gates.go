@@ -404,6 +404,9 @@ func VerifierPrompt(taskTitle string, criteria []Criterion, proofs []Verdict, ba
 	return b.String()
 }
 
+// SignalNoTaskLines is the verifier signal when its answer holds no TASK line.
+const SignalNoTaskLines = "the verifier printed no TASK n: DONE|INCOMPLETE lines"
+
 var verifierLine = regexp.MustCompile(`(?m)^\s*TASK\s+([0-9]+)\s*:\s*(DONE|INCOMPLETE)\b\s*(?:[—:-]+\s*(.*))?$`)
 var verifierEnvironmentObjection = regexp.MustCompile(`(?i)sandbox|could not run|cannot run|unable to run|not permitted|permission|unverified|could not verify|cannot verify|unable to verify|not verified|no network`)
 
@@ -414,7 +417,7 @@ func Verifier(output string, criteria int, proofs []Verdict) Verdict {
 	verdict := Verdict{Name: "verifier", Pass: false}
 	matches := verifierLine.FindAllStringSubmatch(output, -1)
 	if len(matches) == 0 {
-		verdict.Signal = "the verifier printed no TASK n: DONE|INCOMPLETE lines"
+		verdict.Signal = SignalNoTaskLines
 		verdict.Detail = bound(tail(output))
 		return verdict
 	}

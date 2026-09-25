@@ -44,6 +44,8 @@ type RejectedLine struct {
 	Reason string `json:"reason"`
 }
 
+const findingsOpen = "<<<FINDINGS"
+
 // ParseFindings accepts exactly one complete marker block. Malformed framing
 // rejects the entire block; malformed JSON lines do not discard valid neighbours.
 func ParseFindings(output string) ([]Finding, []RejectedLine) {
@@ -51,7 +53,7 @@ func ParseFindings(output string) ([]Finding, []RejectedLine) {
 	start, end := -1, -1
 	for i, line := range lines {
 		switch strings.TrimSpace(line) {
-		case "<<<FINDINGS":
+		case findingsOpen:
 			if start != -1 || end != -1 {
 				return nil, []RejectedLine{{Line: i + 1, Text: line, Reason: "duplicate or nested FINDINGS block"}}
 			}

@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/batuta-ai/core/executor"
 )
 
 func TestReportPrintsWalkthroughAndOrdersFindings(t *testing.T) {
@@ -156,12 +159,12 @@ func TestArtifactsRefuseGitlinkDestination(t *testing.T) {
 	}
 	for _, directory := range []string{"module/reports", "module/new-reports"} {
 		out := filepath.Join(root, directory)
-		_, err := CheckArtifactPaths(root, ArtifactPaths(out))
+		_, err := CheckArtifactPaths(root, ArtifactPaths(out, Report{}))
 		if err == nil {
 			t.Errorf("accepted gitlink destination %s", directory)
 		}
 	}
-	for _, filename := range ArtifactPaths(filepath.Join(root, "module/reports")) {
+	for _, filename := range ArtifactPaths(filepath.Join(root, "module/reports"), Report{}) {
 		payload, err := os.ReadFile(filename)
 		if err != nil || string(payload) != "local edits\n" {
 			t.Fatalf("artifact changed: %q, %v", payload, err)
@@ -169,5 +172,63 @@ func TestArtifactsRefuseGitlinkDestination(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "module/new-reports")); !os.IsNotExist(err) {
 		t.Fatalf("created destination: %v", err)
+	}
+}
+
+func uncoveredTailReport() Report {
+	attempt := SessionAttempt{Result: executor.Result{ExitCode: 2, Stdout: []byte("out\n")}}
+	manifest := Manifest{Cohorts: []Cohort{{Files: []string{"a.go"}}, {Files: []string{"b.go"}}, {Files: []string{"c.go"}}}}
+	return BuildReport(manifest, []CohortResult{
+		{Cohort: 0, Files: []string{"a.go"}, Covered: true},
+		{Cohort: 1, Files: []string{"b.go"}, Reason: "reviewer failed", Attempts: []SessionAttempt{attempt}},
+		{Cohort: 2, Files: []string{"c.go"}, Reason: "never ran"},
+	}, nil)
+}
+
+func TestArtifactPathsIncludeCohortTails(t *testing.T) {
+	t.Parallel()
+	directory := filepath.Join(t.TempDir(), "artifacts")
+	got := ArtifactPaths(directory, uncoveredTailReport())
+	want := []string{"manifest.json", "findings.json", "review.md", "state.json", "cohort-2.tail.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("ArtifactPaths() = %v, want %v under %s", got, want, directory)
+	}
+	for i, name := range want {
+		if got[i] != filepath.Join(directory, name) {
+			t.Errorf("ArtifactPaths()[%d] = %q, want %q", i, got[i], filepath.Join(directory, name))
+		}
+	}
+}
+
+func TestWriteArtifactsPrunesStaleTails(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	stale := []string{"cohort-1.tail.txt", "cohort-7.tail.txt"}
+	kept := []string{"cohort-1.tail.txt.bak", "cohort-notes.txt", "notes.tail.txt", "cohort-9.tail.txt.d"}
+	for _, name := range append(slices.Clone(stale), kept...) {
+		writeTestFile(t, directory, name, "old\n")
+	}
+	if err := os.Mkdir(filepath.Join(directory, "cohort-8.tail.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteArtifacts(directory, uncoveredTailReport(), IncrementalState{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range stale {
+		if _, err := os.Stat(filepath.Join(directory, name)); !os.IsNotExist(err) {
+			t.Errorf("stale %s survived: %v", name, err)
+		}
+	}
+	for _, name := range kept {
+		if _, err := os.Stat(filepath.Join(directory, name)); err != nil {
+			t.Errorf("unrelated %s removed: %v", name, err)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(directory, "cohort-8.tail.txt")); err != nil || !info.IsDir() {
+		t.Errorf("directory matching the pattern was removed: %v", err)
+	}
+	payload, err := os.ReadFile(filepath.Join(directory, "cohort-2.tail.txt"))
+	if err != nil || !strings.Contains(string(payload), "out") {
+		t.Fatalf("current tail = %q, %v", payload, err)
 	}
 }

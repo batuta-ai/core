@@ -1125,7 +1125,7 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	} else if !filepath.IsAbs(directory) {
 		directory = filepath.Join(root, directory)
 	}
-	artifactPaths := append(review.ArtifactPaths(directory), statePath)
+	artifactPaths := append(review.ArtifactPaths(directory, review.Report{}), statePath)
 	resolvedPaths, err := review.CheckArtifactPaths(root, artifactPaths)
 	if err != nil {
 		return err
@@ -1183,7 +1183,9 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	}
 	report := review.BuildReport(manifest, cohorts, sweep)
 	state = review.StateAfterReport(report, after.HeadSHA)
-	if _, err := review.CheckArtifactPaths(root, artifactPaths); err != nil {
+	artifactPaths = append(review.ArtifactPaths(directory, report), statePath)
+	resolvedPaths, err = review.CheckArtifactPaths(root, artifactPaths)
+	if err != nil {
 		return err
 	}
 	publicationGit := git

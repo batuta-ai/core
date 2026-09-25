@@ -94,8 +94,6 @@ type claimEvidenceUncertainJSON struct {
 var (
 	claimProgressLine = regexp.MustCompile(`^BATUTA-PROGRESS [0-9]+ (START|DONE)$`)
 	claimTaskLine     = regexp.MustCompile(`(?i)^TASK\s+[0-9]+\s*:`)
-	claimEnvLine      = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
-	claimAbsolutePath = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/|\\)[^\s"'=]+`)
 	claimToken        = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_./-]*`)
 )
 
@@ -173,12 +171,12 @@ func BuildClaimEvidenceState(input ClaimEvidenceInput, maxBytes int) (any, error
 	for index, criterion := range input.Criteria {
 		item := claimEvidenceCriterion{
 			Index: index + 1,
-			Text:  redactText(criterion.Text, workspace),
-			Proof: redactText(criterion.Proof, workspace),
+			Text:  executor.RedactPaths(criterion.Text, workspace),
+			Proof: executor.RedactPaths(criterion.Proof, workspace),
 		}
 		if index < len(input.Report.Proofs) {
 			item.Pass = input.Report.Proofs[index].Pass
-			item.Signal = redactText(input.Report.Proofs[index].Signal, workspace)
+			item.Signal = executor.RedactPaths(input.Report.Proofs[index].Signal, workspace)
 		}
 		criteria = append(criteria, item)
 	}
@@ -196,7 +194,7 @@ func BuildClaimEvidenceState(input ClaimEvidenceInput, maxBytes int) (any, error
 	state := claimEvidenceState{
 		Task: claimEvidenceTask{
 			ID:    input.Task.ID,
-			Title: redactText(input.Task.Title, workspace),
+			Title: executor.RedactPaths(input.Task.Title, workspace),
 			Scope: scope,
 		},
 		Criteria:       criteria,
@@ -213,8 +211,8 @@ func BuildClaimEvidenceState(input ClaimEvidenceInput, maxBytes int) (any, error
 	}
 	if input.Report.Verifier != nil {
 		state.Verifier = &claimEvidenceVerifier{
-			Signal: redactText(input.Report.Verifier.Signal, workspace),
-			Detail: redactText(dropSecretLines(input.Report.Verifier.Detail), workspace),
+			Signal: executor.RedactPaths(input.Report.Verifier.Signal, workspace),
+			Detail: executor.RedactPaths(executor.DropSecretLines(input.Report.Verifier.Detail), workspace),
 		}
 	}
 
@@ -294,7 +292,7 @@ func BuildClaimEvidenceRequest(input ClaimEvidenceInput, claims []Claim) judge.R
 		State: claimEvidenceRequestState{
 			Task: claimEvidenceTask{
 				ID:    input.Task.ID,
-				Title: redactText(input.Task.Title, workspace),
+				Title: executor.RedactPaths(input.Task.Title, workspace),
 				Scope: redactPaths(input.Task.Scope, workspace),
 			},
 			OutcomeGates: failingGateNames(input.Report),
@@ -461,10 +459,10 @@ func boundExecutorReport(output, workspace string) string {
 	lines := splitReportLines(output)
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if claimEnvLine.MatchString(strings.TrimSpace(line)) {
+		if executor.IsSecretLine(line) {
 			continue
 		}
-		kept = append(kept, redactText(line, workspace))
+		kept = append(kept, executor.RedactPaths(line, workspace))
 	}
 	if len(kept) > claimEvidenceReportLines {
 		kept = kept[len(kept)-claimEvidenceReportLines:]
@@ -512,21 +510,6 @@ func protectedReportLine(line string) bool {
 	return claimProgressLine.MatchString(trimmed) || claimTaskLine.MatchString(trimmed)
 }
 
-func dropSecretLines(value string) string {
-	if value == "" {
-		return ""
-	}
-	lines := strings.Split(value, "\n")
-	kept := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if claimEnvLine.MatchString(strings.TrimSpace(line)) {
-			continue
-		}
-		kept = append(kept, line)
-	}
-	return strings.Join(kept, "\n")
-}
-
 // DiffSlice ranks the hunks of a unified diff by the claim tokens they share
 // and returns the best whole hunks in their original order, never more than
 // maxBytes (default claimEvidenceDiffBytes). Paths are redacted and
@@ -539,7 +522,7 @@ func DiffSlice(diff, claim string, maxBytes int) string {
 	if maxBytes <= 0 {
 		maxBytes = claimEvidenceDiffBytes
 	}
-	hunks := splitDiffHunks(dropDiffSecretLines(redactText(diff, "")))
+	hunks := splitDiffHunks(dropDiffSecretLines(executor.RedactPaths(diff, "")))
 	if len(hunks) == 0 {
 		return ""
 	}
@@ -650,67 +633,17 @@ func claimDiffTokens(claim string) []string {
 }
 
 // dropDiffSecretLines drops the secret-shaped environment assignments that
-// dropSecretLines cannot see behind the marker column of a unified diff.
+// executor.DropSecretLines cannot see behind the marker column of a unified diff.
 func dropDiffSecretLines(diff string) string {
 	lines := strings.Split(diff, "\n")
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
-		if claimEnvLine.MatchString(strings.TrimSpace(strings.TrimLeft(line, "+- "))) {
+		if executor.IsSecretLine(strings.TrimLeft(line, "+- ")) {
 			continue
 		}
 		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
-}
-
-func redactText(value, workspace string) string {
-	if value == "" {
-		return ""
-	}
-	if workspace != "" {
-		for _, prefix := range []string{
-			workspace + string(filepath.Separator),
-			workspace + "/",
-			workspace + `\`,
-			workspace,
-		} {
-			value = strings.ReplaceAll(value, prefix, "")
-		}
-	}
-	matches := claimAbsolutePath.FindAllStringIndex(value, -1)
-	if len(matches) == 0 {
-		return value
-	}
-	var b strings.Builder
-	last := 0
-	for _, loc := range matches {
-		start, end := loc[0], loc[1]
-		if start > 0 {
-			prev := value[start-1]
-			if prev == '.' || prev == '\\' || alphanumeric(prev) {
-				continue
-			}
-		}
-		match := value[start:end]
-		cleaned := strings.TrimRight(match, ".,;:)")
-		if strings.HasPrefix(cleaned, "//") {
-			continue
-		}
-		slash := filepath.ToSlash(cleaned)
-		if !filepath.IsAbs(cleaned) && !strings.HasPrefix(slash, "/") {
-			continue
-		}
-		b.WriteString(value[last:start])
-		b.WriteString(filepath.ToSlash(filepath.Base(cleaned)))
-		b.WriteString(match[len(cleaned):])
-		last = end
-	}
-	b.WriteString(value[last:])
-	return b.String()
-}
-
-func alphanumeric(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }
 
 func redactPaths(paths []string, workspace string) []string {

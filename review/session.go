@@ -296,7 +296,7 @@ func runCohort(ctx context.Context, manifest Manifest, diagnostics []LinterFindi
 
 func hasFindingsOpeningMarker(output string) bool {
 	for _, line := range strings.Split(output, "\n") {
-		if strings.TrimSpace(line) == "<<<FINDINGS" {
+		if strings.TrimSpace(line) == findingsOpen {
 			return true
 		}
 	}

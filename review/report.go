@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -81,8 +80,8 @@ func PrintReport(w io.Writer, report Report) error {
 		status := "covered"
 		if !cohort.Covered {
 			status = "uncovered: " + cleanReportText(cohort.Reason)
-			if len(cohort.Attempts) > 0 {
-				status += fmt.Sprintf(" (tail: cohort-%d.tail.txt)", cohort.Cohort+1)
+			if name, ok := cohortTailName(cohort); ok {
+				status += fmt.Sprintf(" (tail: %s)", name)
 			}
 		}
 		names := make([]string, len(cohort.Files))
@@ -184,39 +183,57 @@ func WriteArtifacts(directory string, report Report, state IncrementalState) err
 			return fmt.Errorf("review: write %s: %w", artifact.name, err)
 		}
 	}
+	current := map[string]bool{}
 	for _, cohort := range report.Cohorts {
-		if cohort.Covered || len(cohort.Attempts) == 0 {
+		name, ok := cohortTailName(cohort)
+		if !ok {
 			continue
 		}
 		last := cohort.Attempts[len(cohort.Attempts)-1].Result
 		payload := []byte("stdout:\n" + reviewOutputTail(last.Stdout) + "\nstderr:\n" + reviewOutputTail(last.Stderr) + "\n")
-		name := fmt.Sprintf("cohort-%d.tail.txt", cohort.Cohort+1)
 		if err := writeArtifact(directory, name, payload); err != nil {
 			return fmt.Errorf("review: write %s: %w", name, err)
+		}
+		current[name] = true
+	}
+	return pruneStaleTails(directory, current)
+}
+
+const cohortTailPattern = "cohort-*.tail.txt"
+
+// cohortTailName names the output tail of an uncovered cohort that ran at
+// least one attempt.
+func cohortTailName(cohort CohortResult) (string, bool) {
+	if cohort.Covered || len(cohort.Attempts) == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("cohort-%d.tail.txt", cohort.Cohort+1), true
+}
+
+// pruneStaleTails removes the tail files of an earlier review that the
+// current report does not produce, so no old cohort output survives next to
+// the fresh artifacts.
+func pruneStaleTails(directory string, current map[string]bool) error {
+	stale, err := filepath.Glob(filepath.Join(directory, cohortTailPattern))
+	if err != nil {
+		return fmt.Errorf("review: list stale tails: %w", err)
+	}
+	for _, filename := range stale {
+		if current[filepath.Base(filename)] {
+			continue
+		}
+		if info, err := os.Lstat(filename); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if err := os.Remove(filename); err != nil {
+			return fmt.Errorf("review: remove stale tail %s: %w", filepath.Base(filename), err)
 		}
 	}
 	return nil
 }
 
-var (
-	reviewSecretLine   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
-	reviewAbsolutePath = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/|\\)[^\s"'=]+`)
-)
-
 func reviewOutputTail(payload []byte) string {
-	lines := strings.Split(executor.Tail(payload, 40), "\n")
-	kept := make([]string, 0, len(lines))
-	for _, line := range lines {
-		if reviewSecretLine.MatchString(strings.TrimSpace(line)) {
-			continue
-		}
-		kept = append(kept, line)
-	}
-	redacted := strings.Join(kept, "\n")
-	redacted = reviewAbsolutePath.ReplaceAllStringFunc(redacted, func(match string) string {
-		cleaned := strings.TrimRight(match, ".,;:)")
-		return filepath.Base(cleaned) + match[len(cleaned):]
-	})
+	redacted := executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, 40), ""))
 	if len(redacted) <= 4096 {
 		return redacted
 	}
@@ -269,11 +286,17 @@ func markdownCell(value string) string {
 	return strings.ReplaceAll(cleanReportText(value), "|", "\\|")
 }
 
-// ArtifactPaths lists every destination before publication can create anything.
-func ArtifactPaths(directory string) []string {
+// ArtifactPaths lists every destination the report produces before publication
+// can create anything, including the output tail of each uncovered cohort.
+func ArtifactPaths(directory string, report Report) []string {
 	var paths []string
 	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
 		paths = append(paths, filepath.Join(directory, name))
+	}
+	for _, cohort := range report.Cohorts {
+		if name, ok := cohortTailName(cohort); ok {
+			paths = append(paths, filepath.Join(directory, name))
+		}
 	}
 	return paths
 }

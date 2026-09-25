@@ -318,6 +318,7 @@ func TestUncoveredCohortWritesTail(t *testing.T) {
 			name = "covered"
 		}
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			manifest, runtime, opts := sessionFixture(t, 1)
 			calls := 0
 			useReviewRunner(&opts, func(context.Context, publication.Command) (publication.CommandResult, error) {

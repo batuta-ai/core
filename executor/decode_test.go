@@ -285,3 +285,51 @@ func TestDecoderUnknownLines(t *testing.T) {
 		}
 	}
 }
+
+func TestDecoderCountsOnlyUnknownEvents(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		format  string
+		known   []string
+		unknown string
+	}{
+		{"codex-json", []string{
+			`{"type":"thread.started","thread_id":"t"}`,
+			`{"type":"turn.started"}`,
+			`{"type":"item.started","item":{"type":"command_execution"}}`,
+			`{"type":"item.completed","item":{"type":"command_execution"}}`,
+			`{"type":"item.completed","item":{"type":"reasoning"}}`,
+		}, `{"type":"mystery"}`},
+		{"claude-stream-json", []string{
+			`{"type":"system","subtype":"init"}`,
+			`{"type":"user","message":{"content":[]}}`,
+			`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`,
+		}, `{"type":"mystery"}`},
+		{"cursor-stream-json", []string{
+			`{"type":"system","subtype":"init"}`,
+			`{"type":"tool_call","subtype":"started"}`,
+		}, `{"type":"mystery"}`},
+		{"agy-stream-json", []string{
+			`{"event":"step_update","step_update":{"step_type":"tool_call","state":"RUNNING"}}`,
+		}, `{"event":"mystery"}`},
+		{"opencode-json", []string{
+			`{"type":"step_finish","part":{}}`,
+		}, `{"type":"mystery"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.format, func(t *testing.T) {
+			t.Parallel()
+			decoder := LookupDecoder(tc.format)
+			for _, line := range tc.known {
+				decoder.Decode(line)
+			}
+			if got := decoder.DroppedLines(); got != 0 {
+				t.Fatalf("DroppedLines after known events = %d, want 0", got)
+			}
+			decoder.Decode(tc.unknown)
+			if got := decoder.DroppedLines(); got != 1 {
+				t.Fatalf("DroppedLines after unknown event = %d, want 1", got)
+			}
+		})
+	}
+}

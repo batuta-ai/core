@@ -20,7 +20,6 @@ type streamDecoder struct {
 	parse     func(*streamDecoder, json.RawMessage) string
 	lastByte  byte
 	hasOutput bool
-	usageSeen bool
 	dropped   int
 }
 
@@ -28,11 +27,7 @@ func (d *streamDecoder) Decode(line string) string {
 	var raw json.RawMessage
 	output := line
 	if json.Unmarshal([]byte(line), &raw) == nil {
-		d.usageSeen = false
 		output = d.parse(d, raw)
-		if output == "" && !d.usageSeen {
-			d.dropped++
-		}
 	}
 	if output != "" {
 		d.lastByte = output[len(output)-1]
@@ -107,14 +102,16 @@ func decodeCursor(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Type {
+	case "system", "tool_call":
+		return ""
 	case "assistant":
 		return completeMessage(textFromBlocks(event.Message.Content))
 	case "result":
 		if event.Usage != nil {
-			d.usageSeen = true
 			d.usage = &Usage{
 				InputTokens:      event.Usage.InputTokens,
 				OutputTokens:     event.Usage.OutputTokens,
@@ -124,6 +121,7 @@ func decodeCursor(d *streamDecoder, raw json.RawMessage) string {
 		}
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -149,6 +147,7 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"result"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Event {
@@ -163,7 +162,6 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 		return text
 	case "result":
 		if event.Result.Usage != nil {
-			d.usageSeen = true
 			d.usage = &Usage{
 				InputTokens:         event.Result.Usage.InputTokens,
 				OutputTokens:        event.Result.Usage.OutputTokens,
@@ -177,6 +175,7 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 		}
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -202,9 +201,12 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Type {
+	case "thread.started", "turn.started", "item.started":
+		return ""
 	case "item.completed":
 		if event.Item.Type == "error" {
 			return providerLine("provider notice: " + event.Item.Message)
@@ -219,7 +221,6 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 		return providerLine("provider error: " + event.Error.Message)
 	case "turn.completed":
 		if event.Usage != nil {
-			d.usageSeen = true
 			d.usage = &Usage{
 				InputTokens:      event.Usage.InputTokens,
 				CacheReadTokens:  event.Usage.CachedInputTokens,
@@ -231,6 +232,7 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 		}
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -258,9 +260,12 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Type {
+	case "system", "user":
+		return ""
 	case "assistant":
 		return completeMessage(textFromBlocks(event.Message.Content))
 	case "rate_limit_event":
@@ -270,7 +275,6 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 		return providerLine(fmt.Sprintf("provider limit: %s %s resetsAt %d", event.RateLimitInfo.RateLimitType, event.RateLimitInfo.Status, event.RateLimitInfo.ResetsAt))
 	case "result":
 		if event.Usage != nil || event.TotalCostUSD != nil {
-			d.usageSeen = true
 			usage := &Usage{CacheSemantics: CacheSemanticsAdditive}
 			if event.Usage != nil {
 				usage.InputTokens = event.Usage.InputTokens
@@ -289,6 +293,7 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 		}
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -319,6 +324,7 @@ func decodeOpencode(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"part"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Type {
@@ -350,6 +356,7 @@ func decodeOpencode(d *streamDecoder, raw json.RawMessage) string {
 		d.addUsage(usage)
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -358,7 +365,6 @@ func (d *streamDecoder) addUsage(next *Usage) {
 	if next == nil {
 		return
 	}
-	d.usageSeen = true
 	if d.usage == nil {
 		d.usage = next
 		return

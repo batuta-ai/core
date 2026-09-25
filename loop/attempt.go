@@ -763,7 +763,7 @@ func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gate
 		output = string(result.RawStdout)
 	}
 	verdict := gates.Verifier(output, len(criteria), proofs)
-	if verdict.Signal == "the verifier printed no TASK n: DONE|INCOMPLETE lines" {
+	if verdict.Signal == gates.SignalNoTaskLines {
 		verdict.Detail = r.verifierOutputTail(result)
 	}
 	verdict.Signal = name + "/" + model + ": " + verdict.Signal
@@ -1109,7 +1109,7 @@ func uncleanInvocation(result executor.Result) bool {
 // workspace path into the journal.
 func (r *Runner) outputTailDetail(result executor.Result) map[string]any {
 	stream := func(payload []byte) string {
-		return tailWindow(dropSecretLines(redactText(executor.Tail(payload, outputTailLines), r.root)), outputTailBytes)
+		return tailWindow(executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, outputTailLines), r.root)), outputTailBytes)
 	}
 	return map[string]any{"stdout": stream(result.Stdout), "stderr": stream(result.Stderr)}
 }

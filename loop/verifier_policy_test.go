@@ -75,6 +75,7 @@ func TestVerifierFailureKeepsOutputTail(t *testing.T) {
 		{"no task lines", executor.Result{Finished: true, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nlast stdout\n"), Stderr: []byte("last stderr\n"), DecoderDroppedLines: 3}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			verdict := verifyOutput(t, tc.result)
 			for _, want := range []string{"secret.txt", "last stdout", "last stderr", "decoder_dropped_lines: 3"} {
 				if !strings.Contains(verdict.Detail, want) {
