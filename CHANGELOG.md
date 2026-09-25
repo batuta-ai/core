@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0-beta.41](https://github.com/batuta-ai/core/compare/v1.1.0-beta.40...v1.1.0-beta.41) (2026-09-25)
+
+
+### Features
+
+* complete-message events end with a newline; streamed deltas are ([ce19f3e](https://github.com/batuta-ai/core/commit/ce19f3e2174d4d35337311592657a04153075490))
+
+
+### Bug Fixes
+
+* **executor:** decoded agent messages keep their line boundaries ([4d54dee](https://github.com/batuta-ai/core/commit/4d54dee14e65b41067a5c987a240d3bab42cf3c5))
+
 ## [1.1.0-beta.40](https://github.com/batuta-ai/core/compare/v1.1.0-beta.39...v1.1.0-beta.40) (2026-09-25)
 
 
