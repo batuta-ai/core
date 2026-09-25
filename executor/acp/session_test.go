@@ -447,6 +447,64 @@ func TestSessionStreamsOnlyAgentTextAndCannotReplay(t *testing.T) {
 	}
 }
 
+func TestSessionRecordsDeniedPermissions(t *testing.T) {
+	conn, peer := testConnection(t, Options{})
+	cwd := t.TempDir()
+	type outcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd})
+		var result TurnResult
+		if err == nil {
+			result, err = session.Prompt(context.Background(), "brief", nil)
+		}
+		done <- outcome{result, err}
+	}()
+	reader := bufio.NewReader(peer)
+	setupPeer(t, peer, reader, cwd, `{}`)
+	prompt := expectMethod(t, reader, "session/prompt")
+	for i := range 17 {
+		locations := make([]map[string]string, 9)
+		for j := range locations {
+			locations[j] = map[string]string{"path": strings.Repeat("p", 201) + fmt.Sprint(j)}
+		}
+		params, err := json.Marshal(map[string]any{
+			"sessionId": "task",
+			"toolCall": map[string]any{
+				"toolCallId": fmt.Sprint(i), "kind": "execute", "title": strings.Repeat("t", 201),
+				"rawInput": map[string]any{"command": strings.Repeat("c", 201)}, "locations": locations,
+			},
+			"options": []map[string]string{{"optionId": "no", "kind": "reject_once"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeMessage(t, peer, fmt.Sprintf(`{"jsonrpc":"2.0","id":"p-%d","method":"session/request_permission","params":%s}`, i, params))
+		response := readMessage(t, reader)
+		if string(response["result"]) != `{"outcome":{"outcome":"selected","optionId":"no"}}` {
+			t.Fatalf("denial %d: %s", i, response)
+		}
+	}
+	sessionReply(t, peer, prompt, `{"stopReason":"end_turn"}`)
+	got := <-done
+	if got.err != nil || !got.result.Completed || len(got.result.DeniedPermissions) != 4 || got.result.DeniedPermissionsTotal != 17 {
+		t.Fatalf("turn: %+v / %v", got.result, got.err)
+	}
+	for i, denied := range got.result.DeniedPermissions {
+		if denied.Kind != "execute" || denied.Title != strings.Repeat("t", 80) || denied.Command != strings.Repeat("c", 160) || len(denied.Locations) != 2 {
+			t.Fatalf("denial %d: %+v", i, denied)
+		}
+		for j, location := range denied.Locations {
+			if location != strings.Repeat("p", 160) {
+				t.Fatalf("denial %d location %d: %q", i, j, location)
+			}
+		}
+	}
+}
+
 func runUsageTurn(t *testing.T, update, response string) TurnResult {
 	t.Helper()
 	conn, peer := testConnection(t, Options{})

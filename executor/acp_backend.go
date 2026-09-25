@@ -133,6 +133,8 @@ func (b ACPBackend) Execute(ctx context.Context, execution Execution) (result Re
 	if turn.Completed {
 		receipt.Submission.State = SubmissionSubmitted
 	}
+	receipt.DeniedPermissions = turn.DeniedPermissions
+	receipt.DeniedPermissionsTotal = turn.DeniedPermissionsTotal
 	if turn.Usage != nil {
 		receipt.Usage = &Usage{
 			InputTokens:         turn.Usage.InputTokens,

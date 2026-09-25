@@ -10,26 +10,129 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const permissionParams = `{"sessionId":"task","toolCall":{"toolCallId":"write-1","kind":"edit","rawInput":{"path":"target"}},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}`
 
+func TestDeniedPermissionRedactsSecrets(t *testing.T) {
+	for _, tt := range []struct {
+		name, input, want string
+	}{
+		{"assignment", "TOKEN=private", "TOKEN=[redacted]"},
+		{"secret key", "MY_SECRET=private", "MY_SECRET=[redacted]"},
+		{"mixed case assignment", "Api_Key=private", "Api_Key=[redacted]"},
+		{"apikey key", "apikey=private", "apikey=[redacted]"},
+		{"assignment with quotes", `PASSWORD="private value"`, `PASSWORD=[redacted]`},
+		{"assignment with escaped quote", `TOKEN="private \" value"`, `TOKEN=[redacted]`},
+		{"passwd key", "PASSWD=private", "PASSWD=[redacted]"},
+		{"flag value", "--auth private", "--auth [redacted]"},
+		{"quoted flag value", `--SECRET 'private value'`, `--SECRET [redacted]`},
+		{"flag equals", "--credential=private", "--credential=[redacted]"},
+		{"bearer", "Bearer private", "Bearer [redacted]"},
+		{"mixed case bearer", "bEaReR private", "bEaReR [redacted]"},
+		{"prefix", "sk-private ghp_private gho_private github_pat_private xoxprivate AKIAprivate", "[redacted]"},
+		{"sk prefix", "run sk-x tail", "run [redacted]"},
+		{"ghp prefix", "run ghp_x tail", "run [redacted]"},
+		{"gho prefix", "run gho_x tail", "run [redacted]"},
+		{"github_pat prefix", "run github_pat_x tail", "run [redacted]"},
+		{"xox prefix", "run xoxb-x tail", "run [redacted]"},
+		{"AKIA prefix", "run AKIAX tail", "run [redacted]"},
+		{"closing quote then suffix", `TOKEN="private"suffix`, "TOKEN=[redacted]"},
+		{"single quotes then suffix", `TOKEN='a b'c`, "TOKEN=[redacted]"},
+		{"escaped space", `TOKEN=a\ b`, "TOKEN=[redacted]"},
+		{"flag quote then suffix", `--api-key "x"y`, "--api-key [redacted]"},
+		{"flag equals then more", "--api-key=x rest", "--api-key=[redacted]"},
+		{"tail after secret", "FOO=1 TOKEN=x next --path /w", "FOO=1 TOKEN=[redacted]"},
+		{"nested pair", "FOO=TOKEN=x", "FOO=TOKEN=[redacted]"},
+		{"header", `curl -H "Authorization: Bearer abc" url`, `curl -H "Authorization: Bearer [redacted]`},
+		{"no secret", `curl -H "Accept: json" https://example.test/a?b=c`, `curl -H "Accept: json" https://example.test/a?b=c`},
+		{"prefix alone", "xox", "[redacted]"},
+		{"ordinary", "git status --path /worktree", "git status --path /worktree"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := PermissionRequest{}
+			request.ToolCall.Title = tt.input
+			request.ToolCall.Kind = tt.input
+			request.ToolCall.RawInput, _ = json.Marshal(map[string]string{"command": tt.input})
+			request.ToolCall.Locations = make([]struct {
+				Path string `json:"path"`
+			}, 1)
+			request.ToolCall.Locations[0].Path = tt.input
+			session := &Session{}
+			session.recordDenial(request)
+			got := session.denials[0]
+			if got.Title != tt.want || got.Command != tt.want || got.Kind != tt.want || got.Locations[0] != tt.want {
+				t.Fatalf("recorded %+v, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeniedPermissionTruncatesUTF8(t *testing.T) {
+	request := PermissionRequest{}
+	request.ToolCall.Title = strings.Repeat("界", 30)
+	request.ToolCall.Kind = "execute"
+	request.ToolCall.RawInput, _ = json.Marshal(map[string]string{"command": strings.Repeat("界", 60)})
+	request.ToolCall.Locations = make([]struct {
+		Path string `json:"path"`
+	}, 1)
+	request.ToolCall.Locations[0].Path = strings.Repeat("界", 60)
+	session := &Session{}
+	session.recordDenial(request)
+	got := session.denials[0]
+	for _, field := range []struct {
+		value string
+		limit int
+	}{{got.Title, 80}, {got.Command, 160}, {got.Locations[0], 160}} {
+		if !utf8.ValidString(field.value) || len(field.value) != field.limit-field.limit%3 {
+			t.Fatalf("invalid UTF-8 truncation: %q (%d bytes)", field.value, len(field.value))
+		}
+	}
+}
+
+func TestDeniedPermissionBoundsEscapedJSON(t *testing.T) {
+	request := PermissionRequest{}
+	request.ToolCall.Kind = strings.Repeat("<", 200)
+	request.ToolCall.Title = strings.Repeat("<", 200)
+	request.ToolCall.RawInput, _ = json.Marshal(map[string]string{"command": strings.Repeat("<", 200)})
+	request.ToolCall.Locations = make([]struct {
+		Path string `json:"path"`
+	}, 2)
+	for i := range request.ToolCall.Locations {
+		request.ToolCall.Locations[i].Path = strings.Repeat("<", 200)
+	}
+	session := &Session{}
+	session.recordDenial(request)
+	got := session.denials[0]
+	for _, field := range []struct {
+		value string
+		limit int
+	}{{got.Kind, 80}, {got.Title, 80}, {got.Command, 160}, {got.Locations[0], 160}, {got.Locations[1], 160}} {
+		encoded, err := json.Marshal(field.value)
+		if err != nil || len(encoded)-2 > field.limit {
+			t.Fatalf("field exceeded JSON budget: %d bytes / %v", len(encoded)-2, err)
+		}
+	}
+}
+
 func TestPermissionPolicySelection(t *testing.T) {
 	for _, tt := range []struct {
 		name, params, selection string
-		allow, called           bool
+		allow, reject, called   bool
 	}{
-		{"explicit allow", permissionParams, "yes", true, true},
-		{"no authorization", permissionParams, "", false, true},
-		{"reject option", permissionParams, "no", false, true},
-		{"invented option", permissionParams, "invented", false, true},
-		{"wrong session", `{"sessionId":"other","toolCall":{"toolCallId":"write-1"},"options":[{"optionId":"yes","kind":"allow_once"}]}`, "yes", false, false},
-		{"missing tool", `{"sessionId":"task","options":[{"optionId":"yes","kind":"allow_once"}]}`, "yes", false, false},
-		{"duplicate option", `{"sessionId":"task","toolCall":{"toolCallId":"write-1"},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"yes","kind":"reject_once"}]}`, "yes", false, false},
-		{"unknown kind", `{"sessionId":"task","toolCall":{"toolCallId":"write-1"},"options":[{"optionId":"yes","kind":"invented"}]}`, "yes", false, false},
-		{"empty option", `{"sessionId":"task","toolCall":{"toolCallId":"write-1"},"options":[{"optionId":"","kind":"allow_once"}]}`, "", false, false},
+		{"explicit allow", permissionParams, "yes", true, false, true},
+		{"no authorization", permissionParams, "", false, true, true},
+		{"reject option", permissionParams, "no", false, true, true},
+		{"invented option", permissionParams, "invented", false, true, true},
+		{"wrong session", `{"sessionId":"other","toolCall":{"toolCallId":"write-1"},"options":[{"optionId":"no","kind":"reject_once"}]}`, "yes", false, false, false},
+		{"missing tool", `{"sessionId":"task","options":[{"optionId":"no","kind":"reject_once"}]}`, "yes", false, false, false},
+		{"duplicate option", `{"sessionId":"task","toolCall":{"toolCallId":"write-1"},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"yes","kind":"reject_once"}]}`, "yes", false, false, false},
+		{"unknown kind", `{"sessionId":"task","toolCall":{"toolCallId":"write-1"},"options":[{"optionId":"no","kind":"reject_once"},{"optionId":"yes","kind":"invented"}]}`, "yes", false, false, false},
+		{"empty option", `{"sessionId":"task","toolCall":{"toolCallId":"write-1"},"options":[{"optionId":"","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}`, "", false, false, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			conn, peer := testConnection(t, Options{})
@@ -57,21 +160,87 @@ func TestPermissionPolicySelection(t *testing.T) {
 			want := `{"outcome":{"outcome":"cancelled"}}`
 			if tt.allow {
 				want = `{"outcome":{"outcome":"selected","optionId":"yes"}}`
+			} else if tt.reject {
+				want = `{"outcome":{"outcome":"selected","optionId":"no"}}`
 			}
 			if string(response["result"]) != want {
 				t.Errorf("permission response: %s, want %s", response["result"], want)
 			}
-			if tt.allow {
+			if tt.allow || tt.reject {
 				sessionReply(t, peer, prompt, `{"stopReason":"end_turn"}`)
 			}
 			var wantErr error
-			if !tt.allow {
+			if !tt.allow && !tt.reject {
 				wantErr = ErrPermissionDenied
 			}
 			awaitError(t, done, wantErr)
 			if called != tt.called {
 				t.Errorf("policy called = %v, want %v", called, tt.called)
 			}
+		})
+	}
+}
+
+func TestPermissionRejectOnceContinues(t *testing.T) {
+	conn, peer := testConnection(t, Options{})
+	cwd := t.TempDir()
+	type outcome struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd})
+		var result TurnResult
+		if err == nil {
+			result, err = session.Prompt(context.Background(), "brief", nil)
+		}
+		done <- outcome{result, err}
+	}()
+	reader := bufio.NewReader(peer)
+	setupPeer(t, peer, reader, cwd, `{}`)
+	prompt := expectMethod(t, reader, "session/prompt")
+	writeMessage(t, peer, `{"jsonrpc":"2.0","id":"p","method":"session/request_permission","params":`+permissionParams+`}`)
+	response := readMessage(t, reader)
+	if string(response["result"]) != `{"outcome":{"outcome":"selected","optionId":"no"}}` {
+		t.Fatalf("rejection response: %s", response)
+	}
+	if err := conn.Err(); err != nil {
+		t.Fatalf("connection closed after rejection: %v", err)
+	}
+	sessionReply(t, peer, prompt, `{"stopReason":"max_tokens"}`)
+	got := <-done
+	if got.err != nil || !got.result.Completed || got.result.StopReason != "max_tokens" {
+		t.Fatalf("turn: %+v / %v", got.result, got.err)
+	}
+}
+
+func TestPermissionWithoutRejectOnceIsTerminal(t *testing.T) {
+	for _, options := range []string{
+		`[{"optionId":"yes","kind":"allow_once"}]`,
+		`[{"optionId":"never","kind":"reject_always"}]`,
+	} {
+		t.Run(options, func(t *testing.T) {
+			conn, peer := testConnection(t, Options{})
+			cwd := t.TempDir()
+			done := make(chan error, 1)
+			go func() {
+				session, err := NewSession(context.Background(), conn, SessionConfig{Cwd: cwd})
+				if err == nil {
+					_, err = session.Prompt(context.Background(), "brief", nil)
+				}
+				done <- err
+			}()
+			reader := bufio.NewReader(peer)
+			setupPeer(t, peer, reader, cwd, `{}`)
+			expectMethod(t, reader, "session/prompt")
+			params := `{"sessionId":"task","toolCall":{"toolCallId":"write-1"},"options":` + options + `}`
+			writeMessage(t, peer, `{"jsonrpc":"2.0","id":"p","method":"session/request_permission","params":`+params+`}`)
+			response := readMessage(t, reader)
+			if string(response["result"]) != `{"outcome":{"outcome":"cancelled"}}` {
+				t.Fatalf("terminal response: %s", response)
+			}
+			awaitError(t, done, ErrPermissionDenied)
 		})
 	}
 }
@@ -99,6 +268,35 @@ func TestBufferedPermissionIsAnsweredAndCannotComplete(t *testing.T) {
 	}
 }
 
+func TestBufferedDeniedPermissionCountsBeforeSubmission(t *testing.T) {
+	conn, peer := testConnection(t, Options{})
+	conn.mu.Lock()
+	conn.ordered = true
+	conn.mu.Unlock()
+	if err := conn.receive(message{ID: json.RawMessage(`"p"`), Method: "session/request_permission", Params: json.RawMessage(permissionParams)}); err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{conn: conn, id: "task"}
+	type outcome struct {
+		result TurnResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := session.Prompt(context.Background(), "brief", nil)
+		done <- outcome{result, err}
+	}()
+	response := readMessage(t, bufio.NewReader(peer))
+	got := <-done
+	result, err := got.result, got.err
+	if !errors.Is(err, ErrPermissionDenied) || result.DeniedPermissionsTotal != 1 || len(result.DeniedPermissions) != 1 {
+		t.Fatalf("pre-submission denial: %+v / %v", result, err)
+	}
+	if string(response["result"]) != `{"outcome":{"outcome":"cancelled"}}` {
+		t.Fatal("permission was not cancelled")
+	}
+}
+
 // The fixture writes the target only after the real client's allow response.
 func TestPermissionStdioPeer(t *testing.T) {
 	target := os.Getenv("BATUTA_ACP_PERMISSION_TARGET")
@@ -118,7 +316,7 @@ func TestPermissionStdioPeer(t *testing.T) {
 			os.Exit(2)
 		}
 	}
-	// An agent's subsequent success claim must not turn denial into completion.
+	// A rejected tool call does not stop the agent's subsequent prompt reply.
 	fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"All work succeeded"}}}}`+"\n")
 	fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`+"\n", prompt["id"])
 	io.Copy(io.Discard, reader)
@@ -168,15 +366,10 @@ func TestPermissionRealChildTarget(t *testing.T) {
 			if ctx.Err() != nil {
 				t.Fatal("child required hard deadline")
 			}
-			if allow && waitErr != nil {
+			if waitErr != nil {
 				t.Fatalf("child exit: %v", waitErr)
 			}
-			// A denied child may receive SIGPIPE while claiming success after closure.
-			var wantErr error
-			if !allow {
-				wantErr = ErrPermissionDenied
-			}
-			if !errors.Is(sessionErr, wantErr) || result.Completed != allow {
+			if sessionErr != nil || !result.Completed || result.StopReason != "end_turn" {
 				t.Fatalf("turn: %+v / %v", result, sessionErr)
 			}
 			contents, readErr := os.ReadFile(target)

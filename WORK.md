@@ -305,6 +305,10 @@
 - [x] A qualification pins the session mode and meta, and the stock factory carries the codex and claude records → cursor-agent (cursor-grok-4.6-high), commit 381a646be0ce (trail: .batuta/runs/2026-09-23-acp-bridge-records-task-1.md, delivery acp-bridge-records-20260923-192746, plan acp-bridge-records, 2026-09-23)
 - [x] The measurement doc records the bridge qualifications → opencode (opencode/glm-5.3-flash), commit ba85be7d7d90 (trail: .batuta/runs/2026-09-23-acp-bridge-records-task-2.md, delivery acp-bridge-records-20260923-192746, plan acp-bridge-records, 2026-09-23)
 - [x] docs/dispatch.md gains a CLI containment paragraph → claude (sonnet), commit 1049d9c476f5 (trail: .batuta/runs/2026-09-24-cli-containment-docs-task-1.md, delivery cli-containment-docs-20260924-132906, plan cli-containment-docs, 2026-09-24)
+- [x] A denied request is answered with the offered reject option and the session continues; each denial is recorded → codex (gpt-6-sol), 1 retry, commit a915dbb8ccca (trail: .batuta/runs/2026-09-25-acp-soft-deny-task-1.md, delivery acp-soft-deny-20260925-142341, plan acp-soft-deny, 2026-09-25)
+- [x] The docs state the continuing denial → claude (sonnet), commit de073eefe4e2 (trail: .batuta/runs/2026-09-25-acp-soft-deny-task-2.md, delivery acp-soft-deny-20260925-142341, plan acp-soft-deny, 2026-09-25)
+- [x] Denial records are redacted and bounded so the receipt always fits → codex (gpt-6-sol), commit 05548ab5c06b (trail: .batuta/runs/2026-09-25-acp-soft-deny-fixes-task-1.md, delivery acp-soft-deny-fixes-20260925-150706, plan acp-soft-deny-fixes, 2026-09-25)
+- [x] Once a secret-shaped key or prefix appears, everything after it in the field is redacted → claude (sonnet), commit f76306665177 (trail: .batuta/runs/2026-09-25-acp-soft-deny-fixes-2-task-1.md, delivery acp-soft-deny-fixes-2-20260925-152505, plan acp-soft-deny-fixes-2, 2026-09-25)
 - [x] Decoders emit one text line per provider error or limit event → codex (gpt-6-sol), commit 85244ca714fc (trail: .batuta/runs/2026-09-25-decoder-errors-task-1.md, delivery decoder-errors-20260925-145538, plan decoder-errors, 2026-09-25)
 
 ## Blocked
