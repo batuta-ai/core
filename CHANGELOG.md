@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0-beta.39](https://github.com/batuta-ai/core/compare/v1.1.0-beta.38...v1.1.0-beta.39) (2026-09-25)
+
+
+### Features
+
+* decoders emit one text line per provider error or limit event ([85244ca](https://github.com/batuta-ai/core/commit/85244ca714fc6c5aa0fca8484deddc903f92b5fb))
+* **executor:** stream decoders surface provider errors and limits ([5ff3c62](https://github.com/batuta-ai/core/commit/5ff3c62aa84b92f038fc954fb9bfcab05e206713))
+
 ## [1.1.0-beta.38](https://github.com/batuta-ai/core/compare/v1.1.0-beta.37...v1.1.0-beta.38) (2026-09-23)
 
 
