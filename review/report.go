@@ -214,19 +214,20 @@ func cohortTailName(cohort CohortResult) (string, bool) {
 // current report does not produce, so no old cohort output survives next to
 // the fresh artifacts.
 func pruneStaleTails(directory string, current map[string]bool) error {
-	stale, err := filepath.Glob(filepath.Join(directory, cohortTailPattern))
+	entries, err := os.ReadDir(directory)
 	if err != nil {
 		return fmt.Errorf("review: list stale tails: %w", err)
 	}
-	for _, filename := range stale {
-		if current[filepath.Base(filename)] {
+	for _, entry := range entries {
+		name := entry.Name()
+		if match, _ := filepath.Match(cohortTailPattern, name); !match || current[name] {
 			continue
 		}
-		if info, err := os.Lstat(filename); err != nil || !info.Mode().IsRegular() {
+		if !entry.Type().IsRegular() {
 			continue
 		}
-		if err := os.Remove(filename); err != nil {
-			return fmt.Errorf("review: remove stale tail %s: %w", filepath.Base(filename), err)
+		if err := os.Remove(filepath.Join(directory, name)); err != nil {
+			return fmt.Errorf("review: remove stale tail %s: %w", name, err)
 		}
 	}
 	return nil

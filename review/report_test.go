@@ -200,9 +200,30 @@ func TestArtifactPathsIncludeCohortTails(t *testing.T) {
 	}
 }
 
+func TestReviewTailRedaction(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, want string }{
+		{"relative path", "edit a/b/c now", "edit a/b/c now"},
+		{"dotted relative path", "see ./x/y", "see ./x/y"},
+		{"url", "fetch https://host/path", "fetch https://host/path"},
+		{"absolute workspace path", "open /work/space/a/b.go", "open b.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := reviewOutputTail([]byte(tc.in)); got != tc.want {
+				t.Fatalf("reviewOutputTail(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestWriteArtifactsPrunesStaleTails(t *testing.T) {
 	t.Parallel()
-	directory := t.TempDir()
+	directory := filepath.Join(t.TempDir(), "art[if]acts*?")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	stale := []string{"cohort-1.tail.txt", "cohort-7.tail.txt"}
 	kept := []string{"cohort-1.tail.txt.bak", "cohort-notes.txt", "notes.tail.txt", "cohort-9.tail.txt.d"}
 	for _, name := range append(slices.Clone(stale), kept...) {

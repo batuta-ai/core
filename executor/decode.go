@@ -106,7 +106,7 @@ func decodeCursor(d *streamDecoder, raw json.RawMessage) string {
 		return ""
 	}
 	switch event.Type {
-	case "system", "tool_call":
+	case "system", "user", "thinking", "tool_call":
 		return ""
 	case "assistant":
 		return completeMessage(textFromBlocks(event.Message.Content))
@@ -151,6 +151,8 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 		return ""
 	}
 	switch event.Event {
+	case "init":
+		return ""
 	case "step_update":
 		text := event.StepUpdate.TextDelta
 		if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.State == "DONE" && text != "" {
@@ -328,6 +330,8 @@ func decodeOpencode(d *streamDecoder, raw json.RawMessage) string {
 		return ""
 	}
 	switch event.Type {
+	case "step_start", "tool_use":
+		return ""
 	case "text":
 		return completeMessage(event.Part.Text)
 	case "error":

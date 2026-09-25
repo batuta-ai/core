@@ -34,22 +34,15 @@ func DropSecretLines(value string) string {
 }
 
 // RedactPaths strips the workspace prefix and reduces every remaining
-// absolute path to its base name. A match preceded by '.', '\\' or an
-// alphanumeric byte is part of a relative path and stays as written.
+// absolute path to its base name. The workspace is stripped only where a
+// separator, a quote, whitespace or the end of the value follows it. A match
+// preceded by '.', '\\' or an alphanumeric byte is part of a relative path
+// and stays as written.
 func RedactPaths(value, workspace string) string {
 	if value == "" {
 		return ""
 	}
-	if workspace != "" {
-		for _, prefix := range []string{
-			workspace + string(filepath.Separator),
-			workspace + "/",
-			workspace + `\`,
-			workspace,
-		} {
-			value = strings.ReplaceAll(value, prefix, "")
-		}
-	}
+	value = stripWorkspace(value, workspace)
 	matches := absolutePath.FindAllStringIndex(value, -1)
 	if len(matches) == 0 {
 		return value
@@ -79,6 +72,33 @@ func RedactPaths(value, workspace string) string {
 		last = end
 	}
 	b.WriteString(value[last:])
+	return b.String()
+}
+
+func stripWorkspace(value, workspace string) string {
+	workspace = strings.TrimRight(workspace, `/\`)
+	if workspace == "" {
+		return value
+	}
+	var b strings.Builder
+	rest := value
+	for {
+		index := strings.Index(rest, workspace)
+		if index < 0 {
+			break
+		}
+		b.WriteString(rest[:index])
+		rest = rest[index+len(workspace):]
+		switch {
+		case rest == "":
+		case rest[0] == '/' || rest[0] == '\\':
+			rest = rest[1:]
+		case strings.IndexByte("\"'` \t\r\n", rest[0]) >= 0:
+		default:
+			b.WriteString(workspace)
+		}
+	}
+	b.WriteString(rest)
 	return b.String()
 }
 

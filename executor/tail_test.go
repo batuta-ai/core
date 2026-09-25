@@ -24,6 +24,26 @@ func TestRedactPathsKeepsRelative(t *testing.T) {
 	}
 }
 
+func TestRedactWorkspaceBoundary(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, workspace, want string }{
+		{"sibling with shared prefix", "open /work/spacefoo", "/work/space", "open spacefoo"},
+		{"followed by separator", "open /work/space/a.go", "/work/space", "open a.go"},
+		{"followed by quote", `open "/work/space"`, "/work/space", `open ""`},
+		{"followed by whitespace", "cd /work/space now", "/work/space", "cd  now"},
+		{"at end of string", "cd /work/space", "/work/space", "cd "},
+		{"trailing separator on workspace", "open /work/space/a.go", "/work/space/", "open a.go"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := RedactPaths(tc.in, tc.workspace); got != tc.want {
+				t.Fatalf("RedactPaths(%q, %q) = %q, want %q", tc.in, tc.workspace, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestDropSecretLines(t *testing.T) {
 	t.Parallel()
 	in := "kept\nAPI_KEY=abc\n  TOKEN=x\nlower=case\nkept too"
