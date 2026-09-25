@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,83 @@ func TestDecoderLookup(t *testing.T) {
 		if LookupDecoder(name) == nil {
 			t.Fatalf("LookupDecoder(%q) = nil", name)
 		}
+	}
+}
+
+func TestDecoderMessageBoundaries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		format  string
+		message func(string) string
+	}{
+		{"codex", "codex-json", func(text string) string {
+			return `{"type":"item.completed","item":{"type":"agent_message","text":` + quotedText(text) + `}}`
+		}},
+		{"claude", "claude-stream-json", func(text string) string {
+			return `{"type":"assistant","message":{"content":[{"type":"text","text":` + quotedText(text) + `}]}}`
+		}},
+		{"cursor", "cursor-stream-json", func(text string) string {
+			return `{"type":"assistant","message":{"content":[{"type":"text","text":` + quotedText(text) + `}]}}`
+		}},
+		{"opencode", "opencode-json", func(text string) string {
+			return `{"type":"text","part":{"text":` + quotedText(text) + `}}`
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			decoder := LookupDecoder(tc.format)
+			for _, input := range []string{"first message", "already ended\n", ""} {
+				want := input
+				if input != "" && !strings.HasSuffix(input, "\n") {
+					want += "\n"
+				}
+				if got := decoder.Decode(tc.message(input)); got != want {
+					t.Errorf("Decode(%q) = %q, want %q", input, got, want)
+				}
+			}
+			decoder = LookupDecoder(tc.format)
+			got := decoder.Decode(tc.message("I will read the diff.")) + decoder.Decode(tc.message("<<<FINDINGS\n- finding"))
+			if want := "I will read the diff.\n<<<FINDINGS\n- finding\n"; got != want {
+				t.Errorf("consecutive messages = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+func quotedText(value string) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	return string(encoded)
+}
+
+func TestAgyDecoderStepBoundary(t *testing.T) {
+	t.Parallel()
+	decoder := LookupDecoder("agy-stream-json")
+	steps := []struct {
+		line string
+		want string
+	}{
+		{`{"event":"step_update","step_update":{"step_type":"agent_response","state":"ACTIVE","text_delta":"hello "}}`, "hello "},
+		{`{"event":"step_update","step_update":{"step_type":"agent_response","state":"ACTIVE","text_delta":"world"}}`, "world"},
+		{`{"event":"step_update","step_update":{"step_type":"agent_response","state":"DONE"}}`, "\n"},
+		{`{"event":"step_update","step_update":{"step_type":"agent_response","state":"ACTIVE","text_delta":"next\n"}}`, "next\n"},
+		{`{"event":"step_update","step_update":{"step_type":"agent_response","state":"DONE"}}`, ""},
+		{`{"event":"step_update","step_update":{"step_type":"agent_response","state":"DONE","text_delta":"final"}}`, "final\n"},
+	}
+	var joined strings.Builder
+	for _, step := range steps {
+		got := decoder.Decode(step.line)
+		if got != step.want {
+			t.Errorf("Decode(%s) = %q, want %q", step.line, got, step.want)
+		}
+		joined.WriteString(got)
+	}
+	if got, want := joined.String(), "hello world\nnext\nfinal\n"; got != want {
+		t.Errorf("joined steps = %q, want %q", got, want)
 	}
 }
 
