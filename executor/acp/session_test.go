@@ -490,15 +490,15 @@ func TestSessionRecordsDeniedPermissions(t *testing.T) {
 	}
 	sessionReply(t, peer, prompt, `{"stopReason":"end_turn"}`)
 	got := <-done
-	if got.err != nil || !got.result.Completed || len(got.result.DeniedPermissions) != 16 {
+	if got.err != nil || !got.result.Completed || len(got.result.DeniedPermissions) != 4 || got.result.DeniedPermissionsTotal != 17 {
 		t.Fatalf("turn: %+v / %v", got.result, got.err)
 	}
 	for i, denied := range got.result.DeniedPermissions {
-		if denied.Kind != "execute" || denied.Title != strings.Repeat("t", 200) || denied.Command != strings.Repeat("c", 200) || len(denied.Locations) != 8 {
+		if denied.Kind != "execute" || denied.Title != strings.Repeat("t", 80) || denied.Command != strings.Repeat("c", 160) || len(denied.Locations) != 2 {
 			t.Fatalf("denial %d: %+v", i, denied)
 		}
 		for j, location := range denied.Locations {
-			if location != strings.Repeat("p", 200) {
+			if location != strings.Repeat("p", 160) {
 				t.Fatalf("denial %d location %d: %q", i, j, location)
 			}
 		}

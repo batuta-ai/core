@@ -10,11 +10,99 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 const permissionParams = `{"sessionId":"task","toolCall":{"toolCallId":"write-1","kind":"edit","rawInput":{"path":"target"}},"options":[{"optionId":"yes","kind":"allow_once"},{"optionId":"no","kind":"reject_once"}]}`
+
+func TestDeniedPermissionRedactsSecrets(t *testing.T) {
+	for _, tt := range []struct {
+		name, input, want string
+	}{
+		{"assignment", "TOKEN=private", "TOKEN=[redacted]"},
+		{"secret key", "MY_SECRET=private", "MY_SECRET=[redacted]"},
+		{"mixed case assignment", "Api_Key=private", "Api_Key=[redacted]"},
+		{"apikey key", "apikey=private", "apikey=[redacted]"},
+		{"assignment with quotes", `PASSWORD="private value"`, `PASSWORD=[redacted]`},
+		{"assignment with escaped quote", `TOKEN="private \" value"`, `TOKEN=[redacted]`},
+		{"passwd key", "PASSWD=private", "PASSWD=[redacted]"},
+		{"flag value", "--auth private", "--auth [redacted]"},
+		{"quoted flag value", `--SECRET 'private value'`, `--SECRET [redacted]`},
+		{"flag equals", "--credential=private", "--credential=[redacted]"},
+		{"bearer", "Bearer private", "Bearer [redacted]"},
+		{"mixed case bearer", "bEaReR private", "bEaReR [redacted]"},
+		{"prefix", "sk-private ghp_private gho_private github_pat_private xoxprivate AKIAprivate", "[redacted] [redacted] [redacted] [redacted] [redacted] [redacted]"},
+		{"prefix alone", "xox", "[redacted]"},
+		{"ordinary", "git status --path /worktree", "git status --path /worktree"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := PermissionRequest{}
+			request.ToolCall.Title = tt.input
+			request.ToolCall.Kind = tt.input
+			request.ToolCall.RawInput, _ = json.Marshal(map[string]string{"command": tt.input})
+			request.ToolCall.Locations = make([]struct {
+				Path string `json:"path"`
+			}, 1)
+			request.ToolCall.Locations[0].Path = tt.input
+			session := &Session{}
+			session.recordDenial(request)
+			got := session.denials[0]
+			if got.Title != tt.want || got.Command != tt.want || got.Kind != tt.want || got.Locations[0] != tt.want {
+				t.Fatalf("recorded %+v, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDeniedPermissionTruncatesUTF8(t *testing.T) {
+	request := PermissionRequest{}
+	request.ToolCall.Title = strings.Repeat("界", 30)
+	request.ToolCall.Kind = "execute"
+	request.ToolCall.RawInput, _ = json.Marshal(map[string]string{"command": strings.Repeat("界", 60)})
+	request.ToolCall.Locations = make([]struct {
+		Path string `json:"path"`
+	}, 1)
+	request.ToolCall.Locations[0].Path = strings.Repeat("界", 60)
+	session := &Session{}
+	session.recordDenial(request)
+	got := session.denials[0]
+	for _, field := range []struct {
+		value string
+		limit int
+	}{{got.Title, 80}, {got.Command, 160}, {got.Locations[0], 160}} {
+		if !utf8.ValidString(field.value) || len(field.value) != field.limit-field.limit%3 {
+			t.Fatalf("invalid UTF-8 truncation: %q (%d bytes)", field.value, len(field.value))
+		}
+	}
+}
+
+func TestDeniedPermissionBoundsEscapedJSON(t *testing.T) {
+	request := PermissionRequest{}
+	request.ToolCall.Kind = strings.Repeat("<", 200)
+	request.ToolCall.Title = strings.Repeat("<", 200)
+	request.ToolCall.RawInput, _ = json.Marshal(map[string]string{"command": strings.Repeat("<", 200)})
+	request.ToolCall.Locations = make([]struct {
+		Path string `json:"path"`
+	}, 2)
+	for i := range request.ToolCall.Locations {
+		request.ToolCall.Locations[i].Path = strings.Repeat("<", 200)
+	}
+	session := &Session{}
+	session.recordDenial(request)
+	got := session.denials[0]
+	for _, field := range []struct {
+		value string
+		limit int
+	}{{got.Kind, 80}, {got.Title, 80}, {got.Command, 160}, {got.Locations[0], 160}, {got.Locations[1], 160}} {
+		encoded, err := json.Marshal(field.value)
+		if err != nil || len(encoded)-2 > field.limit {
+			t.Fatalf("field exceeded JSON budget: %d bytes / %v", len(encoded)-2, err)
+		}
+	}
+}
 
 func TestPermissionPolicySelection(t *testing.T) {
 	for _, tt := range []struct {
@@ -162,6 +250,35 @@ func TestBufferedPermissionIsAnsweredAndCannotComplete(t *testing.T) {
 	awaitError(t, done, ErrPermissionDenied)
 	if !errors.Is(conn.Err(), ErrPermissionDenied) {
 		t.Fatalf("connection lost rejection: %v", conn.Err())
+	}
+}
+
+func TestBufferedDeniedPermissionCountsBeforeSubmission(t *testing.T) {
+	conn, peer := testConnection(t, Options{})
+	conn.mu.Lock()
+	conn.ordered = true
+	conn.mu.Unlock()
+	if err := conn.receive(message{ID: json.RawMessage(`"p"`), Method: "session/request_permission", Params: json.RawMessage(permissionParams)}); err != nil {
+		t.Fatal(err)
+	}
+	session := &Session{conn: conn, id: "task"}
+	type outcome struct {
+		result TurnResult
+		err error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		result, err := session.Prompt(context.Background(), "brief", nil)
+		done <- outcome{result, err}
+	}()
+	response := readMessage(t, bufio.NewReader(peer))
+	got := <-done
+	result, err := got.result, got.err
+	if !errors.Is(err, ErrPermissionDenied) || result.DeniedPermissionsTotal != 1 || len(result.DeniedPermissions) != 1 {
+		t.Fatalf("pre-submission denial: %+v / %v", result, err)
+	}
+	if string(response["result"]) != `{"outcome":{"outcome":"cancelled"}}` {
+		t.Fatal("permission was not cancelled")
 	}
 }
 

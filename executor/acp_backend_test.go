@@ -451,13 +451,16 @@ func TestACPReceiptRecordsDeniedPermissions(t *testing.T) {
 	if len(denied) != 2 {
 		t.Fatalf("denied permissions: %+v", denied)
 	}
+	if result.Receipt.DeniedPermissionsTotal != 2 {
+		t.Fatalf("denial total: %d", result.Receipt.DeniedPermissionsTotal)
+	}
 	for _, entry := range denied {
 		if entry.Kind != "execute" || entry.Title != "Git commit" || entry.Command != "git commit" || len(entry.Locations) != 1 || entry.Locations[0] != "/worktree" {
 			t.Fatalf("denied permission: %+v", entry)
 		}
 	}
 	encoded, err := MarshalReceipt(*result.Receipt)
-	if err != nil || !bytes.Contains(encoded, []byte(`"denied_permissions"`)) {
+	if err != nil || !bytes.Contains(encoded, []byte(`"denied_permissions"`)) || !bytes.Contains(encoded, []byte(`"denied_permissions_total":2`)) {
 		t.Fatalf("receipt: %s / %v", encoded, err)
 	}
 }

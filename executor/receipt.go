@@ -65,15 +65,16 @@ type ArtifactReference struct {
 // Receipt is a compact account of execution facts. It intentionally carries
 // no proof-verification verdict.
 type Receipt struct {
-	Submission        Submission             `json:"submission"`
-	Transport         Transport              `json:"transport"`
-	Worker            WorkerClaim            `json:"worker"`
-	Usage             *Usage                 `json:"usage,omitempty"`
-	DeniedPermissions []acp.DeniedPermission `json:"denied_permissions,omitempty"`
-	Effort            string                 `json:"effort,omitempty"`
-	Evidence          *ArtifactReference     `json:"evidence,omitempty"`
-	Overflow          bool                   `json:"overflow,omitempty"`
-	OmittedBytes      int                    `json:"omitted_bytes,omitempty"`
+	Submission             Submission             `json:"submission"`
+	Transport              Transport              `json:"transport"`
+	Worker                 WorkerClaim            `json:"worker"`
+	Usage                  *Usage                 `json:"usage,omitempty"`
+	DeniedPermissions      []acp.DeniedPermission `json:"denied_permissions,omitempty"`
+	DeniedPermissionsTotal int                    `json:"denied_permissions_total,omitempty"`
+	Effort                 string                 `json:"effort,omitempty"`
+	Evidence               *ArtifactReference     `json:"evidence,omitempty"`
+	Overflow               bool                   `json:"overflow,omitempty"`
+	OmittedBytes           int                    `json:"omitted_bytes,omitempty"`
 }
 
 // MarshalReceipt returns a JSON receipt no larger than ReceiptLimit. When the

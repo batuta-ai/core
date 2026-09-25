@@ -39,17 +39,19 @@ type Session struct {
 	config        SessionConfig
 	options       []ConfigOption
 	denials       []DeniedPermission
+	denialsTotal  int
 	prompted      atomic.Bool
 	enforcing     bool
 	skippedEffort bool
 }
 
 type TurnResult struct {
-	SubmissionAttempted bool
-	Completed           bool
-	StopReason          string
-	Usage               *Usage
-	DeniedPermissions   []DeniedPermission
+	SubmissionAttempted    bool
+	Completed              bool
+	StopReason             string
+	Usage                  *Usage
+	DeniedPermissions      []DeniedPermission
+	DeniedPermissionsTotal int
 }
 
 type DeniedPermission struct {
@@ -258,11 +260,14 @@ func (s *Session) checkConfiguration() error {
 // Prompt may be called once, even if submission fails. A transport failure in
 // Call's send/reply window cannot prove that the worker did not accept work.
 // Text callbacks are serialized and must return promptly.
-func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) error) (TurnResult, error) {
-	result := TurnResult{}
+func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) error) (result TurnResult, err error) {
 	if !s.prompted.CompareAndSwap(false, true) {
 		return result, ErrAlreadyPrompted
 	}
+	defer func() {
+		result.DeniedPermissions = s.denials
+		result.DeniedPermissionsTotal = s.denialsTotal
+	}()
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
@@ -294,7 +299,6 @@ func (s *Session) Prompt(ctx context.Context, prompt string, text func(string) e
 	}
 	result.SubmissionAttempted = true
 	raw, err := s.call(ctx, "session/prompt", params, text, &result, nil)
-	result.DeniedPermissions = s.denials
 	if err != nil {
 		return result, err
 	}

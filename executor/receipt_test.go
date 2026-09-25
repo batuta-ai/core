@@ -4,7 +4,36 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/batuta-ai/core/executor/acp"
 )
+
+func TestReceiptWithMaximumDenialsFitsLimit(t *testing.T) {
+	denials := make([]acp.DeniedPermission, 4)
+	for i := range denials {
+		denials[i] = acp.DeniedPermission{
+			Kind: strings.Repeat("k", 80), Title: strings.Repeat("t", 80), Command: strings.Repeat("c", 160),
+			Locations: []string{strings.Repeat("p", 160), strings.Repeat("q", 160)},
+		}
+	}
+	receipt := Receipt{
+		Submission: Submission{State: SubmissionSubmitted}, Transport: Transport{Outcome: TransportCompleted},
+		Worker:            WorkerClaim{Outcome: WorkerClaimedSuccess, Detail: strings.Repeat("detail", ReceiptLimit)},
+		DeniedPermissions: denials, DeniedPermissionsTotal: 17,
+		Evidence: &ArtifactReference{Path: "receipts/task/full.json", SHA256: strings.Repeat("a", 64)},
+	}
+	payload, err := MarshalReceipt(receipt)
+	if err != nil || len(payload) > ReceiptLimit {
+		t.Fatalf("receipt size %d: %v", len(payload), err)
+	}
+	var compact Receipt
+	if err := json.Unmarshal(payload, &compact); err != nil {
+		t.Fatal(err)
+	}
+	if !compact.Overflow || compact.Worker.Detail != "" || len(compact.DeniedPermissions) != 4 || compact.DeniedPermissionsTotal != 17 {
+		t.Fatalf("receipt lost denial evidence: %+v", compact)
+	}
+}
 
 func TestMarshalReceiptSeparatesExecutionFacts(t *testing.T) {
 	t.Parallel()

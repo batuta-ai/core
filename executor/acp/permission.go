@@ -4,9 +4,69 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"regexp"
 	"slices"
 	"strings"
 )
+
+const maxDeniedPermissions = 4
+
+var (
+	denialAssignment = regexp.MustCompile(`(?i)(?:--)?[a-z_][a-z0-9_-]*=(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)`)
+	denialFlag       = regexp.MustCompile(`(?i)--[a-z_][a-z0-9_-]*[ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)`)
+	denialBearer     = regexp.MustCompile(`(?i)\bBearer[ \t]+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\S+)`)
+	denialPrefix     = regexp.MustCompile("(?i)\\b(?:sk-|ghp_|gho_|github_pat_|xox|AKIA)[^\\s\\\"']*")
+)
+
+func secretKey(key string) bool {
+	key = strings.ToLower(key)
+	for _, part := range []string{"token", "secret", "password", "passwd", "api_key", "apikey", "auth", "credential"} {
+		if strings.Contains(key, part) {
+			return true
+		}
+	}
+	return false
+}
+
+func redactDenialField(value string) string {
+	value = denialAssignment.ReplaceAllStringFunc(value, func(match string) string {
+		index := strings.IndexByte(match, '=')
+		if !secretKey(strings.TrimPrefix(match[:index], "--")) {
+			return match
+		}
+		return match[:index+1] + "[redacted]"
+	})
+	value = denialFlag.ReplaceAllStringFunc(value, func(match string) string {
+		index := strings.IndexAny(match, " \t")
+		if !secretKey(match[2:index]) {
+			return match
+		}
+		end := index
+		for end < len(match) && (match[end] == ' ' || match[end] == '\t') {
+			end++
+		}
+		return match[:end] + "[redacted]"
+	})
+	value = denialBearer.ReplaceAllStringFunc(value, func(match string) string {
+		index := strings.IndexAny(match, " \t")
+		return match[:index] + " [redacted]"
+	})
+	return denialPrefix.ReplaceAllString(value, "[redacted]")
+}
+
+func boundedDenialField(value string, limit int) string {
+	value = redactDenialField(value)
+	var result strings.Builder
+	for _, r := range value {
+		candidate := result.String() + string(r)
+		encoded, _ := json.Marshal(candidate)
+		if len(candidate) > limit || len(encoded)-2 > limit {
+			break
+		}
+		result.WriteRune(r)
+	}
+	return result.String()
+}
 
 // PermissionRequest is untrusted worker data, bounded by the transport frame
 // limit. It is for local policy evaluation only, never a user question or log.
@@ -97,7 +157,8 @@ func (s *Session) permission(ctx context.Context, request Request, prompting boo
 }
 
 func (s *Session) recordDenial(params PermissionRequest) {
-	if len(s.denials) == 16 {
+	s.denialsTotal++
+	if len(s.denials) == maxDeniedPermissions {
 		return
 	}
 	var input struct {
@@ -105,12 +166,12 @@ func (s *Session) recordDenial(params PermissionRequest) {
 	}
 	_ = json.Unmarshal(params.ToolCall.RawInput, &input)
 	denial := DeniedPermission{
-		Kind:    params.ToolCall.Kind,
-		Title:   params.ToolCall.Title[:min(len(params.ToolCall.Title), 200)],
-		Command: input.Command[:min(len(input.Command), 200)],
+		Kind:    boundedDenialField(params.ToolCall.Kind, 80),
+		Title:   boundedDenialField(params.ToolCall.Title, 80),
+		Command: boundedDenialField(input.Command, 160),
 	}
-	for _, location := range params.ToolCall.Locations[:min(len(params.ToolCall.Locations), 8)] {
-		denial.Locations = append(denial.Locations, location.Path[:min(len(location.Path), 200)])
+	for _, location := range params.ToolCall.Locations[:min(len(params.ToolCall.Locations), 2)] {
+		denial.Locations = append(denial.Locations, boundedDenialField(location.Path, 160))
 	}
 	s.denials = append(s.denials, denial)
 }
