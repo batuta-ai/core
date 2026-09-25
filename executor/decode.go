@@ -15,16 +15,23 @@ type Decoder interface {
 }
 
 type streamDecoder struct {
-	usage *Usage
-	parse func(*streamDecoder, json.RawMessage) string
+	usage     *Usage
+	parse     func(*streamDecoder, json.RawMessage) string
+	lastByte  byte
+	hasOutput bool
 }
 
 func (d *streamDecoder) Decode(line string) string {
 	var raw json.RawMessage
-	if json.Unmarshal([]byte(line), &raw) != nil {
-		return line
+	output := line
+	if json.Unmarshal([]byte(line), &raw) == nil {
+		output = d.parse(d, raw)
 	}
-	return d.parse(d, raw)
+	if output != "" {
+		d.lastByte = output[len(output)-1]
+		d.hasOutput = true
+	}
+	return output
 }
 
 func (d *streamDecoder) Usage() *Usage {
@@ -64,6 +71,13 @@ func textFromBlocks(blocks []textBlock) string {
 	return text.String()
 }
 
+func completeMessage(text string) string {
+	if text == "" || strings.HasSuffix(text, "\n") {
+		return text
+	}
+	return text + "\n"
+}
+
 func providerLine(message string) string {
 	return strings.Join(strings.Fields(message), " ") + "\n"
 }
@@ -86,7 +100,7 @@ func decodeCursor(d *streamDecoder, raw json.RawMessage) string {
 	}
 	switch event.Type {
 	case "assistant":
-		return textFromBlocks(event.Message.Content)
+		return completeMessage(textFromBlocks(event.Message.Content))
 	case "result":
 		if event.Usage != nil {
 			d.usage = &Usage{
@@ -106,6 +120,8 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 	var event struct {
 		Event      string `json:"event"`
 		StepUpdate struct {
+			StepType  string `json:"step_type"`
+			State     string `json:"state"`
 			TextDelta string `json:"text_delta"`
 		} `json:"step_update"`
 		Result struct {
@@ -125,7 +141,14 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 	}
 	switch event.Event {
 	case "step_update":
-		return event.StepUpdate.TextDelta
+		text := event.StepUpdate.TextDelta
+		if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.State == "DONE" && text != "" {
+			return completeMessage(text)
+		}
+		if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.State == "DONE" && d.hasOutput && d.lastByte != '\n' {
+			return "\n"
+		}
+		return text
 	case "result":
 		if event.Result.Usage != nil {
 			d.usage = &Usage{
@@ -176,7 +199,7 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 		if event.Item.Type != "agent_message" {
 			return ""
 		}
-		return event.Item.Text
+		return completeMessage(event.Item.Text)
 	case "error":
 		return providerLine("provider error: " + event.Message)
 	case "turn.failed":
@@ -225,7 +248,7 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 	}
 	switch event.Type {
 	case "assistant":
-		return textFromBlocks(event.Message.Content)
+		return completeMessage(textFromBlocks(event.Message.Content))
 	case "rate_limit_event":
 		if event.RateLimitInfo.Status == "allowed" {
 			return ""
@@ -285,7 +308,7 @@ func decodeOpencode(d *streamDecoder, raw json.RawMessage) string {
 	}
 	switch event.Type {
 	case "text":
-		return event.Part.Text
+		return completeMessage(event.Part.Text)
 	case "error":
 		status := ""
 		if event.Error.Data.StatusCode != nil {

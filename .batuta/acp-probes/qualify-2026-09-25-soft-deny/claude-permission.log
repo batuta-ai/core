@@ -1,0 +1,66 @@
+=== RUN   TestBridgeQualify
+{
+  "artifact": "",
+  "artifact_present": false,
+  "bridge": "claude-agent-acp",
+  "cancel_ms": 0,
+  "case": "permission",
+  "child_alive_after": false,
+  "child_pid": 0,
+  "child_seen_ms": 0,
+  "denied_present": false,
+  "effort": "low",
+  "elapsed_ms": 8307,
+  "error": "\u003cnil\u003e",
+  "executor": "claude",
+  "expired_marker": false,
+  "finished": true,
+  "meta": "{\"claudeCode\":{\"options\":{\"sandbox\":{\"enabled\":true,\"autoAllowBashIfSandboxed\":true}}}}",
+  "mode": "acceptEdits",
+  "model": "haiku",
+  "outside_present": true,
+  "permission_requests": [
+    "{\"toolCallId\":\"toolu_015SZBMVusbx1tJPwVcwhZTb\",\"kind\":\"edit\",\"title\":\"Write /tmp/probe/.batuta-qualify-3877778374/denied.txt\",\"rawInput\":{\"file_path\":\"/tmp/probe/.batuta-qualify-3877778374/denied.txt\",\"content\":\"denied\"},\"locations\":[{\"path\":\"/tmp/probe/.batuta-qualify-3877778374/denied.txt\"}]}"
+  ],
+  "receipt": {
+    "submission": {
+      "state": "submitted"
+    },
+    "transport": {
+      "outcome": "completed"
+    },
+    "worker": {
+      "outcome": "success",
+      "detail": "end_turn"
+    },
+    "usage": {
+      "input_tokens": 18,
+      "output_tokens": 363,
+      "cache_read_tokens": 54984,
+      "cache_write_tokens": 39357,
+      "reported_total_tokens": 94722,
+      "cost_amount": 0.08704139999999999,
+      "cost_currency": "USD",
+      "cache_semantics": "additive",
+      "provenance": "acp/session-prompt/usage (draft)"
+    },
+    "denied_permissions": [
+      {
+        "kind": "edit",
+        "title": "Write /tmp/probe/.batuta-qualify-3877778374/denied.txt",
+        "command": "",
+        "locations": [
+          "/tmp/probe/.batuta-qualify-3877778374/denied.txt"
+        ]
+      }
+    ],
+    "denied_permissions_total": 1,
+    "effort": "not_applicable"
+  },
+  "rejected_callbacks": 1,
+  "stdout_tail": "Permission denied. File not created.",
+  "version": "0.81.1"
+}
+--- PASS: TestBridgeQualify (9.02s)
+PASS
+ok  	github.com/batuta-ai/core/executor	9.195s

@@ -197,8 +197,8 @@ func TestRunDecodedProgressAndQuestion(t *testing.T) {
 
 func TestRunDecodedLimitRegex(t *testing.T) {
 	t.Parallel()
-	first := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"quota "}]}}` + "\n")
-	second := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"exceeded\ntotal tokens used: 42"}]}}` + "\n")
+	first := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"quota exceeded"}]}}` + "\n")
+	second := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"total tokens used: 42"}]}}` + "\n")
 	raw := append(append([]byte(nil), first...), second...)
 	adapter := Adapter{
 		OutputDecoder: "cursor-stream-json",
@@ -303,7 +303,7 @@ func TestDecodeWriterEmitsCompleteLinesBeyondCap(t *testing.T) {
 	if _, err := w.Write(payload); err != nil {
 		t.Fatalf("Write() error = %v", err)
 	}
-	if got, want := dest.String(), "onetwothree"; got != want {
+	if got, want := dest.String(), "one\ntwo\nthree\n"; got != want {
 		t.Fatalf("destination received %q, want %q", got, want)
 	}
 }
@@ -338,14 +338,14 @@ func TestDecodeWriterBoundsPendingLine(t *testing.T) {
 	if len(w.pending) > outputLimit {
 		t.Fatalf("pending length = %d after follow-on, want <= %d", len(w.pending), outputLimit)
 	}
-	if got := dest.String(); got != text {
-		t.Fatalf("destination received %q, want %q", got, text)
+	if got, want := dest.String(), text+"\n"; got != want {
+		t.Fatalf("destination received %q, want %q", got, want)
 	}
 	if err := w.flush(); err != nil {
 		t.Fatalf("flush() error = %v", err)
 	}
-	if got := dest.String(); got != text {
-		t.Fatalf("after flush destination received %q, want %q", got, text)
+	if got, want := dest.String(), text+"\n"; got != want {
+		t.Fatalf("after flush destination received %q, want %q", got, want)
 	}
 }
 
