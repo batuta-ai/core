@@ -233,6 +233,22 @@ func pruneStaleTails(directory string, current map[string]bool) error {
 	return nil
 }
 
+// ExistingTailPaths lists the cohort tail files already present in the
+// artifact directory, the ones a review may prune.
+func ExistingTailPaths(directory string) []string {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for _, entry := range entries {
+		if match, _ := filepath.Match(cohortTailPattern, entry.Name()); match && entry.Type().IsRegular() {
+			paths = append(paths, filepath.Join(directory, entry.Name()))
+		}
+	}
+	return paths
+}
+
 func reviewOutputTail(payload []byte) string {
 	redacted := executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, 40), ""))
 	if len(redacted) <= 4096 {

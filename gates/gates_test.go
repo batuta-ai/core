@@ -11,6 +11,32 @@ import (
 	"github.com/batuta-ai/core/publication"
 )
 
+func TestHasTaskLines(t *testing.T) {
+	for _, tc := range []struct {
+		name, output string
+		want         bool
+	}{
+		{"done", "TASK 1: DONE\n", true},
+		{"incomplete with detail", "notes\n  TASK 2: INCOMPLETE — missing test\n", true},
+		{"empty", "", false},
+		{"prose mentioning a task", "TASK 1 is finished\n", false},
+		{"numbered line without a verdict", "TASK 1: looks fine\n", false},
+		{"template echo", "TASK <n>: DONE\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := HasTaskLines(tc.output); got != tc.want {
+				t.Fatalf("HasTaskLines(%q) = %v, want %v", tc.output, got, tc.want)
+			}
+			if tc.want && Verifier(tc.output, 1, nil).Signal == SignalNoTaskLines {
+				t.Fatalf("Verifier found no task line in %q that HasTaskLines accepted", tc.output)
+			}
+			if !tc.want && Verifier(tc.output, 1, nil).Signal != SignalNoTaskLines {
+				t.Fatalf("Verifier parsed a task line in %q that HasTaskLines rejected", tc.output)
+			}
+		})
+	}
+}
+
 func TestScopeMatchesPathsPrefixesAndGlobs(t *testing.T) {
 	scope := []string{"src/checkout/payment.ts", "tests/checkout/", "docs/**/*.md", "lib/*.go"}
 	if err := ValidScope(scope); err != nil {

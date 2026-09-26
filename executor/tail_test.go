@@ -32,6 +32,11 @@ func TestRedactWorkspaceBoundary(t *testing.T) {
 		{"followed by quote", `open "/work/space"`, "/work/space", `open ""`},
 		{"followed by whitespace", "cd /work/space now", "/work/space", "cd  now"},
 		{"at end of string", "cd /work/space", "/work/space", "cd "},
+		{"followed by period", "cannot open /work/space.", "/work/space", "cannot open ."},
+		{"followed by comma", "in /work/space, then", "/work/space", "in , then"},
+		{"followed by semicolon", "cd /work/space; ls", "/work/space", "cd ; ls"},
+		{"followed by colon", "/work/space: not found", "/work/space", ": not found"},
+		{"followed by parenthesis", "(cwd /work/space)", "/work/space", "(cwd )"},
 		{"trailing separator on workspace", "open /work/space/a.go", "/work/space/", "open a.go"},
 	}
 	for _, tc := range cases {

@@ -2666,3 +2666,40 @@ func TestLoopSupervisionStandaloneLegacyReview(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewGuardExcludesStaleTails(t *testing.T) {
+	root, _ := reviewCommandRepo(t)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(root, "reports")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(directory, "cohort-3.tail.txt")
+	if err := os.WriteFile(stale, []byte("old\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(root, ".batuta", "reviews", "state", "key.json")
+	resolved, err := review.CheckArtifactPaths(root, reviewGuardPaths(directory, review.Report{}, statePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	git := publication.GitClient{Executable: gitPath, Runner: publication.ExecRunner{}}
+	guarded := git
+	guarded.Runner = reviewPublicationRunner{paths: resolved, runner: git.Runner}
+	before, err := guarded.WorktreeState(context.Background(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := review.WriteArtifacts(directory, review.Report{}, review.IncrementalState{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale tail survived: %v", err)
+	}
+	if err := reviewSessionError(context.Background(), guarded, root, before, nil, nil); err != nil {
+		t.Fatalf("pruning a stale tail tripped the guard: %v", err)
+	}
+}

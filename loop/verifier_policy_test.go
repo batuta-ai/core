@@ -89,6 +89,29 @@ func TestVerifierFailureKeepsOutputTail(t *testing.T) {
 	}
 }
 
+func TestVerifierFailureDetailAlwaysRedacted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result executor.Result
+	}{
+		{"incomplete criterion", executor.Result{Finished: true, Stdout: []byte("API_KEY=hidden\nTASK 1: INCOMPLETE — see /private/secret.txt\n")}},
+		{"too many answers", executor.Result{Finished: true, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nTASK 1: DONE\nTASK 2: DONE\n")}},
+		{"skipped criterion", executor.Result{Finished: true, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nTASK 2: DONE\n")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			verdict := verifyOutput(t, tc.result)
+			if verdict.Pass || !strings.Contains(verdict.Detail, "secret.txt") {
+				t.Fatalf("verify() = %+v", verdict)
+			}
+			if strings.Contains(verdict.Detail, "API_KEY") || strings.Contains(verdict.Detail, "hidden") || strings.Contains(verdict.Detail, "/private/secret.txt") {
+				t.Fatalf("detail leaked secret or path: %q", verdict.Detail)
+			}
+		})
+	}
+}
+
 // oneMediumTaskPlan swaps the default plan for a single medium task with the
 // given title, Scope line and Accept line, whose criteria may carry proofs.
 func oneMediumTaskPlan(t *testing.T, f fixture, title, scope, accept string) {

@@ -253,3 +253,37 @@ func TestWriteArtifactsPrunesStaleTails(t *testing.T) {
 		t.Fatalf("current tail = %q, %v", payload, err)
 	}
 }
+
+func TestIncrementalReviewPrunesStaleTailInsideGuard(t *testing.T) {
+	t.Parallel()
+	directory := filepath.Join(t.TempDir(), "artifacts")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := []string{"cohort-1.tail.txt", "cohort-7.tail.txt"}
+	for _, name := range stale {
+		writeTestFile(t, directory, name, "old\n")
+	}
+	if err := os.Mkdir(filepath.Join(directory, "cohort-8.tail.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, directory, "cohort-notes.txt", "keep\n")
+	guard := append(ArtifactPaths(directory, Report{}), ExistingTailPaths(directory)...)
+	if err := WriteArtifacts(directory, uncoveredTailReport(), IncrementalState{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range stale {
+		filename := filepath.Join(directory, name)
+		if _, err := os.Stat(filename); !os.IsNotExist(err) {
+			t.Fatalf("stale %s survived: %v", name, err)
+		}
+		if !slices.Contains(guard, filename) {
+			t.Errorf("pruned %s is outside the guard %v", name, guard)
+		}
+	}
+	for _, filename := range guard {
+		if strings.HasSuffix(filename, "cohort-8.tail.txt") || strings.HasSuffix(filename, "cohort-notes.txt") {
+			t.Errorf("guard lists a file the review never prunes: %s", filename)
+		}
+	}
+}

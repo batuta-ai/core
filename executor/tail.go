@@ -35,7 +35,8 @@ func DropSecretLines(value string) string {
 
 // RedactPaths strips the workspace prefix and reduces every remaining
 // absolute path to its base name. The workspace is stripped only where a
-// separator, a quote, whitespace or the end of the value follows it. A match
+// separator, a quote, whitespace, the end of the value or one of the
+// punctuation bytes trimmed from a path end (".,;:)") follows it. A match
 // preceded by '.', '\\' or an alphanumeric byte is part of a relative path
 // and stays as written.
 func RedactPaths(value, workspace string) string {
@@ -93,7 +94,7 @@ func stripWorkspace(value, workspace string) string {
 		case rest == "":
 		case rest[0] == '/' || rest[0] == '\\':
 			rest = rest[1:]
-		case strings.IndexByte("\"'` \t\r\n", rest[0]) >= 0:
+		case strings.IndexByte("\"'` \t\r\n.,;:)", rest[0]) >= 0:
 		default:
 			b.WriteString(workspace)
 		}

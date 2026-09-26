@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -697,8 +696,6 @@ func (r *Runner) attach(ac *attemptContext, wt attemptWorktree) error {
 // verify dispatches the independent read-only verifier on a research row
 // at or below the task's lane, falling back to the implementation low row
 // or the task's own adapter and model.
-var verifierTaskLine = regexp.MustCompile(`(?m)^[ \t]*TASK[ \t]+[0-9]+[ \t]*:`)
-
 func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gates.Criterion, proofs []gates.Verdict) (gates.Verdict, error) {
 	name, model := ac.adapter.Name, ac.runtime.Model
 	lanes := []routing.Complexity{routing.ComplexityLow, routing.ComplexityMedium, routing.ComplexityHigh, routing.ComplexityCritical}
@@ -749,7 +746,7 @@ func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gate
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier guard: " + err.Error()}, nil
 	}
 	if before != after {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: executor.Tail(result.Stdout, 10)}, nil
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: r.redactDetail(executor.Tail(result.Stdout, 10))}, nil
 	}
 	if execErr != nil {
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not complete: " + execErr.Error(), Detail: r.verifierOutputTail(result)}, nil
@@ -759,15 +756,22 @@ func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gate
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete", Detail: r.verifierOutputTail(result)}, nil
 	}
 	output := string(result.Stdout)
-	if !verifierTaskLine.MatchString(output) && len(result.RawStdout) > 0 {
+	if !gates.HasTaskLines(output) && len(result.RawStdout) > 0 {
 		output = string(result.RawStdout)
 	}
 	verdict := gates.Verifier(output, len(criteria), proofs)
 	if verdict.Signal == gates.SignalNoTaskLines {
 		verdict.Detail = r.verifierOutputTail(result)
 	}
+	if !verdict.Pass {
+		verdict.Detail = r.redactDetail(verdict.Detail)
+	}
 	verdict.Signal = name + "/" + model + ": " + verdict.Signal
 	return verdict, nil
+}
+
+func (r *Runner) redactDetail(detail string) string {
+	return executor.DropSecretLines(executor.RedactPaths(detail, r.root))
 }
 
 func (r *Runner) verifierOutputTail(result executor.Result) string {
