@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.0-beta.42](https://github.com/batuta-ai/core/compare/v1.1.0-beta.41...v1.1.0-beta.42) (2026-09-26)
+
+
+### Features
+
+* A failed verifier and an uncovered review cohort keep a redacted ([c1372fd](https://github.com/batuta-ai/core/commit/c1372fd55aaca2d11d2db52c8e5da12150ae498b))
+* decoders count dropped lines; review and verifier fall back to raw ([1b95fac](https://github.com/batuta-ai/core/commit/1b95fac2b0c024f7160d7ca34dc2c505ed6dd026))
+* every committed fixture replays with zero dropped lines; redaction ([4de96fb](https://github.com/batuta-ai/core/commit/4de96fb191baff098e8c2dd77a10f9ec29a00d84))
+* only unknown event types count as dropped; tail files are ([74b1c2a](https://github.com/batuta-ai/core/commit/74b1c2a8b9f4bc6371b6c5f5d982f34e8b7aa4e4))
+* stale tails are excluded from the guard before they are pruned ([cde4340](https://github.com/batuta-ai/core/commit/cde43408ecd1cc27165655951bca22fa1bf6face))
+
+
+### Bug Fixes
+
+* **review,loop:** read-only output survives a decoder mismatch; failed read-only sessions keep evidence ([6fd546e](https://github.com/batuta-ai/core/commit/6fd546e34a5f258180c8867dd6ae6cb6c3b35fd4))
+
 ## [1.1.0-beta.41](https://github.com/batuta-ai/core/compare/v1.1.0-beta.40...v1.1.0-beta.41) (2026-09-25)
 
 
