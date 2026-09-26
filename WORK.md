@@ -318,6 +318,7 @@
 - [x] Stale tails are excluded from the guard before they are pruned; failing verifier details are always redacted → claude (sonnet), commit cde43408ecd1 (trail: .batuta/runs/2026-09-25-decoder-fallback-telemetry-fixes-3-task-1.md, delivery decoder-fallback-telemetry-fixes-3-20260925-235915, plan decoder-fallback-telemetry-fixes-3, 2026-09-26)
 - [x] classify v2: Scope features, five noul questions, the frozen lane rule → codex (gpt-6-sol), commit 384f1322164e (trail: .batuta/runs/2026-09-26-classify-v2-task-1.md, delivery classify-v2-20260926-172530, plan classify-v2, 2026-09-26)
 - [x] batuta judge classify bench --rubric v2 scores against outcomes with the frozen measures → codex (gpt-6-sol), commit 028563a73b20 (trail: .batuta/runs/2026-09-26-classify-v2-task-2.md, delivery classify-v2-20260926-172530, plan classify-v2, 2026-09-26)
+- [x] HTTPJudge keeps the valid answers of a mismatched response; bench v2 applies DecideV2 to them → codex (gpt-6-sol), commit cfbdb67e9bdf (trail: .batuta/runs/2026-09-26-classify-v2-fixes-task-1.md, delivery classify-v2-fixes-20260926-175535, plan classify-v2-fixes, 2026-09-26)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
