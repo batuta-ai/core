@@ -368,8 +368,30 @@ is agreement with the host's labels:
 
 ```text
 batuta judge classify bench --plan <file> [--plan <file>...] [--journals <dir>...]
-                            [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]
+                            [--rubric v1|v2] [--json] [--config <path>]
+                            [--workspace <dir>] [--base-url <url>]
 ```
+
+The default rubric is v1, with the output described below. `--rubric v2`
+uses the frozen rule in [section 13 of the judge research note](../.batuta/judge-research.md#13-plan-classification-v2-decision-rule-frozen-before-the-run-2026-09-26).
+Code measures file count, distinct directories, test-only and docs-only from
+each task's Scope. Jev answers five yes/no questions about contract changes,
+lifecycle, security, open decisions and mechanical work. Each task line shows
+those answers, their confidences and defaults, the proposed lane and the
+recorded outcome. The request uses the same bounded, secret-filtered task
+context as v1 and does not include the plan lane.
+
+The v2 summary counts sufficient outcomes (`candidate`, `retried`),
+insufficient outcomes (`escalated`, `failed`) and excluded unknown outcomes.
+Economy is the share of sufficient tasks whose proposed lane is no higher
+than the plan lane (PASS at 75%); safety is the share of insufficient tasks
+whose proposed lane is higher (PASS at 50%, reported only with fewer than
+10 insufficient tasks). Discrimination passes when no lane exceeds 70% of
+the scored proposals and at least three lanes are used. Balance is the
+average of economy and safety (PASS at 0.65). The summary also reports lane
+distribution, agreement with the plan lane, answer distribution, defaulted
+answers and unavailable answers. `--json` emits task objects and one summary
+object with the same measures. This is a shadow score; it changes no routing.
 
 It prints one line per task (prefixed with the plan slug) and a summary:
 tasks, exact complexity and domain agreement, under-routed (judge lane lower

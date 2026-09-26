@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -232,12 +233,13 @@ func runJudgeClassifyBench(args []string, stdout, stderr io.Writer) error {
 	configPath := flags.String("config", "", "judge config path (default: .batuta/judge.json under --workspace)")
 	workspace := flags.String("workspace", "", "workspace directory (default: current directory)")
 	baseURL := flags.String("base-url", "", "override the configured provider base URL")
+	rubric := flags.String("rubric", "v1", "classification rubric (v1 or v2)")
 	asJSON := flags.Bool("json", false, "print one JSON object per task plus a summary object")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || len(planPaths) == 0 {
-		return errors.New("usage: batuta judge classify bench --plan <file> [--plan <file>...] [--journals <dir>...] [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]")
+	if flags.NArg() != 0 || len(planPaths) == 0 || (*rubric != "v1" && *rubric != "v2") {
+		return errors.New("usage: batuta judge classify bench --plan <file> [--plan <file>...] [--journals <dir>...] [--rubric v1|v2] [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]")
 	}
 	plans := make([]routing.Plan, 0, len(planPaths))
 	for _, path := range planPaths {
@@ -258,6 +260,9 @@ func runJudgeClassifyBench(args []string, stdout, stderr io.Writer) error {
 	j, buildReason, threshold, err := classifyJudge(*configPath, *workspace, *baseURL)
 	if err != nil {
 		return err
+	}
+	if *rubric == "v2" {
+		return classifyBenchTasksV2(context.Background(), stdout, j, buildReason, plans, deliveries, *asJSON)
 	}
 	if !*asJSON {
 		fmt.Fprintf(stdout, "threshold=%s\n", corpusThresholdLabel(threshold))
@@ -545,4 +550,302 @@ func printBenchSummaryJSON(encoder *json.Encoder, threshold float64, counts *ben
 		summary.Baseline = benchBaselineJSON{Label: label, Count: count, Share: float64(count) / float64(total)}
 	}
 	return encoder.Encode(map[string]benchSummaryJSON{"summary": summary})
+}
+
+var benchV2Questions = []string{"contract", "lifecycle", "security", "open_decision", "mechanical"}
+
+type benchV2Answer struct {
+	Answer      bool    `json:"answer"`
+	Confidence  float64 `json:"confidence"`
+	Defaulted   bool    `json:"defaulted"`
+	Unavailable bool    `json:"unavailable"`
+}
+
+type benchV2Record struct {
+	PlanSlug    string                   `json:"plan_slug"`
+	Task        string                   `json:"task"`
+	PlanLane    string                   `json:"plan_lane"`
+	JudgeLane   string                   `json:"judge_lane,omitempty"`
+	Scope       classify.ScopeFeatures   `json:"scope"`
+	Answers     map[string]benchV2Answer `json:"answers,omitempty"`
+	Outcome     string                   `json:"outcome"`
+	Relation    string                   `json:"relation"`
+	InputTokens *int                     `json:"input_tokens,omitempty"`
+	Unavailable string                   `json:"unavailable,omitempty"`
+}
+
+func (r benchV2Record) text() string {
+	line := fmt.Sprintf("%s %s plan=%s", r.PlanSlug, r.Task, r.PlanLane)
+	if r.Unavailable != "" {
+		line += " unavailable=" + r.Unavailable
+	} else {
+		line += " judge=" + r.JudgeLane
+	}
+	line += fmt.Sprintf(" scope=files:%d,dirs:%d,test_only:%t,docs_only:%t", r.Scope.Files, r.Scope.Directories, r.Scope.TestOnly, r.Scope.DocsOnly)
+	for _, key := range benchV2Questions {
+		answer, ok := r.Answers[key]
+		if !ok {
+			continue
+		}
+		value := "no"
+		if answer.Answer {
+			value = "yes"
+		}
+		line += fmt.Sprintf(" %s=%s confidence=%.2f defaulted=%t", key, value, answer.Confidence, answer.Defaulted)
+	}
+	return fmt.Sprintf("%s outcome=%s relation=%s", line, r.Outcome, r.Relation)
+}
+
+func classifyBenchTasksV2(ctx context.Context, stdout io.Writer, j judge.Judge, buildReason string, plans []routing.Plan, deliveries []benchDelivery, asJSON bool) error {
+	encoder := json.NewEncoder(stdout)
+	counts := newBenchV2Counts()
+	for _, plan := range plans {
+		for _, task := range plan.Tasks {
+			record := benchV2RecordFor(ctx, j, buildReason, plan, task, deliveries)
+			counts.add(record)
+			if asJSON {
+				if err := encoder.Encode(record); err != nil {
+					return err
+				}
+			} else if _, err := fmt.Fprintln(stdout, record.text()); err != nil {
+				return err
+			}
+		}
+	}
+	if asJSON {
+		return encoder.Encode(map[string]benchV2Summary{"summary": counts.summary()})
+	}
+	return counts.printSummary(stdout)
+}
+
+func benchV2RecordFor(ctx context.Context, j judge.Judge, buildReason string, plan routing.Plan, task routing.PlanTask, deliveries []benchDelivery) benchV2Record {
+	record := benchV2Record{
+		PlanSlug: plan.Slug, Task: task.ID, PlanLane: string(task.Complexity),
+		Scope: classify.Features(task), Outcome: benchOutcomeUnknown, Relation: benchRelationUnknown,
+	}
+	if delivery := benchDeliveryFor(deliveries, plan.Slug, task.ID); delivery != nil {
+		record.Outcome = benchOutcome(delivery.records, task.ID)
+	}
+	if j == nil {
+		record.Unavailable = buildReason
+		return record
+	}
+	response, err := j.Ask(ctx, classify.BuildRequestV2(task, plan.ContextFor(task.Number)))
+	if err != nil {
+		record.Unavailable = judgeReplayReason(err)
+		return record
+	}
+	decision := classify.DecideV2(record.Scope, response.Answers)
+	record.JudgeLane = string(decision.Complexity)
+	record.Answers = make(map[string]benchV2Answer, len(benchV2Questions))
+	for _, key := range benchV2Questions {
+		answer := response.Answers[key]
+		unavailable := answer.Type != judge.QuestionNoul || math.IsNaN(answer.Noul) || answer.Noul < 0 || answer.Noul > 1
+		confidence := 0.0
+		if !unavailable {
+			confidence = math.Max(answer.Noul, 1-answer.Noul)
+		}
+		defaulted := false
+		for _, name := range decision.Defaulted {
+			if name == key {
+				defaulted = true
+				break
+			}
+		}
+		record.Answers[key] = benchV2Answer{Answer: decision.Answers[key], Confidence: confidence, Defaulted: defaulted, Unavailable: unavailable}
+	}
+	if response.Usage.InputTokens != 0 {
+		tokens := response.Usage.InputTokens
+		record.InputTokens = &tokens
+	}
+	switch {
+	case decision.Complexity == task.Complexity:
+		record.Relation = benchRelationEqual
+	case benchComplexityRank[decision.Complexity] < benchComplexityRank[task.Complexity]:
+		record.Relation = benchRelationLower
+	default:
+		record.Relation = benchRelationHigher
+	}
+	return record
+}
+
+type benchV2Measure struct {
+	Count        int     `json:"count"`
+	Total        int     `json:"total"`
+	Share        float64 `json:"share"`
+	Pass         bool    `json:"pass"`
+	ReportedOnly bool    `json:"reported_only,omitempty"`
+}
+
+type benchV2Discrimination struct {
+	Distribution map[string]int `json:"distribution"`
+	LargestLane  string         `json:"largest_lane"`
+	LargestShare float64        `json:"largest_share"`
+	Lanes        int            `json:"lanes"`
+	Pass         bool           `json:"pass"`
+}
+
+type benchV2Summary struct {
+	Tasks              int                       `json:"tasks"`
+	Sufficient         int                       `json:"sufficient"`
+	Insufficient       int                       `json:"insufficient"`
+	Unknown            int                       `json:"unknown"`
+	Unavailable        int                       `json:"unavailable"`
+	UnavailableAnswers int                       `json:"unavailable_answers"`
+	DefaultedAnswers   int                       `json:"defaulted_answers"`
+	AnswerDistribution map[string]map[string]int `json:"answer_distribution"`
+	Economy            benchV2Measure            `json:"economy"`
+	Safety             benchV2Measure            `json:"safety"`
+	Discrimination     benchV2Discrimination     `json:"discrimination"`
+	Balance            benchV2Measure            `json:"balance"`
+	Agreement          benchV2Measure            `json:"agreement"`
+	Pass               bool                      `json:"pass"`
+}
+
+type benchV2Counts struct {
+	summaryData          benchV2Summary
+	economy              int
+	safety               int
+	agreement            int
+	agreedTotal          int
+	measured             int
+	sufficientMeasured   int
+	insufficientMeasured int
+}
+
+func newBenchV2Counts() *benchV2Counts {
+	c := &benchV2Counts{}
+	c.summaryData.AnswerDistribution = map[string]map[string]int{}
+	c.summaryData.Discrimination.Distribution = map[string]int{}
+	for _, key := range benchV2Questions {
+		c.summaryData.AnswerDistribution[key] = map[string]int{"yes": 0, "no": 0}
+	}
+	for _, lane := range benchComplexityLabels {
+		c.summaryData.Discrimination.Distribution[lane] = 0
+	}
+	return c
+}
+
+func (c *benchV2Counts) add(record benchV2Record) {
+	s := &c.summaryData
+	s.Tasks++
+	switch record.Outcome {
+	case benchOutcomeCandidate, benchOutcomeRetried:
+		s.Sufficient++
+	case benchOutcomeEscalated, benchOutcomeFailed:
+		s.Insufficient++
+	default:
+		s.Unknown++
+	}
+	if record.Unavailable != "" {
+		s.Unavailable++
+		s.UnavailableAnswers += len(benchV2Questions)
+		return
+	}
+	for _, key := range benchV2Questions {
+		answer := record.Answers[key]
+		if answer.Unavailable {
+			s.UnavailableAnswers++
+		}
+		if answer.Defaulted {
+			s.DefaultedAnswers++
+		}
+		value := "no"
+		if answer.Answer {
+			value = "yes"
+		}
+		s.AnswerDistribution[key][value]++
+	}
+	c.agreedTotal++
+	if record.Relation == benchRelationEqual {
+		c.agreement++
+	}
+	if record.Outcome == benchOutcomeUnknown {
+		return
+	}
+	c.measured++
+	s.Discrimination.Distribution[record.JudgeLane]++
+	if record.Outcome == benchOutcomeCandidate || record.Outcome == benchOutcomeRetried {
+		c.sufficientMeasured++
+		if record.Relation != benchRelationHigher {
+			c.economy++
+		}
+	} else {
+		c.insufficientMeasured++
+		if record.Relation == benchRelationHigher {
+			c.safety++
+		}
+	}
+}
+
+func benchV2Share(count, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return float64(count) / float64(total)
+}
+
+func (c *benchV2Counts) summary() benchV2Summary {
+	s := c.summaryData
+	s.Economy = benchV2Measure{Count: c.economy, Total: c.sufficientMeasured, Share: benchV2Share(c.economy, c.sufficientMeasured)}
+	s.Economy.Pass = s.Economy.Total > 0 && s.Economy.Share >= 0.75
+	s.Safety = benchV2Measure{Count: c.safety, Total: c.insufficientMeasured, Share: benchV2Share(c.safety, c.insufficientMeasured), ReportedOnly: s.Insufficient < 10}
+	s.Safety.Pass = s.Safety.Total > 0 && s.Safety.Share >= 0.5
+	s.Agreement = benchV2Measure{Count: c.agreement, Total: c.agreedTotal, Share: benchV2Share(c.agreement, c.agreedTotal)}
+	for _, lane := range benchComplexityLabels {
+		count := s.Discrimination.Distribution[lane]
+		if count > 0 {
+			s.Discrimination.Lanes++
+		}
+		if count > s.Discrimination.Distribution[s.Discrimination.LargestLane] {
+			s.Discrimination.LargestLane = lane
+		}
+	}
+	s.Discrimination.LargestShare = benchV2Share(s.Discrimination.Distribution[s.Discrimination.LargestLane], c.measured)
+	s.Discrimination.Pass = c.measured > 0 && s.Discrimination.LargestShare <= 0.7 && s.Discrimination.Lanes >= 3
+	s.Balance.Share = (s.Economy.Share + s.Safety.Share) / 2
+	s.Balance.Pass = s.Economy.Total > 0 && s.Safety.Total > 0 && s.Balance.Share >= 0.65
+	s.Pass = s.Economy.Pass && (s.Safety.Pass || s.Safety.ReportedOnly) && s.Discrimination.Pass && s.Balance.Pass
+	return s
+}
+
+func (c *benchV2Counts) printSummary(stdout io.Writer) error {
+	s := c.summary()
+	if _, err := fmt.Fprintf(stdout, "bench v2 tasks=%d sufficient=%d insufficient=%d unknown=%d unavailable=%d\n", s.Tasks, s.Sufficient, s.Insufficient, s.Unknown, s.Unavailable); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(stdout, "economy=%d/%d (%.2f) %s\n", s.Economy.Count, s.Economy.Total, s.Economy.Share, benchV2Verdict(s.Economy.Pass)); err != nil {
+		return err
+	}
+	status := ""
+	if s.Safety.ReportedOnly {
+		status = " reported only"
+	}
+	if _, err := fmt.Fprintf(stdout, "safety=%d/%d (%.2f) %s%s\n", s.Safety.Count, s.Safety.Total, s.Safety.Share, benchV2Verdict(s.Safety.Pass), status); err != nil {
+		return err
+	}
+	parts := make([]string, 0, len(benchComplexityLabels))
+	for _, lane := range benchComplexityLabels {
+		parts = append(parts, fmt.Sprintf("%s=%d", lane, s.Discrimination.Distribution[lane]))
+	}
+	if _, err := fmt.Fprintf(stdout, "discrimination=%s largest=%s %.2f lanes=%d %s\n", strings.Join(parts, " "), s.Discrimination.LargestLane, s.Discrimination.LargestShare, s.Discrimination.Lanes, benchV2Verdict(s.Discrimination.Pass)); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(stdout, "balance=%.2f %s\nagreement=%d/%d (%.2f)\nunavailable_answers=%d/%d defaulted_answers=%d\n", s.Balance.Share, benchV2Verdict(s.Balance.Pass), s.Agreement.Count, s.Agreement.Total, s.Agreement.Share, s.UnavailableAnswers, s.Tasks*len(benchV2Questions), s.DefaultedAnswers); err != nil {
+		return err
+	}
+	for _, key := range benchV2Questions {
+		if _, err := fmt.Fprintf(stdout, "answers %s yes=%d no=%d\n", key, s.AnswerDistribution[key]["yes"], s.AnswerDistribution[key]["no"]); err != nil {
+			return err
+		}
+	}
+	_, err := fmt.Fprintf(stdout, "bench v2 %s\n", benchV2Verdict(s.Pass))
+	return err
+}
+
+func benchV2Verdict(pass bool) string {
+	if pass {
+		return "PASS"
+	}
+	return "FAIL"
 }
