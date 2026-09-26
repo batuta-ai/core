@@ -12,6 +12,7 @@ import (
 type Decoder interface {
 	Decode(line string) string
 	Usage() *Usage
+	DroppedLines() int
 }
 
 type streamDecoder struct {
@@ -19,6 +20,7 @@ type streamDecoder struct {
 	parse     func(*streamDecoder, json.RawMessage) string
 	lastByte  byte
 	hasOutput bool
+	dropped   int
 }
 
 func (d *streamDecoder) Decode(line string) string {
@@ -36,6 +38,10 @@ func (d *streamDecoder) Decode(line string) string {
 
 func (d *streamDecoder) Usage() *Usage {
 	return d.usage
+}
+
+func (d *streamDecoder) DroppedLines() int {
+	return d.dropped
 }
 
 // LookupDecoder returns a fresh decoder for a recorded CLI format name.
@@ -96,9 +102,12 @@ func decodeCursor(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Type {
+	case "system", "user", "thinking", "tool_call":
+		return ""
 	case "assistant":
 		return completeMessage(textFromBlocks(event.Message.Content))
 	case "result":
@@ -112,6 +121,7 @@ func decodeCursor(d *streamDecoder, raw json.RawMessage) string {
 		}
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -137,9 +147,12 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"result"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Event {
+	case "init":
+		return ""
 	case "step_update":
 		text := event.StepUpdate.TextDelta
 		if event.StepUpdate.StepType == "agent_response" && event.StepUpdate.State == "DONE" && text != "" {
@@ -164,6 +177,7 @@ func decodeAgy(d *streamDecoder, raw json.RawMessage) string {
 		}
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -189,9 +203,12 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Type {
+	case "thread.started", "turn.started", "item.started":
+		return ""
 	case "item.completed":
 		if event.Item.Type == "error" {
 			return providerLine("provider notice: " + event.Item.Message)
@@ -217,6 +234,7 @@ func decodeCodex(d *streamDecoder, raw json.RawMessage) string {
 		}
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -244,9 +262,12 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"usage"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Type {
+	case "system", "user":
+		return ""
 	case "assistant":
 		return completeMessage(textFromBlocks(event.Message.Content))
 	case "rate_limit_event":
@@ -274,6 +295,7 @@ func decodeClaude(d *streamDecoder, raw json.RawMessage) string {
 		}
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }
@@ -304,9 +326,12 @@ func decodeOpencode(d *streamDecoder, raw json.RawMessage) string {
 		} `json:"part"`
 	}
 	if json.Unmarshal(raw, &event) != nil {
+		d.dropped++
 		return ""
 	}
 	switch event.Type {
+	case "step_start", "tool_use":
+		return ""
 	case "text":
 		return completeMessage(event.Part.Text)
 	case "error":
@@ -335,6 +360,7 @@ func decodeOpencode(d *streamDecoder, raw json.RawMessage) string {
 		d.addUsage(usage)
 		return ""
 	default:
+		d.dropped++
 		return ""
 	}
 }

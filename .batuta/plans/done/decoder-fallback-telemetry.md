@@ -1,0 +1,18 @@
+# Plan — read-only output survives a decoder mismatch, and failed read-only sessions leave evidence
+<!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
+
+**Goal:** Two defects found on 2026-09-25 were fixed at their symptoms (batuta-ai/skills#68, core#132); this closes their causes. A decoder drops JSON lines of unknown type without a trace, so a read-only session whose output format differs from its adapter's decoder loses its findings or verifier lines silently; and a failed verifier or an uncovered review cohort keeps no output, so both failures had to be reproduced by hand to find the cause.
+**Created:** 2026-09-25 · **Status:** done
+
+## Tasks
+- [x] 1. Decoders count dropped lines; review and verifier fall back to raw stdout when the decoded text has no framing — backend/high
+      Scope: executor/decode.go, executor/decode_test.go, executor/run.go, executor/run_test.go, review/session.go, review/session_test.go, loop/attempt.go, loop/verifier_policy_test.go
+      Accept: a decoder counts the JSON lines it maps to no text and no usage (unknown event types), and Result.DecoderDroppedLines carries that count for a decoded run → go test ./executor -run TestRunCountsDroppedDecoderLines; when a review cohort's decoded stdout has no `<<<FINDINGS` block and RawStdout has one, the cohort is parsed from RawStdout → go test ./review -run TestCohortFallsBackToRawStdout; when the verifier's decoded stdout has no `TASK <n>:` line and RawStdout has them, the verdict is computed from RawStdout → go test ./loop -run TestVerifierFallsBackToRawStdout; when the decoded text has framing, it is used and RawStdout is ignored → go test ./review ./loop -run 'TestCohortPrefersDecoded|TestVerifierPrefersDecoded'; the packages stay green → go test ./executor ./review ./loop
+- [x] 2. A failed verifier and an uncovered review cohort keep a redacted output tail — backend/high
+      Depends on: 1
+      Scope: loop/attempt.go, loop/verifier_policy_test.go, review/session.go, review/session_test.go, review/report.go, review/report_test.go
+      Accept: when the verifier verdict is `verifier execution incomplete` or has no TASK lines, the verdict's Detail carries the same redacted output tail the loop records for executors (`outputTailDetail`, ~1091 in loop/attempt.go), including DecoderDroppedLines when non-zero → go test ./loop -run TestVerifierFailureKeepsOutputTail; an uncovered review cohort writes `cohort-<n>.tail.txt` into the artifact directory with the redacted tail of its last attempt's stdout and stderr (at most 4096 bytes each, secret-shaped lines dropped), and review.md names that file on the cohort's uncovered line → go test ./review -run TestUncoveredCohortWritesTail; a covered cohort writes no tail file → go test ./review -run TestUncoveredCohortWritesTail; the packages stay green → go test ./review ./loop
+
+## Decisions and context
+
+Go standard library only, conventional commits. Nothing changes for executor (`run`) sessions except the new count. Scope was built with `grep -rln` over every test that calls the touched functions (`ParseFindings`, `gates.Verifier`, `runCohort`, `outputTailDetail`); if another test file breaks, stop and ask rather than editing it. Review artifacts are written in `review/report.go` (~172, ~224); the verifier is `(*Runner).verify` in `loop/attempt.go` (~699–760); `runCohort` is in `review/session.go` (~237). Redaction: reuse `redactText`/`dropSecretLines` in loop; review needs its own small redactor unless one exists there — check first. Sandbox note: `/bin/ps`, loopback listeners and scratch directories outside the worktree are blocked; run the named tests and let the conductor's gate run `go test ./...`.

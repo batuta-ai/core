@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/batuta-ai/core/executor"
 )
 
 // Report is the deterministic reduction of cohort and optional spec results.
@@ -78,6 +80,9 @@ func PrintReport(w io.Writer, report Report) error {
 		status := "covered"
 		if !cohort.Covered {
 			status = "uncovered: " + cleanReportText(cohort.Reason)
+			if name, ok := cohortTailName(cohort); ok {
+				status += fmt.Sprintf(" (tail: %s)", name)
+			}
 		}
 		names := make([]string, len(cohort.Files))
 		for i, name := range cohort.Files {
@@ -178,7 +183,87 @@ func WriteArtifacts(directory string, report Report, state IncrementalState) err
 			return fmt.Errorf("review: write %s: %w", artifact.name, err)
 		}
 	}
+	current := map[string]bool{}
+	for _, cohort := range report.Cohorts {
+		name, ok := cohortTailName(cohort)
+		if !ok {
+			continue
+		}
+		last := cohort.Attempts[len(cohort.Attempts)-1].Result
+		payload := []byte("stdout:\n" + reviewOutputTail(last.Stdout) + "\nstderr:\n" + reviewOutputTail(last.Stderr) + "\n")
+		if err := writeArtifact(directory, name, payload); err != nil {
+			return fmt.Errorf("review: write %s: %w", name, err)
+		}
+		current[name] = true
+	}
+	return pruneStaleTails(directory, current)
+}
+
+const cohortTailPattern = "cohort-*.tail.txt"
+
+// cohortTailName names the output tail of an uncovered cohort that ran at
+// least one attempt.
+func cohortTailName(cohort CohortResult) (string, bool) {
+	if cohort.Covered || len(cohort.Attempts) == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("cohort-%d.tail.txt", cohort.Cohort+1), true
+}
+
+// pruneStaleTails removes the tail files of an earlier review that the
+// current report does not produce, so no old cohort output survives next to
+// the fresh artifacts.
+func pruneStaleTails(directory string, current map[string]bool) error {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return fmt.Errorf("review: list stale tails: %w", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if match, _ := filepath.Match(cohortTailPattern, name); !match || current[name] {
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			continue
+		}
+		if err := os.Remove(filepath.Join(directory, name)); err != nil {
+			return fmt.Errorf("review: remove stale tail %s: %w", name, err)
+		}
+	}
 	return nil
+}
+
+// ExistingTailPaths lists the cohort tail files already present in the
+// artifact directory, the ones a review may prune.
+func ExistingTailPaths(directory string) []string {
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for _, entry := range entries {
+		if match, _ := filepath.Match(cohortTailPattern, entry.Name()); match && entry.Type().IsRegular() {
+			paths = append(paths, filepath.Join(directory, entry.Name()))
+		}
+	}
+	return paths
+}
+
+func reviewOutputTail(payload []byte) string {
+	redacted := executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, 40), ""))
+	if len(redacted) <= 4096 {
+		return redacted
+	}
+	cut := redacted[len(redacted)-4096:]
+	for len(cut) > 0 && cut[0]&0xc0 == 0x80 {
+		cut = cut[1:]
+	}
+	if redacted[len(redacted)-len(cut)-1] != '\n' {
+		if index := strings.IndexByte(cut, '\n'); index >= 0 {
+			cut = cut[index+1:]
+		}
+	}
+	return cut
 }
 
 func writeArtifact(directory, name string, payload []byte) error {
@@ -218,11 +303,17 @@ func markdownCell(value string) string {
 	return strings.ReplaceAll(cleanReportText(value), "|", "\\|")
 }
 
-// ArtifactPaths lists every destination before publication can create anything.
-func ArtifactPaths(directory string) []string {
+// ArtifactPaths lists every destination the report produces before publication
+// can create anything, including the output tail of each uncovered cohort.
+func ArtifactPaths(directory string, report Report) []string {
 	var paths []string
 	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
 		paths = append(paths, filepath.Join(directory, name))
+	}
+	for _, cohort := range report.Cohorts {
+		if name, ok := cohortTailName(cohort); ok {
+			paths = append(paths, filepath.Join(directory, name))
+		}
 	}
 	return paths
 }

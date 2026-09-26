@@ -9,8 +9,108 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
+	"github.com/batuta-ai/core/routing"
 )
+
+type verifierOutputBackend struct {
+	result executor.Result
+}
+
+func (b verifierOutputBackend) Execute(context.Context, executor.Execution) (executor.Result, error) {
+	return b.result, nil
+}
+
+func verifyOutput(t *testing.T, result executor.Result) gates.Verdict {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.verifier = verifierOutputBackend{result: result}
+	adapter, err := r.adapterLocked("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ac := attemptContext{
+		adapter: adapter, runtime: routing.RuntimeValue{Provider: "codex", Model: "fake-low"},
+		worktree: attemptWorktree{Root: f.root}, base: f.base,
+		plan: routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Add greeting one"}},
+	}
+	verdict, err := r.verify(context.Background(), &ac, gates.ParseCriteria([]string{"greeting is correct"}), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return verdict
+}
+
+func TestVerifierFallsBackToRawStdout(t *testing.T) {
+	t.Parallel()
+	verdict := verifyOutput(t, executor.Result{Finished: true, RawStdout: []byte("TASK 1: DONE\n")})
+	if !verdict.Pass || !strings.Contains(verdict.Signal, "1/1 DONE") {
+		t.Fatalf("verify() = %+v", verdict)
+	}
+}
+
+func TestVerifierPrefersDecoded(t *testing.T) {
+	t.Parallel()
+	verdict := verifyOutput(t, executor.Result{
+		Finished: true, Stdout: []byte("TASK 1: INCOMPLETE — missing behavior\n"), RawStdout: []byte("TASK 1: DONE\n"),
+	})
+	if verdict.Pass || !strings.Contains(verdict.Detail, "missing behavior") {
+		t.Fatalf("verify() = %+v", verdict)
+	}
+}
+
+func TestVerifierFailureKeepsOutputTail(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result executor.Result
+	}{
+		{"incomplete execution", executor.Result{ExitCode: 2, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nlast stdout\n"), Stderr: []byte("last stderr\n"), DecoderDroppedLines: 3}},
+		{"no task lines", executor.Result{Finished: true, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nlast stdout\n"), Stderr: []byte("last stderr\n"), DecoderDroppedLines: 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			verdict := verifyOutput(t, tc.result)
+			for _, want := range []string{"secret.txt", "last stdout", "last stderr", "decoder_dropped_lines: 3"} {
+				if !strings.Contains(verdict.Detail, want) {
+					t.Errorf("detail = %q, missing %q", verdict.Detail, want)
+				}
+			}
+			if strings.Contains(verdict.Detail, "API_KEY") || strings.Contains(verdict.Detail, "hidden") || strings.Contains(verdict.Detail, "/private/secret.txt") {
+				t.Fatalf("detail leaked secret or path: %q", verdict.Detail)
+			}
+		})
+	}
+}
+
+func TestVerifierFailureDetailAlwaysRedacted(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result executor.Result
+	}{
+		{"incomplete criterion", executor.Result{Finished: true, Stdout: []byte("API_KEY=hidden\nTASK 1: INCOMPLETE — see /private/secret.txt\n")}},
+		{"too many answers", executor.Result{Finished: true, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nTASK 1: DONE\nTASK 2: DONE\n")}},
+		{"skipped criterion", executor.Result{Finished: true, Stdout: []byte("checking /private/secret.txt\nAPI_KEY=hidden\nTASK 2: DONE\n")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			verdict := verifyOutput(t, tc.result)
+			if verdict.Pass || !strings.Contains(verdict.Detail, "secret.txt") {
+				t.Fatalf("verify() = %+v", verdict)
+			}
+			if strings.Contains(verdict.Detail, "API_KEY") || strings.Contains(verdict.Detail, "hidden") || strings.Contains(verdict.Detail, "/private/secret.txt") {
+				t.Fatalf("detail leaked secret or path: %q", verdict.Detail)
+			}
+		})
+	}
+}
 
 // oneMediumTaskPlan swaps the default plan for a single medium task with the
 // given title, Scope line and Accept line, whose criteria may carry proofs.

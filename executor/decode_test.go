@@ -285,3 +285,107 @@ func TestDecoderUnknownLines(t *testing.T) {
 		}
 	}
 }
+
+func TestDecoderFixturesDropNothing(t *testing.T) {
+	t.Parallel()
+	unknown := map[string]string{
+		"cursor-stream-json": `{"type":"mystery"}`,
+		"agy-stream-json":    `{"event":"mystery"}`,
+		"codex-json":         `{"type":"mystery"}`,
+		"claude-stream-json": `{"type":"mystery"}`,
+		"opencode-json":      `{"type":"mystery"}`,
+	}
+	for _, name := range streamDecoderNames {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			decoder := LookupDecoder(name)
+			agent, _, _ := strings.Cut(name, "-")
+			var files []string
+			for _, directory := range []string{
+				filepath.Join("testdata", "stream"),
+				filepath.Join("testdata", "stream", "errors"),
+			} {
+				matches, err := filepath.Glob(filepath.Join(directory, agent+"-*.jsonl"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				files = append(files, matches...)
+			}
+			if len(files) == 0 {
+				t.Fatalf("no fixtures found for %s", name)
+			}
+			for _, file := range files {
+				payload, err := os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scanner := bufio.NewScanner(bytes.NewReader(payload))
+				for scanner.Scan() {
+					decoder.Decode(scanner.Text())
+				}
+				if err := scanner.Err(); err != nil {
+					t.Fatal(err)
+				}
+				if got := decoder.DroppedLines(); got != 0 {
+					t.Fatalf("%s: DroppedLines = %d, want 0", file, got)
+				}
+			}
+			decoder.Decode(unknown[name])
+			if got := decoder.DroppedLines(); got != 1 {
+				t.Fatalf("DroppedLines after unknown event = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestDecoderCountsOnlyUnknownEvents(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		format  string
+		known   []string
+		unknown string
+	}{
+		{"codex-json", []string{
+			`{"type":"thread.started","thread_id":"t"}`,
+			`{"type":"turn.started"}`,
+			`{"type":"item.started","item":{"type":"command_execution"}}`,
+			`{"type":"item.completed","item":{"type":"command_execution"}}`,
+			`{"type":"item.completed","item":{"type":"reasoning"}}`,
+		}, `{"type":"mystery"}`},
+		{"claude-stream-json", []string{
+			`{"type":"system","subtype":"init"}`,
+			`{"type":"user","message":{"content":[]}}`,
+			`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`,
+		}, `{"type":"mystery"}`},
+		{"cursor-stream-json", []string{
+			`{"type":"system","subtype":"init"}`,
+			`{"type":"tool_call","subtype":"started"}`,
+			`{"type":"thinking","subtype":"delta"}`,
+			`{"type":"user","message":{"content":[]}}`,
+		}, `{"type":"mystery"}`},
+		{"agy-stream-json", []string{
+			`{"event":"step_update","step_update":{"step_type":"tool_call","state":"RUNNING"}}`,
+		}, `{"event":"mystery"}`},
+		{"opencode-json", []string{
+			`{"type":"step_finish","part":{}}`,
+			`{"type":"step_start","part":{}}`,
+			`{"type":"tool_use","part":{}}`,
+		}, `{"type":"mystery"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.format, func(t *testing.T) {
+			t.Parallel()
+			decoder := LookupDecoder(tc.format)
+			for _, line := range tc.known {
+				decoder.Decode(line)
+			}
+			if got := decoder.DroppedLines(); got != 0 {
+				t.Fatalf("DroppedLines after known events = %d, want 0", got)
+			}
+			decoder.Decode(tc.unknown)
+			if got := decoder.DroppedLines(); got != 1 {
+				t.Fatalf("DroppedLines after unknown event = %d, want 1", got)
+			}
+		})
+	}
+}

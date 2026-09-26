@@ -746,18 +746,41 @@ func (r *Runner) verify(ctx context.Context, ac *attemptContext, criteria []gate
 		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier guard: " + err.Error()}, nil
 	}
 	if before != after {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: executor.Tail(result.Stdout, 10)}, nil
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "the verifier wrote to the tree; round invalid", Detail: r.redactDetail(executor.Tail(result.Stdout, 10))}, nil
 	}
 	if execErr != nil {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not complete: " + execErr.Error()}, nil
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier did not complete: " + execErr.Error(), Detail: r.verifierOutputTail(result)}, nil
 	}
 	finished := gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, "")
 	if !finished.Pass || result.Truncated || ac.verifierDispatch.ReconciliationRequired {
-		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete"}, nil
+		return gates.Verdict{Name: "verifier", Pass: false, Signal: "verifier execution incomplete", Detail: r.verifierOutputTail(result)}, nil
 	}
-	verdict := gates.Verifier(string(result.Stdout), len(criteria), proofs)
+	output := string(result.Stdout)
+	if !gates.HasTaskLines(output) && len(result.RawStdout) > 0 {
+		output = string(result.RawStdout)
+	}
+	verdict := gates.Verifier(output, len(criteria), proofs)
+	if verdict.Signal == gates.SignalNoTaskLines {
+		verdict.Detail = r.verifierOutputTail(result)
+	}
+	if !verdict.Pass {
+		verdict.Detail = r.redactDetail(verdict.Detail)
+	}
 	verdict.Signal = name + "/" + model + ": " + verdict.Signal
 	return verdict, nil
+}
+
+func (r *Runner) redactDetail(detail string) string {
+	return executor.DropSecretLines(executor.RedactPaths(detail, r.root))
+}
+
+func (r *Runner) verifierOutputTail(result executor.Result) string {
+	tail := r.outputTailDetail(result)
+	detail := fmt.Sprintf("stdout:\n%s\nstderr:\n%s", tail["stdout"], tail["stderr"])
+	if result.DecoderDroppedLines > 0 {
+		detail += fmt.Sprintf("\ndecoder_dropped_lines: %d", result.DecoderDroppedLines)
+	}
+	return detail
 }
 
 func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result executor.Result, treeChanged bool) error {
@@ -1090,7 +1113,7 @@ func uncleanInvocation(result executor.Result) bool {
 // workspace path into the journal.
 func (r *Runner) outputTailDetail(result executor.Result) map[string]any {
 	stream := func(payload []byte) string {
-		return tailWindow(dropSecretLines(redactText(executor.Tail(payload, outputTailLines), r.root)), outputTailBytes)
+		return tailWindow(executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, outputTailLines), r.root)), outputTailBytes)
 	}
 	return map[string]any{"stdout": stream(result.Stdout), "stderr": stream(result.Stderr)}
 }

@@ -62,6 +62,73 @@ func cleanReview() publication.CommandResult {
 	return publication.CommandResult{Stdout: []byte("<<<FINDINGS\nFINDINGS>>>\nNo defects found.\n")}
 }
 
+func TestCohortFallsBackToRawStdout(t *testing.T) {
+	t.Parallel()
+	for _, decoded := range []struct{ name, event string }{
+		{"empty", ""},
+		{"closing marker only", `{"type":"item.completed","item":{"type":"agent_message","text":"FINDINGS>>>\n"}}` + "\n"},
+	} {
+		t.Run(decoded.name, func(t *testing.T) {
+			t.Parallel()
+			manifest, runtime, opts := sessionFixture(t, 1)
+			adapterPath := filepath.Join(opts.Skills, "adapters", "codex.md")
+			adapter, err := os.ReadFile(adapterPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			configured := strings.Replace(string(adapter), "finished: exit_code", "output_decoder: codex-json\nfinished: exit_code", 1)
+			if err := os.WriteFile(adapterPath, []byte(configured), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			useReviewRunner(&opts, func(_ context.Context, cmd publication.Command) (publication.CommandResult, error) {
+				payload := []byte(`{"type":"unknown"}` + "\n" + decoded.event)
+				if _, err := cmd.Observer.Write(payload); err != nil {
+					return publication.CommandResult{}, err
+				}
+				return cleanReview(), nil
+			})
+			results, err := RunCohorts(t.Context(), manifest, runtime, opts)
+			if err != nil || len(results) != 1 {
+				t.Fatalf("RunCohorts() = %+v, %v", results, err)
+			}
+			if !results[0].Covered || len(results[0].Rejected) != 0 {
+				t.Fatalf("cohort did not parse raw findings: %+v", results[0])
+			}
+			if got := results[0].Attempts[0].Result.DecoderDroppedLines; got != 1 {
+				t.Fatalf("DecoderDroppedLines = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestCohortPrefersDecoded(t *testing.T) {
+	t.Parallel()
+	manifest, runtime, opts := sessionFixture(t, 1)
+	adapterPath := filepath.Join(opts.Skills, "adapters", "codex.md")
+	adapter, err := os.ReadFile(adapterPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configured := strings.Replace(string(adapter), "finished: exit_code", "output_decoder: codex-json\nfinished: exit_code", 1)
+	if err := os.WriteFile(adapterPath, []byte(configured), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	useReviewRunner(&opts, func(_ context.Context, cmd publication.Command) (publication.CommandResult, error) {
+		payload := []byte(`{"type":"item.completed","item":{"type":"agent_message","text":"<<<FINDINGS\nFINDINGS>>>\nNo defects found.\n"}}` + "\n")
+		if _, err := cmd.Observer.Write(payload); err != nil {
+			return publication.CommandResult{}, err
+		}
+		return publication.CommandResult{Stdout: payload}, nil
+	})
+	results, err := RunCohorts(t.Context(), manifest, runtime, opts)
+	if err != nil || len(results) != 1 {
+		t.Fatalf("RunCohorts() = %+v, %v", results, err)
+	}
+	if !results[0].Covered || len(results[0].Rejected) != 0 {
+		t.Fatalf("cohort did not use decoded findings: %+v", results[0])
+	}
+}
+
 func TestReviewerRuntimeFromTable(t *testing.T) {
 	t.Parallel()
 	lanes := "| Lane | Domain | Executor | Model |\n|---|---|---|---|\n| high | * | codex | high-model |\n| high | frontend | cursor-agent | ui-model |\n"
@@ -238,6 +305,72 @@ func TestUncoveredCohortReported(t *testing.T) {
 			}
 			if !result.Covered && result.Reason == "" {
 				t.Fatal("uncovered cohort has no reason")
+			}
+		})
+	}
+}
+
+func TestUncoveredCohortWritesTail(t *testing.T) {
+	t.Parallel()
+	for _, covered := range []bool{false, true} {
+		name := "uncovered"
+		if covered {
+			name = "covered"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			manifest, runtime, opts := sessionFixture(t, 1)
+			calls := 0
+			useReviewRunner(&opts, func(context.Context, publication.Command) (publication.CommandResult, error) {
+				calls++
+				if covered {
+					return cleanReview(), nil
+				}
+				if calls == 1 {
+					return publication.CommandResult{ExitCode: 2, Stdout: []byte("first attempt only\n")}, nil
+				}
+				return publication.CommandResult{ExitCode: 2,
+					Stdout: []byte(strings.Repeat("long stdout "+strings.Repeat("x", 300)+"\n", 400) + "API_KEY=hidden\nlast stdout " + opts.Root + "/file0.go\n"),
+					Stderr: []byte(strings.Repeat("long stderr "+strings.Repeat("y", 300)+"\n", 400) + "TOKEN=hidden\nlast stderr /private/secret.txt\n"),
+				}, nil
+			})
+			results, err := RunCohorts(t.Context(), manifest, runtime, opts)
+			if err != nil || len(results) != 1 || results[0].Covered != covered {
+				t.Fatalf("RunCohorts() = %+v, %v", results, err)
+			}
+			out := filepath.Join(t.TempDir(), "artifacts")
+			if err := WriteArtifacts(out, BuildReport(manifest, results, nil), IncrementalState{}); err != nil {
+				t.Fatal(err)
+			}
+			name := filepath.Join(out, "cohort-1.tail.txt")
+			payload, err := os.ReadFile(name)
+			if covered {
+				if !os.IsNotExist(err) {
+					t.Fatalf("covered cohort tail = %q, %v", payload, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			tail := string(payload)
+			for _, want := range []string{"last stdout file0.go", "last stderr secret.txt"} {
+				if !strings.Contains(tail, want) {
+					t.Errorf("tail missing %q", want)
+				}
+			}
+			for _, forbidden := range []string{"first attempt only", "API_KEY", "TOKEN=", "hidden", opts.Root, "/private/secret.txt"} {
+				if strings.Contains(tail, forbidden) {
+					t.Errorf("tail contains %q", forbidden)
+				}
+			}
+			stdout, stderr, found := strings.Cut(strings.TrimPrefix(tail, "stdout:\n"), "\nstderr:\n")
+			if !found || len(stdout) > 4096 || len(stderr) > 4097 {
+				t.Errorf("tail stream sizes = %d, %d; separator found = %t", len(stdout), len(stderr), found)
+			}
+			review, err := os.ReadFile(filepath.Join(out, "review.md"))
+			if err != nil || !strings.Contains(string(review), "uncovered:") || !strings.Contains(string(review), "cohort-1.tail.txt") {
+				t.Fatalf("review.md = %q, %v", review, err)
 			}
 		})
 	}

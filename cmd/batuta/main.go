@@ -1125,7 +1125,7 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	} else if !filepath.IsAbs(directory) {
 		directory = filepath.Join(root, directory)
 	}
-	artifactPaths := append(review.ArtifactPaths(directory), statePath)
+	artifactPaths := reviewGuardPaths(directory, review.Report{}, statePath)
 	resolvedPaths, err := review.CheckArtifactPaths(root, artifactPaths)
 	if err != nil {
 		return err
@@ -1183,7 +1183,9 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	}
 	report := review.BuildReport(manifest, cohorts, sweep)
 	state = review.StateAfterReport(report, after.HeadSHA)
-	if _, err := review.CheckArtifactPaths(root, artifactPaths); err != nil {
+	artifactPaths = reviewGuardPaths(directory, report, statePath)
+	resolvedPaths, err = review.CheckArtifactPaths(root, artifactPaths)
+	if err != nil {
 		return err
 	}
 	publicationGit := git
@@ -1215,6 +1217,13 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	default:
 		return &ExitError{Code: 3, State: string(report.Verdict)}
 	}
+}
+
+// reviewGuardPaths lists every file the review may create or prune: the
+// report artifacts, the state file and the cohort tails already on disk.
+func reviewGuardPaths(directory string, report review.Report, statePath string) []string {
+	paths := append(review.ArtifactPaths(directory, report), statePath)
+	return append(paths, review.ExistingTailPaths(directory)...)
 }
 
 func reviewSessionError(ctx context.Context, git publication.GitClient, root string, baseline publication.WorktreeState, trackedBaseline map[string]string, sessionErr error) error {
