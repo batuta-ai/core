@@ -33,7 +33,7 @@ func TestChainFallbackReasons(t *testing.T) {
 	success := Response{Model: "winner", Answers: map[string]Answer{"ok": {Type: QuestionNoul, Noul: 1}}}
 	req := Request{State: "state", Questions: map[string]Question{"ok": {Type: QuestionNoul}}}
 
-	for _, reason := range []string{ReasonRateLimited, ReasonServerError, ReasonTimeout, ReasonMalformedResponse} {
+	for _, reason := range []string{ReasonRateLimited, ReasonServerError, ReasonTimeout, ReasonMalformedResponse, ReasonAnswerMismatch} {
 		reason := reason
 		t.Run("continues on "+reason, func(t *testing.T) {
 			t.Parallel()
@@ -61,7 +61,7 @@ func TestChainFallbackReasons(t *testing.T) {
 		})
 	}
 
-	for _, reason := range []string{ReasonStateTooLarge, ReasonAnswerMismatch} {
+	for _, reason := range []string{ReasonStateTooLarge} {
 		reason := reason
 		t.Run("stops on "+reason, func(t *testing.T) {
 			t.Parallel()
@@ -145,5 +145,40 @@ func TestChainAllUnavailable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(chainErr.Attempts, want) {
 		t.Fatalf("ChainError.Attempts = %#v, want %#v", chainErr.Attempts, want)
+	}
+}
+
+func TestChainReturnsPartialOnMismatch(t *testing.T) {
+	t.Parallel()
+
+	first := Response{Model: "first", Answers: map[string]Answer{"contract": {Type: QuestionNoul, Noul: 0.9}}}
+	last := Response{Model: "last", Answers: map[string]Answer{"security": {Type: QuestionNoul, Noul: 0.8}}}
+	chain := &Chain{Judges: []Named{
+		{Provider: ProviderTypesafe, Judge: staticJudge{resp: first, err: &UnavailableError{Reason: ReasonAnswerMismatch}}},
+		{Provider: ProviderVercel, Judge: staticJudge{err: &UnavailableError{Reason: ReasonTimeout}}},
+		{Provider: ProviderOpenRouter, Judge: staticJudge{resp: last, err: &UnavailableError{Reason: ReasonAnswerMismatch}}},
+	}}
+	resp, err := chain.Ask(context.Background(), Request{})
+	requireUnavailable(t, err, ReasonAllUnavailable)
+	if !reflect.DeepEqual(resp, last) {
+		t.Fatalf("Ask() response = %#v, want last mismatch %#v", resp, last)
+	}
+	var chainErr *ChainError
+	if !errors.As(err, &chainErr) || !reflect.DeepEqual(chainErr.Attempts, []ChainAttempt{
+		{Provider: ProviderTypesafe, Reason: ReasonAnswerMismatch},
+		{Provider: ProviderVercel, Reason: ReasonTimeout},
+		{Provider: ProviderOpenRouter, Reason: ReasonAnswerMismatch},
+	}) {
+		t.Fatalf("Ask() error = %v, want chain attempts", err)
+	}
+
+	chain = &Chain{Judges: []Named{
+		{Provider: ProviderTypesafe, Judge: staticJudge{resp: first, err: &UnavailableError{Reason: ReasonAnswerMismatch}}},
+		{Provider: ProviderVercel, Judge: staticJudge{err: &UnavailableError{Reason: ReasonTimeout}}},
+	}}
+	resp, err = chain.Ask(context.Background(), Request{})
+	requireUnavailable(t, err, ReasonAllUnavailable)
+	if !reflect.DeepEqual(resp, first) {
+		t.Fatalf("Ask() response = %#v, want earlier mismatch %#v", resp, first)
 	}
 }

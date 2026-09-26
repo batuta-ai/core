@@ -1,5 +1,14 @@
 # WORK — core
 
+## Current status — 2026-09-26 pause: classification v2 negative, PR open
+- [ ] Open PR, not merged: **core#136** `feat/classify-v2` (classify v2 code in shadow, `judge classify bench --rubric v2`, partial answers through `HTTPJudge`/`Chain`, and the run 1 record). Final delivery review SHIP; CI green at push.
+- [ ] Classification v2 run 1 (frozen rule, `.batuta/judge-research.md` §13; record in `.batuta/judge-benchmark.md`): **negative** — economy 11.9% (bar 75%), safety 90% (holds only because almost everything went up), discrimination critical 81.9% (bar 70%), balance 0.51 (bar 0.65). Jev never answered `open_decision` yes with confidence ≥ 0.7 and was below 0.7 on 197/228, which the rule turns into critical; post hoc, even with that default flipped, economy 55.6% and balance 0.53 still fail.
+- [ ] Next, maintainer to choose: verifier-objection triage (the agreed next Jev decision), or a v3 of classification first (open decision detected by code from the plan, weighted mapping of the firm answers, calibrate/test split with the rule frozen before the test half).
+- [ ] Merged since 2026-09-23: core#121 #122 #125 #127 #128 #129 #132 #134; skills#62 #64 #66 #68; host batuta#101 (pins core v1.1.0-beta.42, skills v0.14.0). This machine runs core beta.42 and `~/.agents/skills/batuta` synced from skills main.
+- [ ] Known limits: claude over ACP cannot run Bash in a real worktree (commands became denied `execute` requests; shutdown unverified), so loops run `--transport cli`; the claude CLI sandbox blocks the Go build cache and codex's sandbox blocks `ps`/loopback, so executors in those sandboxes cannot run the full core suite and the gate decides; opencode Zen has no credit and cursor-agent is uninstalled (routing: medium claude sonnet, high codex gpt-6-sol).
+- [ ] Follow-ups in merged PR bodies: #134 minors (`stripWorkspace` boundary before the match, `.` before a sibling segment; `TestHasTaskLines` without `t.Parallel()`); a skills probe to let the claude sandbox write the Go caches.
+
+
 ## Current status — 2026-09-23: structured-output and verifier-coverage in review
 - [ ] Open PRs, not merged: **core#121** `feat/structured-output-impl` (plan `structured-output` plus four review-fix plans, final review SHIP, CI green) and **core#122** `feat/verifier-coverage` stacked on #121 (review SHIP). Merge #121 first.
 - [ ] Known minors listed in both PR bodies; agy's sandbox once could not read `~/.gitconfig`; `TestNativeTransportProcessOutcomes/disconnect` and `TestLimitWaitRecordsTail` flaked once under loop load.
@@ -316,6 +325,9 @@
 - [x] Only unknown event types count as dropped; tail files are authorized, pruned and redacted like the loop → claude (sonnet), 1 retry, commit 74b1c2a8b9f4 (trail: .batuta/runs/2026-09-25-decoder-fallback-telemetry-fixes-task-1.md, delivery decoder-fallback-telemetry-fixes-20260925-230852, plan decoder-fallback-telemetry-fixes, 2026-09-25)
 - [x] Every committed fixture replays with zero dropped lines; redaction and pruning edge cases are pinned → claude (sonnet), commit 4de96fb191ba (trail: .batuta/runs/2026-09-25-decoder-fallback-telemetry-fixes-2-task-1.md, delivery decoder-fallback-telemetry-fixes-2-20260925-233816, plan decoder-fallback-telemetry-fixes-2, 2026-09-25)
 - [x] Stale tails are excluded from the guard before they are pruned; failing verifier details are always redacted → claude (sonnet), commit cde43408ecd1 (trail: .batuta/runs/2026-09-25-decoder-fallback-telemetry-fixes-3-task-1.md, delivery decoder-fallback-telemetry-fixes-3-20260925-235915, plan decoder-fallback-telemetry-fixes-3, 2026-09-26)
+- [x] classify v2: Scope features, five noul questions, the frozen lane rule → codex (gpt-6-sol), commit 384f1322164e (trail: .batuta/runs/2026-09-26-classify-v2-task-1.md, delivery classify-v2-20260926-172530, plan classify-v2, 2026-09-26)
+- [x] batuta judge classify bench --rubric v2 scores against outcomes with the frozen measures → codex (gpt-6-sol), commit 028563a73b20 (trail: .batuta/runs/2026-09-26-classify-v2-task-2.md, delivery classify-v2-20260926-172530, plan classify-v2, 2026-09-26)
+- [x] HTTPJudge keeps the valid answers of a mismatched response; bench v2 applies DecideV2 to them → codex (gpt-6-sol), commit cfbdb67e9bdf (trail: .batuta/runs/2026-09-26-classify-v2-fixes-task-1.md, delivery classify-v2-fixes-20260926-175535, plan classify-v2-fixes, 2026-09-26)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

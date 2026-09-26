@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/loop"
+	"github.com/batuta-ai/core/routing"
 )
 
 // benchOutcomeTestPlan is a four-lane plan whose tasks are classified with
@@ -720,5 +722,293 @@ func TestClassifyBenchRejectsInvalidArguments(t *testing.T) {
 				t.Fatalf("judge classify bench = nil, want an error")
 			}
 		})
+	}
+}
+
+type classifyV2Route struct {
+	answers map[string]float64
+}
+
+type staticBenchJudge struct {
+	response judge.Response
+	err      error
+}
+
+func (j staticBenchJudge) Ask(_ context.Context, _ judge.Request) (judge.Response, error) {
+	return j.response, j.err
+}
+
+func partialBenchV2Plan() routing.Plan {
+	return routing.Plan{Slug: "partial", Tasks: []routing.PlanTask{{
+		TaskArtifact: routing.TaskArtifact{ID: "task_1", Complexity: routing.ComplexityLow},
+		Number:       1,
+		Scope:        []string{"README.md"},
+	}}}
+}
+
+func TestClassifyBenchV2PartialAnswers(t *testing.T) {
+	partial := judge.Response{Model: "partial", Answers: map[string]judge.Answer{
+		"contract":   {Type: judge.QuestionNoul, Noul: 0.1},
+		"mechanical": {Type: judge.QuestionNoul, Noul: 0.5},
+	}, Usage: judge.Usage{InputTokens: 7}}
+	mismatch := &judge.UnavailableError{Reason: judge.ReasonAnswerMismatch}
+	delivery := benchDelivery{name: "partial-run", records: []journal.Record{
+		{Kind: loop.KindFinished, TaskID: "task_1", Detail: []byte(`{"execution":1}`)},
+		{Kind: loop.KindCandidate, TaskID: "task_1", Detail: []byte(`{"execution":1}`)},
+	}}
+	for _, tc := range []struct {
+		name  string
+		judge judge.Judge
+	}{
+		{"direct", staticBenchJudge{response: partial, err: mismatch}},
+		{"chain", &judge.Chain{Judges: []judge.Named{
+			{Provider: judge.ProviderTypesafe, Judge: staticBenchJudge{response: partial, err: mismatch}},
+			{Provider: judge.ProviderVercel, Judge: staticBenchJudge{err: &judge.UnavailableError{Reason: judge.ReasonTimeout}}},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output strings.Builder
+			if err := classifyBenchTasksV2(context.Background(), &output, tc.judge, "", []routing.Plan{partialBenchV2Plan()}, []benchDelivery{delivery}, true); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("output = %s", output.String())
+			}
+			var record struct {
+				JudgeLane   string                   `json:"judge_lane"`
+				Reason      string                   `json:"reason"`
+				Unavailable string                   `json:"unavailable"`
+				Answers     map[string]benchV2Answer `json:"answers"`
+				InputTokens *int                     `json:"input_tokens"`
+			}
+			if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.JudgeLane != "critical" || record.Reason != judge.ReasonAnswerMismatch || record.Unavailable != "" || record.InputTokens == nil || *record.InputTokens != 7 {
+				t.Fatalf("record = %+v", record)
+			}
+			if got := record.Answers["contract"]; got.Answer || got.Defaulted || got.Unavailable || got.Confidence != 0.9 {
+				t.Errorf("contract = %+v", got)
+			}
+			if got := record.Answers["mechanical"]; got.Answer || !got.Defaulted || got.Unavailable || got.Confidence != 0.5 {
+				t.Errorf("mechanical = %+v", got)
+			}
+			for _, key := range []string{"lifecycle", "security", "open_decision"} {
+				if got := record.Answers[key]; !got.Answer || !got.Defaulted || !got.Unavailable {
+					t.Errorf("%s = %+v", key, got)
+				}
+			}
+			var envelope struct {
+				Summary benchV2Summary `json:"summary"`
+			}
+			if err := json.Unmarshal([]byte(lines[1]), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			summary := envelope.Summary
+			if summary.Unavailable != 0 || summary.UnavailableAnswers != 3 || summary.DefaultedAnswers != 4 || summary.Agreement.Total != 1 || summary.Economy.Total != 1 {
+				t.Fatalf("summary = %+v", summary)
+			}
+		})
+	}
+}
+
+func TestClassifyBenchV2Unavailable(t *testing.T) {
+	partial := judge.Response{Answers: map[string]judge.Answer{"contract": {Type: judge.QuestionNoul, Noul: 0.9}}}
+	for _, tc := range []struct {
+		name   string
+		judge  judge.Judge
+		reason string
+	}{
+		{"other error with answers", staticBenchJudge{response: partial, err: &judge.UnavailableError{Reason: judge.ReasonTimeout}}, judge.ReasonTimeout},
+		{"mismatch with no answers", staticBenchJudge{response: judge.Response{Answers: map[string]judge.Answer{}}, err: &judge.UnavailableError{Reason: judge.ReasonAnswerMismatch}}, judge.ReasonAnswerMismatch},
+		{"mismatch with invalid answer", staticBenchJudge{response: judge.Response{Answers: map[string]judge.Answer{"contract": {Type: judge.QuestionChoice, Choice: "yes"}}}, err: &judge.UnavailableError{Reason: judge.ReasonAnswerMismatch}}, judge.ReasonAnswerMismatch},
+		{"chain mismatch with no answers", &judge.Chain{Judges: []judge.Named{{Provider: judge.ProviderTypesafe, Judge: staticBenchJudge{err: &judge.UnavailableError{Reason: judge.ReasonAnswerMismatch}}}}}, judge.ReasonAllUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output strings.Builder
+			if err := classifyBenchTasksV2(context.Background(), &output, tc.judge, "", []routing.Plan{partialBenchV2Plan()}, nil, true); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("output = %s", output.String())
+			}
+			var record benchV2Record
+			if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Unavailable != tc.reason || record.JudgeLane != "" || record.Reason != "" || len(record.Answers) != 0 {
+				t.Fatalf("record = %+v", record)
+			}
+			var envelope struct {
+				Summary benchV2Summary `json:"summary"`
+			}
+			if err := json.Unmarshal([]byte(lines[1]), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			summary := envelope.Summary
+			if summary.Tasks != 1 || summary.Unavailable != 1 || summary.UnavailableAnswers != 5 || summary.Agreement.Total != 0 || summary.Economy.Total != 0 {
+				t.Fatalf("summary = %+v", summary)
+			}
+		})
+	}
+}
+
+func classifyV2TestServer(t *testing.T, routes map[string]classifyV2Route) (*httptest.Server, *classifyCallRecord) {
+	t.Helper()
+	record := &classifyCallRecord{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		record.bodies = append(record.bodies, body)
+		state, _ := body["state"].(map[string]any)
+		task, _ := state["task"].(map[string]any)
+		title, _ := task["title"].(string)
+		answers := map[string]any{}
+		for key, value := range routes[title].answers {
+			answers[key] = map[string]any{"type": "noul", "noul": value}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{"model": "jev-test", "answers": answers}); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server, record
+}
+
+func classifyV2Fixture(t *testing.T) (string, string, string, *httptest.Server, *classifyCallRecord) {
+	t.Helper()
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	plan := writeBenchPlan(t, root, "classify-bench.md", benchOutcomeTestPlan)
+	journals := t.TempDir()
+	writeBenchJournal(t, journals, "classify-bench-run1", []benchJournalEntry{
+		{loop.KindStarted, "task_1", benchStartedDetail(1, "opencode")},
+		{loop.KindFinished, "task_1", benchFinishedDetail(1)},
+		{loop.KindCandidate, "task_1", benchCandidateDetail(1)},
+		{loop.KindStarted, "task_2", benchStartedDetail(1, "codex")},
+		{loop.KindFinished, "task_2", benchFinishedDetail(1)},
+		{loop.KindStarted, "task_2", benchStartedDetail(2, "codex")},
+		{loop.KindFinished, "task_2", benchFinishedDetail(2)},
+		{loop.KindStarted, "task_3", benchStartedDetail(1, "codex")},
+		{loop.KindFinished, "task_3", benchFinishedDetail(1)},
+		{loop.KindStarted, "task_3", benchStartedDetail(2, "opencode")},
+		{loop.KindFinished, "task_3", benchFinishedDetail(2)},
+		{loop.KindStarted, "task_4", benchStartedDetail(1, "codex")},
+		{loop.KindFinished, "task_4", benchFinishedDetail(1)},
+	})
+	server, record := classifyV2TestServer(t, map[string]classifyV2Route{
+		"First attempt sticks":  {answers: map[string]float64{"contract": 0.1, "lifecycle": 0.1, "security": 0.1, "open_decision": 0.1, "mechanical": 0.9}},
+		"Retry the same lane":   {answers: map[string]float64{"contract": 0.9, "lifecycle": 0.1, "security": 0.1, "open_decision": 0.1, "mechanical": 0.1}},
+		"Bump to a higher lane": {answers: map[string]float64{"contract": 0.1, "lifecycle": 0.1, "security": 0.9, "open_decision": 0.1, "mechanical": 0.1}},
+		"Only one try":          {answers: map[string]float64{"contract": 0.1, "lifecycle": 0.1, "security": 0.1, "open_decision": 0.9, "mechanical": 0.1}},
+	})
+	return root, plan, journals, server, record
+}
+
+func TestClassifyBenchV2Lines(t *testing.T) {
+	root, plan, journals, server, _ := classifyV2Fixture(t)
+	var stdout, stderr strings.Builder
+	if err := run([]string{"judge", "classify", "bench", "--rubric", "v2", "--plan", plan, "--journals", journals, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr); err != nil {
+		t.Fatalf("bench v2: %v\nstderr: %s", err, stderr.String())
+	}
+	for _, want := range []string{"task_1 plan=low judge=low", "task_2 plan=medium judge=medium", "task_3 plan=medium judge=high", "task_4 plan=high judge=critical", "contract=no confidence=0.90 defaulted=false", "mechanical=yes confidence=0.90 defaulted=false", "outcome=candidate", "outcome=retried", "outcome=escalated", "outcome=failed"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestClassifyBenchV2Summary(t *testing.T) {
+	root, plan, journals, server, _ := classifyV2Fixture(t)
+	unknown := writeBenchPlan(t, root, "unknown-bench.md", strings.Replace(classifyTestPlan, "# Plan — Classify bench", "# Plan — Unknown bench", 1))
+	var stdout, stderr strings.Builder
+	if err := run([]string{"judge", "classify", "bench", "--rubric", "v2", "--plan", plan, "--plan", unknown, "--journals", journals, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr); err != nil {
+		t.Fatalf("bench v2: %v\nstderr: %s", err, stderr.String())
+	}
+	for _, want := range []string{"sufficient=2 insufficient=2 unknown=3", "economy=2/2 (1.00) PASS", "safety=2/2 (1.00) PASS reported only", "balance=1.00 PASS", "discrimination=", "agreement=", "unavailable_answers="} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Errorf("summary missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestClassifyBenchV2JSON(t *testing.T) {
+	root, plan, journals, server, _ := classifyV2Fixture(t)
+	var stdout, stderr strings.Builder
+	if err := run([]string{"judge", "classify", "bench", "--rubric", "v2", "--json", "--plan", plan, "--journals", journals, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr); err != nil {
+		t.Fatalf("bench v2 JSON: %v\nstderr: %s", err, stderr.String())
+	}
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) != 5 {
+		t.Fatalf("lines = %d, want four tasks and summary:\n%s", len(lines), stdout.String())
+	}
+	var task struct {
+		JudgeLane string `json:"judge_lane"`
+		Answers   map[string]struct {
+			Answer     bool    `json:"answer"`
+			Confidence float64 `json:"confidence"`
+			Defaulted  bool    `json:"defaulted"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal([]byte(lines[0]), &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.JudgeLane != "low" || !task.Answers["mechanical"].Answer || task.Answers["mechanical"].Confidence != 0.9 || task.Answers["mechanical"].Defaulted {
+		t.Errorf("task = %+v", task)
+	}
+	var summary struct {
+		Summary struct {
+			Economy struct {
+				Share float64 `json:"share"`
+				Pass  bool    `json:"pass"`
+			} `json:"economy"`
+			Safety struct {
+				Share        float64 `json:"share"`
+				ReportedOnly bool    `json:"reported_only"`
+			} `json:"safety"`
+			Balance struct {
+				Share float64 `json:"share"`
+				Pass  bool    `json:"pass"`
+			} `json:"balance"`
+			Sufficient   int `json:"sufficient"`
+			Insufficient int `json:"insufficient"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(lines[4]), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Summary.Sufficient != 2 || summary.Summary.Insufficient != 2 || summary.Summary.Economy.Share != 1 || !summary.Summary.Economy.Pass || summary.Summary.Safety.Share != 1 || !summary.Summary.Safety.ReportedOnly || summary.Summary.Balance.Share != 1 || !summary.Summary.Balance.Pass {
+		t.Errorf("summary = %+v", summary.Summary)
+	}
+}
+
+func TestClassifyBenchV2LabelFree(t *testing.T) {
+	root, plan, journals, server, record := classifyV2Fixture(t)
+	var stdout, stderr strings.Builder
+	if err := run([]string{"judge", "classify", "bench", "--rubric", "v2", "--plan", plan, "--journals", journals, "--workspace", root, "--base-url", server.URL}, &stdout, &stderr); err != nil {
+		t.Fatalf("bench v2: %v\nstderr: %s", err, stderr.String())
+	}
+	assertBenchBodiesLabelFree(t, record, 4)
+	for i, body := range record.bodies {
+		questions, ok := body["questions"].(map[string]any)
+		if !ok || len(questions) != 5 {
+			t.Fatalf("call %d questions = %#v", i, body["questions"])
+		}
+		for _, key := range []string{"contract", "lifecycle", "security", "open_decision", "mechanical"} {
+			question, ok := questions[key].(map[string]any)
+			if !ok || question["type"] != "noul" {
+				t.Errorf("call %d question %s = %#v", i, key, questions[key])
+			}
+		}
+		wire, _ := json.Marshal(body)
+		if strings.Contains(string(wire), `"complexity":"low"`) || strings.Contains(string(wire), `"complexity":"medium"`) || strings.Contains(string(wire), `"complexity":"high"`) {
+			t.Errorf("call %d carries plan lane: %s", i, wire)
+		}
 	}
 }

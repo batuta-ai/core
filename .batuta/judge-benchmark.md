@@ -273,3 +273,25 @@ Headline: with the double gate removed and the threshold calibrated on held-out 
 ## Provider-limit classification: no data yet (2026-09-22)
 
 The independent review (`.batuta/judge-review-astra.md`) ranked provider-limit message classification first among decisions where Jev could earn its place. Before any experiment, the conductor checked the data. No journal in core, skills or `geeknaveia/menuflix` records a real provider limit (`rate_limited` true): the two journals that matched a text search only mention `limit_wait` in prose. Applying the union of the adapters' `limit_regex` to the last 40 lines of the 202 run logs under `core/.batuta/runs` and `skills/.batuta/runs` matched 9 files, none a real limit: four are `429` or "usage limit" quoted in code, docs or a memory note, five are the batuta trailer line `rate limited false`, which the loop writes after matching and never matches against. With zero positives, a Jev experiment here would measure false positives only. The loop now needs to record the output tail of every unclean session (plan `executor-telemetry`) before this decision can be tested.
+
+## Plan classification v2, run 1 (2026-09-26)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 13 (commit `ff2e68e`). Binary built from `ecdd9b3`, the last commit of branch `feat/classify-v2` after the final review of delivery `classify-v2-fixes-20260926-175535` returned SHIP. Config `.batuta/judge-classify-v2/judge-classify.json` (`provider: auto`, `timeout_ms: 20000`), keys from the maintainer's shell, one trial. Command: `batuta judge classify bench --rubric v2 --json` over every plan in `core/.batuta/plans/done/` and `skills/.batuta/plans/done/`, journals of both repositories. Raw output: `.batuta/judge-classify-v2/run.jsonl`.
+
+Deviation, recorded before any judge call (`.batuta/judge-classify-v2/deviation.txt`): the first launch stopped at plan parsing on `core/.batuta/plans/done/supervision-fixes.md` (free-text `Status`), the plan run 1 also excluded; it is excluded here (2 tasks).
+
+| measure | value | frozen bar | |
+|---|---|---|---|
+| tasks | 228 (sufficient 151, insufficient 20, unknown outcome 57) | | |
+| unavailable | 0 tasks, 0 answers; 411 of 1,140 answers below 0.7 took the default | | |
+| economy (sufficient with J ≤ L) | 18 / 151 = 11.9% | ≥ 75% | **fails** |
+| safety (insufficient with J > L) | 18 / 20 = 90.0% | ≥ 50% | holds |
+| discrimination | critical 140, high 17, medium 13, low 1 (largest 81.9%) | ≤ 70% | **fails** |
+| balance | 0.510 | ≥ 0.65 | **fails** |
+| agreement with the plan lane (reported only) | 16 / 228 = 7.0% | | |
+
+Headline: v2 is not fit to propose lanes. It sent 140 of 171 outcome-labelled tasks to `critical`; its 90% safety comes from routing almost everything up, not from recognising the tasks that needed more.
+
+Why, from the answers (reported, not a result): Jev never answered `open_decision` yes with confidence ≥ 0.7 (0 of 228); it was below 0.7 on 197 tasks (median 0.62), and section 13 turns that uncertainty into yes, hence `critical`. The other questions were answered more firmly (median confidence: lifecycle 0.85, security 0.79, contract 0.74, mechanical 0.94).
+
+Post hoc, not a result and not a restatement of the rule: with an uncertain `open_decision` counted as no, the same answers would give economy 55.6%, safety 50.0%, balance 0.528, and `high` 119 of 171 (69.6%). v2 would still fail economy and balance; the rule's contract/lifecycle/security defaults and the "two of three" clause push most batuta tasks, which do touch contracts and processes, to `high`. The host's own lanes score economy 1.0, safety 0.0, balance 0.5 on the same tasks.
