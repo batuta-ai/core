@@ -230,3 +230,37 @@ Rule, on the test half:
 - Sanity: code flags at least 90% of `fabricated_reference` and `wrong_count`; if not, the corpus or settlement is broken and the judge result is not read.
 - Unavailable answers are counted separately and excluded; above 10% unavailable, the run is repeated once and both runs are reported.
 - A negative result is the headline. Nothing is restated at another threshold.
+
+## 13. Plan classification v2: decision rule, frozen before the run (2026-09-26)
+
+Agreed with the maintainer on 2026-09-26, before any v2 code was built. This section is not edited afterwards.
+
+Why v2: run 1 (section 11, benchmark "Plan classification, run 1") measured a rubric whose `high` criterion ("subsystem or multi-file work fully captured by a precise brief") describes almost every batuta plan task, and it scored against lanes the host wrote rather than against what happened.
+
+Rubric. Code measures what is objective; Jev answers only yes/no questions; a fixed rule maps both to a lane.
+- Code, from the task's Scope: number of files; number of distinct directories (packages); test-only (every entry is a test file or under `testdata/`); docs-only (every entry is `*.md` or under `docs/`).
+- Jev, one `noul` question each, from the task text and its plan context:
+  - (a) contract: does it change a public or cross-package contract (exported API, CLI flag, file format, protocol)?
+  - (b) lifecycle: does it involve concurrency, process lifecycle, I/O timing or retries?
+  - (c) security: is it security-sensitive (permissions, sandbox, secrets, redaction)?
+  - (d) open decision: does it depend on a decision the plan does not state?
+  - (e) mechanical: is it purely mechanical (rename, copy, config, documentation wording)?
+- An answer below confidence 0.7, or unavailable, counts as yes for (a)–(d) and no for (e): uncertainty only ever raises the lane.
+- Mapping, first match wins: `critical` if (d); `low` if (e) and at most 2 Scope files and none of (a), (b), (c); `high` if (c), or at least two of (a), (b), (c), or at least 3 directories; otherwise `medium`.
+
+Labels, from outcomes. For each plan task with a delivery journal, L is the lane of its first attempt and the outcome is the one `batuta judge classify` already derives: `candidate` or `retried` means sufficient at L; `escalated` or `failed` means insufficient at L; `unknown` (no journal) is excluded from the decision and counted.
+
+Inputs, fixed:
+- Binary built from the last commit of branch `feat/classify-v2` after its plan's final review returns SHIP.
+- Tasks: every task of every plan under `core/.batuta/plans/done/` and `skills/.batuta/plans/done/` when the run starts; the count is recorded. Journals: `core/.batuta/journal/` and `skills/.batuta/journal/`.
+- Judge: `provider: auto` (Jev), one trial, no wording, threshold or rule change between build and run.
+
+Decision. v2 (lane J) is fit to propose lanes only if all four hold:
+1. Economy: among sufficient tasks, J ≤ L for at least 75%.
+2. Safety: among insufficient tasks, J > L for at least 50%. If fewer than 10 insufficient tasks exist, safety is reported and does not decide.
+3. Discrimination: no lane holds more than 70% of J, and J uses at least 3 lanes.
+4. Balance: (economy + safety) / 2 is at least 0.65 (the host's own lanes score 0.5: economy 1.0, safety 0.0).
+
+Reported beside it, deciding nothing: agreement with the host lane, the v1 answers of run 1 for the same tasks, the distribution of (a)–(e), and unavailable answers (if more than 10% are unavailable, the run is repeated once and both are reported).
+
+Shadow only: nothing routes on J. A negative result is the headline; nothing is restated at another threshold or mapping.
