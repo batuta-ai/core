@@ -47,3 +47,9 @@
 - 2026-09-22: a conductor-added "while you are there" fix (pending-line cap in fixes-3) introduced the regression the next review caught. Keep fix plans to the findings.
 - 2026-09-25 decoder-message-boundaries: the plan's Scope missed test files twice more (`executor/testdata/stream/errors/*.want.json`, then `executor/run_test.go`), although the error fixtures had been created two plans earlier. A change to what a shared function returns needs a grep of every test that calls it (`grep -rln LookupDecoder --include='*_test.go'`), not only of the file named in the task.
 - 2026-09-25: an end-to-end run with a throwaway repository and `--skills <branch>` caught two defects no unit test saw (reviewer output lost through the decoder; messages joined without a newline). Run one before shipping an adapter-format change.
+
+## 2026-09-26 — classification v2, sandboxed executors
+
+- An executor inside a CLI sandbox cannot run the whole core suite: codex's sandbox blocks `ps` and loopback, claude's blocks the Go build cache. Briefs say "run the named tests; the gate runs the rest". The claude adapter may need the Go cache paths allowed in its sandbox settings — probe before changing it.
+- claude over ACP turned every Bash call in a real worktree into a denied `execute` request and ended with an unverified shutdown (delivery `output-decoder-20260925-192240`); the probes that qualified it only ran simple commands. Loops on this machine run `--transport cli` until a probe runs real commands in a real worktree.
+- Bench runs need the judge keys from the maintainer's login shell: run them through `zsh -lic "..."`; never print or copy the keys. `batuta review --reviewer claude/opus` covers a codex outage.
