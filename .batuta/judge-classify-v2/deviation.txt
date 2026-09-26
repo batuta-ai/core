@@ -1,0 +1,1 @@
+Deviation, recorded before any judge call: the first launch stopped at plan parsing on .batuta/plans/done/supervision-fixes.md (free-text Status line), the same plan excluded in run 1; it is excluded here too (2 tasks).
