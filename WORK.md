@@ -1,5 +1,14 @@
 # WORK — core
 
+## Current status — 2026-09-26 pause: classification v2 negative, PR open
+- [ ] Open PR, not merged: **core#136** `feat/classify-v2` (classify v2 code in shadow, `judge classify bench --rubric v2`, partial answers through `HTTPJudge`/`Chain`, and the run 1 record). Final delivery review SHIP; CI green at push.
+- [ ] Classification v2 run 1 (frozen rule, `.batuta/judge-research.md` §13; record in `.batuta/judge-benchmark.md`): **negative** — economy 11.9% (bar 75%), safety 90% (holds only because almost everything went up), discrimination critical 81.9% (bar 70%), balance 0.51 (bar 0.65). Jev never answered `open_decision` yes with confidence ≥ 0.7 and was below 0.7 on 197/228, which the rule turns into critical; post hoc, even with that default flipped, economy 55.6% and balance 0.53 still fail.
+- [ ] Next, maintainer to choose: verifier-objection triage (the agreed next Jev decision), or a v3 of classification first (open decision detected by code from the plan, weighted mapping of the firm answers, calibrate/test split with the rule frozen before the test half).
+- [ ] Merged since 2026-09-23: core#121 #122 #125 #127 #128 #129 #132 #134; skills#62 #64 #66 #68; host batuta#101 (pins core v1.1.0-beta.42, skills v0.14.0). This machine runs core beta.42 and `~/.agents/skills/batuta` synced from skills main.
+- [ ] Known limits: claude over ACP cannot run Bash in a real worktree (commands became denied `execute` requests; shutdown unverified), so loops run `--transport cli`; the claude CLI sandbox blocks the Go build cache and codex's sandbox blocks `ps`/loopback, so executors in those sandboxes cannot run the full core suite and the gate decides; opencode Zen has no credit and cursor-agent is uninstalled (routing: medium claude sonnet, high codex gpt-6-sol).
+- [ ] Follow-ups in merged PR bodies: #134 minors (`stripWorkspace` boundary before the match, `.` before a sibling segment; `TestHasTaskLines` without `t.Parallel()`); a skills probe to let the claude sandbox write the Go caches.
+
+
 ## Current status — 2026-09-23: structured-output and verifier-coverage in review
 - [ ] Open PRs, not merged: **core#121** `feat/structured-output-impl` (plan `structured-output` plus four review-fix plans, final review SHIP, CI green) and **core#122** `feat/verifier-coverage` stacked on #121 (review SHIP). Merge #121 first.
 - [ ] Known minors listed in both PR bodies; agy's sandbox once could not read `~/.gitconfig`; `TestNativeTransportProcessOutcomes/disconnect` and `TestLimitWaitRecordsTail` flaked once under loop load.
