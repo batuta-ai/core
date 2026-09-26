@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/loop"
+	"github.com/batuta-ai/core/routing"
 )
 
 // benchOutcomeTestPlan is a four-lane plan whose tasks are classified with
@@ -725,6 +727,132 @@ func TestClassifyBenchRejectsInvalidArguments(t *testing.T) {
 
 type classifyV2Route struct {
 	answers map[string]float64
+}
+
+type staticBenchJudge struct {
+	response judge.Response
+	err      error
+}
+
+func (j staticBenchJudge) Ask(_ context.Context, _ judge.Request) (judge.Response, error) {
+	return j.response, j.err
+}
+
+func partialBenchV2Plan() routing.Plan {
+	return routing.Plan{Slug: "partial", Tasks: []routing.PlanTask{{
+		TaskArtifact: routing.TaskArtifact{ID: "task_1", Complexity: routing.ComplexityLow},
+		Number:       1,
+		Scope:        []string{"README.md"},
+	}}}
+}
+
+func TestClassifyBenchV2PartialAnswers(t *testing.T) {
+	partial := judge.Response{Model: "partial", Answers: map[string]judge.Answer{
+		"contract":   {Type: judge.QuestionNoul, Noul: 0.1},
+		"mechanical": {Type: judge.QuestionNoul, Noul: 0.5},
+	}, Usage: judge.Usage{InputTokens: 7}}
+	mismatch := &judge.UnavailableError{Reason: judge.ReasonAnswerMismatch}
+	delivery := benchDelivery{name: "partial-run", records: []journal.Record{
+		{Kind: loop.KindFinished, TaskID: "task_1", Detail: []byte(`{"execution":1}`)},
+		{Kind: loop.KindCandidate, TaskID: "task_1", Detail: []byte(`{"execution":1}`)},
+	}}
+	for _, tc := range []struct {
+		name  string
+		judge judge.Judge
+	}{
+		{"direct", staticBenchJudge{response: partial, err: mismatch}},
+		{"chain", &judge.Chain{Judges: []judge.Named{
+			{Provider: judge.ProviderTypesafe, Judge: staticBenchJudge{response: partial, err: mismatch}},
+			{Provider: judge.ProviderVercel, Judge: staticBenchJudge{err: &judge.UnavailableError{Reason: judge.ReasonTimeout}}},
+		}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output strings.Builder
+			if err := classifyBenchTasksV2(context.Background(), &output, tc.judge, "", []routing.Plan{partialBenchV2Plan()}, []benchDelivery{delivery}, true); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("output = %s", output.String())
+			}
+			var record struct {
+				JudgeLane   string                   `json:"judge_lane"`
+				Reason      string                   `json:"reason"`
+				Unavailable string                   `json:"unavailable"`
+				Answers     map[string]benchV2Answer `json:"answers"`
+				InputTokens *int                     `json:"input_tokens"`
+			}
+			if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.JudgeLane != "critical" || record.Reason != judge.ReasonAnswerMismatch || record.Unavailable != "" || record.InputTokens == nil || *record.InputTokens != 7 {
+				t.Fatalf("record = %+v", record)
+			}
+			if got := record.Answers["contract"]; got.Answer || got.Defaulted || got.Unavailable || got.Confidence != 0.9 {
+				t.Errorf("contract = %+v", got)
+			}
+			if got := record.Answers["mechanical"]; got.Answer || !got.Defaulted || got.Unavailable || got.Confidence != 0.5 {
+				t.Errorf("mechanical = %+v", got)
+			}
+			for _, key := range []string{"lifecycle", "security", "open_decision"} {
+				if got := record.Answers[key]; !got.Answer || !got.Defaulted || !got.Unavailable {
+					t.Errorf("%s = %+v", key, got)
+				}
+			}
+			var envelope struct {
+				Summary benchV2Summary `json:"summary"`
+			}
+			if err := json.Unmarshal([]byte(lines[1]), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			summary := envelope.Summary
+			if summary.Unavailable != 0 || summary.UnavailableAnswers != 3 || summary.DefaultedAnswers != 4 || summary.Agreement.Total != 1 || summary.Economy.Total != 1 {
+				t.Fatalf("summary = %+v", summary)
+			}
+		})
+	}
+}
+
+func TestClassifyBenchV2Unavailable(t *testing.T) {
+	partial := judge.Response{Answers: map[string]judge.Answer{"contract": {Type: judge.QuestionNoul, Noul: 0.9}}}
+	for _, tc := range []struct {
+		name   string
+		judge  judge.Judge
+		reason string
+	}{
+		{"other error with answers", staticBenchJudge{response: partial, err: &judge.UnavailableError{Reason: judge.ReasonTimeout}}, judge.ReasonTimeout},
+		{"mismatch with no answers", staticBenchJudge{response: judge.Response{Answers: map[string]judge.Answer{}}, err: &judge.UnavailableError{Reason: judge.ReasonAnswerMismatch}}, judge.ReasonAnswerMismatch},
+		{"mismatch with invalid answer", staticBenchJudge{response: judge.Response{Answers: map[string]judge.Answer{"contract": {Type: judge.QuestionChoice, Choice: "yes"}}}, err: &judge.UnavailableError{Reason: judge.ReasonAnswerMismatch}}, judge.ReasonAnswerMismatch},
+		{"chain mismatch with no answers", &judge.Chain{Judges: []judge.Named{{Provider: judge.ProviderTypesafe, Judge: staticBenchJudge{err: &judge.UnavailableError{Reason: judge.ReasonAnswerMismatch}}}}}, judge.ReasonAllUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output strings.Builder
+			if err := classifyBenchTasksV2(context.Background(), &output, tc.judge, "", []routing.Plan{partialBenchV2Plan()}, nil, true); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(output.String()), "\n")
+			if len(lines) != 2 {
+				t.Fatalf("output = %s", output.String())
+			}
+			var record benchV2Record
+			if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record.Unavailable != tc.reason || record.JudgeLane != "" || record.Reason != "" || len(record.Answers) != 0 {
+				t.Fatalf("record = %+v", record)
+			}
+			var envelope struct {
+				Summary benchV2Summary `json:"summary"`
+			}
+			if err := json.Unmarshal([]byte(lines[1]), &envelope); err != nil {
+				t.Fatal(err)
+			}
+			summary := envelope.Summary
+			if summary.Tasks != 1 || summary.Unavailable != 1 || summary.UnavailableAnswers != 5 || summary.Agreement.Total != 0 || summary.Economy.Total != 0 {
+				t.Fatalf("summary = %+v", summary)
+			}
+		})
+	}
 }
 
 func classifyV2TestServer(t *testing.T, routes map[string]classifyV2Route) (*httptest.Server, *classifyCallRecord) {

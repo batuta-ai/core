@@ -24,6 +24,7 @@ var fallbackReasons = map[string]struct{}{
 	ReasonTimeout:           {},
 	ReasonMalformedResponse: {},
 	ReasonKeyMissing:        {},
+	ReasonAnswerMismatch:    {},
 }
 
 // Named pairs a provider identity with the Judge that serves it.
@@ -101,6 +102,7 @@ func (c *Chain) Ask(ctx context.Context, req Request) (Response, error) {
 
 	c.answered = ""
 	attempts := make([]ChainAttempt, 0, len(walk))
+	var lastMismatch Response
 	for _, provider := range walk {
 		j := byProvider[provider]
 		if j == nil {
@@ -122,8 +124,11 @@ func (c *Chain) Ask(ctx context.Context, req Request) (Response, error) {
 			c.last = attempts
 			return Response{}, err
 		}
+		if unavailableErr.Reason == ReasonAnswerMismatch {
+			lastMismatch = resp
+		}
 		attempts = append(attempts, ChainAttempt{Provider: provider, Reason: unavailableErr.Reason})
 	}
 	c.last = attempts
-	return Response{}, unavailable(ReasonAllUnavailable, &ChainError{Attempts: slices.Clone(attempts)})
+	return lastMismatch, unavailable(ReasonAllUnavailable, &ChainError{Attempts: slices.Clone(attempts)})
 }

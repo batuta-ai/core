@@ -171,7 +171,7 @@ func (j *HTTPJudge) Ask(ctx context.Context, req Request) (Response, error) {
 		return Response{}, unavailable(ReasonMalformedResponse, errors.New("missing answers"))
 	}
 	if err := validateAnswers(req.Questions, parsed.Answers); err != nil {
-		return Response{}, err
+		return Response{Model: parsed.Model, Answers: matchingAnswers(req.Questions, parsed.Answers), Usage: parsed.Usage}, err
 	}
 	return Response{Model: parsed.Model, Answers: parsed.Answers, Usage: parsed.Usage}, nil
 }
@@ -203,6 +203,27 @@ func validateAnswers(questions map[string]Question, answers map[string]Answer) e
 		}
 	}
 	return nil
+}
+
+func matchingAnswers(questions map[string]Question, answers map[string]Answer) map[string]Answer {
+	matched := make(map[string]Answer)
+	for key, answer := range answers {
+		question, ok := questions[key]
+		if !ok || answer.Type != question.Type {
+			continue
+		}
+		if question.Type == QuestionChoice {
+			options, ok := choiceOptions(question.Criteria)
+			if !ok {
+				continue
+			}
+			if _, ok := options[answer.Choice]; !ok {
+				continue
+			}
+		}
+		matched[key] = answer
+	}
+	return matched
 }
 
 func choiceOptions(criteria any) (map[string]struct{}, bool) {

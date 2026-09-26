@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -70,6 +71,63 @@ func TestHTTPJudgeAnswers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(score.Probabilities, map[string]float64{"low": 0, "high": 1}) {
 		t.Fatalf("score probabilities = %#v", score.Probabilities)
+	}
+}
+
+type staticHTTPTransport struct {
+	body string
+}
+
+func (transport staticHTTPTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(transport.body))}, nil
+}
+
+func TestHTTPJudgePartialAnswersOnMismatch(t *testing.T) {
+	t.Parallel()
+
+	questions := map[string]Question{
+		"valid":   {Type: QuestionNoul},
+		"choice":  {Type: QuestionChoice, Criteria: map[string]string{"known": "known option"}},
+		"missing": {Type: QuestionScore},
+	}
+	for _, tc := range []struct {
+		name    string
+		answers string
+		want    map[string]Answer
+	}{
+		{
+			name:    "missing answer and unknown choice",
+			answers: `{"valid":{"type":"noul","noul":0.9},"choice":{"type":"choice","choice":"unknown"}}`,
+			want:    map[string]Answer{"valid": {Type: QuestionNoul, Noul: 0.9}},
+		},
+		{
+			name:    "wrong type and extra key",
+			answers: `{"valid":{"type":"score","score":1},"choice":{"type":"choice","choice":"known"},"missing":{"type":"score","score":1},"extra":{"type":"noul","noul":1}}`,
+			want: map[string]Answer{
+				"choice":  {Type: QuestionChoice, Choice: "known"},
+				"missing": {Type: QuestionScore, Score: 1},
+			},
+		},
+		{
+			name:    "no usable answer",
+			answers: `{"valid":{"type":"score","score":1}}`,
+			want:    map[string]Answer{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			j := NewHTTPJudge(Options{
+				Key: "test-key",
+				Client: &http.Client{Transport: staticHTTPTransport{
+					body: `{"model":"partial","answers":` + tc.answers + `,"usage":{"input_tokens":7}}`,
+				}},
+			})
+			resp, err := j.Ask(context.Background(), Request{Questions: questions})
+			requireUnavailable(t, err, ReasonAnswerMismatch)
+			if resp.Model != "partial" || resp.Usage.InputTokens != 7 || !reflect.DeepEqual(resp.Answers, tc.want) {
+				t.Fatalf("Ask() response = %#v, want model, usage and answers %#v", resp, tc.want)
+			}
+		})
 	}
 }
 

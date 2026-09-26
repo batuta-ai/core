@@ -572,6 +572,7 @@ type benchV2Record struct {
 	Relation    string                   `json:"relation"`
 	InputTokens *int                     `json:"input_tokens,omitempty"`
 	Unavailable string                   `json:"unavailable,omitempty"`
+	Reason      string                   `json:"reason,omitempty"`
 }
 
 func (r benchV2Record) text() string {
@@ -580,6 +581,9 @@ func (r benchV2Record) text() string {
 		line += " unavailable=" + r.Unavailable
 	} else {
 		line += " judge=" + r.JudgeLane
+		if r.Reason != "" {
+			line += " reason=" + r.Reason
+		}
 	}
 	line += fmt.Sprintf(" scope=files:%d,dirs:%d,test_only:%t,docs_only:%t", r.Scope.Files, r.Scope.Directories, r.Scope.TestOnly, r.Scope.DocsOnly)
 	for _, key := range benchV2Questions {
@@ -632,15 +636,18 @@ func benchV2RecordFor(ctx context.Context, j judge.Judge, buildReason string, pl
 	}
 	response, err := j.Ask(ctx, classify.BuildRequestV2(task, plan.ContextFor(task.Number)))
 	if err != nil {
-		record.Unavailable = judgeReplayReason(err)
-		return record
+		if !benchV2AnswerMismatch(err) || !benchV2HasUsableAnswer(response.Answers) {
+			record.Unavailable = judgeReplayReason(err)
+			return record
+		}
+		record.Reason = judge.ReasonAnswerMismatch
 	}
 	decision := classify.DecideV2(record.Scope, response.Answers)
 	record.JudgeLane = string(decision.Complexity)
 	record.Answers = make(map[string]benchV2Answer, len(benchV2Questions))
 	for _, key := range benchV2Questions {
 		answer := response.Answers[key]
-		unavailable := answer.Type != judge.QuestionNoul || math.IsNaN(answer.Noul) || answer.Noul < 0 || answer.Noul > 1
+		unavailable := !benchV2NoulAvailable(answer)
 		confidence := 0.0
 		if !unavailable {
 			confidence = math.Max(answer.Noul, 1-answer.Noul)
@@ -667,6 +674,39 @@ func benchV2RecordFor(ctx context.Context, j judge.Judge, buildReason string, pl
 		record.Relation = benchRelationHigher
 	}
 	return record
+}
+
+func benchV2AnswerMismatch(err error) bool {
+	var unavailable *judge.UnavailableError
+	if !errors.As(err, &unavailable) {
+		return false
+	}
+	if unavailable.Reason == judge.ReasonAnswerMismatch {
+		return true
+	}
+	var chainErr *judge.ChainError
+	if !errors.As(err, &chainErr) {
+		return false
+	}
+	for _, attempt := range chainErr.Attempts {
+		if attempt.Reason == judge.ReasonAnswerMismatch {
+			return true
+		}
+	}
+	return false
+}
+
+func benchV2HasUsableAnswer(answers map[string]judge.Answer) bool {
+	for _, key := range benchV2Questions {
+		if benchV2NoulAvailable(answers[key]) {
+			return true
+		}
+	}
+	return false
+}
+
+func benchV2NoulAvailable(answer judge.Answer) bool {
+	return answer.Type == judge.QuestionNoul && !math.IsNaN(answer.Noul) && answer.Noul >= 0 && answer.Noul <= 1
 }
 
 type benchV2Measure struct {
