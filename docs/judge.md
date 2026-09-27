@@ -368,7 +368,8 @@ is agreement with the host's labels:
 
 ```text
 batuta judge classify bench --plan <file> [--plan <file>...] [--journals <dir>...]
-                            [--rubric v1|v2] [--json] [--config <path>]
+                            [--rubric v1|v2|v3] [--split calibrate|test]
+                            [--rule <file>] [--json] [--config <path>]
                             [--workspace <dir>] [--base-url <url>]
 ```
 
@@ -392,6 +393,24 @@ average of economy and safety (PASS at 0.65). The summary also reports lane
 distribution, agreement with the plan lane, answer distribution, defaulted
 answers and unavailable answers. `--json` emits task objects and one summary
 object with the same measures. This is a shadow score; it changes no routing.
+
+`--rubric v3` follows [section 14 of the judge research note](../.batuta/judge-research.md#14-plan-classification-v3-decision-rule-frozen-before-the-build-2026-09-27).
+Lane C comes from Scope and the open decision marker. Lane J starts at C and
+uses one choice question for each nonempty code-built contract or security
+packet. An insufficient, uncertain or unavailable answer leaves that lane
+unchanged. `--split calibrate|test` keeps whole plans together by the parity
+of the first byte of the plan slug's SHA-256; without it, both halves are
+scored. `--rule <file>` loads a JSON rule with `FHigh`, `FLow`, `DocsLow` and
+`Threshold` from the frozen grid; without it, the default rule applies.
+These two flags are accepted only with v3. Each task record names its split,
+both lanes, Scope features, open marker, packet presence and size, and answer
+status, choice, confidence and probabilities when available. A question
+without a packet is recorded as `not_asked` and is not counted among the
+answers. The summary
+reports economy, safety, discrimination and balance for both lanes, their
+balance difference, unknown outcomes, question counts and input tokens.
+`--json` emits the same records and summary as JSON objects. V3 is a shadow
+score and does not change routing.
 
 It prints one line per task (prefixed with the plan slug) and a summary:
 tasks, exact complexity and domain agreement, under-routed (judge lane lower
