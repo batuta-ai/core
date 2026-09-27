@@ -331,6 +331,10 @@
 - [x] HTTPJudge keeps the valid answers of a mismatched response; bench v2 applies DecideV2 to them → codex (gpt-6-sol), commit cfbdb67e9bdf (trail: .batuta/runs/2026-09-26-classify-v2-fixes-task-1.md, delivery classify-v2-fixes-20260926-175535, plan classify-v2-fixes, 2026-09-26)
 - [x] classify v3: open marker, rule parameters, code lane C, split by plan → claude (sonnet), commit 34c95a47d3d0 (trail: .batuta/runs/2026-09-27-classify-v3-task-1.md, delivery classify-v3-20260927-212743, plan classify-v3, 2026-09-27)
 - [x] classify v3: contract and security packets, the two choice questions, lane J → codex (gpt-6-sol), commit ad27bff1c48d (trail: .batuta/runs/2026-09-27-classify-v3-task-2.md, delivery classify-v3-20260927-212743, plan classify-v3, 2026-09-27)
+- [x] classify v3: open marker, rule parameters, code lane C, split by plan → ticked in the plan before the run, commit 7844c661a289 (trail: .batuta/runs/2026-09-27-classify-v3-task-1.md, delivery classify-v3-20260927-221835, plan classify-v3, 2026-09-27)
+- [x] classify v3: contract and security packets, the two choice questions, lane J → ticked in the plan before the run, commit 7844c661a289 (trail: .batuta/runs/2026-09-27-classify-v3-task-2.md, delivery classify-v3-20260927-221835, plan classify-v3, 2026-09-27)
+- [x] batuta judge classify bench --rubric v3 with --split and --rule → ticked in the plan before the run, commit 7844c661a289 (trail: .batuta/runs/2026-09-27-classify-v3-task-3.md, delivery classify-v3-20260927-221835, plan classify-v3, 2026-09-27)
+- [x] batuta judge classify calibrate selects the rule offline from a recorded calibrate run → claude (sonnet), 1 retry, commit fd80d2d5eef9 (trail: .batuta/runs/2026-09-27-classify-v3-task-4.md, delivery classify-v3-20260927-221835, plan classify-v3, 2026-09-27)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
