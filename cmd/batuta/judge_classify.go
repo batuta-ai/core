@@ -76,6 +76,9 @@ func runJudgeClassify(args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == "bench" {
 		return runJudgeClassifyBench(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "calibrate" {
+		return runJudgeClassifyCalibrate(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("judge classify", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	planPath := flags.String("plan", "", "plan file whose tasks are classified")

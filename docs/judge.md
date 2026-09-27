@@ -436,6 +436,42 @@ plans or journals, and never a key (the API key lives in the environment
 variable `key_env` names). The bench touches the plan files, the journal
 files and the judge endpoint, and writes nothing.
 
+#### `classify calibrate`
+
+`classify calibrate` selects the v3 rule offline from a recorded
+`bench --rubric v3 --split calibrate --json` run, following the procedure of
+[section 14 of the judge research note](../.batuta/judge-research.md#14-plan-classification-v3-decision-rule-frozen-before-the-build-2026-09-27):
+calibrate run, selection, freeze, test run.
+
+```text
+batuta judge classify calibrate --run <file> [--out <file>] [--json]
+```
+
+It reads only the task records of `--run` — the record type `bench` writes,
+skipping the trailing summary object — and makes no judge or network call.
+Every record must name the calibrate half; a record naming the test half, or
+a run with no v3 record, is refused.
+
+For each of the twenty grid points (`FHigh` in 4-8, `FLow` in 1 or 2,
+`DocsLow` no or yes) lane C is recomputed from each task's recorded Scope
+features and open marker, and the same measures the bench computes — economy,
+safety, the largest lane's share, the lanes used and balance — are printed.
+The point selected is the one with the highest balance among those where no
+lane holds more than 70% and at least 3 lanes are used; ties go to the higher
+economy, then the lower `FHigh`, then the lower `FLow`, then `DocsLow` no.
+When no point discriminates, the highest balance is taken over the whole grid
+and the failure is reported.
+
+With C fixed, lane J is recomputed from each task's recorded answers for
+every threshold of 0.7, 0.8 and 0.9 — an answer's kept choice and confidence
+let a different threshold change what counts as firm — and the highest
+balance is selected, ties to the higher threshold.
+
+The selected `FHigh`, `FLow`, `DocsLow` and threshold are printed as the
+frozen rule; `--out` writes them as the JSON `bench --rule` accepts, so the
+rule can be committed and frozen before the test half is read. `--json`
+prints the grid, both selections and the rule as JSON instead of text.
+
 ## Safety rules
 
 - The judge may block, escalate, demote or annotate. It **never approves**,
