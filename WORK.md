@@ -329,6 +329,8 @@
 - [x] classify v2: Scope features, five noul questions, the frozen lane rule → codex (gpt-6-sol), commit 384f1322164e (trail: .batuta/runs/2026-09-26-classify-v2-task-1.md, delivery classify-v2-20260926-172530, plan classify-v2, 2026-09-26)
 - [x] batuta judge classify bench --rubric v2 scores against outcomes with the frozen measures → codex (gpt-6-sol), commit 028563a73b20 (trail: .batuta/runs/2026-09-26-classify-v2-task-2.md, delivery classify-v2-20260926-172530, plan classify-v2, 2026-09-26)
 - [x] HTTPJudge keeps the valid answers of a mismatched response; bench v2 applies DecideV2 to them → codex (gpt-6-sol), commit cfbdb67e9bdf (trail: .batuta/runs/2026-09-26-classify-v2-fixes-task-1.md, delivery classify-v2-fixes-20260926-175535, plan classify-v2-fixes, 2026-09-26)
+- [x] classify v3: open marker, rule parameters, code lane C, split by plan → claude (sonnet), commit 34c95a47d3d0 (trail: .batuta/runs/2026-09-27-classify-v3-task-1.md, delivery classify-v3-20260927-212743, plan classify-v3, 2026-09-27)
+- [x] classify v3: contract and security packets, the two choice questions, lane J → codex (gpt-6-sol), commit ad27bff1c48d (trail: .batuta/runs/2026-09-27-classify-v3-task-2.md, delivery classify-v3-20260927-212743, plan classify-v3, 2026-09-27)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
@@ -382,3 +384,4 @@
 - [ ] docs/dispatch.md gains a CLI containment paragraph → cursor-agent (cursor-grok-4.6-high), escalated from opencode after 2 fails, aborted: verifier_incomplete (trail: .batuta/runs/2026-09-23-cli-containment-docs-task-1.md, delivery cli-containment-docs-20260923-221352, plan cli-containment-docs, 2026-09-23)
 - [ ] Decoders emit one text line per provider error or limit event → codex (gpt-6-sol), aborted: submission_uncertain (trail: .batuta/runs/2026-09-25-decoder-errors-task-1.md, delivery decoder-errors-20260925-101331, plan decoder-errors, 2026-09-25)
 - [ ] Decoders emit one text line per provider error or limit event → codex (gpt-6-sol), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-25-decoder-errors-task-1.md, delivery decoder-errors-20260925-142228, plan decoder-errors, 2026-09-25)
+- [ ] batuta judge classify bench --rubric v3 with --split and --rule → codex (gpt-6-sol), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-27-classify-v3-task-3.md, delivery classify-v3-20260927-212743, plan classify-v3, 2026-09-27)
