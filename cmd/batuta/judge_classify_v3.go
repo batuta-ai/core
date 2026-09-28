@@ -171,6 +171,10 @@ func benchV3RecordFor(ctx context.Context, j judge.Judge, buildReason string, pl
 	}
 	record.Called = true
 	response, err := j.Ask(ctx, request)
+	if response.Usage.InputTokens != 0 {
+		tokens := response.Usage.InputTokens
+		record.InputTokens = &tokens
+	}
 	if err != nil && (!benchV2AnswerMismatch(err) || !benchV3HasUsableAnswer(response.Answers, request.Questions)) {
 		record.Unavailable = judgeReplayReason(err)
 		return record
@@ -197,10 +201,6 @@ func benchV3RecordFor(ctx context.Context, j judge.Judge, buildReason string, pl
 			Choice: answer.Choice, Confidence: answer.Confidence,
 			Probabilities: answer.Probabilities, Status: decision.Status[key],
 		}
-	}
-	if response.Usage.InputTokens != 0 {
-		tokens := response.Usage.InputTokens
-		record.InputTokens = &tokens
 	}
 	return record
 }
@@ -247,6 +247,7 @@ type benchV3QuestionCounts struct {
 	Insufficient   int `json:"insufficient"`
 	BelowThreshold int `json:"below_threshold"`
 	Unavailable    int `json:"unavailable"`
+	NotAsked       int `json:"not_asked"`
 }
 
 type benchV3LaneSummary struct {
@@ -335,6 +336,8 @@ func (c *benchV3Counts) add(r benchV3Record) {
 			count.BelowThreshold++
 		case "unavailable":
 			count.Unavailable++
+		case "not_asked":
+			count.NotAsked++
 		}
 		s.Questions[key] = count
 	}
@@ -433,7 +436,7 @@ func (c *benchV3Counts) printSummary(w io.Writer) error {
 	}
 	for _, key := range benchV3Questions {
 		q := s.Questions[key]
-		if _, err := fmt.Fprintf(w, "%s packets=%d calls=%d firm=%d insufficient=%d below_threshold=%d unavailable=%d\n", key, q.Packets, q.Calls, q.Firm, q.Insufficient, q.BelowThreshold, q.Unavailable); err != nil {
+		if _, err := fmt.Fprintf(w, "%s packets=%d calls=%d firm=%d insufficient=%d below_threshold=%d unavailable=%d not_asked=%d\n", key, q.Packets, q.Calls, q.Firm, q.Insufficient, q.BelowThreshold, q.Unavailable, q.NotAsked); err != nil {
 			return err
 		}
 	}

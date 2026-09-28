@@ -409,6 +409,12 @@ without a packet is recorded as `not_asked` and is not counted among the
 answers. The summary
 reports economy, safety, discrimination and balance for both lanes, their
 balance difference, unknown outcomes, question counts and input tokens.
+Per question, the summary counts `packets`, `calls`, `firm`, `insufficient`,
+`below_threshold`, `unavailable` and `not_asked`, in text and in `--json`;
+`insufficient` counts only answers the judge gave, so section 14's
+empty-packet total is `insufficient` plus `not_asked`. Input tokens are
+recorded from every judge call that returns usage, including one that ends in
+an error such as an answer mismatch.
 `--json` emits the same records and summary as JSON objects. V3 is a shadow
 score and does not change routing.
 

@@ -242,6 +242,61 @@ func TestClassifyBenchV3JSON(t *testing.T) {
 	}
 }
 
+func TestClassifyBenchV3UsageOnError(t *testing.T) {
+	t.Parallel()
+	root, plan := benchV3Fixture(t, "usage-error-a")
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"model":"jev-test","answers":{"contract":{"type":"choice","choice":"bogus","confidence":0.9}},"usage":{"input_tokens":37}}`))
+	}))
+	t.Cleanup(server.Close)
+	output, err := benchV3Run(t, root, plan, server.URL, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("calls = %d", calls.Load())
+	}
+	if !strings.Contains(output, `"unavailable":"answer_mismatch"`) || strings.Count(output, `"input_tokens":37`) != 2 {
+		t.Fatalf("record/summary missing usage: %s", output)
+	}
+}
+
+func TestClassifyBenchV3NotAskedCount(t *testing.T) {
+	t.Parallel()
+	root, plan := benchV3Fixture(t, "not-asked-a")
+	server, _ := benchV3Server(t)
+	output, err := benchV3Run(t, root, plan, server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output, "contract packets=1 calls=1 firm=1 insufficient=0 below_threshold=0 unavailable=0 not_asked=1") ||
+		!strings.Contains(output, "security packets=0 calls=0 firm=0 insufficient=0 below_threshold=0 unavailable=0 not_asked=2") {
+		t.Fatalf("not_asked count missing: %s", output)
+	}
+	jsonOutput, err := benchV3Run(t, root, plan, server.URL, "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(jsonOutput), "\n")
+	var summary struct {
+		Summary struct {
+			Questions map[string]benchV3QuestionCounts `json:"questions"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &summary); err != nil {
+		t.Fatal(err)
+	}
+	if summary.Summary.Questions["security"].NotAsked != 2 || summary.Summary.Questions["contract"].NotAsked != 1 {
+		t.Fatalf("json not_asked = %+v", summary.Summary.Questions)
+	}
+	if summary.Summary.Questions["contract"].Firm != 1 || summary.Summary.Questions["contract"].Insufficient != 0 {
+		t.Fatalf("insufficient must count only judged answers: %+v", summary.Summary.Questions["contract"])
+	}
+}
+
 func TestClassifyBenchV3LabelFree(t *testing.T) {
 	t.Parallel()
 	root, plan := benchV3Fixture(t, "label-a")
