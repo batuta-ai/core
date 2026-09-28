@@ -2,17 +2,17 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Close the accepted findings of the two reviews of plan `classify-v3` (supervision review of delivery `classify-v3-20260927-221835`, verdict REWORK, and the full-range review from base `4166ba6`, verdict REWORK) so the calibrate and test runs of `.batuta/judge-research.md` section 14 read only well-formed records and report complete counts. No wording, grid, threshold or mapping of section 14 changes.
-**Created:** 2026-09-27 · **Status:** approved
+**Created:** 2026-09-27 · **Status:** done
 
 ## Tasks
-- [ ] 1. judge classify calibrate reads only complete v3 records and a matching summary — backend/medium
+- [x] 1. judge classify calibrate reads only complete v3 records and a matching summary — backend/medium
       Scope: cmd/batuta/judge_classify_calibrate.go, cmd/batuta/judge_classify_calibrate_test.go
       Accept: a task record that lacks any of split, plan lane, code lane, judge lane, outcome, the Scope object, or the packet and answer entries for both questions makes calibrate exit 1 and name the record's line → go test ./cmd/batuta -run TestClassifyCalibrateRejectsMalformedRecord; a run file without the trailing summary object, or whose summary task count differs from the number of task records, makes calibrate exit 1 → go test ./cmd/batuta -run TestClassifyCalibrateRequiresSummary; a complete calibrate run is read as before and the existing selection results are unchanged → go test ./cmd/batuta -run 'TestClassifyCalibrateOffline|TestClassifyCalibrateGrid|TestClassifyCalibrateSelectC|TestClassifyCalibrateSelectT|TestClassifyCalibrateRuleRoundTrip|TestClassifyCalibrateRefusesTest'; the package stays green → go test ./cmd/batuta
-- [ ] 2. bench v3 records usage on every call and counts not_asked in the summary — backend/medium
+- [x] 2. bench v3 records usage on every call and counts not_asked in the summary — backend/medium
       Depends on: 1
       Scope: cmd/batuta/judge_classify_v3.go, cmd/batuta/judge_classify_v3_test.go, cmd/batuta/judge_classify_calibrate_test.go, docs/judge.md
       Accept: when the judge returns input-token usage together with an error, including an answer mismatch with no usable answer, the record and the summary carry those input tokens → go test ./cmd/batuta -run TestClassifyBenchV3UsageOnError; the summary reports per question a `not_asked` count beside packets, calls, firm, insufficient, below threshold and unavailable, in text and in `--json`, and `insufficient` keeps counting only answers the judge gave → go test ./cmd/batuta -run TestClassifyBenchV3NotAskedCount; task records keep the status `not_asked` for a question without a packet → go test ./cmd/batuta -run TestClassifyBenchV3UnavailableCall; docs/judge.md names the `not_asked` count and says that section 14's empty-packet total is `insufficient` plus `not_asked` → grep -q 'insufficient. plus .not_asked' docs/judge.md; the packages stay green → go test ./cmd/batuta ./classify
-- [ ] 3. the split tests assert sha256 parity computed outside SplitV3 — backend/low
+- [x] 3. the split tests assert sha256 parity computed outside SplitV3 — backend/low
       Scope: classify/v3_test.go, cmd/batuta/judge_classify_v3_test.go
       Accept: TestSplitV3 asserts the six fixed slugs and halves listed in this plan as literals → go test ./classify -run TestSplitV3; the bench split test takes its expected half from a literal, not from SplitV3 → go test ./cmd/batuta -run TestClassifyBenchV3Split; no production file changes → git diff --quiet HEAD -- classify/v3.go cmd/batuta/judge_classify_v3.go; the packages stay green → go test ./cmd/batuta ./classify
 

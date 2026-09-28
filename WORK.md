@@ -335,6 +335,9 @@
 - [x] classify v3: contract and security packets, the two choice questions, lane J → ticked in the plan before the run, commit 7844c661a289 (trail: .batuta/runs/2026-09-27-classify-v3-task-2.md, delivery classify-v3-20260927-221835, plan classify-v3, 2026-09-27)
 - [x] batuta judge classify bench --rubric v3 with --split and --rule → ticked in the plan before the run, commit 7844c661a289 (trail: .batuta/runs/2026-09-27-classify-v3-task-3.md, delivery classify-v3-20260927-221835, plan classify-v3, 2026-09-27)
 - [x] batuta judge classify calibrate selects the rule offline from a recorded calibrate run → claude (sonnet), 1 retry, commit fd80d2d5eef9 (trail: .batuta/runs/2026-09-27-classify-v3-task-4.md, delivery classify-v3-20260927-221835, plan classify-v3, 2026-09-27)
+- [x] judge classify calibrate reads only complete v3 records and a matching summary → claude (sonnet), commit 9f318b659afb (trail: .batuta/runs/2026-09-28-classify-v3-fixes-task-1.md, delivery classify-v3-fixes-20260928-144315, plan classify-v3-fixes, 2026-09-28)
+- [x] bench v3 records usage on every call and counts not_asked in the summary → claude (sonnet), commit 5027fed78ef3 (trail: .batuta/runs/2026-09-28-classify-v3-fixes-task-2.md, delivery classify-v3-fixes-20260928-144315, plan classify-v3-fixes, 2026-09-28)
+- [x] the split tests assert sha256 parity computed outside SplitV3 → agy (gemini-3.8-flash-low), commit 9eedd67f03d4 (trail: .batuta/runs/2026-09-28-classify-v3-fixes-task-3.md, delivery classify-v3-fixes-20260928-144315, plan classify-v3-fixes, 2026-09-28)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
