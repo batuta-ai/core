@@ -295,3 +295,28 @@ Headline: v2 is not fit to propose lanes. It sent 140 of 171 outcome-labelled ta
 Why, from the answers (reported, not a result): Jev never answered `open_decision` yes with confidence ≥ 0.7 (0 of 228); it was below 0.7 on 197 tasks (median 0.62), and section 13 turns that uncertainty into yes, hence `critical`. The other questions were answered more firmly (median confidence: lifecycle 0.85, security 0.79, contract 0.74, mechanical 0.94).
 
 Post hoc, not a result and not a restatement of the rule: with an uncertain `open_decision` counted as no, the same answers would give economy 55.6%, safety 50.0%, balance 0.528, and `high` 119 of 171 (69.6%). v2 would still fail economy and balance; the rule's contract/lifecycle/security defaults and the "two of three" clause push most batuta tasks, which do touch contracts and processes, to `high`. The host's own lanes score economy 1.0, safety 0.0, balance 0.5 on the same tasks.
+
+## Plan classification v3, run 1 (2026-09-28)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 14 (commit `8bcbbca`). Binary built from `d2fbd86` on branch `feat/classify-v3`. Config `.batuta/judge-classify-v3/judge-classify.json` (`provider: typesafe`, `model: jev-1.13.0`, `timeout_ms: 20000`), key from the maintainer's login shell, one trial per half. Commands: `batuta judge classify bench --rubric v3 --split calibrate --json`, then `batuta judge classify calibrate --run`, then `batuta judge classify bench --rubric v3 --split test --rule .batuta/judge-classify-v3/rule.json --json`, over the 85 plan files of `.batuta/judge-classify-v3/plans-run.txt` and the journals of both repositories. Raw output: `.batuta/judge-classify-v3/calibrate.jsonl`, `calibrate-selection.txt`, `test.jsonl`.
+
+Deviations, recorded before any judge call (`.batuta/judge-classify-v3/deviation.txt`): the engine review of the last delivery returned REWORK on one finding with no effect on a measure and was accepted by the conductor's judgment on the maintainer's authorization, so the binary was not built after a SHIP; task 3 of the build was closed by the conductor, recording a question without a packet as `not_asked`; `supervision-fixes.md` does not parse and is excluded (2 tasks), as in runs 1 and 2.
+
+Calibrate half, 125 tasks in 46 plans (sufficient 83, insufficient 5, unknown 37). 103 calls, 0 unavailable, 145,926 input tokens. Selection by the procedure of section 14, table of the twenty grid points in `calibrate-selection.txt`: C at F_high 4, F_low 2, docs_low yes (balance 0.4494, economy 0.6988, safety 1/5, largest lane `high` 48.9%, 4 lanes); T at 0.8 (balance 0.4554, tied with 0.7, tie to the higher). No grid point reached balance 0.45 for C; every point with F_high ≥ 5 had safety 0/5. Rule committed as `rule.json` in `b976756` before the test half was read.
+
+Test half, 113 tasks in 38 plans (sufficient 78, insufficient 15, unknown outcome 20). 85 calls, 0 unavailable, 134,982 input tokens.
+
+| measure | lane C (code only) | lane J (C adjusted by Jev) | frozen bar | |
+|---|---|---|---|---|
+| economy (sufficient with lane ≤ L) | 55 / 78 = 70.5% | 54 / 78 = 69.2% | ≥ 75% | **fails**, both |
+| safety (insufficient with lane > L) | 5 / 15 = 33.3% | 5 / 15 = 33.3% | ≥ 50% | **fails**, both |
+| discrimination | high 58, low 26, medium 9, critical 0 (largest 62.4%, 3 lanes) | high 59, low 27, medium 7, critical 0 (largest 63.4%, 3 lanes) | ≤ 70%, ≥ 3 lanes | holds, both |
+| balance | 0.519 | 0.513 | ≥ 0.65 | **fails**, both |
+| balance(J) − balance(C) | | −0.006 | ≥ 0.05 | **fails** |
+| agreement with the plan lane (reported only) | 49 / 113 = 43.4% | 48 / 113 = 42.5% | | |
+
+Headline: neither lane is fit to propose lanes, and Jev does not add to classification. Lane C fails economy, safety and balance; lane J is 0.006 below C on balance. By section 14 classification stays code-only and the next Jev decision is verifier-objection triage.
+
+Reported beside it, deciding nothing. Retrieval: a contract packet was found for 85 of 113 test tasks, a security packet for 3. Answers on `contract`: 18 firm, 67 below 0.8, 0 `insufficient`, 28 not asked; choices `exported_change` 47, `internal_only` 38; confidence median 0.63 (min 0.27, max 0.99). Answers on `security`: 2 firm, 1 below 0.8, 110 not asked. On the calibrate half `contract` had 11 firm at 0.9 and 92 below, confidence median 0.64. Over both halves Jev chose `insufficient` on 0 of 195 answers. J differs from C on 7 of 113 test tasks (raised on 3: low→medium 2, medium→high 1; lowered on 4: medium→low 3, high→medium 1); 4 of the 7 have a known outcome, all sufficient. Open marker: 1 test task, 2 calibrate tasks. Both halves together: 188 calls, 280,908 input tokens.
+
+Post hoc, not a result and not a restatement of the rule: 6 of the 15 insufficient test tasks ran at host lane `high`, where only `critical` is higher, and lane C gives `critical` only on the open marker; with this rule safety could not exceed 9 / 15. The calibrate half had 5 insufficient tasks, and the selection took the only F_high that raised any of them.

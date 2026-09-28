@@ -1,5 +1,13 @@
 # WORK — core
 
+## Current status — 2026-09-28: classification v3 run 1 negative, branch not pushed
+- [ ] Branch `feat/classify-v3` (local, not pushed, no PR): the Jev application study (`.batuta/judge-application-study.md`), section 14 frozen in `8bcbbca`, the v3 build (plans `classify-v3` and `classify-v3-fixes` to `-fixes-4`, all done), the run inputs and outputs under `.batuta/judge-classify-v3/`, and the record in `.batuta/judge-benchmark.md` "Plan classification v3, run 1".
+- [ ] Run 1, test half (113 tasks, 15 insufficient): lane C (code only) economy 70.5%, safety 33.3%, balance 0.519; lane J (C adjusted by Jev) economy 69.2%, safety 33.3%, balance 0.513; balance(J) − balance(C) = −0.006. **Negative for both**: neither lane is fit to propose lanes and Jev does not add to classification. Rule selected on the calibrate half and frozen in `b976756`: F_high 4, F_low 2, docs_low yes, T 0.8.
+- [ ] By section 14 classification stays code-only, in shadow, and the next Jev decision is verifier-objection triage (study section 5, item 1).
+- [ ] Review: five engine reviews of the branch returned REWORK; the last one (delivery `classify-v3-fixes-4-20260928-161040`) was accepted by the conductor's judgment on the maintainer's authorization of 2026-09-28. The judgments of the four earlier reviews stay pending. Deviations in `.batuta/judge-classify-v3/deviation.txt`.
+- [ ] Known minors for the PR body: `ContractPacket` does not resolve a flag registered through a field selector or on a shadowed name (`classify/v3_packet.go` ~217–221); calibrate text output is `key=value` lines; a confidence that underflows to zero passes the zero check on an unanswered entry (`cmd/batuta/judge_classify_calibrate.go` ~353).
+- [ ] Not done: push, PR, the re-probe of the OpenCode Zen `systemone` route, the hand adjudication of the insufficient tasks (lane or environment).
+
 ## Current status — 2026-09-26 resume: #136 merged, Jev application study before classification v3
 - [ ] **core#136** merged to `main` (admin merge, 2026-09-26): classify v2 in shadow, `judge classify bench --rubric v2`, partial answers through `HTTPJudge`/`Chain`, run 1 record. Local `main` at `e519537`.
 - [ ] In flight on `docs/jev-application-study`: a study of how batuta should apply the Jev judge (what the two negative experiments and the astra review say, which decisions suit the judge, how to phrase and calibrate), written to `.batuta/judge-application-study.md`; it informs the classification v3 rule.
