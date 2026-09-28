@@ -5,3 +5,7 @@ Deviations from section 14 of .batuta/judge-research.md, recorded on 2026-09-28 
 2. Task 3 of plan classify-v3 was closed by the conductor after the executor's second attempt escalated to the critical lane (commit e12fde1): a question without a packet is recorded as not_asked instead of insufficient. The summary shows insufficient and not_asked apart; section 14's empty-packet total is their sum. The mapping is unchanged: both change nothing.
 
 3. Findings declined, known minors: ContractPacket does not resolve flag names registered through a field selector or on a shadowed non-FlagSet name (classify/v3_packet.go ~217-221); neither form occurs in core or skills. The calibrate text output uses key=value lines like the bench.
+
+4. Corpus, recorded before any judge call: .batuta/plans/done/supervision-fixes.md does not parse (free-text Status line), the same plan excluded in classification runs 1 and 2; it is excluded here too (2 tasks). The run reads 85 plan files (84 slugs; research-ladder exists in core and in skills), 238 tasks: calibrate 125 tasks in 46 plans, test 113 tasks in 38 plans. A pass with the judge off counted the packets: calibrate 103 tasks with a contract packet and 4 with a security packet; test 85 and 3. The security question is therefore asked on 7 tasks in all. The corpus includes the five done plans of this build (classify-v3 and its four fix plans).
+
+5. Binary: built from d2fbd864f679 (version v1.1.0-beta.42.0.20260928183654-d2fbd864f679). Later commits on the branch touch only .batuta/ files.
