@@ -120,6 +120,26 @@ func TestCodeLaneV3(t *testing.T) {
 func TestSplitV3(t *testing.T) {
 	t.Parallel()
 
+	for _, tc := range []struct {
+		slug string
+		byte byte
+		want string
+	}{
+		{"classify-v3", 0xec, "calibrate"},
+		{"classify-v2", 0xc3, "test"},
+		{"watch", 0xba, "calibrate"},
+		{"roadmap", 0x3d, "test"},
+		{"dashboard", 0x66, "calibrate"},
+		{"review", 0xc9, "test"},
+	} {
+		t.Run(tc.slug, func(t *testing.T) {
+			t.Parallel()
+			if got := SplitV3(tc.slug); got != tc.want {
+				t.Fatalf("SplitV3(%q) = %q, want %q (byte 0x%02x)", tc.slug, got, tc.want, tc.byte)
+			}
+		})
+	}
+
 	counts := map[string]int{"calibrate": 0, "test": 0}
 	for i := 0; i < 200; i++ {
 		slug := "plan-" + strings.Repeat("x", i%7) + string(rune('a'+i%26))

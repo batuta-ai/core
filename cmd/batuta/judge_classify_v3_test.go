@@ -10,8 +10,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-
-	"github.com/batuta-ai/core/classify"
 )
 
 const benchV3TestPlan = `# Plan — V3 bench
@@ -115,7 +113,7 @@ func TestClassifyBenchV3Split(t *testing.T) {
 	t.Parallel()
 	root, plan := benchV3Fixture(t, "split-a")
 	server, bodies := benchV3Server(t)
-	want := classify.SplitV3("split-a")
+	want := "test"
 	output, err := benchV3Run(t, root, plan, server.URL, "--split", want, "--json")
 	if err != nil {
 		t.Fatal(err)
