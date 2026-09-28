@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Close the two blockers of the supervision review of delivery `classify-v3-fixes-20260928-144315` (verdict REWORK): the calibrate reader takes a summary wherever it appears, and it checks that required keys exist without checking their values. After this plan the reader accepts a file only when every line is a well-typed v3 task record and the last line is the one summary. Nothing in `.batuta/judge-research.md` section 14 changes.
-**Created:** 2026-09-28 · **Status:** approved
+**Created:** 2026-09-28 · **Status:** done
 
 ## Tasks
-- [ ] 1. judge classify calibrate rejects a misplaced summary and null or mistyped record values — backend/medium
+- [x] 1. judge classify calibrate rejects a misplaced summary and null or mistyped record values — backend/medium
       Scope: cmd/batuta/judge_classify_calibrate.go, cmd/batuta/judge_classify_calibrate_test.go
       Accept: a file whose summary is followed by a task record, a file with two summaries, and a file with a JSON object that is neither a task record nor the summary each make calibrate exit 1 and name the line → go test ./cmd/batuta -run TestClassifyCalibrateSummaryMustBeLast; a task record where `split`, `plan_lane`, `code_lane`, `judge_lane` or `outcome` is null, not a string or empty, where `scope` is null or not an object with numeric `Files` and `Directories` and boolean `TestOnly` and `DocsOnly`, where a `packets` entry is null or lacks a boolean `found`, or where an `answers` entry is null or lacks a `status` that is one of firm, insufficient, below_threshold, not_asked, unavailable makes calibrate exit 1 and name the line and the field → go test ./cmd/batuta -run TestClassifyCalibrateRejectsNullOrMistyped; the earlier cases still hold → go test ./cmd/batuta -run 'TestClassifyCalibrateRejectsMalformedRecord|TestClassifyCalibrateRequiresSummary|TestClassifyCalibrateRefusesTest'; a complete calibrate run written by `bench --rubric v3 --json` is read and selects as before → go test ./cmd/batuta -run 'TestClassifyCalibrateOffline|TestClassifyCalibrateGrid|TestClassifyCalibrateSelectC|TestClassifyCalibrateSelectT|TestClassifyCalibrateRuleRoundTrip'; no file outside the calibrate reader and its test changes → git diff --quiet HEAD -- cmd/batuta/judge_classify_v3.go classify docs; the package stays green → go test ./cmd/batuta
 
