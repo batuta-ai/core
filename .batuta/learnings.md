@@ -53,3 +53,10 @@
 - An executor inside a CLI sandbox cannot run the whole core suite: codex's sandbox blocks `ps` and loopback, claude's blocks the Go build cache. Briefs say "run the named tests; the gate runs the rest". The claude adapter may need the Go cache paths allowed in its sandbox settings — probe before changing it.
 - claude over ACP turned every Bash call in a real worktree into a denied `execute` request and ended with an unverified shutdown (delivery `output-decoder-20260925-192240`); the probes that qualified it only ran simple commands. Loops on this machine run `--transport cli` until a probe runs real commands in a real worktree.
 - Bench runs need the judge keys from the maintainer's login shell: run them through `zsh -lic "..."`; never print or copy the keys. `batuta review --reviewer claude/opus` covers a codex outage.
+
+## 2026-09-28 — classification v3 build, five review rounds
+
+- A fix plan for a validator names every field the code reads, with presence, type, allowed value and consistency, in Accept lines with proofs. Naming only the fields of the finding gave four more rounds on `readCalibrateRecords`, each finding the next field.
+- Every normative sentence of a plan goes in an Accept line with a proof. The reviewer reads the plan's prose as requirements: "confidence is always written and is 0" in the context of fixes-3 became a blocker in the next round.
+- Declined 2026-09-28, review of `classify-v3-fixes-4`: rejecting a confidence that underflows to zero (`1e-999`) on an answer the code never reads. A validator of a file the same binary writes stops at what changes a result.
+- The final review of a delivery covers only that delivery's diff. When an earlier delivery of the same plan ended blocked, run `batuta review --base <plan commit> --full` once over the whole range.
