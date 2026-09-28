@@ -2,9 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/batuta-ai/core/classify"
@@ -65,13 +68,14 @@ func writeRawCalibrateRun(t *testing.T, lines []string) string {
 // one to prove its absence is rejected.
 func calibrateRecordMap() map[string]any {
 	return map[string]any{
-		"task":       "a",
-		"split":      "calibrate",
-		"plan_lane":  "low",
-		"code_lane":  "low",
-		"judge_lane": "low",
-		"outcome":    benchOutcomeCandidate,
-		"scope":      map[string]any{"Files": 1, "Directories": 1, "TestOnly": false, "DocsOnly": false},
+		"task":        "a",
+		"split":       "calibrate",
+		"plan_lane":   "low",
+		"code_lane":   "low",
+		"judge_lane":  "low",
+		"outcome":     benchOutcomeCandidate,
+		"open_marker": false,
+		"scope":       map[string]any{"Files": 1, "Directories": 1, "TestOnly": false, "DocsOnly": false},
 		"packets": map[string]any{
 			"contract": map[string]any{"found": false, "size": 0},
 			"security": map[string]any{"found": false, "size": 0},
@@ -81,6 +85,26 @@ func calibrateRecordMap() map[string]any {
 			"security": map[string]any{"status": "not_asked", "confidence": 0},
 		},
 	}
+}
+
+// calibrateAnsweredRecordMap is a complete raw task record whose contract
+// question was asked and answered: security stays not_asked, matching what
+// a real bench run leaves for a question with no packet.
+func calibrateAnsweredRecordMap(status, choice string, confidence float64) map[string]any {
+	record := calibrateRecordMap()
+	record["packets"] = map[string]any{
+		"contract": map[string]any{"found": true, "size": 1},
+		"security": map[string]any{"found": false, "size": 0},
+	}
+	answer := map[string]any{"status": status, "confidence": confidence}
+	if choice != "" {
+		answer["choice"] = choice
+	}
+	record["answers"] = map[string]any{
+		"contract": answer,
+		"security": map[string]any{"status": "not_asked", "confidence": 0},
+	}
+	return record
 }
 
 // calibrateNotAskedAnswers is the packets/answers pair a real bench run
@@ -526,4 +550,395 @@ func TestClassifyCalibrateRequiresSummary(t *testing.T) {
 			t.Fatal("expected an error for a summary tasks count that disagrees with the record count")
 		}
 	})
+}
+
+// calibrateRunSingleRecord writes one raw record and a matching trailing
+// summary, then runs judge classify calibrate against it, returning the
+// error so a test can assert on its message.
+func calibrateRunSingleRecord(t *testing.T, record map[string]any) error {
+	t.Helper()
+	recordJSON, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryJSON, err := json.Marshal(map[string]any{"summary": map[string]any{"tasks": 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := writeRawCalibrateRun(t, []string{string(recordJSON), string(summaryJSON)})
+	var stdout, stderr strings.Builder
+	return run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr)
+}
+
+// TestClassifyCalibrateOpenMarker proves that a record whose open_marker is
+// missing, null or not a boolean is rejected by line and by field.
+func TestClassifyCalibrateOpenMarker(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"missing", func(m map[string]any) { delete(m, "open_marker") }},
+		{"null", func(m map[string]any) { m["open_marker"] = nil }},
+		{"not a boolean", func(m map[string]any) { m["open_marker"] = "yes" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := calibrateRecordMap()
+			tc.mutate(record)
+			err := calibrateRunSingleRecord(t, record)
+			if err == nil {
+				t.Fatalf("expected an error for open_marker %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "open_marker") {
+				t.Fatalf("expected the error to name line 1 and open_marker, got %v", err)
+			}
+		})
+	}
+}
+
+// TestClassifyCalibrateAllowedValues proves that split, plan_lane, code_lane,
+// judge_lane and outcome are rejected when they hold a value outside their
+// allowed set, by line and by field.
+func TestClassifyCalibrateAllowedValues(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		field  string
+		mutate func(map[string]any)
+	}{
+		{"split not calibrate or test", "split", func(m map[string]any) { m["split"] = "bogus" }},
+		{"plan_lane not a lane", "plan_lane", func(m map[string]any) { m["plan_lane"] = "urgent" }},
+		{"code_lane not a lane", "code_lane", func(m map[string]any) { m["code_lane"] = "urgent" }},
+		{"judge_lane not a lane", "judge_lane", func(m map[string]any) { m["judge_lane"] = "urgent" }},
+		{"outcome not an outcome", "outcome", func(m map[string]any) { m["outcome"] = "bogus" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := calibrateRecordMap()
+			tc.mutate(record)
+			err := calibrateRunSingleRecord(t, record)
+			if err == nil {
+				t.Fatalf("expected an error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("expected the error to name line 1 and %s, got %v", tc.field, err)
+			}
+		})
+	}
+}
+
+// TestClassifyCalibrateCounts proves that Scope's Files and Directories, and
+// a packet's size, are rejected when negative or non-integer, and that a
+// packet with found false and size above zero is rejected too.
+func TestClassifyCalibrateCounts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		field  string
+		mutate func(map[string]any)
+	}{
+		{"scope Files negative", "scope", func(m map[string]any) {
+			m["scope"] = map[string]any{"Files": -1, "Directories": 1, "TestOnly": false, "DocsOnly": false}
+		}},
+		{"scope Files not an integer", "scope", func(m map[string]any) {
+			m["scope"] = map[string]any{"Files": 1.5, "Directories": 1, "TestOnly": false, "DocsOnly": false}
+		}},
+		{"scope Directories negative", "scope", func(m map[string]any) {
+			m["scope"] = map[string]any{"Files": 1, "Directories": -1, "TestOnly": false, "DocsOnly": false}
+		}},
+		{"scope Directories not an integer", "scope", func(m map[string]any) {
+			m["scope"] = map[string]any{"Files": 1, "Directories": 2.5, "TestOnly": false, "DocsOnly": false}
+		}},
+		{"packet size missing", "packets", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": map[string]any{"found": false}, "security": map[string]any{"found": false, "size": 0}}
+		}},
+		{"packet size null", "packets", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": map[string]any{"found": false, "size": nil}, "security": map[string]any{"found": false, "size": 0}}
+		}},
+		{"packet size negative", "packets", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": map[string]any{"found": false, "size": -1}, "security": map[string]any{"found": false, "size": 0}}
+		}},
+		{"packet size not an integer", "packets", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": map[string]any{"found": false, "size": 1.5}, "security": map[string]any{"found": false, "size": 0}}
+		}},
+		{"packet found false with size above zero", "packets", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": map[string]any{"found": false, "size": 3}, "security": map[string]any{"found": false, "size": 0}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := calibrateRecordMap()
+			tc.mutate(record)
+			err := calibrateRunSingleRecord(t, record)
+			if err == nil {
+				t.Fatalf("expected an error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("expected the error to name line 1 and %s, got %v", tc.field, err)
+			}
+		})
+	}
+}
+
+// TestClassifyCalibrateAnswerValues proves that, for a question actually
+// asked and answered, choice, confidence and probabilities are each
+// rejected when malformed, for every status that carries them.
+func TestClassifyCalibrateAnswerValues(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"firm", "insufficient", "below_threshold"} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(map[string]any)
+		}{
+			{"choice missing", func(m map[string]any) {
+				delete(m["answers"].(map[string]any)["contract"].(map[string]any), "choice")
+			}},
+			{"choice null", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["choice"] = nil
+			}},
+			{"choice empty", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["choice"] = ""
+			}},
+			{"choice not an option", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["choice"] = "bogus"
+			}},
+			{"confidence missing", func(m map[string]any) {
+				delete(m["answers"].(map[string]any)["contract"].(map[string]any), "confidence")
+			}},
+			{"confidence null", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["confidence"] = nil
+			}},
+			{"confidence not a number", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["confidence"] = "high"
+			}},
+			{"confidence below zero", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["confidence"] = -0.1
+			}},
+			{"confidence above one", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["confidence"] = 1.1
+			}},
+			{"probabilities not an object", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["probabilities"] = "nope"
+			}},
+			{"probabilities value below zero", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["probabilities"] = map[string]any{"exported_change": -0.1}
+			}},
+			{"probabilities value above one", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["probabilities"] = map[string]any{"exported_change": 1.1}
+			}},
+			{"probabilities value not a number", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["probabilities"] = map[string]any{"exported_change": "high"}
+			}},
+		} {
+			t.Run(status+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				record := calibrateAnsweredRecordMap(status, "exported_change", 0.95)
+				tc.mutate(record)
+				err := calibrateRunSingleRecord(t, record)
+				if err == nil {
+					t.Fatalf("expected an error for status %s, %s", status, tc.name)
+				}
+				if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "answers") {
+					t.Fatalf("expected the error to name line 1 and answers, got %v", err)
+				}
+			})
+		}
+	}
+}
+
+// TestClassifyCalibratePacketAnswerConsistency proves that a packet's found
+// and its question's answer status must agree: found false pairs only with
+// not_asked, and found true pairs only with something other than not_asked.
+func TestClassifyCalibratePacketAnswerConsistency(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{"found false but status firm", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": map[string]any{"found": false, "size": 0}, "security": map[string]any{"found": false, "size": 0}}
+			m["answers"] = map[string]any{
+				"contract": map[string]any{"status": "firm", "choice": "exported_change", "confidence": 0.95},
+				"security": map[string]any{"status": "not_asked", "confidence": 0},
+			}
+		}},
+		{"found true but status not_asked", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": map[string]any{"found": true, "size": 1}, "security": map[string]any{"found": false, "size": 0}}
+			m["answers"] = map[string]any{
+				"contract": map[string]any{"status": "not_asked", "confidence": 0},
+				"security": map[string]any{"status": "not_asked", "confidence": 0},
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := calibrateRecordMap()
+			tc.mutate(record)
+			err := calibrateRunSingleRecord(t, record)
+			if err == nil {
+				t.Fatalf("expected an error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "answers") {
+				t.Fatalf("expected the error to name line 1 and answers, got %v", err)
+			}
+		})
+	}
+}
+
+// TestClassifyCalibrateSummaryTasks proves that the trailing summary's tasks
+// field is rejected when missing, null, non-integer or negative.
+func TestClassifyCalibrateSummaryTasks(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		summary map[string]any
+	}{
+		{"missing", map[string]any{}},
+		{"null", map[string]any{"tasks": nil}},
+		{"not an integer", map[string]any{"tasks": 1.5}},
+		{"negative", map[string]any{"tasks": -1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			recordJSON, err := json.Marshal(calibrateRecordMap())
+			if err != nil {
+				t.Fatal(err)
+			}
+			summaryJSON, err := json.Marshal(map[string]any{"summary": tc.summary})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := writeRawCalibrateRun(t, []string{string(recordJSON), string(summaryJSON)})
+			var stdout, stderr strings.Builder
+			err = run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("expected an error for summary tasks %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "line 2") || !strings.Contains(err.Error(), "tasks") {
+				t.Fatalf("expected the error to name line 2 and tasks, got %v", err)
+			}
+		})
+	}
+}
+
+// calibrateBenchTestPlan is a five-task plan whose slug hashes to the
+// calibrate half (classify.SplitV3("calibrate-fixture-a")): four tasks
+// reference the same Go file, so their contract question is asked, and one
+// references a doc path that is never created, so it never gets a packet.
+const calibrateBenchTestPlan = `# Plan — calibrate statuses
+<!-- inputs: profile.md@sha256:1a2b3c4d5e6f routing.md@sha256:0f0e0d0c0b0a -->
+
+**Goal:** Exercise every answer status a v3 bench run can write.
+**Created:** 2026-09-27 · **Status:** approved
+
+## Tasks
+- [ ] 1. Change firm — backend/low
+      Scope: api/contract.go
+      Accept: Go tests pass → go test ./...
+- [ ] 2. Change insufficient — backend/low
+      Scope: api/contract.go
+      Accept: Go tests pass → go test ./...
+- [ ] 3. Change below threshold — backend/low
+      Scope: api/contract.go
+      Accept: Go tests pass → go test ./...
+- [ ] 4. Change unavailable — backend/low
+      Scope: api/contract.go
+      Accept: Go tests pass → go test ./...
+- [ ] 5. Document behavior — docs/medium
+      Scope: docs/readme.md
+      Accept: documentation exists → test -f docs/readme.md
+
+## Decisions and context
+Tasks 1-4 change Exported.
+`
+
+// calibrateBenchFixture is calibrateBenchTestPlan on disk: one Go file for
+// the four code tasks, and no docs/readme.md at all, so the fifth task's
+// question is never asked, exactly as benchV3Fixture leaves its docs task.
+func calibrateBenchFixture(t *testing.T) (string, string) {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".batuta"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".batuta", "judge.json"), []byte(`{"provider":"typesafe","model":"jev-test","key_env":"PATH"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "api"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "api", "contract.go"), []byte("package api\nfunc Exported() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	planDir := filepath.Join(root, ".batuta", "plans", "done")
+	if err := os.MkdirAll(planDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	plan := filepath.Join(planDir, "calibrate-fixture-a.md")
+	if err := os.WriteFile(plan, []byte(calibrateBenchTestPlan), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root, plan
+}
+
+// calibrateBenchStatusServer answers the bench's four contract-question
+// calls (one per code task) in order, one canned body per target status:
+// firm, insufficient, below_threshold, then an unknown choice that Ask
+// rejects, leaving that answer's status at its unavailable default.
+func calibrateBenchStatusServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	bodies := []string{
+		`{"model":"jev-test","answers":{"contract":{"type":"choice","choice":"exported_change","confidence":0.95}},"usage":{"input_tokens":10}}`,
+		`{"model":"jev-test","answers":{"contract":{"type":"choice","choice":"insufficient","confidence":0.99}},"usage":{"input_tokens":10}}`,
+		`{"model":"jev-test","answers":{"contract":{"type":"choice","choice":"internal_only","confidence":0.5}},"usage":{"input_tokens":10}}`,
+		`{"model":"jev-test","answers":{"contract":{"type":"choice","choice":"bogus","confidence":0.9}},"usage":{"input_tokens":10}}`,
+	}
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		index := int(calls.Add(1)) - 1
+		if index < 0 || index >= len(bodies) {
+			t.Fatalf("unexpected call %d", index+1)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(bodies[index]))
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// TestClassifyCalibrateAcceptsBenchOutput proves that a calibrate run
+// written by the real bench, covering every answer status, is read and
+// validated without complaint: the reader is proven against what the bench
+// actually writes, not a hand-written fixture.
+func TestClassifyCalibrateAcceptsBenchOutput(t *testing.T) {
+	t.Parallel()
+	root, plan := calibrateBenchFixture(t)
+	server := calibrateBenchStatusServer(t)
+	var benchOut, benchErr strings.Builder
+	benchArgs := []string{
+		"judge", "classify", "bench", "--plan", plan, "--rubric", "v3",
+		"--workspace", root, "--base-url", server.URL, "--split", "calibrate", "--json",
+	}
+	if err := run(benchArgs, &benchOut, &benchErr); err != nil {
+		t.Fatalf("bench: %v (stderr %s)", err, benchErr.String())
+	}
+	output := benchOut.String()
+	for _, status := range []string{
+		`"status":"firm"`, `"status":"insufficient"`, `"status":"below_threshold"`,
+		`"status":"unavailable"`, `"status":"not_asked"`,
+	} {
+		if !strings.Contains(output, status) {
+			t.Fatalf("expected bench output to contain %s, got %s", status, output)
+		}
+	}
+	runPath := filepath.Join(t.TempDir(), "run.json")
+	if err := os.WriteFile(runPath, []byte(output), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var calibrateOut, calibrateErr strings.Builder
+	if err := run([]string{"judge", "classify", "calibrate", "--run", runPath}, &calibrateOut, &calibrateErr); err != nil {
+		t.Fatalf("calibrate rejected a real bench run: %v (stderr %s)", err, calibrateErr.String())
+	}
 }

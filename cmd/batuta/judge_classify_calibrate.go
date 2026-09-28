@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 
@@ -18,7 +19,7 @@ import (
 // calibrateRequiredFields are the top-level keys a task record must carry:
 // without them the record's downstream fields silently fall back to zero
 // values, corrupting the grid and threshold search rather than failing loud.
-var calibrateRequiredFields = []string{"split", "plan_lane", "code_lane", "judge_lane", "outcome", "scope", "packets", "answers"}
+var calibrateRequiredFields = []string{"split", "plan_lane", "code_lane", "judge_lane", "outcome", "open_marker", "scope", "packets", "answers"}
 
 // calibrateSplit is the only split a calibrate run's records may carry: the
 // procedure of judge-research.md section 14 selects the rule from the
@@ -124,6 +125,9 @@ func readCalibrateRecords(path string) ([]benchV3Record, error) {
 		switch _, hasSummary := raw["summary"]; {
 		case hasSummary:
 			summaryRaw := raw["summary"]
+			if err := calibrateValidateSummaryTasks(summaryRaw); err != nil {
+				return nil, fmt.Errorf("line %d: %w", line, err)
+			}
 			var s benchV3Summary
 			if err := json.Unmarshal(summaryRaw, &s); err != nil {
 				return nil, fmt.Errorf("line %d: summary: %w", line, err)
@@ -172,61 +176,169 @@ var calibrateValidAnswerStatuses = map[string]bool{
 	"not_asked": true, "unavailable": true,
 }
 
+// calibrateAnsweredStatuses are the statuses a found packet's answer may
+// carry once the judge has actually answered it: the ones that write choice
+// and probabilities and a nonzero confidence, as opposed to not_asked and
+// unavailable, which never do.
+var calibrateAnsweredStatuses = map[string]bool{
+	"firm": true, "insufficient": true, "below_threshold": true,
+}
+
+// calibrateValidSplits are the only values a record's split may carry: the
+// runJudgeClassifyCalibrate mixed-half check rejects "test" by name once
+// every record has been read, but a validly typed value must still be one
+// of the two halves a v3 bench run ever writes.
+var calibrateValidSplits = map[string]bool{"calibrate": true, "test": true}
+
+// calibrateValidLanes are the only values plan_lane, code_lane and
+// judge_lane may carry: routing.Complexity's own labels.
+var calibrateValidLanes = calibrateLabelSet(benchComplexityLabels)
+
+// calibrateValidOutcomes are the only values outcome may carry: the
+// benchOutcome* constants benchOutcome itself can produce.
+var calibrateValidOutcomes = calibrateLabelSet(benchOutcomeLabels)
+
+func calibrateLabelSet(labels []string) map[string]bool {
+	set := make(map[string]bool, len(labels))
+	for _, label := range labels {
+		set[label] = true
+	}
+	return set
+}
+
+// calibrateQuestionChoices are the options an answered question's choice may
+// hold: classify's own v3ContractCriteria and v3SecurityCriteria keys,
+// repeated here because classify keeps them private.
+var calibrateQuestionChoices = map[string]map[string]bool{
+	"contract": {"exported_change": true, "internal_only": true, "insufficient": true},
+	"security": {"security_behaviour": true, "incidental": true, "insufficient": true},
+}
+
 // validateCalibrateRecordFields checks that a task record carries every
 // field the calibrate grid and threshold search read, and that each holds a
-// well-typed value rather than merely existing: split, plan_lane, code_lane,
-// judge_lane and outcome must be non-empty strings; scope must be an object
-// with numeric Files and Directories and boolean TestOnly and DocsOnly; and
-// packets and answers must each carry an entry for both questions in
-// benchV3Questions, with a boolean found for packets and a status from
-// calibrateValidAnswerStatuses for answers.
+// well-typed, in-range value rather than merely existing: split, plan_lane,
+// code_lane and judge_lane must each be one of calibrateValidSplits or
+// calibrateValidLanes, outcome one of calibrateValidOutcomes, open_marker a
+// boolean, scope an object with non-negative integer Files and Directories
+// and boolean TestOnly and DocsOnly, and packets and answers must each carry
+// an entry for both questions in benchV3Questions. A packet's found must be
+// a boolean and its size a non-negative integer that is zero when found is
+// false. An answer's status must be one of calibrateValidAnswerStatuses and
+// consistent with its packet's found: not_asked exactly when found is
+// false. When the status is one of calibrateAnsweredStatuses, choice must be
+// one of the question's options, confidence a number in [0,1], and
+// probabilities, when present, an object of numbers in [0,1].
 func validateCalibrateRecordFields(raw map[string]json.RawMessage) error {
 	for _, field := range calibrateRequiredFields {
 		if _, ok := raw[field]; !ok {
 			return fmt.Errorf("missing %q", field)
 		}
 	}
-	for _, field := range []string{"split", "plan_lane", "code_lane", "judge_lane", "outcome"} {
-		if _, err := calibrateRequireString(raw, field); err != nil {
+	if value, err := calibrateRequireString(raw, "split"); err != nil {
+		return err
+	} else if !calibrateValidSplits[value] {
+		return fmt.Errorf("split: %q is not one of calibrate, test", value)
+	}
+	for _, field := range []string{"plan_lane", "code_lane", "judge_lane"} {
+		value, err := calibrateRequireString(raw, field)
+		if err != nil {
 			return err
 		}
+		if !calibrateValidLanes[value] {
+			return fmt.Errorf("%s: %q is not one of low, medium, high, critical", field, value)
+		}
+	}
+	if value, err := calibrateRequireString(raw, "outcome"); err != nil {
+		return err
+	} else if !calibrateValidOutcomes[value] {
+		return fmt.Errorf("outcome: %q is not one of %s", value, strings.Join(benchOutcomeLabels, ", "))
+	}
+	if _, err := calibrateRequireBool(raw, "open_marker"); err != nil {
+		return err
 	}
 	if err := calibrateValidateScope(raw["scope"]); err != nil {
 		return fmt.Errorf("scope: %w", err)
 	}
-	for _, field := range []string{"packets", "answers"} {
-		var entries map[string]json.RawMessage
-		if err := json.Unmarshal(raw[field], &entries); err != nil {
-			return fmt.Errorf("%s: %w", field, err)
+	var packetsRaw, answersRaw map[string]json.RawMessage
+	if err := json.Unmarshal(raw["packets"], &packetsRaw); err != nil {
+		return fmt.Errorf("packets: %w", err)
+	}
+	if err := json.Unmarshal(raw["answers"], &answersRaw); err != nil {
+		return fmt.Errorf("answers: %w", err)
+	}
+	found := make(map[string]bool, len(benchV3Questions))
+	for _, question := range benchV3Questions {
+		entry, err := calibrateRequireEntry(packetsRaw, question, "packets")
+		if err != nil {
+			return err
 		}
-		for _, question := range benchV3Questions {
-			entryRaw, ok := entries[question]
-			if !ok {
-				return fmt.Errorf("%s: missing %q entry", field, question)
-			}
-			if calibrateIsJSONNull(entryRaw) {
-				return fmt.Errorf("%s: %q entry is null", field, question)
-			}
-			var entry map[string]json.RawMessage
-			if err := json.Unmarshal(entryRaw, &entry); err != nil {
-				return fmt.Errorf("%s: %q entry: %w", field, question, err)
-			}
-			if field == "packets" {
-				if err := calibrateRequireBool(entry, "found"); err != nil {
-					return fmt.Errorf("%s: %q entry: %w", field, question, err)
-				}
-				continue
-			}
-			status, err := calibrateRequireString(entry, "status")
-			if err != nil {
-				return fmt.Errorf("%s: %q entry: %w", field, question, err)
-			}
-			if !calibrateValidAnswerStatuses[status] {
-				return fmt.Errorf("%s: %q entry: status %q is not one of firm, insufficient, below_threshold, not_asked, unavailable", field, question, status)
-			}
+		isFound, err := calibrateRequireBool(entry, "found")
+		if err != nil {
+			return fmt.Errorf("packets: %q entry: %w", question, err)
+		}
+		size, err := calibrateRequireNonNegativeInt(entry, "size")
+		if err != nil {
+			return fmt.Errorf("packets: %q entry: %w", question, err)
+		}
+		if !isFound && size > 0 {
+			return fmt.Errorf("packets: %q entry: size %d is above zero but found is false", question, size)
+		}
+		found[question] = isFound
+	}
+	for _, question := range benchV3Questions {
+		entry, err := calibrateRequireEntry(answersRaw, question, "answers")
+		if err != nil {
+			return err
+		}
+		status, err := calibrateRequireString(entry, "status")
+		if err != nil {
+			return fmt.Errorf("answers: %q entry: %w", question, err)
+		}
+		if !calibrateValidAnswerStatuses[status] {
+			return fmt.Errorf("answers: %q entry: status %q is not one of firm, insufficient, below_threshold, not_asked, unavailable", question, status)
+		}
+		switch {
+		case found[question] && status == "not_asked":
+			return fmt.Errorf("answers: %q entry: status is not_asked but packets found is true", question)
+		case !found[question] && status != "not_asked":
+			return fmt.Errorf("answers: %q entry: status %q but packets found is false", question, status)
+		}
+		if !calibrateAnsweredStatuses[status] {
+			continue
+		}
+		choice, err := calibrateRequireString(entry, "choice")
+		if err != nil {
+			return fmt.Errorf("answers: %q entry: %w", question, err)
+		}
+		if !calibrateQuestionChoices[question][choice] {
+			return fmt.Errorf("answers: %q entry: choice %q is not one of %s's options", question, choice, question)
+		}
+		if err := calibrateRequireRange01(entry, "confidence"); err != nil {
+			return fmt.Errorf("answers: %q entry: %w", question, err)
+		}
+		if err := calibrateValidateProbabilities(entry); err != nil {
+			return fmt.Errorf("answers: %q entry: %w", question, err)
 		}
 	}
 	return nil
+}
+
+// calibrateRequireEntry decodes a required, non-null object entry for a
+// question out of a packets or answers map, naming the field and the
+// question on failure.
+func calibrateRequireEntry(entries map[string]json.RawMessage, question, field string) (map[string]json.RawMessage, error) {
+	entryRaw, ok := entries[question]
+	if !ok {
+		return nil, fmt.Errorf("%s: missing %q entry", field, question)
+	}
+	if calibrateIsJSONNull(entryRaw) {
+		return nil, fmt.Errorf("%s: %q entry is null", field, question)
+	}
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal(entryRaw, &entry); err != nil {
+		return nil, fmt.Errorf("%s: %q entry: %w", field, question, err)
+	}
+	return entry, nil
 }
 
 // calibrateIsJSONNull reports whether a raw JSON value is the literal null,
@@ -255,37 +367,112 @@ func calibrateRequireString(fields map[string]json.RawMessage, key string) (stri
 
 // calibrateRequireBool reads a required, non-null boolean field from a raw
 // JSON object's decoded key/value map.
-func calibrateRequireBool(fields map[string]json.RawMessage, key string) error {
+func calibrateRequireBool(fields map[string]json.RawMessage, key string) (bool, error) {
 	raw, ok := fields[key]
 	if !ok || calibrateIsJSONNull(raw) {
-		return fmt.Errorf("%s: missing or null", key)
+		return false, fmt.Errorf("%s: missing or null", key)
 	}
 	var value bool
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return fmt.Errorf("%s: not a boolean: %w", key, err)
+		return false, fmt.Errorf("%s: not a boolean: %w", key, err)
 	}
-	return nil
+	return value, nil
 }
 
 // calibrateRequireNumber reads a required, non-null numeric field from a raw
 // JSON object's decoded key/value map.
-func calibrateRequireNumber(fields map[string]json.RawMessage, key string) error {
+func calibrateRequireNumber(fields map[string]json.RawMessage, key string) (float64, error) {
 	raw, ok := fields[key]
 	if !ok || calibrateIsJSONNull(raw) {
-		return fmt.Errorf("%s: missing or null", key)
+		return 0, fmt.Errorf("%s: missing or null", key)
 	}
 	var value float64
 	if err := json.Unmarshal(raw, &value); err != nil {
-		return fmt.Errorf("%s: not a number: %w", key, err)
+		return 0, fmt.Errorf("%s: not a number: %w", key, err)
+	}
+	return value, nil
+}
+
+// calibrateRequireNonNegativeInt reads a required, non-null field that must
+// hold an integer at or above zero: the counts (Files, Directories, a
+// packet's size) that a negative or fractional value could never truthfully
+// represent.
+func calibrateRequireNonNegativeInt(fields map[string]json.RawMessage, key string) (int, error) {
+	value, err := calibrateRequireNumber(fields, key)
+	if err != nil {
+		return 0, err
+	}
+	if value != math.Trunc(value) {
+		return 0, fmt.Errorf("%s: %v is not an integer", key, value)
+	}
+	if value < 0 {
+		return 0, fmt.Errorf("%s: %v is negative", key, value)
+	}
+	return int(value), nil
+}
+
+// calibrateRequireRange01 reads a required, non-null numeric field and
+// checks it falls within [0,1], the range every confidence and probability
+// value in a bench v3 record is defined over.
+func calibrateRequireRange01(fields map[string]json.RawMessage, key string) error {
+	value, err := calibrateRequireNumber(fields, key)
+	if err != nil {
+		return err
+	}
+	if value < 0 || value > 1 {
+		return fmt.Errorf("%s: %v is not between 0 and 1", key, value)
+	}
+	return nil
+}
+
+// calibrateValidateProbabilities checks an answered entry's probabilities
+// field when present: the bench writes it with omitempty, so it is entirely
+// absent for not_asked and unavailable answers, but when present it must be
+// an object of numbers in [0,1].
+func calibrateValidateProbabilities(entry map[string]json.RawMessage) error {
+	raw, ok := entry["probabilities"]
+	if !ok {
+		return nil
+	}
+	if calibrateIsJSONNull(raw) {
+		return errors.New("probabilities: not an object")
+	}
+	var probabilities map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probabilities); err != nil {
+		return fmt.Errorf("probabilities: not an object: %w", err)
+	}
+	for option, valueRaw := range probabilities {
+		var value float64
+		if err := json.Unmarshal(valueRaw, &value); err != nil {
+			return fmt.Errorf("probabilities: %s: not a number: %w", option, err)
+		}
+		if value < 0 || value > 1 {
+			return fmt.Errorf("probabilities: %s: %v is not between 0 and 1", option, value)
+		}
+	}
+	return nil
+}
+
+// calibrateValidateSummaryTasks checks that the trailing summary object's
+// tasks field is present, non-null and a non-negative integer: unmarshaling
+// straight into benchV3Summary's int field would silently accept a missing,
+// null or negative value as zero or as itself, rather than rejecting it.
+func calibrateValidateSummaryTasks(raw json.RawMessage) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return fmt.Errorf("summary: not an object: %w", err)
+	}
+	if _, err := calibrateRequireNonNegativeInt(fields, "tasks"); err != nil {
+		return fmt.Errorf("summary: %w", err)
 	}
 	return nil
 }
 
 // calibrateValidateScope checks that a record's scope field is a non-null
 // object carrying classify.ScopeFeatures' fields with their declared types:
-// numeric Files and Directories, boolean TestOnly and DocsOnly. classify.
-// ScopeFeatures has no JSON tags, so its keys are exactly those Go field
-// names.
+// non-negative integer Files and Directories, boolean TestOnly and DocsOnly.
+// classify.ScopeFeatures has no JSON tags, so its keys are exactly those Go
+// field names.
 func calibrateValidateScope(raw json.RawMessage) error {
 	if calibrateIsJSONNull(raw) {
 		return errors.New("missing or null")
@@ -295,12 +482,12 @@ func calibrateValidateScope(raw json.RawMessage) error {
 		return fmt.Errorf("not an object: %w", err)
 	}
 	for _, key := range []string{"Files", "Directories"} {
-		if err := calibrateRequireNumber(fields, key); err != nil {
+		if _, err := calibrateRequireNonNegativeInt(fields, key); err != nil {
 			return err
 		}
 	}
 	for _, key := range []string{"TestOnly", "DocsOnly"} {
-		if err := calibrateRequireBool(fields, key); err != nil {
+		if _, err := calibrateRequireBool(fields, key); err != nil {
 			return err
 		}
 	}
