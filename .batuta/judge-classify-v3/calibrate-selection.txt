@@ -1,0 +1,27 @@
+records=125
+grid f_high=4 f_low=1 docs_low=false economy=0.6386 safety=0.2000 largest_lane=high largest_share=0.4886 lanes=4 balance=0.4193 discriminates=true
+grid f_high=4 f_low=1 docs_low=true economy=0.6627 safety=0.2000 largest_lane=high largest_share=0.4886 lanes=4 balance=0.4313 discriminates=true
+grid f_high=4 f_low=2 docs_low=false economy=0.6747 safety=0.2000 largest_lane=high largest_share=0.4886 lanes=4 balance=0.4373 discriminates=true
+grid f_high=4 f_low=2 docs_low=true economy=0.6988 safety=0.2000 largest_lane=high largest_share=0.4886 lanes=4 balance=0.4494 discriminates=true
+grid f_high=5 f_low=1 docs_low=false economy=0.7952 safety=0.0000 largest_lane=medium largest_share=0.6818 lanes=4 balance=0.3976 discriminates=true
+grid f_high=5 f_low=1 docs_low=true economy=0.8193 safety=0.0000 largest_lane=medium largest_share=0.6591 lanes=4 balance=0.4096 discriminates=true
+grid f_high=5 f_low=2 docs_low=false economy=0.8313 safety=0.0000 largest_lane=medium largest_share=0.4205 lanes=4 balance=0.4157 discriminates=true
+grid f_high=5 f_low=2 docs_low=true economy=0.8554 safety=0.0000 largest_lane=medium largest_share=0.3750 lanes=4 balance=0.4277 discriminates=true
+grid f_high=6 f_low=1 docs_low=false economy=0.7952 safety=0.0000 largest_lane=medium largest_share=0.7386 lanes=4 balance=0.3976 discriminates=false
+grid f_high=6 f_low=1 docs_low=true economy=0.8193 safety=0.0000 largest_lane=medium largest_share=0.7159 lanes=4 balance=0.4096 discriminates=false
+grid f_high=6 f_low=2 docs_low=false economy=0.8313 safety=0.0000 largest_lane=medium largest_share=0.4773 lanes=4 balance=0.4157 discriminates=true
+grid f_high=6 f_low=2 docs_low=true economy=0.8554 safety=0.0000 largest_lane=medium largest_share=0.4318 lanes=4 balance=0.4277 discriminates=true
+grid f_high=7 f_low=1 docs_low=false economy=0.8072 safety=0.0000 largest_lane=medium largest_share=0.7614 lanes=4 balance=0.4036 discriminates=false
+grid f_high=7 f_low=1 docs_low=true economy=0.8313 safety=0.0000 largest_lane=medium largest_share=0.7386 lanes=4 balance=0.4157 discriminates=false
+grid f_high=7 f_low=2 docs_low=false economy=0.8434 safety=0.0000 largest_lane=medium largest_share=0.5000 lanes=4 balance=0.4217 discriminates=true
+grid f_high=7 f_low=2 docs_low=true economy=0.8675 safety=0.0000 largest_lane=medium largest_share=0.4545 lanes=4 balance=0.4337 discriminates=true
+grid f_high=8 f_low=1 docs_low=false economy=0.8193 safety=0.0000 largest_lane=medium largest_share=0.7727 lanes=4 balance=0.4096 discriminates=false
+grid f_high=8 f_low=1 docs_low=true economy=0.8434 safety=0.0000 largest_lane=medium largest_share=0.7500 lanes=4 balance=0.4217 discriminates=false
+grid f_high=8 f_low=2 docs_low=false economy=0.8554 safety=0.0000 largest_lane=medium largest_share=0.5114 lanes=4 balance=0.4277 discriminates=true
+grid f_high=8 f_low=2 docs_low=true economy=0.8795 safety=0.0000 largest_lane=medium largest_share=0.4659 lanes=4 balance=0.4398 discriminates=true
+selected f_high=4 f_low=2 docs_low=true economy=0.6988 safety=0.2000 largest_lane=high largest_share=0.4886 lanes=4 balance=0.4494 discriminates=true
+threshold=0.70 economy=0.7108 safety=0.2000 balance=0.4554
+threshold=0.80 economy=0.7108 safety=0.2000 balance=0.4554
+threshold=0.90 economy=0.6988 safety=0.2000 balance=0.4494
+selected threshold=0.80
+rule={"FHigh":4,"FLow":2,"DocsLow":true,"Threshold":0.8}
