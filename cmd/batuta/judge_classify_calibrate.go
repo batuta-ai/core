@@ -1,17 +1,24 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/batuta-ai/core/classify"
 	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/routing"
 )
+
+// calibrateRequiredFields are the top-level keys a task record must carry:
+// without them the record's downstream fields silently fall back to zero
+// values, corrupting the grid and threshold search rather than failing loud.
+var calibrateRequiredFields = []string{"split", "plan_lane", "code_lane", "judge_lane", "outcome", "scope", "packets", "answers"}
 
 // calibrateSplit is the only split a calibrate run's records may carry: the
 // procedure of judge-research.md section 14 selects the rule from the
@@ -79,31 +86,96 @@ func runJudgeClassifyCalibrate(args []string, stdout, stderr io.Writer) error {
 }
 
 // readCalibrateRecords decodes the concatenated JSON objects a v3 bench
-// `--json` run writes: one benchV3Record per task, then a summary object.
-// A value with no task id is the summary (or any other non-task object) and
-// is skipped, never counted as a record.
+// `--json` run writes: one benchV3Record per task, then the summary object
+// under the key "summary" that classifyBenchTasksV3 writes last. Each line
+// is decoded into a raw map first so a record missing a required field is
+// rejected rather than silently completed with zero values, and the file is
+// rejected unless the summary is present and its tasks count matches the
+// number of task records read.
 func readCalibrateRecords(path string) ([]benchV3Record, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-	decoder := json.NewDecoder(file)
+
 	var records []benchV3Record
-	for {
-		var record benchV3Record
-		if err := decoder.Decode(&record); err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, err
-		}
-		if record.Task == "" {
+	var summary *benchV3Summary
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
+	line := 0
+	for scanner.Scan() {
+		line++
+		text := strings.TrimSpace(scanner.Text())
+		if text == "" {
 			continue
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(text), &raw); err != nil {
+			return nil, fmt.Errorf("line %d: %w", line, err)
+		}
+		if summaryRaw, ok := raw["summary"]; ok {
+			var s benchV3Summary
+			if err := json.Unmarshal(summaryRaw, &s); err != nil {
+				return nil, fmt.Errorf("line %d: summary: %w", line, err)
+			}
+			summary = &s
+			continue
+		}
+		taskRaw, ok := raw["task"]
+		if !ok {
+			continue
+		}
+		var task string
+		if err := json.Unmarshal(taskRaw, &task); err != nil {
+			return nil, fmt.Errorf("line %d: task: %w", line, err)
+		}
+		if task == "" {
+			continue
+		}
+		if err := validateCalibrateRecordFields(raw); err != nil {
+			return nil, fmt.Errorf("line %d: task %s: %w", line, task, err)
+		}
+		var record benchV3Record
+		if err := json.Unmarshal([]byte(text), &record); err != nil {
+			return nil, fmt.Errorf("line %d: task %s: %w", line, task, err)
 		}
 		records = append(records, record)
 	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	if summary == nil {
+		return nil, fmt.Errorf("%s: no trailing summary object", path)
+	}
+	if summary.Tasks != len(records) {
+		return nil, fmt.Errorf("%s: summary tasks=%d does not match %d task records", path, summary.Tasks, len(records))
+	}
 	return records, nil
+}
+
+// validateCalibrateRecordFields checks that a task record carries every
+// field the calibrate grid and threshold search read: split, plan_lane,
+// code_lane, judge_lane, outcome and scope directly, plus a packets and an
+// answers entry for both questions in benchV3Questions.
+func validateCalibrateRecordFields(raw map[string]json.RawMessage) error {
+	for _, field := range calibrateRequiredFields {
+		if _, ok := raw[field]; !ok {
+			return fmt.Errorf("missing %q", field)
+		}
+	}
+	for _, field := range []string{"packets", "answers"} {
+		var entries map[string]json.RawMessage
+		if err := json.Unmarshal(raw[field], &entries); err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		for _, question := range benchV3Questions {
+			if _, ok := entries[question]; !ok {
+				return fmt.Errorf("%s: missing %q entry", field, question)
+			}
+		}
+	}
+	return nil
 }
 
 // calibrateCodeLane mirrors classify.CodeLaneV3's first-match order without

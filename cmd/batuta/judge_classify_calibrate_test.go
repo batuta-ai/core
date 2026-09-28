@@ -13,6 +13,18 @@ import (
 
 func writeCalibrateRun(t *testing.T, records []benchV3Record, trailingSummary bool) string {
 	t.Helper()
+	tasks := len(records)
+	if !trailingSummary {
+		return writeCalibrateRunWithSummary(t, records, nil)
+	}
+	return writeCalibrateRunWithSummary(t, records, &tasks)
+}
+
+// writeCalibrateRunWithSummary writes a calibrate run file with an explicit
+// summary tasks count, or none at all when summaryTasks is nil, so a test
+// can exercise a summary that disagrees with the number of task records.
+func writeCalibrateRunWithSummary(t *testing.T, records []benchV3Record, summaryTasks *int) string {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "run.json")
 	file, err := os.Create(path)
 	if err != nil {
@@ -24,8 +36,8 @@ func writeCalibrateRun(t *testing.T, records []benchV3Record, trailingSummary bo
 			t.Fatal(err)
 		}
 	}
-	if trailingSummary {
-		if err := encoder.Encode(map[string]any{"summary": map[string]any{"tasks": len(records)}}); err != nil {
+	if summaryTasks != nil {
+		if err := encoder.Encode(map[string]any{"summary": map[string]any{"tasks": *summaryTasks}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -35,6 +47,50 @@ func writeCalibrateRun(t *testing.T, records []benchV3Record, trailingSummary bo
 	return path
 }
 
+// writeRawCalibrateRun writes each given raw JSON line verbatim, letting a
+// test omit a field readCalibrateRecords must reject rather than shaping
+// the line through benchV3Record's own json tags.
+func writeRawCalibrateRun(t *testing.T, lines []string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "run.json")
+	content := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// calibrateRecordMap is a complete raw task record: every field
+// readCalibrateRecords requires is present, so a test can delete exactly
+// one to prove its absence is rejected.
+func calibrateRecordMap() map[string]any {
+	return map[string]any{
+		"task":       "a",
+		"split":      "calibrate",
+		"plan_lane":  "low",
+		"code_lane":  "low",
+		"judge_lane": "low",
+		"outcome":    benchOutcomeCandidate,
+		"scope":      map[string]any{"files": 1, "directories": 1},
+		"packets": map[string]any{
+			"contract": map[string]any{"found": false, "size": 0},
+			"security": map[string]any{"found": false, "size": 0},
+		},
+		"answers": map[string]any{
+			"contract": map[string]any{"status": "not_asked", "confidence": 0},
+			"security": map[string]any{"status": "not_asked", "confidence": 0},
+		},
+	}
+}
+
+// calibrateNotAskedAnswers is the packets/answers pair a real bench run
+// writes for a task where neither question got a packet: both questions
+// present, "not_asked", exactly as benchV3RecordFor leaves them.
+func calibrateNotAskedAnswers() (map[string]benchV3Packet, map[string]benchV3Answer) {
+	return map[string]benchV3Packet{"contract": {}, "security": {}},
+		map[string]benchV3Answer{"contract": {Status: "not_asked"}, "security": {Status: "not_asked"}}
+}
+
 // calibrateDiscriminatingFixture is a four-task calibrate run whose lane C
 // depends on FLow alone: FHigh (4-8) never applies, since every Scope's
 // files count is either 0, 2 or 10 files (well below the lowest FHigh or at
@@ -42,11 +98,12 @@ func writeCalibrateRun(t *testing.T, records []benchV3Record, trailingSummary bo
 // FLow=1 keeps task c at medium (3 lanes, discriminates); FLow=2 drops it to
 // low, merging with task d (2 lanes, fails discrimination).
 func calibrateDiscriminatingFixture() []benchV3Record {
+	packets, answers := calibrateNotAskedAnswers()
 	return []benchV3Record{
-		{Task: "a", Split: "calibrate", PlanLane: "high", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 10, Directories: 1}},
-		{Task: "b", Split: "calibrate", PlanLane: "medium", Outcome: benchOutcomeEscalated, Scope: classify.ScopeFeatures{Files: 10, Directories: 1}},
-		{Task: "c", Split: "calibrate", PlanLane: "low", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 2, Directories: 1}},
-		{Task: "d", Split: "calibrate", PlanLane: "low", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 0, Directories: 1}},
+		{Task: "a", Split: "calibrate", PlanLane: "high", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 10, Directories: 1}, Packets: packets, Answers: answers},
+		{Task: "b", Split: "calibrate", PlanLane: "medium", Outcome: benchOutcomeEscalated, Scope: classify.ScopeFeatures{Files: 10, Directories: 1}, Packets: packets, Answers: answers},
+		{Task: "c", Split: "calibrate", PlanLane: "low", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 2, Directories: 1}, Packets: packets, Answers: answers},
+		{Task: "d", Split: "calibrate", PlanLane: "low", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 0, Directories: 1}, Packets: packets, Answers: answers},
 	}
 }
 
@@ -75,7 +132,7 @@ func TestClassifyCalibrateRefusesTest(t *testing.T) {
 		t.Parallel()
 		records := calibrateDiscriminatingFixture()
 		records[1].Split = "test"
-		path := writeCalibrateRun(t, records, false)
+		path := writeCalibrateRun(t, records, true)
 		var stdout, stderr strings.Builder
 		if err := run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr); err == nil {
 			t.Fatal("expected an error for a mixed-half run")
@@ -230,7 +287,7 @@ func TestClassifyCalibrateSelectT(t *testing.T) {
 
 func TestClassifyCalibrateRuleRoundTrip(t *testing.T) {
 	t.Parallel()
-	path := writeCalibrateRun(t, calibrateDiscriminatingFixture(), false)
+	path := writeCalibrateRun(t, calibrateDiscriminatingFixture(), true)
 	outPath := filepath.Join(t.TempDir(), "rule.json")
 	var stdout, stderr strings.Builder
 	if err := run([]string{"judge", "classify", "calibrate", "--run", path, "--out", outPath}, &stdout, &stderr); err != nil {
@@ -257,4 +314,77 @@ func TestClassifyCalibrateNoJudgeCall(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "base-url") {
 		t.Fatalf("expected an undefined-flag error naming base-url, got %v", err)
 	}
+}
+
+// TestClassifyCalibrateRejectsMalformedRecord proves that a task record
+// missing any field the grid and threshold search read is rejected by name
+// and by line, instead of silently reading as a zero value.
+func TestClassifyCalibrateRejectsMalformedRecord(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		remove func(map[string]any)
+	}{
+		{"split", func(m map[string]any) { delete(m, "split") }},
+		{"plan_lane", func(m map[string]any) { delete(m, "plan_lane") }},
+		{"code_lane", func(m map[string]any) { delete(m, "code_lane") }},
+		{"judge_lane", func(m map[string]any) { delete(m, "judge_lane") }},
+		{"outcome", func(m map[string]any) { delete(m, "outcome") }},
+		{"scope", func(m map[string]any) { delete(m, "scope") }},
+		{"packets", func(m map[string]any) { delete(m, "packets") }},
+		{"answers", func(m map[string]any) { delete(m, "answers") }},
+		{"packets contract entry", func(m map[string]any) {
+			delete(m["packets"].(map[string]any), "contract")
+		}},
+		{"answers security entry", func(m map[string]any) {
+			delete(m["answers"].(map[string]any), "security")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := calibrateRecordMap()
+			tc.remove(record)
+			recordJSON, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			summaryJSON, err := json.Marshal(map[string]any{"summary": map[string]any{"tasks": 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := writeRawCalibrateRun(t, []string{string(recordJSON), string(summaryJSON)})
+			var stdout, stderr strings.Builder
+			err = run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("expected an error for a record missing %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "line 1") {
+				t.Fatalf("expected the error to name line 1, got %v", err)
+			}
+		})
+	}
+}
+
+// TestClassifyCalibrateRequiresSummary proves that a run file is rejected
+// when it lacks the trailing summary object, or when the summary's tasks
+// count disagrees with the number of task records actually read.
+func TestClassifyCalibrateRequiresSummary(t *testing.T) {
+	t.Parallel()
+	t.Run("no trailing summary", func(t *testing.T) {
+		t.Parallel()
+		path := writeCalibrateRun(t, calibrateDiscriminatingFixture(), false)
+		var stdout, stderr strings.Builder
+		if err := run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr); err == nil {
+			t.Fatal("expected an error for a run file with no trailing summary")
+		}
+	})
+	t.Run("summary tasks count mismatch", func(t *testing.T) {
+		t.Parallel()
+		mismatched := len(calibrateDiscriminatingFixture()) + 1
+		path := writeCalibrateRunWithSummary(t, calibrateDiscriminatingFixture(), &mismatched)
+		var stdout, stderr strings.Builder
+		if err := run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr); err == nil {
+			t.Fatal("expected an error for a summary tasks count that disagrees with the record count")
+		}
+	})
 }
