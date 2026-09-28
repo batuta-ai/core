@@ -71,7 +71,7 @@ func calibrateRecordMap() map[string]any {
 		"code_lane":  "low",
 		"judge_lane": "low",
 		"outcome":    benchOutcomeCandidate,
-		"scope":      map[string]any{"files": 1, "directories": 1},
+		"scope":      map[string]any{"Files": 1, "Directories": 1, "TestOnly": false, "DocsOnly": false},
 		"packets": map[string]any{
 			"contract": map[string]any{"found": false, "size": 0},
 			"security": map[string]any{"found": false, "size": 0},
@@ -100,10 +100,10 @@ func calibrateNotAskedAnswers() (map[string]benchV3Packet, map[string]benchV3Ans
 func calibrateDiscriminatingFixture() []benchV3Record {
 	packets, answers := calibrateNotAskedAnswers()
 	return []benchV3Record{
-		{Task: "a", Split: "calibrate", PlanLane: "high", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 10, Directories: 1}, Packets: packets, Answers: answers},
-		{Task: "b", Split: "calibrate", PlanLane: "medium", Outcome: benchOutcomeEscalated, Scope: classify.ScopeFeatures{Files: 10, Directories: 1}, Packets: packets, Answers: answers},
-		{Task: "c", Split: "calibrate", PlanLane: "low", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 2, Directories: 1}, Packets: packets, Answers: answers},
-		{Task: "d", Split: "calibrate", PlanLane: "low", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 0, Directories: 1}, Packets: packets, Answers: answers},
+		{Task: "a", Split: "calibrate", PlanLane: "high", CodeLane: "high", JudgeLane: "high", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 10, Directories: 1}, Packets: packets, Answers: answers},
+		{Task: "b", Split: "calibrate", PlanLane: "medium", CodeLane: "medium", JudgeLane: "medium", Outcome: benchOutcomeEscalated, Scope: classify.ScopeFeatures{Files: 10, Directories: 1}, Packets: packets, Answers: answers},
+		{Task: "c", Split: "calibrate", PlanLane: "low", CodeLane: "low", JudgeLane: "low", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 2, Directories: 1}, Packets: packets, Answers: answers},
+		{Task: "d", Split: "calibrate", PlanLane: "low", CodeLane: "low", JudgeLane: "low", Outcome: benchOutcomeCandidate, Scope: classify.ScopeFeatures{Files: 0, Directories: 1}, Packets: packets, Answers: answers},
 	}
 }
 
@@ -360,6 +360,145 @@ func TestClassifyCalibrateRejectsMalformedRecord(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), "line 1") {
 				t.Fatalf("expected the error to name line 1, got %v", err)
+			}
+		})
+	}
+}
+
+// TestClassifyCalibrateSummaryMustBeLast proves that the trailing summary
+// object must be the file's last non-blank line: a task record after it, a
+// second summary, and a JSON object that is neither a task record nor the
+// summary are all rejected by line number.
+func TestClassifyCalibrateSummaryMustBeLast(t *testing.T) {
+	t.Parallel()
+	recordJSON, err := json.Marshal(calibrateRecordMap())
+	if err != nil {
+		t.Fatal(err)
+	}
+	summaryLine := func(tasks int) string {
+		b, err := json.Marshal(map[string]any{"summary": map[string]any{"tasks": tasks}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	t.Run("summary followed by a task record", func(t *testing.T) {
+		t.Parallel()
+		path := writeRawCalibrateRun(t, []string{summaryLine(1), string(recordJSON)})
+		var stdout, stderr strings.Builder
+		err := run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected an error for a summary followed by a task record")
+		}
+		if !strings.Contains(err.Error(), "line 2") {
+			t.Fatalf("expected the error to name line 2, got %v", err)
+		}
+	})
+	t.Run("two summaries", func(t *testing.T) {
+		t.Parallel()
+		path := writeRawCalibrateRun(t, []string{summaryLine(0), summaryLine(0)})
+		var stdout, stderr strings.Builder
+		err := run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected an error for a run with two summaries")
+		}
+		if !strings.Contains(err.Error(), "line 2") {
+			t.Fatalf("expected the error to name line 2, got %v", err)
+		}
+	})
+	t.Run("neither a task record nor the summary", func(t *testing.T) {
+		t.Parallel()
+		path := writeRawCalibrateRun(t, []string{`{"foo":"bar"}`, summaryLine(0)})
+		var stdout, stderr strings.Builder
+		err := run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr)
+		if err == nil {
+			t.Fatal("expected an error for a JSON object that is neither a task record nor the summary")
+		}
+		if !strings.Contains(err.Error(), "line 1") {
+			t.Fatalf("expected the error to name line 1, got %v", err)
+		}
+	})
+}
+
+// TestClassifyCalibrateRejectsNullOrMistyped proves that a task record whose
+// value for a required field is null, mistyped, or otherwise ill-shaped is
+// rejected by line and by field name, instead of silently decoding into a
+// zero value.
+func TestClassifyCalibrateRejectsNullOrMistyped(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		field  string
+		mutate func(map[string]any)
+	}{
+		{"split null", "split", func(m map[string]any) { m["split"] = nil }},
+		{"split not a string", "split", func(m map[string]any) { m["split"] = 5 }},
+		{"split empty", "split", func(m map[string]any) { m["split"] = "" }},
+		{"plan_lane null", "plan_lane", func(m map[string]any) { m["plan_lane"] = nil }},
+		{"plan_lane not a string", "plan_lane", func(m map[string]any) { m["plan_lane"] = 5 }},
+		{"plan_lane empty", "plan_lane", func(m map[string]any) { m["plan_lane"] = "" }},
+		{"code_lane null", "code_lane", func(m map[string]any) { m["code_lane"] = nil }},
+		{"code_lane not a string", "code_lane", func(m map[string]any) { m["code_lane"] = 5 }},
+		{"code_lane empty", "code_lane", func(m map[string]any) { m["code_lane"] = "" }},
+		{"judge_lane null", "judge_lane", func(m map[string]any) { m["judge_lane"] = nil }},
+		{"judge_lane not a string", "judge_lane", func(m map[string]any) { m["judge_lane"] = 5 }},
+		{"judge_lane empty", "judge_lane", func(m map[string]any) { m["judge_lane"] = "" }},
+		{"outcome null", "outcome", func(m map[string]any) { m["outcome"] = nil }},
+		{"outcome not a string", "outcome", func(m map[string]any) { m["outcome"] = 5 }},
+		{"outcome empty", "outcome", func(m map[string]any) { m["outcome"] = "" }},
+		{"scope null", "scope", func(m map[string]any) { m["scope"] = nil }},
+		{"scope not an object", "scope", func(m map[string]any) { m["scope"] = "nope" }},
+		{"scope Files not numeric", "scope", func(m map[string]any) {
+			m["scope"] = map[string]any{"Files": "x", "Directories": 1, "TestOnly": false, "DocsOnly": false}
+		}},
+		{"scope Directories null", "scope", func(m map[string]any) {
+			m["scope"] = map[string]any{"Files": 1, "Directories": nil, "TestOnly": false, "DocsOnly": false}
+		}},
+		{"scope TestOnly not boolean", "scope", func(m map[string]any) {
+			m["scope"] = map[string]any{"Files": 1, "Directories": 1, "TestOnly": "no", "DocsOnly": false}
+		}},
+		{"scope DocsOnly null", "scope", func(m map[string]any) {
+			m["scope"] = map[string]any{"Files": 1, "Directories": 1, "TestOnly": false, "DocsOnly": nil}
+		}},
+		{"packets entry null", "packets", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": nil, "security": map[string]any{"found": false}}
+		}},
+		{"packets entry lacks found", "packets", func(m map[string]any) {
+			m["packets"] = map[string]any{"contract": map[string]any{"size": 0}, "security": map[string]any{"found": false}}
+		}},
+		{"answers entry null", "answers", func(m map[string]any) {
+			m["answers"] = map[string]any{"contract": nil, "security": map[string]any{"status": "not_asked"}}
+		}},
+		{"answers entry lacks status", "answers", func(m map[string]any) {
+			m["answers"] = map[string]any{"contract": map[string]any{"confidence": 0}, "security": map[string]any{"status": "not_asked"}}
+		}},
+		{"answers entry status not one of the valid values", "answers", func(m map[string]any) {
+			m["answers"] = map[string]any{"contract": map[string]any{"status": "bogus"}, "security": map[string]any{"status": "not_asked"}}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := calibrateRecordMap()
+			tc.mutate(record)
+			recordJSON, err := json.Marshal(record)
+			if err != nil {
+				t.Fatal(err)
+			}
+			summaryJSON, err := json.Marshal(map[string]any{"summary": map[string]any{"tasks": 1}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := writeRawCalibrateRun(t, []string{string(recordJSON), string(summaryJSON)})
+			var stdout, stderr strings.Builder
+			err = run([]string{"judge", "classify", "calibrate", "--run", path}, &stdout, &stderr)
+			if err == nil {
+				t.Fatalf("expected an error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), "line 1") {
+				t.Fatalf("expected the error to name line 1, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Fatalf("expected the error to name field %q, got %v", tc.field, err)
 			}
 		})
 	}

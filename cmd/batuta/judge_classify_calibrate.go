@@ -88,10 +88,13 @@ func runJudgeClassifyCalibrate(args []string, stdout, stderr io.Writer) error {
 // readCalibrateRecords decodes the concatenated JSON objects a v3 bench
 // `--json` run writes: one benchV3Record per task, then the summary object
 // under the key "summary" that classifyBenchTasksV3 writes last. Each line
-// is decoded into a raw map first so a record missing a required field is
-// rejected rather than silently completed with zero values, and the file is
-// rejected unless the summary is present and its tasks count matches the
-// number of task records read.
+// is decoded into a raw map first so a record missing a required field, or
+// carrying a null or mistyped one, is rejected rather than silently
+// completed with zero values. The summary must be the last non-blank line:
+// any further content after it, a second summary, or a JSON object that is
+// neither a task record nor the summary is rejected by line number, and the
+// file is rejected unless the summary is present and its tasks count
+// matches the number of task records read.
 func readCalibrateRecords(path string) ([]benchV3Record, error) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -101,6 +104,7 @@ func readCalibrateRecords(path string) ([]benchV3Record, error) {
 
 	var records []benchV3Record
 	var summary *benchV3Summary
+	summaryLine := 0
 	scanner := bufio.NewScanner(file)
 	scanner.Buffer(make([]byte, 0, 64*1024), 10*1024*1024)
 	line := 0
@@ -110,37 +114,43 @@ func readCalibrateRecords(path string) ([]benchV3Record, error) {
 		if text == "" {
 			continue
 		}
+		if summaryLine != 0 {
+			return nil, fmt.Errorf("line %d: content after the summary on line %d", line, summaryLine)
+		}
 		var raw map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(text), &raw); err != nil {
 			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
-		if summaryRaw, ok := raw["summary"]; ok {
+		switch _, hasSummary := raw["summary"]; {
+		case hasSummary:
+			summaryRaw := raw["summary"]
 			var s benchV3Summary
 			if err := json.Unmarshal(summaryRaw, &s); err != nil {
 				return nil, fmt.Errorf("line %d: summary: %w", line, err)
 			}
 			summary = &s
-			continue
+			summaryLine = line
+		default:
+			taskRaw, hasTask := raw["task"]
+			if !hasTask {
+				return nil, fmt.Errorf("line %d: neither a task record nor the summary", line)
+			}
+			var task string
+			if err := json.Unmarshal(taskRaw, &task); err != nil {
+				return nil, fmt.Errorf("line %d: task: %w", line, err)
+			}
+			if task == "" {
+				return nil, fmt.Errorf("line %d: task: empty", line)
+			}
+			if err := validateCalibrateRecordFields(raw); err != nil {
+				return nil, fmt.Errorf("line %d: task %s: %w", line, task, err)
+			}
+			var record benchV3Record
+			if err := json.Unmarshal([]byte(text), &record); err != nil {
+				return nil, fmt.Errorf("line %d: task %s: %w", line, task, err)
+			}
+			records = append(records, record)
 		}
-		taskRaw, ok := raw["task"]
-		if !ok {
-			continue
-		}
-		var task string
-		if err := json.Unmarshal(taskRaw, &task); err != nil {
-			return nil, fmt.Errorf("line %d: task: %w", line, err)
-		}
-		if task == "" {
-			continue
-		}
-		if err := validateCalibrateRecordFields(raw); err != nil {
-			return nil, fmt.Errorf("line %d: task %s: %w", line, task, err)
-		}
-		var record benchV3Record
-		if err := json.Unmarshal([]byte(text), &record); err != nil {
-			return nil, fmt.Errorf("line %d: task %s: %w", line, task, err)
-		}
-		records = append(records, record)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -154,15 +164,35 @@ func readCalibrateRecords(path string) ([]benchV3Record, error) {
 	return records, nil
 }
 
+// calibrateValidAnswerStatuses are the only values validateCalibrateRecordFields
+// accepts for an answers entry's status: the ones DecideV3 and calibrateAnswers
+// know how to interpret.
+var calibrateValidAnswerStatuses = map[string]bool{
+	"firm": true, "insufficient": true, "below_threshold": true,
+	"not_asked": true, "unavailable": true,
+}
+
 // validateCalibrateRecordFields checks that a task record carries every
-// field the calibrate grid and threshold search read: split, plan_lane,
-// code_lane, judge_lane, outcome and scope directly, plus a packets and an
-// answers entry for both questions in benchV3Questions.
+// field the calibrate grid and threshold search read, and that each holds a
+// well-typed value rather than merely existing: split, plan_lane, code_lane,
+// judge_lane and outcome must be non-empty strings; scope must be an object
+// with numeric Files and Directories and boolean TestOnly and DocsOnly; and
+// packets and answers must each carry an entry for both questions in
+// benchV3Questions, with a boolean found for packets and a status from
+// calibrateValidAnswerStatuses for answers.
 func validateCalibrateRecordFields(raw map[string]json.RawMessage) error {
 	for _, field := range calibrateRequiredFields {
 		if _, ok := raw[field]; !ok {
 			return fmt.Errorf("missing %q", field)
 		}
+	}
+	for _, field := range []string{"split", "plan_lane", "code_lane", "judge_lane", "outcome"} {
+		if _, err := calibrateRequireString(raw, field); err != nil {
+			return err
+		}
+	}
+	if err := calibrateValidateScope(raw["scope"]); err != nil {
+		return fmt.Errorf("scope: %w", err)
 	}
 	for _, field := range []string{"packets", "answers"} {
 		var entries map[string]json.RawMessage
@@ -170,9 +200,108 @@ func validateCalibrateRecordFields(raw map[string]json.RawMessage) error {
 			return fmt.Errorf("%s: %w", field, err)
 		}
 		for _, question := range benchV3Questions {
-			if _, ok := entries[question]; !ok {
+			entryRaw, ok := entries[question]
+			if !ok {
 				return fmt.Errorf("%s: missing %q entry", field, question)
 			}
+			if calibrateIsJSONNull(entryRaw) {
+				return fmt.Errorf("%s: %q entry is null", field, question)
+			}
+			var entry map[string]json.RawMessage
+			if err := json.Unmarshal(entryRaw, &entry); err != nil {
+				return fmt.Errorf("%s: %q entry: %w", field, question, err)
+			}
+			if field == "packets" {
+				if err := calibrateRequireBool(entry, "found"); err != nil {
+					return fmt.Errorf("%s: %q entry: %w", field, question, err)
+				}
+				continue
+			}
+			status, err := calibrateRequireString(entry, "status")
+			if err != nil {
+				return fmt.Errorf("%s: %q entry: %w", field, question, err)
+			}
+			if !calibrateValidAnswerStatuses[status] {
+				return fmt.Errorf("%s: %q entry: status %q is not one of firm, insufficient, below_threshold, not_asked, unavailable", field, question, status)
+			}
+		}
+	}
+	return nil
+}
+
+// calibrateIsJSONNull reports whether a raw JSON value is the literal null,
+// the one case json.Unmarshal accepts silently into a struct or map field
+// without changing it, letting a null value pass a presence check unnoticed.
+func calibrateIsJSONNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
+}
+
+// calibrateRequireString reads a required, non-null, non-empty string field
+// from a raw JSON object's decoded key/value map.
+func calibrateRequireString(fields map[string]json.RawMessage, key string) (string, error) {
+	raw, ok := fields[key]
+	if !ok || calibrateIsJSONNull(raw) {
+		return "", fmt.Errorf("%s: missing or null", key)
+	}
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return "", fmt.Errorf("%s: not a string: %w", key, err)
+	}
+	if value == "" {
+		return "", fmt.Errorf("%s: empty", key)
+	}
+	return value, nil
+}
+
+// calibrateRequireBool reads a required, non-null boolean field from a raw
+// JSON object's decoded key/value map.
+func calibrateRequireBool(fields map[string]json.RawMessage, key string) error {
+	raw, ok := fields[key]
+	if !ok || calibrateIsJSONNull(raw) {
+		return fmt.Errorf("%s: missing or null", key)
+	}
+	var value bool
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return fmt.Errorf("%s: not a boolean: %w", key, err)
+	}
+	return nil
+}
+
+// calibrateRequireNumber reads a required, non-null numeric field from a raw
+// JSON object's decoded key/value map.
+func calibrateRequireNumber(fields map[string]json.RawMessage, key string) error {
+	raw, ok := fields[key]
+	if !ok || calibrateIsJSONNull(raw) {
+		return fmt.Errorf("%s: missing or null", key)
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return fmt.Errorf("%s: not a number: %w", key, err)
+	}
+	return nil
+}
+
+// calibrateValidateScope checks that a record's scope field is a non-null
+// object carrying classify.ScopeFeatures' fields with their declared types:
+// numeric Files and Directories, boolean TestOnly and DocsOnly. classify.
+// ScopeFeatures has no JSON tags, so its keys are exactly those Go field
+// names.
+func calibrateValidateScope(raw json.RawMessage) error {
+	if calibrateIsJSONNull(raw) {
+		return errors.New("missing or null")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return fmt.Errorf("not an object: %w", err)
+	}
+	for _, key := range []string{"Files", "Directories"} {
+		if err := calibrateRequireNumber(fields, key); err != nil {
+			return err
+		}
+	}
+	for _, key := range []string{"TestOnly", "DocsOnly"} {
+		if err := calibrateRequireBool(fields, key); err != nil {
+			return err
 		}
 	}
 	return nil
