@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Close the two blockers of the supervision review of delivery `classify-v3-fixes-3-20260928-154826` (verdict REWORK): an answer with the status not_asked or unavailable skips every value check, and a null probability value is accepted. Nothing in `.batuta/judge-research.md` section 14 changes.
-**Created:** 2026-09-28 · **Status:** approved
+**Created:** 2026-09-28 · **Status:** done
 
 ## Tasks
-- [ ] 1. judge classify calibrate checks unanswered entries and every probability value — backend/medium
+- [x] 1. judge classify calibrate checks unanswered entries and every probability value — backend/medium
       Scope: cmd/batuta/judge_classify_calibrate.go, cmd/batuta/judge_classify_calibrate_test.go
       Accept: an answer whose status is not_asked or unavailable is rejected when its `confidence` is missing, null, not a number or not zero, and when it carries a `choice` or a `probabilities` key → go test ./cmd/batuta -run TestClassifyCalibrateUnansweredEntry; an answer whose status is firm, insufficient or below_threshold is rejected when a value in its `probabilities` is null, not a number or outside 0 to 1, or when a key in its `probabilities` is not one of the three options of its question → go test ./cmd/batuta -run TestClassifyCalibrateProbabilityValues; an answer is rejected when its status is insufficient and its `choice` is not `insufficient`, or when its status is firm or below_threshold and its `choice` is `insufficient` → go test ./cmd/batuta -run TestClassifyCalibrateStatusChoiceConsistency; each rejection exits 1 and names the 1-based line and the field → go test ./cmd/batuta -run 'TestClassifyCalibrateUnansweredEntry|TestClassifyCalibrateProbabilityValues|TestClassifyCalibrateStatusChoiceConsistency'; the earlier cases still hold → go test ./cmd/batuta -run 'TestClassifyCalibrate'; records written by the real bench for every status pass the validation unchanged → go test ./cmd/batuta -run TestClassifyCalibrateAcceptsBenchOutput; no file outside the calibrate reader and its test changes → git diff --quiet HEAD -- cmd/batuta/judge_classify_v3.go classify docs; the package stays green → go test ./cmd/batuta
 
