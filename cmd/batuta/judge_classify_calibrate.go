@@ -225,9 +225,14 @@ var calibrateQuestionChoices = map[string]map[string]bool{
 // a boolean and its size a non-negative integer that is zero when found is
 // false. An answer's status must be one of calibrateValidAnswerStatuses and
 // consistent with its packet's found: not_asked exactly when found is
-// false. When the status is one of calibrateAnsweredStatuses, choice must be
-// one of the question's options, confidence a number in [0,1], and
-// probabilities, when present, an object of numbers in [0,1].
+// false. When the status is not one of calibrateAnsweredStatuses (not_asked
+// or unavailable), the entry must carry neither a choice nor a probabilities
+// key, and confidence must be present, a number, and exactly zero. When the
+// status is one of calibrateAnsweredStatuses, choice must be one of the
+// question's options and consistent with status (insufficient exactly when
+// status is insufficient), confidence a number in [0,1], and probabilities,
+// when present, an object whose keys are each one of the question's options
+// and whose values are each a number in [0,1].
 func validateCalibrateRecordFields(raw map[string]json.RawMessage) error {
 	for _, field := range calibrateRequiredFields {
 		if _, ok := raw[field]; !ok {
@@ -304,6 +309,9 @@ func validateCalibrateRecordFields(raw map[string]json.RawMessage) error {
 			return fmt.Errorf("answers: %q entry: status %q but packets found is false", question, status)
 		}
 		if !calibrateAnsweredStatuses[status] {
+			if err := calibrateValidateUnanswered(entry); err != nil {
+				return fmt.Errorf("answers: %q entry: %w", question, err)
+			}
 			continue
 		}
 		choice, err := calibrateRequireString(entry, "choice")
@@ -313,12 +321,51 @@ func validateCalibrateRecordFields(raw map[string]json.RawMessage) error {
 		if !calibrateQuestionChoices[question][choice] {
 			return fmt.Errorf("answers: %q entry: choice %q is not one of %s's options", question, choice, question)
 		}
+		if err := calibrateStatusChoiceConsistency(status, choice); err != nil {
+			return fmt.Errorf("answers: %q entry: %w", question, err)
+		}
 		if err := calibrateRequireRange01(entry, "confidence"); err != nil {
 			return fmt.Errorf("answers: %q entry: %w", question, err)
 		}
-		if err := calibrateValidateProbabilities(entry); err != nil {
+		if err := calibrateValidateProbabilities(entry, question); err != nil {
 			return fmt.Errorf("answers: %q entry: %w", question, err)
 		}
+	}
+	return nil
+}
+
+// calibrateValidateUnanswered checks a not_asked or unavailable answer
+// entry: the bench never sets choice or probabilities for either status, and
+// always writes confidence as the literal zero, so any entry that carries
+// choice or probabilities, or whose confidence is missing, null, not a
+// number, or not zero, cannot have come from a real bench run.
+func calibrateValidateUnanswered(entry map[string]json.RawMessage) error {
+	if _, ok := entry["choice"]; ok {
+		return errors.New("choice: present but status is not_asked or unavailable")
+	}
+	if _, ok := entry["probabilities"]; ok {
+		return errors.New("probabilities: present but status is not_asked or unavailable")
+	}
+	confidence, err := calibrateRequireNumber(entry, "confidence")
+	if err != nil {
+		return err
+	}
+	if confidence != 0 {
+		return fmt.Errorf("confidence: %v is not zero but status is not_asked or unavailable", confidence)
+	}
+	return nil
+}
+
+// calibrateStatusChoiceConsistency checks that an answered entry's choice
+// agrees with its status: insufficient status pairs only with insufficient
+// choice, and firm or below_threshold status pairs only with a choice other
+// than insufficient.
+func calibrateStatusChoiceConsistency(status, choice string) error {
+	switch {
+	case status == "insufficient" && choice != "insufficient":
+		return fmt.Errorf("choice: %q but status is insufficient", choice)
+	case status != "insufficient" && choice == "insufficient":
+		return fmt.Errorf("choice: insufficient but status is %q", status)
 	}
 	return nil
 }
@@ -428,8 +475,9 @@ func calibrateRequireRange01(fields map[string]json.RawMessage, key string) erro
 // calibrateValidateProbabilities checks an answered entry's probabilities
 // field when present: the bench writes it with omitempty, so it is entirely
 // absent for not_asked and unavailable answers, but when present it must be
-// an object of numbers in [0,1].
-func calibrateValidateProbabilities(entry map[string]json.RawMessage) error {
+// an object whose keys are each one of the question's options and whose
+// values are each a number in [0,1].
+func calibrateValidateProbabilities(entry map[string]json.RawMessage, question string) error {
 	raw, ok := entry["probabilities"]
 	if !ok {
 		return nil
@@ -442,6 +490,12 @@ func calibrateValidateProbabilities(entry map[string]json.RawMessage) error {
 		return fmt.Errorf("probabilities: not an object: %w", err)
 	}
 	for option, valueRaw := range probabilities {
+		if !calibrateQuestionChoices[question][option] {
+			return fmt.Errorf("probabilities: %s is not one of %s's options", option, question)
+		}
+		if calibrateIsJSONNull(valueRaw) {
+			return fmt.Errorf("probabilities: %s: not a number", option)
+		}
 		var value float64
 		if err := json.Unmarshal(valueRaw, &value); err != nil {
 			return fmt.Errorf("probabilities: %s: not a number: %w", option, err)

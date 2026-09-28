@@ -107,6 +107,28 @@ func calibrateAnsweredRecordMap(status, choice string, confidence float64) map[s
 	return record
 }
 
+// calibrateUnansweredRecordMap is a complete raw task record whose contract
+// question carries status, with a packets found value that matches it the
+// way the bench always pairs them: not_asked with found false, unavailable
+// with found true.
+func calibrateUnansweredRecordMap(status string) map[string]any {
+	record := calibrateRecordMap()
+	found := status != "not_asked"
+	size := 0
+	if found {
+		size = 1
+	}
+	record["packets"] = map[string]any{
+		"contract": map[string]any{"found": found, "size": size},
+		"security": map[string]any{"found": false, "size": 0},
+	}
+	record["answers"] = map[string]any{
+		"contract": map[string]any{"status": status, "confidence": 0},
+		"security": map[string]any{"status": "not_asked", "confidence": 0},
+	}
+	return record
+}
+
 // calibrateNotAskedAnswers is the packets/answers pair a real bench run
 // writes for a task where neither question got a packet: both questions
 // present, "not_asked", exactly as benchV3RecordFor leaves them.
@@ -744,6 +766,132 @@ func TestClassifyCalibrateAnswerValues(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestClassifyCalibrateUnansweredEntry proves that a not_asked or
+// unavailable answer is rejected when its confidence is missing, null, not a
+// number or not zero, and when it carries a choice or a probabilities key:
+// the bench never writes either for these two statuses, and always writes
+// confidence as the literal zero, so an entry that disagrees cannot have
+// come from a real bench run.
+func TestClassifyCalibrateUnansweredEntry(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"not_asked", "unavailable"} {
+		for _, tc := range []struct {
+			name   string
+			mutate func(map[string]any)
+		}{
+			{"confidence missing", func(m map[string]any) {
+				delete(m["answers"].(map[string]any)["contract"].(map[string]any), "confidence")
+			}},
+			{"confidence null", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["confidence"] = nil
+			}},
+			{"confidence not a number", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["confidence"] = "high"
+			}},
+			{"confidence not zero", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["confidence"] = 0.5
+			}},
+			{"choice present", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["choice"] = "exported_change"
+			}},
+			{"probabilities present", func(m map[string]any) {
+				m["answers"].(map[string]any)["contract"].(map[string]any)["probabilities"] = map[string]any{"exported_change": 0.5}
+			}},
+		} {
+			t.Run(status+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				record := calibrateUnansweredRecordMap(status)
+				tc.mutate(record)
+				err := calibrateRunSingleRecord(t, record)
+				if err == nil {
+					t.Fatalf("expected an error for status %s, %s", status, tc.name)
+				}
+				if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "answers") {
+					t.Fatalf("expected the error to name line 1 and answers, got %v", err)
+				}
+			})
+		}
+	}
+}
+
+// TestClassifyCalibrateProbabilityValues proves that, for a question
+// actually asked and answered, a value in its probabilities is rejected when
+// null, not a number, or outside 0 to 1, and a key in its probabilities is
+// rejected when it is not one of the question's three options.
+func TestClassifyCalibrateProbabilityValues(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{"firm", "insufficient", "below_threshold"} {
+		choice := "exported_change"
+		if status == "insufficient" {
+			choice = "insufficient"
+		}
+		for _, tc := range []struct {
+			name  string
+			value any
+		}{
+			{"value null", nil},
+			{"value not a number", "high"},
+			{"value below zero", -0.1},
+			{"value above one", 1.1},
+		} {
+			t.Run(status+"/"+tc.name, func(t *testing.T) {
+				t.Parallel()
+				record := calibrateAnsweredRecordMap(status, choice, 0.95)
+				record["answers"].(map[string]any)["contract"].(map[string]any)["probabilities"] = map[string]any{"exported_change": tc.value}
+				err := calibrateRunSingleRecord(t, record)
+				if err == nil {
+					t.Fatalf("expected an error for status %s, probabilities %s", status, tc.name)
+				}
+				if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "probabilities") {
+					t.Fatalf("expected the error to name line 1 and probabilities, got %v", err)
+				}
+			})
+		}
+		t.Run(status+"/key not one of the question's options", func(t *testing.T) {
+			t.Parallel()
+			record := calibrateAnsweredRecordMap(status, choice, 0.95)
+			record["answers"].(map[string]any)["contract"].(map[string]any)["probabilities"] = map[string]any{"bogus": 0.5}
+			err := calibrateRunSingleRecord(t, record)
+			if err == nil {
+				t.Fatalf("expected an error for status %s, probabilities key not an option", status)
+			}
+			if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "probabilities") {
+				t.Fatalf("expected the error to name line 1 and probabilities, got %v", err)
+			}
+		})
+	}
+}
+
+// TestClassifyCalibrateStatusChoiceConsistency proves that an answer is
+// rejected when its status is insufficient and its choice is not
+// insufficient, or when its status is firm or below_threshold and its choice
+// is insufficient: DecideV3 never produces the mismatched pairing, so a
+// record that carries one cannot have come from a real bench run.
+func TestClassifyCalibrateStatusChoiceConsistency(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status string
+		choice string
+	}{
+		{"insufficient status, non-insufficient choice", "insufficient", "exported_change"},
+		{"firm status, insufficient choice", "firm", "insufficient"},
+		{"below_threshold status, insufficient choice", "below_threshold", "insufficient"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			record := calibrateAnsweredRecordMap(tc.status, tc.choice, 0.95)
+			err := calibrateRunSingleRecord(t, record)
+			if err == nil {
+				t.Fatalf("expected an error for status %s, choice %s", tc.status, tc.choice)
+			}
+			if !strings.Contains(err.Error(), "line 1") || !strings.Contains(err.Error(), "answers") {
+				t.Fatalf("expected the error to name line 1 and answers, got %v", err)
+			}
+		})
 	}
 }
 
