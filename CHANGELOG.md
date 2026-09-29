@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.1.0-beta.43](https://github.com/batuta-ai/core/compare/v1.1.0-beta.42...v1.1.0-beta.43) (2026-09-26)
+
+
+### Features
+
+* batuta judge classify bench --rubric v2 scores against outcomes with ([028563a](https://github.com/batuta-ai/core/commit/028563a73b20fc996b5ef957ea35cfb5ca6aeb63))
+* classify v2: Scope features, five noul questions, the frozen lane ([384f132](https://github.com/batuta-ai/core/commit/384f1322164e7bdd600de47c33921c5c74e271eb))
+* **classify:** plan classification v2 — Scope features, Jev yes/no questions, frozen lane rule, outcome labels ([e519537](https://github.com/batuta-ai/core/commit/e519537ecc153a5f387ee77c87705c5ce1bd3f58))
+* HTTPJudge keeps the valid answers of a mismatched response; bench v2 ([cfbdb67](https://github.com/batuta-ai/core/commit/cfbdb67e9bdf9bb403c644c51261f38101f9448a))
+
 ## [1.1.0-beta.42](https://github.com/batuta-ai/core/compare/v1.1.0-beta.41...v1.1.0-beta.42) (2026-09-26)
 
 
