@@ -76,6 +76,9 @@ func runJudgeClassify(args []string, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == "bench" {
 		return runJudgeClassifyBench(args[1:], stdout, stderr)
 	}
+	if len(args) > 0 && args[0] == "calibrate" {
+		return runJudgeClassifyCalibrate(args[1:], stdout, stderr)
+	}
 	flags := flag.NewFlagSet("judge classify", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	planPath := flags.String("plan", "", "plan file whose tasks are classified")
@@ -233,13 +236,30 @@ func runJudgeClassifyBench(args []string, stdout, stderr io.Writer) error {
 	configPath := flags.String("config", "", "judge config path (default: .batuta/judge.json under --workspace)")
 	workspace := flags.String("workspace", "", "workspace directory (default: current directory)")
 	baseURL := flags.String("base-url", "", "override the configured provider base URL")
-	rubric := flags.String("rubric", "v1", "classification rubric (v1 or v2)")
+	rubric := flags.String("rubric", "v1", "classification rubric (v1, v2 or v3)")
+	split := flags.String("split", "", "v3 plan split (calibrate or test)")
+	rulePath := flags.String("rule", "", "v3 rule JSON file")
 	asJSON := flags.Bool("json", false, "print one JSON object per task plus a summary object")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || len(planPaths) == 0 || (*rubric != "v1" && *rubric != "v2") {
-		return errors.New("usage: batuta judge classify bench --plan <file> [--plan <file>...] [--journals <dir>...] [--rubric v1|v2] [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]")
+	v3OnlyFlag := false
+	flags.Visit(func(f *flag.Flag) {
+		if f.Name == "split" || f.Name == "rule" {
+			v3OnlyFlag = true
+		}
+	})
+	if flags.NArg() != 0 || len(planPaths) == 0 || (*rubric != "v1" && *rubric != "v2" && *rubric != "v3") ||
+		(*rubric != "v3" && v3OnlyFlag) || (*split != "" && *split != "calibrate" && *split != "test") {
+		return errors.New("usage: batuta judge classify bench --plan <file> [--plan <file>...] [--journals <dir>...] [--rubric v1|v2|v3] [--split calibrate|test] [--rule <file>] [--json] [--config <path>] [--workspace <dir>] [--base-url <url>]")
+	}
+	rule := classify.DefaultRuleV3
+	if *rubric == "v3" {
+		var err error
+		rule, err = loadBenchV3Rule(*rulePath)
+		if err != nil {
+			return err
+		}
 	}
 	plans := make([]routing.Plan, 0, len(planPaths))
 	for _, path := range planPaths {
@@ -263,6 +283,9 @@ func runJudgeClassifyBench(args []string, stdout, stderr io.Writer) error {
 	}
 	if *rubric == "v2" {
 		return classifyBenchTasksV2(context.Background(), stdout, j, buildReason, plans, deliveries, *asJSON)
+	}
+	if *rubric == "v3" {
+		return classifyBenchTasksV3(context.Background(), stdout, j, buildReason, plans, planPaths, deliveries, rule, *split, *asJSON)
 	}
 	if !*asJSON {
 		fmt.Fprintf(stdout, "threshold=%s\n", corpusThresholdLabel(threshold))

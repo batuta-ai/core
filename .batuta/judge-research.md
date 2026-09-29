@@ -264,3 +264,50 @@ Decision. v2 (lane J) is fit to propose lanes only if all four hold:
 Reported beside it, deciding nothing: agreement with the host lane, the v1 answers of run 1 for the same tasks, the distribution of (a)–(e), and unavailable answers (if more than 10% are unavailable, the run is repeated once and both are reported).
 
 Shadow only: nothing routes on J. A negative result is the headline; nothing is restated at another threshold or mapping.
+
+## 14. Plan classification v3: decision rule, frozen before the build (2026-09-27)
+
+Agreed with the maintainer on 2026-09-27, before any v3 code was built. This section is not edited afterwards.
+
+Why v3: v2 (section 13) asked Jev five yes/no questions about a task excerpt that does not contain what decides them, and its rule turned every answer below 0.7 into the highest lane (197 of 228 tasks `critical`, economy 11.9%). v3 measures first what code alone can do, then asks Jev only questions whose decisive fact is in the packet, with a way to abstain, and lets an uncertain answer change nothing. Background: `.batuta/judge-application-study.md`.
+
+Known contamination, stated before the run. The study computed post hoc rates on all 171 labelled v2 tasks (for example Scope `Files ≥ 7`: 10/40 insufficient against 10/131). The feature family below was chosen with that knowledge, so the test half is not unseen by the people who wrote the rule. The parameters are chosen by the mechanical procedure below on the calibrate half only.
+
+Corpus and labels, as section 13. Tasks: every task of every plan under `core/.batuta/plans/done/` and `skills/.batuta/plans/done/` when the run starts; the count is recorded. Journals: `core/.batuta/journal/` and `skills/.batuta/journal/`. L is the lane of the task's first attempt. `candidate` or `retried` means sufficient at L; `escalated` or `failed` means insufficient at L; `unknown` is excluded from the measures and counted.
+
+Split. By plan, so the tasks of one plan stay together: the first byte of sha256 of the plan slug, even is calibrate, odd is test. On the v2 corpus this gives calibrate 43 plans (75 sufficient, 5 insufficient, 37 unknown) and test 36 plans (76 sufficient, 15 insufficient, 20 unknown); only label counts were read to write this line. Five insufficient tasks make the calibrate selection noisy; that is accepted and not worked around.
+
+Lane C, code only. From the task's Scope and text, first match wins:
+1. `critical` if the open marker is present: the task title, its Accept entries or its own context paragraph contain, case-insensitive, one of `TBD`, `to be decided`, `to be defined`, `undecided`, `open question`, `open decision`, `decide whether`, or the task title contains `?`.
+2. `high` if Scope files ≥ F_high, or Scope directories ≥ 3.
+3. `low` if Scope files ≤ F_low, and the task is not docs-only unless docs_low is yes.
+4. otherwise `medium`.
+
+Grid for C: F_high in {4, 5, 6, 7, 8}; F_low in {1, 2}; docs_low in {no, yes}. Twenty points.
+
+Lane J, C adjusted by Jev. Code builds a packet per question; a question whose packet is empty is not asked and counts as `insufficient`.
+- `contract`. Packet: the exported identifiers (functions, methods, types, package-level variables and constants) and the flag names registered in the task's Scope files that are non-test `.go` files present in the plan's repository at the bench commit, sorted, at most 60. Question, `choice`: `exported_change` (the task text names, or directly describes changing, adding or removing, an identifier or flag in the packet, or a file format or protocol); `internal_only` (the task text describes a change that leaves every identifier and flag in the packet as it is); `insufficient` (the task text does not say enough to choose).
+- `security`. Packet: the Scope entries whose path contains, case-insensitive, one of `permission`, `sandbox`, `secret`, `redact`, `auth`, `grant`, `contain`. Question, `choice`: `security_behaviour` (the task text asks to change what is permitted, contained, redacted or kept secret in a listed path); `incidental` (the task text touches a listed path without changing what is permitted, contained, redacted or kept secret); `insufficient`.
+- An answer is firm when its option is not `insufficient` and its confidence is at least T. Anything else, including an unavailable answer, changes nothing.
+- Mapping: J starts at C. A `critical` C is never changed. A firm `exported_change` or a firm `security_behaviour` raises J one lane, never above `high`. Otherwise, when at least one question was asked and every asked question is firm on `internal_only` or `incidental`, J drops one lane, never below `low`.
+
+Grid for T: {0.7, 0.8, 0.9}.
+
+Known limit of the contract packet: the tree is the one at the bench commit, so identifiers a finished task added are in its own packet. The packet tests whether Jev matches text to a list, not whether it predicts a change.
+
+Procedure, in this order, each step recorded before the next starts:
+1. Calibrate run: `batuta judge classify bench --rubric v3 --split calibrate --json` with the default rule; one Jev call per task that has at least one packet; every answer recorded with its full distribution.
+2. Selection, offline, from the recorded calibrate run (`batuta judge classify calibrate`): for C, among grid points where no lane holds more than 70% of C and C uses at least 3 lanes, the highest balance; ties go to the higher economy, then the lower F_high, then the lower F_low, then docs_low no. If no point passes discrimination, the highest balance is taken and the failure is reported. For T, with C fixed, the highest balance of J; ties go to the higher T.
+3. Freeze: the selected F_high, F_low, docs_low and T are committed as `.batuta/judge-classify-v3/rule.json` before the test half is read.
+4. Test run: `batuta judge classify bench --rubric v3 --split test --rule .batuta/judge-classify-v3/rule.json --json`, one trial.
+
+Inputs, fixed. Binary built from the last commit of branch `feat/classify-v3` after its plan's final review returns SHIP. Judge: `provider: typesafe`, `model: jev-1.13.0`, `timeout_ms: 20000`; the model is pinned, so the `auto` chain is not used. If more than 10% of the asked questions are unavailable, the run is repeated once and both are reported. No wording, grid, threshold or mapping change between build and run.
+
+Decision, on the test half only, with the four measures of section 13 (economy at least 75%, safety at least 50%, no lane above 70% and at least 3 lanes, balance at least 0.65):
+- C is fit to propose lanes only if all four hold for C.
+- Jev adds to classification only if all four hold for J and balance(J) − balance(C) is at least 0.05.
+- If Jev does not add, classification stays code-only and the next Jev decision is verifier-objection triage.
+
+Reported beside it, deciding nothing: the calibrate table of every grid point; per question, the tasks with a packet, the calls made, and the answers firm, `insufficient`, below T and unavailable; the open marker count; agreement of C and of J with the host lane; input tokens.
+
+Shadow only: nothing routes on C or J. A negative result is the headline; nothing is restated at another grid, threshold or mapping.
