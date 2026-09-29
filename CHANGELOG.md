@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.1.0-beta.44](https://github.com/batuta-ai/core/compare/v1.1.0-beta.43...v1.1.0-beta.44) (2026-09-29)
+
+
+### Features
+
+* batuta judge classify bench --rubric v3 with --split and --rule ([e12fde1](https://github.com/batuta-ai/core/commit/e12fde1cd9c6d4a8c637d679f15787bf3a54eb27))
+* batuta judge classify calibrate selects the rule offline from a ([fd80d2d](https://github.com/batuta-ai/core/commit/fd80d2d5eef94b049cd21909fee108b84793e67b))
+* bench v3 records usage on every call and counts not_asked in the ([5027fed](https://github.com/batuta-ai/core/commit/5027fed78ef3cadec21db15435ec3e8603aaacc7))
+* classify v3: contract and security packets, the two choice ([ad27bff](https://github.com/batuta-ai/core/commit/ad27bff1c48d8f7a0d517d98a8f35799cd96ae9e))
+* classify v3: open marker, rule parameters, code lane C, split by ([34c95a4](https://github.com/batuta-ai/core/commit/34c95a47d3d073246d65fea7b9bb6c121e4c9af9))
+* **classify:** plan classification v3 — code lane, Jev on packets, calibrate/test split; run 1 negative ([196167a](https://github.com/batuta-ai/core/commit/196167afc6ee75c0f124a6e03d7da9a5719b4f95))
+* judge classify calibrate checks unanswered entries and every ([121a47f](https://github.com/batuta-ai/core/commit/121a47f5c477d7d3784f84442dbb267510d7355e))
+* judge classify calibrate reads only complete v3 records and a ([9f318b6](https://github.com/batuta-ai/core/commit/9f318b659afbaf9f8efbd0333deb7d04835a5f89))
+* judge classify calibrate rejects a misplaced summary and null or ([3785b3e](https://github.com/batuta-ai/core/commit/3785b3e206059770604ebbefc8e6bda9db724837))
+* judge classify calibrate validates every record field it reads ([29efcc6](https://github.com/batuta-ai/core/commit/29efcc6a0981bff868b777c993396ad5c2e711be))
+* the split tests assert sha256 parity computed outside SplitV3 ([9eedd67](https://github.com/batuta-ai/core/commit/9eedd67f03d4dd5d4907cadfa12a9507869e9314))
+
 ## [1.1.0-beta.43](https://github.com/batuta-ai/core/compare/v1.1.0-beta.42...v1.1.0-beta.43) (2026-09-26)
 
 
