@@ -109,6 +109,7 @@ rules for the code kinds and task passage are frozen in
 batuta judge questions build --journal <dir> [--journal <dir>...] --out <file>
 batuta judge questions sheet --corpus <file> --out <file>
 batuta judge questions labels --corpus <file> --sheet <file> [--json]
+batuta judge questions bench --corpus <file> --sheet <file> [--split calibrate|test] [--threshold <n>] [--config <path>] [--workspace <dir>] [--base-url <url>] [--json]
 ```
 
 `build` walks every `*.jsonl` under each journal directory. It finds the
@@ -132,6 +133,29 @@ cells empty for review. In `labels`, the maintainer fills `kind` with
 `labels` checks every corpus ID exactly once and prints the code kind versus
 label confusion table, precision and recall by kind, and answer label counts
 by kind as TSV, or one compact JSON object with `--json`.
+
+`bench` checks the same sheet, excludes questions without a matched plan task,
+and asks `question_match` once for each remaining `other` code kind. The
+request contains only the question and the task passage; recorded answers and
+labels stay local. Its default firm confidence threshold is 0.9, with an
+explicit `--threshold` taking precedence over the `question_match` decision
+threshold in judge config. The threshold must be between 0 and 1. `--split`
+limits the scored records to one half of the corpus.
+
+The bench emits a record for every scored question and a summary. Plain
+output is TSV; `--json` writes one compact JSON object per record followed by
+one summary object. Each record shows the code kind, both labels, whether Jev
+was called, and the option, confidence, probabilities, status, unavailability
+reason and input tokens when applicable. The summary shows the code kind
+confusion table, precision and recall for `scope_change`, `environment` and
+`continue`, the firm `answered_here` counts for `other` by answer label,
+the same counts by split, calls, unavailable results and input tokens. It
+marks criterion 2 `reported only` when fewer than six scored `other`
+questions carry a `yes` answer label. It also reports whether a recorded
+answer repeats the passage for firm `answered_here` results. The frozen
+criteria and limitations are in `.batuta/judge-research.md` section 15.
+Unavailable judge results are recorded and make the command exit 2; usage
+and data errors exit 1.
 
 ### Other judge forms
 
