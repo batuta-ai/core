@@ -98,6 +98,43 @@ that was skipped, with its reason.
 
 ## The CLI
 
+### Question corpus and labels
+
+`judge questions` prepares an offline corpus of recorded executor questions and
+checks the maintainer's labels. It never answers or resumes a question. The
+rules for the code kinds and task passage are frozen in
+`.batuta/judge-research.md` section 15.
+
+```text
+batuta judge questions build --journal <dir> [--journal <dir>...] --out <file>
+batuta judge questions sheet --corpus <file> --out <file>
+batuta judge questions labels --corpus <file> --sheet <file> [--json]
+```
+
+`build` walks every `*.jsonl` under each journal directory. It finds the
+delivery's plan by its slug under the journal workspace's `.batuta/plans/`
+or `.batuta/plans/done/`. It writes one compact JSON object per
+`question_recorded` record and a final `summary` object. Each record has
+`id` (`<delivery>/<task>/e<execution>/q<request_id>`), `repo`, `delivery`,
+`plan_slug`, `task`, `execution`, `question`, `answer`, `scope`, `code_kind`,
+`passage`, `passage_found`, `plan_found`, and `split`. `answer` is empty if
+there is no matching `answer_recorded` record. A missing plan or task leaves
+`plan_found` false and the passage empty. The split is by delivery hash:
+`calibrate` or `test`. Question, answer, and passage are capped at 4000 bytes.
+The summary counts journals, questions, questions with an answer, questions
+without a plan, and questions by code kind and split.
+
+`sheet` writes a seven column TSV with `id`, `kind`, `answer_in_passage`,
+`note`, `code_kind`, `question`, and `passage`. It leaves the three label
+cells empty for review. In `labels`, the maintainer fills `kind` with
+`scope_change`, `environment`, `continue`, or `other`, and
+`answer_in_passage` with `yes`, `no`, or `unclear`. The `note` is free text.
+`labels` checks every corpus ID exactly once and prints the code kind versus
+label confusion table, precision and recall by kind, and answer label counts
+by kind as TSV, or one compact JSON object with `--json`.
+
+### Other judge forms
+
 `ask` sends one request built from files and prints the `Response` as
 indented JSON on stdout, with the same snake_case keys the API answers in:
 `model`, `answers`, `usage`, `input_tokens`, `output_tokens`.
