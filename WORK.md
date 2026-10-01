@@ -1,5 +1,11 @@
 # WORK — core
 
+## Current status — 2026-10-01: question-to-plan matching run 1 negative, branch not pushed
+- [ ] Branch `feat/question-matching` (local, not pushed, no PR): the verifier-objection data check (57 objections labelled, 9 environment, triage parked, `.batuta/judge-objections/labels.tsv`), section 15 frozen in `9d3b366`, the build (plans `question-matching`, `-fixes`, `-fixes-2`, final review SHIP), the run under `.batuta/judge-questions/`, and the record in `.batuta/judge-benchmark.md` "Question-to-plan matching, run 1".
+- [ ] Run 1, 81 questions: criterion 1 fails on environment precision 18/21 (scope_change 29/31 and continue 11/12 hold); criterion 2 fails, Jev firm `answered_here` on 0/12 yes and 2/5 no. **Negative on both.** Nothing ships. Four Jev decisions tried, none added to code in a frozen run.
+- [ ] Follow-ups, code only: extend the verifier gate's environment pattern with `not a git repository` and `cannot be inspected` (6 of 9 environment objections missed); treat a plan parse failure as `plan_found` false in `judge questions build` (4 journals excluded) and in the classify benches (`supervision-fixes.md`).
+- [ ] Not done: push, PR, the maintainer's own review of `labels.tsv` beyond approval of the sheet, the OpenCode Zen `systemone` re-probe, the articles (every number is now in `judge-benchmark.md`).
+
 ## Current status — 2026-09-29: classification v3 merged and released, run 1 negative
 - [ ] Merged 2026-09-29: **core#138** `feat/classify-v3` (merge commit `196167a`, admin merge after CI green), released as v1.1.0-beta.44 (core#139). It carries: the Jev application study (`.batuta/judge-application-study.md`), section 14 frozen in `8bcbbca`, the v3 build (plans `classify-v3` and `classify-v3-fixes` to `-fixes-4`, all done), the run inputs and outputs under `.batuta/judge-classify-v3/`, and the record in `.batuta/judge-benchmark.md` "Plan classification v3, run 1".
 - [ ] Run 1, test half (113 tasks, 15 insufficient): lane C (code only) economy 70.5%, safety 33.3%, balance 0.519; lane J (C adjusted by Jev) economy 69.2%, safety 33.3%, balance 0.513; balance(J) − balance(C) = −0.006. **Negative for both**: neither lane is fit to propose lanes and Jev does not add to classification. Rule selected on the calibrate half and frozen in `b976756`: F_high 4, F_low 2, docs_low yes, T 0.8.
