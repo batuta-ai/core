@@ -96,6 +96,28 @@ func TestKindPath(t *testing.T) {
 	}
 }
 
+func TestKindPathTrailingPeriod(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name  string
+		text  string
+		scope []string
+		want  string
+	}{
+		{"outside", "May I edit src/outside.go.", []string{"src/owned"}, "scope_change"},
+		{"outside quoted", "Should I touch `src/outside.go`.", []string{"src/owned"}, "scope_change"},
+		{"inside", "May I edit src/owned/file.go.", []string{"src/owned"}, "other"},
+		{"inside exact", "May I edit src/owned/file.go.", []string{"src/owned/file.go"}, "other"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := Kind(tt.text, tt.scope); got != tt.want {
+				t.Errorf("Kind(%q) = %q, want %q", tt.text, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestKindPrecedence(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

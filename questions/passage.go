@@ -3,6 +3,7 @@ package questions
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/batuta-ai/core/routing"
 )
@@ -23,10 +24,14 @@ type passageParagraph struct {
 func Passage(plan routing.Plan, task routing.PlanTask) string {
 	lines := []string{task.Title}
 	for _, entry := range task.Scope {
-		lines = append(lines, "Scope: "+entry)
+		if entry = dropSecretLines(entry); entry != "" {
+			lines = append(lines, "Scope: "+entry)
+		}
 	}
 	for _, entry := range task.Accept {
-		lines = append(lines, "Accept: "+entry)
+		if entry = dropSecretLines(entry); entry != "" {
+			lines = append(lines, "Accept: "+entry)
+		}
 	}
 	text := strings.Join(lines, "\n")
 	context := boundContext(plan.ContextFor(task.Number))
@@ -34,10 +39,14 @@ func Passage(plan routing.Plan, task routing.PlanTask) string {
 		text += "\n\n" + context
 	}
 	text = dropSecretLines(text)
-	if len(text) > maxPassageBytes {
-		return text[:maxPassageBytes]
+	if len(text) <= maxPassageBytes {
+		return text
 	}
-	return text
+	cut := maxPassageBytes
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut]
 }
 
 // Copied from classify/classify.go's boundContext and dropSecretLines: the

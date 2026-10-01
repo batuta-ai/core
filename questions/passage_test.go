@@ -3,6 +3,7 @@ package questions
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/batuta-ai/core/routing"
 )
@@ -53,4 +54,46 @@ func TestPassage(t *testing.T) {
 			t.Errorf("Passage() length = %d, prefix = %q", len(got), got[:min(len(got), 30)])
 		}
 	})
+}
+
+func TestPassageSecretEntries(t *testing.T) {
+	t.Parallel()
+	task := routing.PlanTask{
+		Number:       1,
+		TaskArtifact: routing.TaskArtifact{Title: "Ship parser"},
+		Scope:        []string{"API_TOKEN=scope-secret", "questions/passage.go"},
+		Accept:       []string{"DB_PASSWORD=accept-secret", "passage is bounded"},
+	}
+	got := Passage(routing.Plan{}, task)
+	want := "Ship parser\nScope: questions/passage.go\nAccept: passage is bounded"
+	if got != want {
+		t.Errorf("Passage() = %q, want %q", got, want)
+	}
+}
+
+func TestPassageUTF8Bound(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		context string
+	}{
+		{"two-byte rune across the bound", strings.Repeat("a", 3987) + strings.Repeat("é", 100)},
+		{"three-byte rune across the bound", strings.Repeat("a", 3986) + strings.Repeat("世", 100)},
+		{"four-byte rune across the bound", strings.Repeat("a", 3985) + strings.Repeat("😀", 100)},
+		{"ascii at the bound", strings.Repeat("a", 5000)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			task := routing.PlanTask{Number: 1, TaskArtifact: routing.TaskArtifact{Title: "Short title"}}
+			got := Passage(routing.Plan{Context: tt.context}, task)
+			full := "Short title\n\n" + tt.context
+			if len(got) > 4000 || !utf8.ValidString(got) || !strings.HasPrefix(full, got) {
+				t.Fatalf("Passage() length = %d, valid = %t", len(got), utf8.ValidString(got))
+			}
+			if len(got) < 4000-utf8.UTFMax+1 {
+				t.Errorf("Passage() cut too early: length = %d", len(got))
+			}
+		})
+	}
 }

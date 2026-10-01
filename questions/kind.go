@@ -36,7 +36,8 @@ func containsWord(text string, words []string) bool {
 
 func namesPathOutsideScope(text string, scope []string) bool {
 	for _, raw := range strings.Fields(text) {
-		token := strings.Trim(raw, "`'\"()[]{}<>,;:?!")
+		token := strings.TrimLeft(raw, "`'\"()[]{}<>,;:?!")
+		token = strings.TrimRight(token, "`'\"()[]{}<>,;:?!.")
 		if !strings.Contains(token, "/") || !pathExtensions[path.Ext(token)] {
 			continue
 		}
