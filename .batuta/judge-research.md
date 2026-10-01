@@ -311,3 +311,40 @@ Decision, on the test half only, with the four measures of section 13 (economy a
 Reported beside it, deciding nothing: the calibrate table of every grid point; per question, the tasks with a packet, the calls made, and the answers firm, `insufficient`, below T and unavailable; the open marker count; agreement of C and of J with the host lane; input tokens.
 
 Shadow only: nothing routes on C or J. A negative result is the headline; nothing is restated at another grid, threshold or mapping.
+
+## 15. Question-to-plan matching: decision rule, frozen before the build (2026-10-01)
+
+Agreed with the maintainer on 2026-10-01, before any code was built. This section is not edited afterwards.
+
+Why. An executor's `BATUTA-QUESTION` parks its delivery until a person answers. The journals on this machine hold 85 such questions (core 45, menuflix 37, skills 1, host 1, core-soft-deny 1) and 41 recorded answers. Read by the conductor on 2026-09-30, most questions are of three shapes the plan already decides by structure: a request to widen Scope, an environment the executor cannot use, or permission to continue past a stop condition. The residue asks something the plan text may or may not state. Code classifies the shapes; Jev is asked, only on the residue, whether the task's own passage of the plan states the answer. Doctrine: `.batuta/judge-application-study.md`, sections 4 and 5. Verifier-objection triage was parked on 2026-09-30 for lack of positives (`.batuta/judge-benchmark.md`, "Verifier-objection triage: data check").
+
+Known contamination, stated before the run. The word lists and the order below were written after the conductor read all 85 questions on 2026-09-30, so criterion 1 measures the fit of lists tuned on the same questions they are scored on; the labels are the maintainer's, not the conductor's alone, and new questions recorded after this date are the only unseen ones.
+
+Corpus. Every `question_recorded` record of every journal under the five directories (`core`, `skills`, `batuta`, `core-soft-deny` and `geeknaveia/menuflix`, each `.batuta/journal/`) when the run starts; the count is recorded. Each question is joined to its plan by the delivery's slug (`<workspace>/.batuta/plans/<slug>.md` or `plans/done/<slug>.md`) and its task; a question whose plan or task is not found is counted and excluded. The `answer_recorded` text of the same task and execution, when present, travels with the question and is never shown to the judge.
+
+Split. By delivery: the first byte of sha256 of the delivery name, even is calibrate, odd is test. Reported, deciding nothing: with 85 questions the halves are too small to select a threshold, so the threshold is fixed below and the split only shows whether the counts hold on both halves.
+
+Labels, by the maintainer after reviewing labels the conductor proposes, frozen in `.batuta/judge-questions/labels.tsv` before the bench runs. Two per question:
+- `kind`: `scope_change` (asks to touch or add a path outside the task's Scope, or to install a dependency), `environment` (the executor cannot run or reach something: sandbox, permissions, Docker, network, caches, disk), `continue` (asks leave to go on after a stop condition, a failure or a timeout, with no other change), `other`.
+- `answer_in_passage`: `yes` when a sentence of the task's passage (defined below) states the answer or the rule that decides it, `no` when none does, `unclear` when the question itself is too unclear to say.
+
+Code kind. From the question text, case-insensitive, first match in this order:
+1. `environment` if it contains one of: `sandbox`, `docker`, `colima`, `socket`, `not permitted`, `permission`, `gocache`, `network`, `loopback`, `/bin/ps`, `write access`, `connectivity`, `container`, `disk`, `disco`, `ambiente`, `environment`, `toolchain`.
+2. `scope_change` if it contains `scope` or `escopo`, or `install`, `instalar`, `dependenc` (English or Portuguese stem), or names a path outside the task's Scope: a token with a `/` and one of the extensions `.go .ts .tsx .js .php .md .json .yaml .yml .lock .sh`, not equal to and not under any Scope entry.
+3. `continue` if it contains one of: `stop condition`, `continue past`, `may i continue`, `may i resume`, `posso continuar`, `posso retomar`, `pode retomar`, `nova tentativa`, `retry`, `resume this`, `retomar est`, `resume verification`, `continue verification`.
+4. otherwise `other`.
+
+Passage. The task's title, its Scope and Accept entries, its own labelled paragraph of `## Decisions and context` and the unlabelled paragraphs, in that order, bounded to 4000 bytes and with secret-shaped lines dropped, as `classify` bounds a task's context. The host lane never travels.
+
+Jev, on `other` questions only. One `choice` question over the packet `{question, passage}`: `answered_here` (a sentence of the passage states what the question asks, or states the rule that decides it); `not_addressed` (no sentence of the passage addresses what the question asks); `insufficient` (the question or the passage is too unclear to choose). An answer is firm when its option is not `insufficient` and its confidence is at least 0.9, the maker's band for automatic action. Anything else changes nothing. Model `jev-1.13.0`, `provider: typesafe`, `timeout_ms: 20000`, one trial; if more than 10% of the calls are unavailable the run is repeated once and both are reported.
+
+Known limit, stated before the run. `not_addressed` is a statement about absence, which the study says Jev does badly. It is asked here only because the passage is whole and small, not a slice of something larger, and the decision below never acts on it: only a firm `answered_here` can count.
+
+Decision, on the whole corpus, counts and shares both recorded:
+1. Code kinds are fit to route questions if, for each of `scope_change`, `environment` and `continue`, at least 90% of the questions code puts in that kind carry that label (precision), and at least 70% of the questions labelled with that kind are put there by code (recall).
+2. Jev adds if, among `other` questions labelled `yes`, at least half get a firm `answered_here`, and among `other` questions labelled `no` or `unclear`, none does. If fewer than 6 `other` questions are labelled `yes`, criterion 2 is reported and does not decide, and the decision on Jev is "no data", not negative.
+3. If 1 holds and 2 does not, question routing ships code-only in shadow (an annotation on the ask file), and Jev's next candidate is finding-to-contract consistency.
+
+Reported beside it, deciding nothing: the confusion table of code kind against label; per split the same counts; for every `other` question the option, confidence and probabilities; agreement of a firm `answered_here` with a recorded answer that repeats the passage; input tokens and calls.
+
+Shadow only: nothing answers a question on any of this. A negative result is the headline; nothing is restated at another threshold, word list or mapping.
