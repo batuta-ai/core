@@ -1,0 +1,7 @@
+Deviations from section 15 of .batuta/judge-research.md, recorded on 2026-10-01 before any judge call of the question-matching run.
+
+1. Corpus. Four menuflix journals whose plans do not parse (free-text Status line in geeknaveia/menuflix/.batuta/plans/done/phase-02-quality*.md) stop the build with "task metadata requires reauthoring"; the build does not treat a parse failure as plan_found false. They are excluded: phase-02-quality-20260910-100848 (2 questions), phase-02-quality-close-20260910-134229 (0), phase-02-quality-final-20260910-122040 (0), phase-02-quality-verification-20260910-130231 (2). The run reads 143 journals listed in journals-run.txt, 81 questions (85 recorded minus 4), 44 with an answer, 0 without a plan. Code kinds before labels: scope_change 31, environment 21, continue 12, other 17; split calibrate 45, test 36.
+
+2. Binary: built from 92f61183a519 (version v1.1.0-beta.44.0.20261001185344-92f61183a519), the branch head after the final review of delivery question-matching-fixes-2-20261001-184806 returned SHIP with no findings; that commit only updates WORK.md over the reviewed code at 9192397.
+
+3. Labels. The conductor's proposed labels were produced by a fresh model session reading each question with its passage and nothing else; the conductor reviewed every `other` row and a sample of the rest before handing the sheet to the maintainer.
