@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Close the two findings of the supervision review of delivery `question-matching-fixes-20261001-182546` (verdict REWORK): `build` guards `--out` by the resolved target's suffix and directory instead of comparing it with the journal files it will read, so a journal symlink to a file elsewhere escapes the guard; and the two-byte case of the UTF-8 bound test places its first multibyte character after the 4000-byte limit instead of across it. Nothing in `.batuta/judge-research.md` section 15 changes.
-**Created:** 2026-10-01 · **Status:** approved
+**Created:** 2026-10-01 · **Status:** done
 
 ## Tasks
-- [ ] 1. build compares --out with every selected journal file; the UTF-8 bound test crosses the limit — backend/medium
+- [x] 1. build compares --out with every selected journal file; the UTF-8 bound test crosses the limit — backend/medium
       Scope: cmd/batuta/judge_questions.go, cmd/batuta/judge_questions_test.go, questions/passage_test.go
       Accept: `judge questions build` collects the journal files it will read first, resolves each one and `--out` with `filepath.Abs` and `filepath.EvalSymlinks`, and exits 1 before creating or truncating anything when the resolved `--out` equals any resolved journal file, whatever the target's name, suffix or directory → go test ./cmd/batuta -run TestQuestionsBuildOutIsInput; a journal directory entry named `*.jsonl` that is a symlink to a file without that suffix outside the directory is read as a journal, and an `--out` naming that target is refused → go test ./cmd/batuta -run TestQuestionsBuildOutIsSymlinkTarget; an `--out` that does not exist, or exists outside the selected journal files, is created as before → go test ./cmd/batuta -run TestQuestionsBuildOffline; in TestPassageUTF8Bound every multibyte case starts its first multibyte character at a byte before 4000 and ends it at or after byte 4000, so the cut falls inside that character, and the test asserts the cut passage ends before that character → go test ./questions -run TestPassageUTF8Bound; the packages stay green → go test ./cmd/batuta ./questions
 

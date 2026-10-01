@@ -354,6 +354,7 @@
 - [x] batuta judge questions bench: Jev on the residue, scored against the labels with the counts of section 15 → codex (gpt-6-sol), commit 6f714a74ce5e (trail: .batuta/runs/2026-10-01-question-matching-task-3.md, delivery question-matching-20261001-172811, plan question-matching, 2026-10-01)
 - [x] questions: trailing period on a path token, secret entries, a UTF-8-safe passage bound → claude (sonnet), commit bb23c334f44f (trail: .batuta/runs/2026-10-01-question-matching-fixes-task-1.md, delivery question-matching-fixes-20261001-182546, plan question-matching-fixes, 2026-10-01)
 - [x] judge questions: build and sheet refuse an output that is an input, labels checks the sheet's context cells → claude (sonnet), commit 3e637f768517 (trail: .batuta/runs/2026-10-01-question-matching-fixes-task-2.md, delivery question-matching-fixes-20261001-182546, plan question-matching-fixes, 2026-10-01)
+- [x] build compares --out with every selected journal file; the UTF-8 bound test crosses the limit → claude (sonnet), commit 919239717492 (trail: .batuta/runs/2026-10-01-question-matching-fixes-2-task-1.md, delivery question-matching-fixes-2-20261001-184806, plan question-matching-fixes-2, 2026-10-01)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
