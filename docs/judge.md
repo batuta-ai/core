@@ -123,14 +123,21 @@ there is no matching `answer_recorded` record. A missing plan or task leaves
 `plan_found` false and the passage empty. The split is by delivery hash:
 `calibrate` or `test`. Question, answer, and passage are capped at 4000 bytes.
 The summary counts journals, questions, questions with an answer, questions
-without a plan, and questions by code kind and split.
+without a plan, and questions by code kind and split. The `--out` file
+may not be an input: `build` refuses an `--out` that resolves, after symlinks,
+to a `*.jsonl` file under a `--journal` directory, and exits 1 before it
+creates or truncates anything.
 
 `sheet` writes a seven column TSV with `id`, `kind`, `answer_in_passage`,
 `note`, `code_kind`, `question`, and `passage`. It leaves the three label
 cells empty for review. In `labels`, the maintainer fills `kind` with
 `scope_change`, `environment`, `continue`, or `other`, and
 `answer_in_passage` with `yes`, `no`, or `unclear`. The `note` is free text.
-`labels` checks every corpus ID exactly once and prints the code kind versus
+`sheet` refuses an `--out` that resolves to the `--corpus` file. `labels` and
+`bench` compare the `code_kind`, `question`, and `passage` cells of each row with
+the corpus record of the same ID, after the sheet's cell normalisation (a tab,
+carriage return, or newline becomes one space), and exit 1 naming the row and
+the cell on a difference. `labels` checks every corpus ID exactly once and prints the code kind versus
 label confusion table, precision and recall by kind, and answer label counts
 by kind as TSV, or one compact JSON object with `--json`.
 

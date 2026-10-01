@@ -292,6 +292,107 @@ func TestQuestionsReaderStrict(t *testing.T) {
 	}
 }
 
+func TestQuestionsBuildOutIsInput(t *testing.T) {
+	t.Parallel()
+	journalDir, root := questionsFixture(t, "demo", fixtureQuestion("Which format?", 1, "q1"))
+	input := filepath.Join(journalDir, "demo-a1b2.jsonl")
+	before, err := os.ReadFile(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link.jsonl")
+	if err := os.Symlink(input, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, out := range []string{input, link} {
+		err := runJudge([]string{"questions", "build", "--journal", journalDir, "--out", out}, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "may not be an input") {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		after, err := os.ReadFile(input)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("out=%s journal changed: err=%v", out, err)
+		}
+	}
+}
+
+func TestQuestionsSheetOutIsInput(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	corpus := filepath.Join(root, "c.jsonl")
+	writeCorpusFixture(t, corpus)
+	before, err := os.ReadFile(corpus)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link.jsonl")
+	if err := os.Symlink(corpus, link); err != nil {
+		t.Fatal(err)
+	}
+	for _, out := range []string{corpus, link} {
+		err := runJudge([]string{"questions", "sheet", "--corpus", corpus, "--out", out}, &bytes.Buffer{}, &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "may not be an input") {
+			t.Fatalf("out=%s err=%v", out, err)
+		}
+		after, err := os.ReadFile(corpus)
+		if err != nil || !bytes.Equal(before, after) {
+			t.Fatalf("out=%s corpus changed: err=%v", out, err)
+		}
+	}
+}
+
+func TestQuestionsLabelsContextMismatch(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ cell, row string }{
+		{"code_kind", "id\tother\tno\t\tenvironment\tq\tp"},
+		{"question", "id\tother\tno\t\tother\tchanged\tp"},
+		{"passage", "id\tother\tno\t\tother\tq\tchanged"},
+	} {
+		tc := tc
+		t.Run(tc.cell, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			corpus, sheet := filepath.Join(root, "c.jsonl"), filepath.Join(root, "s.tsv")
+			writeCorpusFixture(t, corpus)
+			if err := os.WriteFile(sheet, []byte(questionsSheetHeader+"\n"+tc.row+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, form := range []string{"labels", "bench"} {
+				err := runJudge([]string{"questions", form, "--corpus", corpus, "--sheet", sheet}, &bytes.Buffer{}, &bytes.Buffer{})
+				if err == nil || !strings.Contains(err.Error(), "row 2") || !strings.Contains(err.Error(), tc.cell) {
+					t.Fatalf("%s: err = %v", form, err)
+				}
+			}
+		})
+	}
+}
+
+func TestQuestionsLabelsContextRoundTrip(t *testing.T) {
+	t.Parallel()
+	dir, root := questionsFixture(t, "demo", fixtureQuestion("Which\tformat?\r\nplease", 1, "q1"))
+	corpus, sheet := filepath.Join(root, "corpus.jsonl"), filepath.Join(root, "sheet.tsv")
+	if err := runJudge([]string{"questions", "build", "--journal", dir, "--out", corpus}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runJudge([]string{"questions", "sheet", "--corpus", corpus, "--out", sheet}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(sheet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
+	cells := strings.Split(lines[1], "\t")
+	cells[1], cells[2] = "other", "no"
+	lines[1] = strings.Join(cells, "\t")
+	if err := os.WriteFile(sheet, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runJudge([]string{"questions", "labels", "--corpus", corpus, "--sheet", sheet}, &bytes.Buffer{}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestQuestionsUsage(t *testing.T) {
 	t.Parallel()
 	for _, args := range [][]string{{"questions"}, {"questions", "unknown"}, {"questions", "build"}, {"questions", "sheet"}, {"questions", "labels"}} {

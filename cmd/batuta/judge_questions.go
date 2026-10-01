@@ -93,6 +93,9 @@ func runQuestionsBuild(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := questionsRefuseJournalOut(*out, dirs); err != nil {
+		return err
+	}
 	file, err := os.Create(*out)
 	if err != nil {
 		return err
@@ -105,6 +108,58 @@ func runQuestionsBuild(args []string) error {
 		}
 	}
 	return enc.Encode(map[string]any{"summary": corpus.summary})
+}
+
+// questionsResolve returns the absolute, symlink-free path; a path that does
+// not exist yet reports false.
+func questionsResolve(path string) (string, bool, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false, err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return resolved, true, nil
+}
+
+func questionsRefuseJournalOut(out string, dirs []string) error {
+	resolved, exists, err := questionsResolve(out)
+	if err != nil || !exists || !strings.HasSuffix(resolved, ".jsonl") {
+		return err
+	}
+	for _, dir := range dirs {
+		root, ok, err := questionsResolve(dir)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		if rel, err := filepath.Rel(root, resolved); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("--out %s is a journal under --journal %s; --out may not be an input", out, dir)
+		}
+	}
+	return nil
+}
+
+func questionsRefuseCorpusOut(out, corpus string) error {
+	resolvedOut, exists, err := questionsResolve(out)
+	if err != nil || !exists {
+		return err
+	}
+	resolvedCorpus, ok, err := questionsResolve(corpus)
+	if err != nil {
+		return err
+	}
+	if ok && resolvedOut == resolvedCorpus {
+		return fmt.Errorf("--out %s is the --corpus file; --out may not be an input", out)
+	}
+	return nil
 }
 
 func buildQuestionsCorpus(dirs []string) (questionsCorpus, error) {
@@ -448,6 +503,9 @@ func runQuestionsSheet(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := questionsRefuseCorpusOut(*out, *corpusPath); err != nil {
+		return err
+	}
 	file, err := os.Create(*out)
 	if err != nil {
 		return err
@@ -510,12 +568,12 @@ func runQuestionsLabels(args []string, stdout io.Writer) error {
 }
 
 func readQuestionsLabels(records []questionCorpusRecord, path string) (map[string]questionsLabel, error) {
-	ids := map[string]bool{}
+	ids := map[string]questionCorpusRecord{}
 	for _, r := range records {
-		if ids[r.ID] {
+		if _, dup := ids[r.ID]; dup {
 			return nil, fmt.Errorf("corpus id %s repeated", r.ID)
 		}
-		ids[r.ID] = true
+		ids[r.ID] = r
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -539,11 +597,17 @@ func readQuestionsLabels(records []questionCorpusRecord, path string) (map[strin
 			return nil, fmt.Errorf("row %d: expected seven cells", row)
 		}
 		id := cells[0]
-		if !ids[id] {
+		record, ok := ids[id]
+		if !ok {
 			return nil, fmt.Errorf("row %d: id %q not in corpus", row, id)
 		}
 		if _, exists := labels[id]; exists {
 			return nil, fmt.Errorf("row %d: id %q repeated", row, id)
+		}
+		for _, cell := range []struct{ name, got, want string }{{"code_kind", cells[4], record.CodeKind}, {"question", cells[5], record.Question}, {"passage", cells[6], record.Passage}} {
+			if cell.got != questionsCell(cell.want) {
+				return nil, fmt.Errorf("row %d: %s cell differs from the corpus", row, cell.name)
+			}
 		}
 		if !questionsValidKind(cells[1]) {
 			return nil, fmt.Errorf("row %d: kind %q invalid", row, cells[1])
