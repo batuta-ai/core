@@ -76,11 +76,12 @@ func TestPassageUTF8Bound(t *testing.T) {
 	tests := []struct {
 		name    string
 		context string
+		first   string
 	}{
-		{"two-byte rune across the bound", strings.Repeat("a", 3987) + strings.Repeat("é", 100)},
-		{"three-byte rune across the bound", strings.Repeat("a", 3986) + strings.Repeat("世", 100)},
-		{"four-byte rune across the bound", strings.Repeat("a", 3985) + strings.Repeat("😀", 100)},
-		{"ascii at the bound", strings.Repeat("a", 5000)},
+		{"two-byte rune across the bound", strings.Repeat("a", 3986) + strings.Repeat("é", 100), "é"},
+		{"three-byte rune across the bound", strings.Repeat("a", 3985) + strings.Repeat("世", 100), "世"},
+		{"four-byte rune across the bound", strings.Repeat("a", 3984) + strings.Repeat("😀", 100), "😀"},
+		{"ascii at the bound", strings.Repeat("a", 5000), ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -90,6 +91,15 @@ func TestPassageUTF8Bound(t *testing.T) {
 			full := "Short title\n\n" + tt.context
 			if len(got) > 4000 || !utf8.ValidString(got) || !strings.HasPrefix(full, got) {
 				t.Fatalf("Passage() length = %d, valid = %t", len(got), utf8.ValidString(got))
+			}
+			if tt.first != "" {
+				start := strings.Index(full, tt.first)
+				if start >= 4000 || start+len(tt.first) <= 4000 {
+					t.Fatalf("fixture: first %q spans bytes %d-%d, want across byte 4000", tt.first, start, start+len(tt.first))
+				}
+				if len(got) != start {
+					t.Errorf("Passage() length = %d, want cut before %q at %d", len(got), tt.first, start)
+				}
 			}
 			if len(got) < 4000-utf8.UTFMax+1 {
 				t.Errorf("Passage() cut too early: length = %d", len(got))

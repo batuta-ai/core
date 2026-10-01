@@ -89,11 +89,15 @@ func runQuestionsBuild(args []string) error {
 	if flags.NArg() != 0 || len(dirs) == 0 || *out == "" {
 		return errors.New(questionsUsage)
 	}
-	corpus, err := buildQuestionsCorpus(dirs)
+	files, err := questionsJournalFiles(dirs)
 	if err != nil {
 		return err
 	}
-	if err := questionsRefuseJournalOut(*out, dirs); err != nil {
+	if err := questionsRefuseJournalOut(*out, files); err != nil {
+		return err
+	}
+	corpus, err := buildQuestionsCorpus(dirs)
+	if err != nil {
 		return err
 	}
 	file, err := os.Create(*out)
@@ -127,21 +131,38 @@ func questionsResolve(path string) (string, bool, error) {
 	return resolved, true, nil
 }
 
-func questionsRefuseJournalOut(out string, dirs []string) error {
-	resolved, exists, err := questionsResolve(out)
-	if err != nil || !exists || !strings.HasSuffix(resolved, ".jsonl") {
+// questionsJournalFiles lists the *.jsonl entries build will read.
+func questionsJournalFiles(dirs []string) ([]string, error) {
+	var files []string
+	for _, dir := range dirs {
+		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+				files = append(files, path)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("judge questions build: %s: %w", dir, err)
+		}
+	}
+	return files, nil
+}
+
+func questionsRefuseJournalOut(out string, files []string) error {
+	resolvedOut, exists, err := questionsResolve(out)
+	if err != nil || !exists {
 		return err
 	}
-	for _, dir := range dirs {
-		root, ok, err := questionsResolve(dir)
+	for _, file := range files {
+		resolved, ok, err := questionsResolve(file)
 		if err != nil {
 			return err
 		}
-		if !ok {
-			continue
-		}
-		if rel, err := filepath.Rel(root, resolved); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("--out %s is a journal under --journal %s; --out may not be an input", out, dir)
+		if ok && resolved == resolvedOut {
+			return fmt.Errorf("--out %s is the journal %s; --out may not be an input", out, file)
 		}
 	}
 	return nil

@@ -316,6 +316,31 @@ func TestQuestionsBuildOutIsInput(t *testing.T) {
 	}
 }
 
+func TestQuestionsBuildOutIsSymlinkTarget(t *testing.T) {
+	t.Parallel()
+	journalDir, root := questionsFixture(t, "demo", fixtureQuestion("Which format?", 1, "q1"))
+	entry := filepath.Join(journalDir, "demo-a1b2.jsonl")
+	target := filepath.Join(root, "elsewhere.dat")
+	if err := os.Rename(entry, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, entry); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runJudge([]string{"questions", "build", "--journal", journalDir, "--out", target}, &bytes.Buffer{}, &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "may not be an input") {
+		t.Fatalf("err=%v", err)
+	}
+	after, err := os.ReadFile(target)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("target changed: err=%v", err)
+	}
+}
+
 func TestQuestionsSheetOutIsInput(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
