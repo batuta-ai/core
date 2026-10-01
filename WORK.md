@@ -349,6 +349,9 @@
 - [x] judge classify calibrate rejects a misplaced summary and null or mistyped record values → claude (sonnet), commit 3785b3e20605 (trail: .batuta/runs/2026-09-28-classify-v3-fixes-2-task-1.md, delivery classify-v3-fixes-2-20260928-152130, plan classify-v3-fixes-2, 2026-09-28)
 - [x] judge classify calibrate validates every record field it reads → claude (sonnet), commit 29efcc6a0981 (trail: .batuta/runs/2026-09-28-classify-v3-fixes-3-task-1.md, delivery classify-v3-fixes-3-20260928-154826, plan classify-v3-fixes-3, 2026-09-28)
 - [x] judge classify calibrate checks unanswered entries and every probability value → claude (sonnet), commit 121a47f5c477 (trail: .batuta/runs/2026-09-28-classify-v3-fixes-4-task-1.md, delivery classify-v3-fixes-4-20260928-161040, plan classify-v3-fixes-4, 2026-09-28)
+- [x] questions package: code kind, task passage, the Jev request and its decision → codex (gpt-6-sol), commit d9f5f2fee9e7 (trail: .batuta/runs/2026-10-01-question-matching-task-1.md, delivery question-matching-20261001-172811, plan question-matching, 2026-10-01)
+- [x] batuta judge questions build, sheet and labels: the corpus, the label sheet and its check → codex (gpt-6-sol), commit 42a536c5bbe7 (trail: .batuta/runs/2026-10-01-question-matching-task-2.md, delivery question-matching-20261001-172811, plan question-matching, 2026-10-01)
+- [x] batuta judge questions bench: Jev on the residue, scored against the labels with the counts of section 15 → codex (gpt-6-sol), commit 6f714a74ce5e (trail: .batuta/runs/2026-10-01-question-matching-task-3.md, delivery question-matching-20261001-172811, plan question-matching, 2026-10-01)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
