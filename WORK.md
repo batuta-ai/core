@@ -1,5 +1,10 @@
 # WORK — core
 
+## Current status — 2026-10-02: question matching v2 negative, lead closed, branch not pushed
+- [ ] Branch `feat/question-matching-v2` (local, not pushed, no PR): section 17 frozen in `b668331`, the build (plans `question-matching-v2` and `-fixes` to `-fixes-4`, final review SHIP), the run records in `.batuta/judge-questions/bench-v2.jsonl` (no unit text), and the record in `.batuta/judge-benchmark.md` "Question-to-plan matching v2, run 1".
+- [ ] v2, one short unit per call, 2,562 calls: firm `answered_here` 3/12 on other yes (run 1: 0/12) and 2/5 on other no (same two licence questions). **Negative**; by section 17 the lead is closed and Jev stays out of batuta's decisions until a new corpus with positives exists. Five Jev decisions tried, none added to code in a frozen run; the positive control (section 16) shows the request format is sound.
+- [ ] Next: the three articles on the maintainer's site; code follow-ups (verifier gate pattern, plan parse failures); merged core#141 and the v2 branch still pending push, PR and the host pin (beta.44).
+
 ## Current status — 2026-10-01: question-to-plan matching run 1 negative, branch not pushed
 - [ ] Branch `feat/question-matching` (local, not pushed, no PR): the verifier-objection data check (57 objections labelled, 9 environment, triage parked, `.batuta/judge-objections/labels.tsv`), section 15 frozen in `9d3b366`, the build (plans `question-matching`, `-fixes`, `-fixes-2`, final review SHIP), the run under `.batuta/judge-questions/`, and the record in `.batuta/judge-benchmark.md` "Question-to-plan matching, run 1".
 - [ ] Positive control (section 16, 2026-10-02): 40 short English packets, 39/40 correct, 36/40 firm, 0 firm wrong; literal tier 17/20 firm (bar 18, misses by one), one-hop 19/20. The request format is sound; the four negatives are about batuta's long bilingual packets. Lead: reduce the passage by code to the sentences that overlap the question.
