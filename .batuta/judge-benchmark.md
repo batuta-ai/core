@@ -350,3 +350,18 @@ Headline: negative on both criteria. Code kinds miss the environment bar by thre
 Reported beside it, deciding nothing. Jev's confidence on the 17 calls: median 0.54 (min 0.24, max 0.98); 15 of 17 below 0.9. P(`answered_here`) median 0.67; it was at least 0.5 on 8 of the 12 yes questions and on 3 of the 5 no questions, so the probability does not separate the labels. `insufficient` never exceeded 0.03. Per split the picture is the same: calibrate 0/3 yes and 0/2 no with firm answers (reported only, fewer than 6 yes); test 0/9 and 2/3. The 20 `other`-labelled questions include 8 menuflix requests for a corrective brief, which the passage answers with one standing sentence ("achados de produto exigem novo brief corretivo"); Jev read five of those eight at P(`answered_here`) below 0.7.
 
 Post hoc, not a result: dropping `environment` and `ambiente` from the environment word list would have lifted environment precision to 18/18 on this corpus with recall 18/20, which is tuning on the scored data and is not restated as a pass. Across the four Jev decisions tried in batuta (claim evidence, classification v1–v3, question matching) the judge has not added to code in any frozen run; the next candidate in the study, finding-to-contract consistency, has no corpus yet (one correction cycle measured at 8 minutes and 80k tokens).
+
+## Jev positive control, run 1 (2026-10-02)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 16 (commit `bfe8b10`), items in `.batuta/judge-control/items.json`, config `judge-control.json` (`provider: typesafe`, `model: jev-1.13.0`), one `batuta judge ask` call per item through the maintainer's login shell, 40 calls, 17,106 input tokens, 15 seconds. Raw output `run.jsonl`, scored rows `results.json`.
+
+| tier | correct by chosen option | firm and correct (confidence ≥ 0.9) | firm and wrong | confidence median (min, max) | frozen bar | |
+|---|---|---|---|---|---|---|
+| literal (20) | 19 / 20 | 17 / 20 | 0 | 0.99 (0.36, 1.00) | ≥ 18 firm and correct, 0 firm wrong | **fails** by one |
+| one_hop (20) | 20 / 20 | 19 / 20 | 0 | 0.99 (0.89, 1.00) | ≥ 18 firm and correct, 0 firm wrong | holds |
+
+Headline: on short English packets Jev reads both literal statements and one-hop rules: 39 of 40 chosen options correct, 36 of 40 firm, no firm answer wrong, P(expected option) at least 0.89 on every correct item. The literal tier misses its bar by one item: L11, where the passage lists Scope files and the question asks to add another file, chosen `answered_here` at confidence 0.36 (the item's own expectation is arguable, since a Scope line does decide a Scope question one hop away); two more literal items were correct below 0.9. `insufficient` never exceeded 0.01.
+
+What this settles. The request format and the option wording batuta sends are sound: the same request shape that scored 0 firm correct answers on 12 real questions scores 36 of 40 here. The difference between the control and the real runs is the packet, not the judge: real passages are the task's whole plan text, up to 4000 bytes, bilingual, with the deciding sentence buried among Scope, Accept and Decisions lines; control passages are under 200 bytes with the deciding sentence in plain sight. The four negatives stand as results about batuta's packets on this model, not about the request format.
+
+Not a result, a lead for the next rule: in question matching the code already builds the passage; a passage reduced by code to the few sentences with the highest word overlap with the question would put the real packets near the control's shape. That is the study's own rule, code selects the packet, applied one step further.
