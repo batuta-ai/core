@@ -348,3 +348,22 @@ Decision, on the whole corpus, counts and shares both recorded:
 Reported beside it, deciding nothing: the confusion table of code kind against label; per split the same counts; for every `other` question the option, confidence and probabilities; agreement of a firm `answered_here` with a recorded answer that repeats the passage; input tokens and calls.
 
 Shadow only: nothing answers a question on any of this. A negative result is the headline; nothing is restated at another threshold, word list or mapping.
+
+## 16. Jev positive control: decision rule, frozen before the run (2026-10-02)
+
+Agreed with the maintainer on 2026-10-02, after the question-matching run and before any control call. This section is not edited afterwards.
+
+Why. Four decisions (claim evidence, classification v1–v3, question matching) were negative under frozen rules, and in every one Jev's probabilities failed to separate the labelled classes while its escape option went unused. None of those runs included a positive control: a set of packets so plain that a working judge must get them right. Without it the negative results cannot be attributed to the domain rather than to the request format batuta sends. This control settles that.
+
+Items. Forty packets in `.batuta/judge-control/items.json`, written by the conductor on 2026-10-02, English, each passage under 200 bytes, in the exact request shape of question matching (`judge ask` with the state `{question, passage}` and the single `choice` question `answer` whose instructions and three options are the ones of `questions/request.go`). Two tiers of twenty: `literal`, where the passage names the question's subject and decides it (ten `answered_here`) or never mentions it (ten `not_addressed`); `one_hop`, where a general rule in the passage decides the question without naming its subject (ten `answered_here`) or the passage holds unrelated rules (ten `not_addressed`). No item expects `insufficient`.
+
+Judge: `provider: typesafe`, `model: jev-1.13.0`, `timeout_ms: 20000`, one trial, one call per item through the maintainer's login shell.
+
+Decision, per tier and overall, with the threshold 0.9 of section 15:
+1. The request format is sound if, on the `literal` tier, at least 18 of 20 answers are firm (confidence at least 0.9) and correct, and no firm answer is wrong.
+2. One-hop reading works if the same holds on the `one_hop` tier.
+3. If 1 fails, the request format or the question wording is the first suspect, and the four earlier negatives are not attributed to the domain until the format is fixed and this control passes. If 1 holds and 2 fails, Jev reads literal statements but not one-hop rules on this kind of text, and the earlier negatives stand as domain results.
+
+Reported beside it, deciding nothing: every item's option, confidence and probabilities; the lowest P(expected option) among correct items and the highest among wrong ones; input tokens.
+
+Shadow only. A negative result is the headline; nothing is restated at another threshold.
