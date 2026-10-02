@@ -249,7 +249,7 @@ func TestQuestionsBenchUnitMismatchUnavailable(t *testing.T) {
 
 func TestQuestionsBenchAllUnitsUnavailable(t *testing.T) {
 	t.Parallel()
-	root, corpus, sheet := questionsUnitFixture(t, "other", "other", "")
+	root, corpus, sheet := questionsUnitFixture(t, "other", "scope_change", "")
 	server, _ := questionsUnitServer(t, func(string) string {
 		return `{"answers":{"wrong":{"type":"choice","choice":"answered_here","confidence":0.95}},"usage":{"input_tokens":7}}`
 	})
@@ -269,8 +269,9 @@ func TestQuestionsBenchAllUnitsUnavailable(t *testing.T) {
 		Summary struct {
 			UnavailableCalls  *int                      `json:"unavailable_calls"`
 			QuestionsExcluded *int                      `json:"questions_excluded"`
-			Criterion1        questionsBenchCriterion1 `json:"criterion1"`
-			Criterion2        questionsBenchCriterion2 `json:"criterion2"`
+			Confusion         map[string]map[string]int `json:"confusion"`
+			Criterion1        questionsBenchCriterion1  `json:"criterion1"`
+			Criterion2        questionsBenchCriterion2  `json:"criterion2"`
 		} `json:"summary"`
 	}
 	lines := strings.Split(strings.TrimSpace(out), "\n")
@@ -285,6 +286,86 @@ func TestQuestionsBenchAllUnitsUnavailable(t *testing.T) {
 	}
 	if final.Summary.Criterion2.Yes.Total != 0 || final.Summary.Criterion2.NoUnclear.Total != 0 {
 		t.Fatalf("criterion2=%+v want excluded", final.Summary.Criterion2)
+	}
+	if final.Summary.Confusion["other"]["scope_change"] != 1 || final.Summary.Criterion1.Kinds["scope_change"].Recall.Total != 1 || final.Summary.Criterion1.Kinds["scope_change"].Recall.Count != 0 {
+		t.Fatalf("confusion=%v criterion1=%+v want the unavailable question kept", final.Summary.Confusion, final.Summary.Criterion1)
+	}
+}
+
+func questionsBenchUnavailableRun(t *testing.T, mode string) ([]questionsBenchRecordResult, questionsBenchSummary) {
+	t.Helper()
+	corpus := []questionCorpusRecord{
+		questionsBenchRecord("u", "other", "calibrate"),
+		questionsBenchRecord("a", "other", "test"),
+		questionsBenchRecord("s", "scope_change", "test"),
+		questionsBenchRecord("p", "other", "test"),
+	}
+	corpus[3].PlanFound = false
+	for i := range corpus {
+		corpus[i].Passage = "Title\nScope: One"
+	}
+	labels := map[string]questionsLabel{
+		"u": {Kind: "scope_change", AnswerInPassage: "yes"},
+		"a": {Kind: "other", AnswerInPassage: "no"},
+		"s": {Kind: "scope_change"},
+		"p": {Kind: "other", AnswerInPassage: "yes"},
+	}
+	answer := judge.Response{Answers: map[string]judge.Answer{"answer": {Type: judge.QuestionChoice, Choice: "answered_here", Confidence: .95, Probabilities: map[string]float64{"answered_here": .95}}}}
+	script := &scriptedQuestionsJudge{replies: []judge.Response{{}, answer}, errors: []error{&judge.UnavailableError{Reason: judge.ReasonTimeout}, nil}}
+	return questionsBenchRecordsMode(context.Background(), script, "", corpus, labels, "", .9, mode, false)
+}
+
+func TestQuestionsBenchUnavailableLeavesCriterion2(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"full", "units"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			_, summary := questionsBenchUnavailableRun(t, mode)
+			if summary.Criterion2.Yes.Total != 0 || summary.Criterion2.NoUnclear.Total != 1 || summary.Criterion2.NoUnclear.Count != 1 {
+				t.Fatalf("criterion2=%+v", summary.Criterion2)
+			}
+			if got := summary.BySplit["calibrate"].Criterion2; got.Yes.Total != 0 || got.NoUnclear.Total != 0 {
+				t.Fatalf("calibrate criterion2=%+v", got)
+			}
+			if got := summary.BySplit["test"].Criterion2; got.Yes.Total != 0 || got.NoUnclear.Total != 1 {
+				t.Fatalf("test criterion2=%+v", got)
+			}
+		})
+	}
+}
+
+func TestQuestionsBenchExcludedCounts(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"full", "units"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			_, summary := questionsBenchUnavailableRun(t, mode)
+			if summary.Excluded != 2 || summary.Unavailable != 1 || summary.BySplit["calibrate"].Excluded != 1 || summary.BySplit["calibrate"].Unavailable != 1 || summary.BySplit["test"].Excluded != 1 || summary.BySplit["test"].Unavailable != 0 {
+				t.Fatalf("summary=%+v", summary)
+			}
+			if mode == "units" && (summary.QuestionsExcluded == nil || *summary.QuestionsExcluded != 2 || *summary.BySplit["calibrate"].QuestionsExcluded != 1 || *summary.BySplit["test"].QuestionsExcluded != 1) {
+				t.Fatalf("questions_excluded=%+v", summary)
+			}
+		})
+	}
+}
+
+func TestQuestionsBenchUnavailableKeepsCriterion1(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"full", "units"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			records, summary := questionsBenchUnavailableRun(t, mode)
+			if records[0].Status != "unavailable" || records[0].CodeKind != "other" || records[0].Kind != "scope_change" {
+				t.Fatalf("record=%+v", records[0])
+			}
+			if summary.Questions != 3 || summary.Confusion["other"]["scope_change"] != 1 || summary.Confusion["other"]["other"] != 1 || summary.Confusion["scope_change"]["scope_change"] != 1 {
+				t.Fatalf("confusion=%v questions=%d", summary.Confusion, summary.Questions)
+			}
+			if got := summary.Criterion1.Kinds["scope_change"]; got.Recall.Total != 2 || got.Recall.Count != 1 {
+				t.Fatalf("criterion1=%+v", got)
+			}
+		})
 	}
 }
 

@@ -223,7 +223,7 @@ func questionsBenchRecordsMode(ctx context.Context, j judge.Judge, buildReason s
 		}
 	}
 	summary := questionsBenchSummary{questionsBenchCounts: questionsBenchCountRecords(selected, records), BySplit: map[string]questionsBenchCounts{}}
-	summary.Excluded = excluded["calibrate"] + excluded["test"]
+	summary.Excluded = excluded["calibrate"] + excluded["test"] + questionsBenchUnavailableRecords(records)
 	for _, name := range []string{"calibrate", "test"} {
 		var splitCorpus []questionCorpusRecord
 		var splitRecords []questionsBenchRecordResult
@@ -234,7 +234,7 @@ func questionsBenchRecordsMode(ctx context.Context, j judge.Judge, buildReason s
 			}
 		}
 		counts := questionsBenchCountRecords(splitCorpus, splitRecords)
-		counts.Excluded = excluded[name]
+		counts.Excluded = excluded[name] + questionsBenchUnavailableRecords(splitRecords)
 		summary.BySplit[name] = counts
 	}
 	if passageMode == "units" {
@@ -249,10 +249,12 @@ func questionsBenchRecordsMode(ctx context.Context, j judge.Judge, buildReason s
 				}
 			}
 			counts := questionsBenchCountRecordsV2(partCorpus, partRecords)
-			counts.Excluded = excluded[name]
+			counts.Excluded = excluded[name] + questionsBenchUnavailableRecords(partRecords)
+			counts.QuestionsExcluded = benchInt(counts.Excluded)
 			summary.BySplit[name] = counts
 		}
-		summary.Excluded = excluded["calibrate"] + excluded["test"]
+		summary.Excluded = excluded["calibrate"] + excluded["test"] + questionsBenchUnavailableRecords(records)
+		summary.QuestionsExcluded = benchInt(summary.Excluded)
 	}
 	return records, summary
 }
@@ -418,6 +420,16 @@ func questionsQuotedFragment(note string) string {
 func benchInt(value int) *int           { return &value }
 func benchFloat(value float64) *float64 { return &value }
 
+func questionsBenchUnavailableRecords(records []questionsBenchRecordResult) int {
+	var unavailable int
+	for _, record := range records {
+		if record.Status == "unavailable" {
+			unavailable++
+		}
+	}
+	return unavailable
+}
+
 func questionsBenchCountRecords(corpus []questionCorpusRecord, records []questionsBenchRecordResult) questionsBenchCounts {
 	counts := questionsBenchCounts{Questions: len(records), Confusion: map[string]map[string]int{}, Criterion1: questionsBenchCriterion1{Kinds: map[string]questionsBenchKindScore{}, Status: "PASS"}}
 	for _, kind := range questionsKinds {
@@ -434,7 +446,7 @@ func questionsBenchCountRecords(corpus []questionCorpusRecord, records []questio
 		if record.InputTokens != nil {
 			counts.InputTokens += *record.InputTokens
 		}
-		if record.CodeKind != "other" {
+		if record.Status == "unavailable" || record.CodeKind != "other" {
 			continue
 		}
 		firmHere := record.Status == "firm" && record.Option == "answered_here"
@@ -486,23 +498,9 @@ func questionsBenchCountRecords(corpus []questionCorpusRecord, records []questio
 }
 
 func questionsBenchCountRecordsV2(corpus []questionCorpusRecord, records []questionsBenchRecordResult) questionsBenchCounts {
-	var eligibleCorpus []questionCorpusRecord
-	var eligibleRecords []questionsBenchRecordResult
-	for i, record := range records {
-		if record.Status != "unavailable" {
-			eligibleCorpus = append(eligibleCorpus, corpus[i])
-			eligibleRecords = append(eligibleRecords, record)
-		}
-	}
-	counts := questionsBenchCountRecords(eligibleCorpus, eligibleRecords)
-	all := questionsBenchCountRecords(corpus, records)
-	counts.Questions = len(records)
-	counts.Confusion = all.Confusion
-	counts.InputTokens = all.InputTokens
-	counts.Unavailable = all.Unavailable
+	counts := questionsBenchCountRecords(corpus, records)
 	counts.Calls = 0
 	counts.UnavailableCalls = benchInt(0)
-	counts.QuestionsExcluded = benchInt(len(records) - len(eligibleRecords))
 	counts.Retrieval = map[string]int{"kept": 0, "dropped": 0, "none": 0}
 	counts.FirmByCodeKind = map[string]questionsBenchFirmCounts{}
 	for _, kind := range questionsKinds {

@@ -152,8 +152,11 @@ limits the scored records to one half of the corpus.
 `--passage full` is the run 1 default. `--passage units` splits each passage
 into short units and sends the title plus one unit per sequential request. The
 unit with the highest probability for `answered_here` decides the question;
-ties keep the earlier unit. More than 10% unavailable units exclude a question
-from the criteria. `--all` calls the judge for every code kind in either mode;
+ties keep the earlier unit. More than 10% unavailable units make a question
+unavailable. An unavailable question, in either mode, is
+excluded from criterion 2 and counted in `excluded` (and `questions_excluded`
+in unit mode) next to the questions without a plan; it stays in the confusion
+table and in criterion 1. `--all` calls the judge for every code kind in either mode;
 without it only `other` is called. Criterion 2 always counts only `other`.
 Unit mode reports per-unit options, confidence and probability, counts and
 retrieval of quoted label fragments, without printing unit text. The frozen
