@@ -320,3 +320,48 @@ Headline: neither lane is fit to propose lanes, and Jev does not add to classifi
 Reported beside it, deciding nothing. Retrieval: a contract packet was found for 85 of 113 test tasks, a security packet for 3. Answers on `contract`: 18 firm, 67 below 0.8, 0 `insufficient`, 28 not asked; choices `exported_change` 47, `internal_only` 38; confidence median 0.63 (min 0.27, max 0.99). Answers on `security`: 2 firm, 1 below 0.8, 110 not asked. On the calibrate half `contract` had 11 firm at 0.9 and 92 below, confidence median 0.64. Over both halves Jev chose `insufficient` on 0 of 195 answers. J differs from C on 7 of 113 test tasks (raised on 3: low→medium 2, medium→high 1; lowered on 4: medium→low 3, high→medium 1); 4 of the 7 have a known outcome, all sufficient. Open marker: 1 test task, 2 calibrate tasks. Both halves together: 188 calls, 280,908 input tokens.
 
 Post hoc, not a result and not a restatement of the rule: 6 of the 15 insufficient test tasks ran at host lane `high`, where only `critical` is higher, and lane C gives `critical` only on the open marker; with this rule safety could not exceed 9 / 15. The calibrate half had 5 insufficient tasks, and the selection took the only F_high that raised any of them.
+
+## Verifier-objection triage: data check, parked (2026-09-30)
+
+Before any experiment, the conductor read every verifier objection recorded on this machine: the journals of core (90), menuflix (39), skills (10), core-soft-deny (3) and the host package (2). 349 `gates_reported` records, 197 with a verifier verdict, 31 attempts with an INCOMPLETE verdict, 57 objection lines. The verifier was the only failing gate in 17 of the 31 attempts. No verdict records an objection set aside by the gate's environment pattern.
+
+Labels proposed by the conductor, one per line, in `.batuta/judge-objections/labels.tsv` (not yet reviewed by the maintainer): `substantive_gap` 47, `environment_only` 9, `mixed` 1, `insufficient` 0. All 9 environment objections sit on criteria whose proof passed and in attempts where the verifier was the only failing gate; they come from 3 attempts (`watch-20260906-151242` task 3, menuflix `phase-03-cart-corrections` task 1, menuflix `phase-03-sync-final` task 22), so 3 retries were caused by the verifier's own environment. The gate's pattern matches 3 of the 9 (the sandbox wording) and misses 6 (`Current directory is not a git repository`, `code/diff cannot be inspected`); it matches none of the 47 substantive lines.
+
+Decision: parked. The data gate set on 2026-09-29 (at least 15 `environment_only` or `mixed` and 15 `substantive_gap`) fails on the first count, 10 against 15. A Jev triage would have 9 positives to learn from. What the data does support is code: extending the gate's pattern with the two missed wordings would have set aside 6 more lines on passed proofs. Next Jev candidate: question-to-plan matching, 85 `question_recorded` and 41 `answer_recorded` records in the same journals.
+
+## Question-to-plan matching, run 1 (2026-10-01)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 15 (commit `9d3b366`). Binary built from `92f6118` on branch `feat/question-matching`, after the final review of delivery `question-matching-fixes-2-20261001-184806` returned SHIP with no findings. Config `.batuta/judge-questions/judge-questions.json` (`provider: typesafe`, `model: jev-1.13.0`, `timeout_ms: 20000`), key from the maintainer's login shell, threshold 0.9, one trial. Command: `batuta judge questions bench --corpus corpus.jsonl --sheet labels.tsv --json` over the 143 journals of `journals-run.txt` (core, skills, host, core-soft-deny, menuflix). Raw output: `.batuta/judge-questions/bench.jsonl`; labels in `labels.tsv`, proposed by the conductor and approved by the maintainer on 2026-10-01 before the run.
+
+Deviations, recorded before any judge call (`.batuta/judge-questions/deviation.txt`): four menuflix journals whose plans do not parse are excluded (4 of 85 questions lost); the passage is the plan as it stands today, which the maintainer often edited after the question, so a `yes` label says the current plan answers the question, not that the executor could have read the answer at the time.
+
+Corpus: 81 questions, 44 with a recorded answer, 0 without a plan; labels kind scope_change 31, environment 20, continue 11, other 19; answer_in_passage yes 48, no 33, unclear 0. Code kinds: scope_change 31, environment 21, continue 12, other 17. 17 calls, 0 unavailable, 24,607 input tokens.
+
+| measure | value | frozen bar | |
+|---|---|---|---|
+| criterion 1, scope_change precision / recall | 29/31 = 93.5% / 29/31 = 93.5% | ≥ 90% / ≥ 70% | holds |
+| criterion 1, environment precision / recall | 18/21 = 85.7% / 18/20 = 90.0% | ≥ 90% / ≥ 70% | **fails** on precision |
+| criterion 1, continue precision / recall | 11/12 = 91.7% / 11/11 = 100% | ≥ 90% / ≥ 70% | holds |
+| criterion 2, firm `answered_here` on other questions labelled yes | 0 / 12 | ≥ half | **fails** |
+| criterion 2, firm `answered_here` on other questions labelled no or unclear | 2 / 5 | 0 | **fails** |
+
+Headline: negative on both criteria. Code kinds miss the environment bar by three questions that carry the word `environment` or `ambiente` in another sense ("environment overrides", "ambiente explícito", "ambiente E2E"). Jev gave no firm answer on any of the 12 `other` questions whose passage answers them, and its only two firm answers, at confidence 0.96 and 0.98, were `answered_here` on the two licence questions whose passage does not answer them. By section 15 nothing ships: the code kinds do not route questions and Jev does not add.
+
+Reported beside it, deciding nothing. Jev's confidence on the 17 calls: median 0.54 (min 0.24, max 0.98); 15 of 17 below 0.9. P(`answered_here`) median 0.67; it was at least 0.5 on 8 of the 12 yes questions and on 3 of the 5 no questions, so the probability does not separate the labels. `insufficient` never exceeded 0.03. Per split the picture is the same: calibrate 0/3 yes and 0/2 no with firm answers (reported only, fewer than 6 yes); test 0/9 and 2/3. The 20 `other`-labelled questions include 8 menuflix requests for a corrective brief, which the passage answers with one standing sentence ("achados de produto exigem novo brief corretivo"); Jev read five of those eight at P(`answered_here`) below 0.7.
+
+Post hoc, not a result: dropping `environment` and `ambiente` from the environment word list would have lifted environment precision to 18/18 on this corpus with recall 18/20, which is tuning on the scored data and is not restated as a pass. Across the four Jev decisions tried in batuta (claim evidence, classification v1–v3, question matching) the judge has not added to code in any frozen run; the next candidate in the study, finding-to-contract consistency, has no corpus yet (one correction cycle measured at 8 minutes and 80k tokens).
+
+## Jev positive control, run 1 (2026-10-02)
+
+Decision rule frozen beforehand in `.batuta/judge-research.md` section 16 (commit `bfe8b10`), items in `.batuta/judge-control/items.json`, config `judge-control.json` (`provider: typesafe`, `model: jev-1.13.0`), one `batuta judge ask` call per item through the maintainer's login shell, 40 calls, 17,106 input tokens, 15 seconds. Raw output `run.jsonl`, scored rows `results.json`.
+
+| tier | correct by chosen option | firm and correct (confidence ≥ 0.9) | firm and wrong | confidence median (min, max) | frozen bar | |
+|---|---|---|---|---|---|---|
+| literal (20) | 19 / 20 | 17 / 20 | 0 | 0.99 (0.36, 1.00) | ≥ 18 firm and correct, 0 firm wrong | **fails** by one |
+| one_hop (20) | 20 / 20 | 19 / 20 | 0 | 0.99 (0.89, 1.00) | ≥ 18 firm and correct, 0 firm wrong | holds |
+
+Headline: on short English packets Jev reads both literal statements and one-hop rules: 39 of 40 chosen options correct, 36 of 40 firm, no firm answer wrong, P(expected option) at least 0.89 on every correct item. The literal tier misses its bar by one item: L11, where the passage lists Scope files and the question asks to add another file, chosen `answered_here` at confidence 0.36 (the item's own expectation is arguable, since a Scope line does decide a Scope question one hop away); two more literal items were correct below 0.9. `insufficient` never exceeded 0.01.
+
+What this settles. The request format and the option wording batuta sends are sound: the same request shape that scored 0 firm correct answers on 12 real questions scores 36 of 40 here. The difference between the control and the real runs is the packet, not the judge: real passages are the task's whole plan text, up to 4000 bytes, bilingual, with the deciding sentence buried among Scope, Accept and Decisions lines; control passages are under 200 bytes with the deciding sentence in plain sight. The four negatives stand as results about batuta's packets on this model, not about the request format.
+
+Not a result, a lead for the next rule: in question matching the code already builds the passage; a passage reduced by code to the few sentences with the highest word overlap with the question would put the real packets near the control's shape. That is the study's own rule, code selects the packet, applied one step further.

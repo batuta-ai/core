@@ -1,0 +1,11 @@
+{
+ "answer": {
+  "type": "choice",
+  "instructions": "Does a sentence of the task's passage state what the executor's question asks, or state the rule that decides it?",
+  "criteria": {
+   "answered_here": "a sentence of the passage states what the question asks, or states the rule that decides it",
+   "not_addressed": "no sentence of the passage addresses what the question asks",
+   "insufficient": "the question or the passage is too unclear to choose"
+  }
+ }
+}

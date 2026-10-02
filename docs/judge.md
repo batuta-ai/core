@@ -98,6 +98,74 @@ that was skipped, with its reason.
 
 ## The CLI
 
+### Question corpus and labels
+
+`judge questions` prepares an offline corpus of recorded executor questions and
+checks the maintainer's labels. It never answers or resumes a question. The
+rules for the code kinds and task passage are frozen in
+`.batuta/judge-research.md` section 15.
+
+```text
+batuta judge questions build --journal <dir> [--journal <dir>...] --out <file>
+batuta judge questions sheet --corpus <file> --out <file>
+batuta judge questions labels --corpus <file> --sheet <file> [--json]
+batuta judge questions bench --corpus <file> --sheet <file> [--split calibrate|test] [--threshold <n>] [--config <path>] [--workspace <dir>] [--base-url <url>] [--json]
+```
+
+`build` walks every `*.jsonl` under each journal directory. It finds the
+delivery's plan by its slug under the journal workspace's `.batuta/plans/`
+or `.batuta/plans/done/`. It writes one compact JSON object per
+`question_recorded` record and a final `summary` object. Each record has
+`id` (`<delivery>/<task>/e<execution>/q<request_id>`), `repo`, `delivery`,
+`plan_slug`, `task`, `execution`, `question`, `answer`, `scope`, `code_kind`,
+`passage`, `passage_found`, `plan_found`, and `split`. `answer` is empty if
+there is no matching `answer_recorded` record. A missing plan or task leaves
+`plan_found` false and the passage empty. The split is by delivery hash:
+`calibrate` or `test`. Question, answer, and passage are capped at 4000 bytes.
+The summary counts journals, questions, questions with an answer, questions
+without a plan, and questions by code kind and split. The `--out` file
+may not be an input: `build` refuses an `--out` that resolves, after symlinks,
+to a `*.jsonl` file under a `--journal` directory, and exits 1 before it
+creates or truncates anything.
+
+`sheet` writes a seven column TSV with `id`, `kind`, `answer_in_passage`,
+`note`, `code_kind`, `question`, and `passage`. It leaves the three label
+cells empty for review. In `labels`, the maintainer fills `kind` with
+`scope_change`, `environment`, `continue`, or `other`, and
+`answer_in_passage` with `yes`, `no`, or `unclear`. The `note` is free text.
+`sheet` refuses an `--out` that resolves to the `--corpus` file. `labels` and
+`bench` compare the `code_kind`, `question`, and `passage` cells of each row with
+the corpus record of the same ID, after the sheet's cell normalisation (a tab,
+carriage return, or newline becomes one space), and exit 1 naming the row and
+the cell on a difference. `labels` checks every corpus ID exactly once and prints the code kind versus
+label confusion table, precision and recall by kind, and answer label counts
+by kind as TSV, or one compact JSON object with `--json`.
+
+`bench` checks the same sheet, excludes questions without a matched plan task,
+and asks `question_match` once for each remaining `other` code kind. The
+request contains only the question and the task passage; recorded answers and
+labels stay local. Its default firm confidence threshold is 0.9, with an
+explicit `--threshold` taking precedence over the `question_match` decision
+threshold in judge config. The threshold must be between 0 and 1. `--split`
+limits the scored records to one half of the corpus.
+
+The bench emits a record for every scored question and a summary. Plain
+output is TSV; `--json` writes one compact JSON object per record followed by
+one summary object. Each record shows the code kind, both labels, whether Jev
+was called, and the option, confidence, probabilities, status, unavailability
+reason and input tokens when applicable. The summary shows the code kind
+confusion table, precision and recall for `scope_change`, `environment` and
+`continue`, the firm `answered_here` counts for `other` by answer label,
+the same counts by split, calls, unavailable results and input tokens. It
+marks criterion 2 `reported only` when fewer than six scored `other`
+questions carry a `yes` answer label. It also reports whether a recorded
+answer repeats the passage for firm `answered_here` results. The frozen
+criteria and limitations are in `.batuta/judge-research.md` section 15.
+Unavailable judge results are recorded and make the command exit 2; usage
+and data errors exit 1.
+
+### Other judge forms
+
 `ask` sends one request built from files and prints the `Response` as
 indented JSON on stdout, with the same snake_case keys the API answers in:
 `model`, `answers`, `usage`, `input_tokens`, `output_tokens`.

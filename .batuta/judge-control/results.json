@@ -1,0 +1,642 @@
+[
+ {
+  "id": "H01",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 426,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H02",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 416,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H03",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 421,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H04",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 423,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H05",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 447,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H06",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.94,
+  "probs": {
+   "answered_here": 0.96,
+   "insufficient": 0,
+   "not_addressed": 0.04
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 438,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H07",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0.99,
+   "insufficient": 0,
+   "not_addressed": 0.01
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 434,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H08",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.98,
+  "probs": {
+   "answered_here": 0.99,
+   "insufficient": 0,
+   "not_addressed": 0.01
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 428,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H09",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 428,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H10",
+  "tier": "one_hop",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.89,
+  "probs": {
+   "answered_here": 0.93,
+   "insufficient": 0,
+   "not_addressed": 0.07
+  },
+  "firm": false,
+  "correct": true,
+  "tokens": 429,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H11",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 421,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H12",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 422,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H13",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 424,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H14",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0.01,
+   "insufficient": 0,
+   "not_addressed": 0.99
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 420,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H15",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0.01,
+   "insufficient": 0,
+   "not_addressed": 0.99
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 425,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H16",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 428,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H17",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0.01,
+   "insufficient": 0,
+   "not_addressed": 0.99
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 425,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H18",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0.01,
+   "insufficient": 0,
+   "not_addressed": 0.99
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 432,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H19",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 426,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "H20",
+  "tier": "one_hop",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.98,
+  "probs": {
+   "answered_here": 0.01,
+   "insufficient": 0,
+   "not_addressed": 0.99
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 428,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L01",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 431,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L02",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.95,
+  "probs": {
+   "answered_here": 0.97,
+   "insufficient": 0,
+   "not_addressed": 0.03
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 429,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L03",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 420,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L04",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 436,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L05",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 434,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L06",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 428,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L07",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 429,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L08",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0.99,
+   "insufficient": 0,
+   "not_addressed": 0.01
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 428,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L09",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 0.88,
+  "probs": {
+   "answered_here": 0.92,
+   "insufficient": 0,
+   "not_addressed": 0.08
+  },
+  "firm": false,
+  "correct": true,
+  "tokens": 422,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L10",
+  "tier": "literal",
+  "expected": "answered_here",
+  "option": "answered_here",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 1,
+   "insufficient": 0,
+   "not_addressed": 0
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 418,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L11",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "answered_here",
+  "confidence": 0.36,
+  "probs": {
+   "answered_here": 0.57,
+   "insufficient": 0.01,
+   "not_addressed": 0.42
+  },
+  "firm": false,
+  "correct": false,
+  "tokens": 430,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L12",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 436,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L13",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 426,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L14",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.83,
+  "probs": {
+   "answered_here": 0.11,
+   "insufficient": 0,
+   "not_addressed": 0.89
+  },
+  "firm": false,
+  "correct": true,
+  "tokens": 436,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L15",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 426,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L16",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 425,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L17",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.95,
+  "probs": {
+   "answered_here": 0.03,
+   "insufficient": 0,
+   "not_addressed": 0.97
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 431,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L18",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 1,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 430,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L19",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.99,
+  "probs": {
+   "answered_here": 0,
+   "insufficient": 0,
+   "not_addressed": 1
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 424,
+  "model": "jev-1.13.0"
+ },
+ {
+  "id": "L20",
+  "tier": "literal",
+  "expected": "not_addressed",
+  "option": "not_addressed",
+  "confidence": 0.94,
+  "probs": {
+   "answered_here": 0.03,
+   "insufficient": 0.01,
+   "not_addressed": 0.96
+  },
+  "firm": true,
+  "correct": true,
+  "tokens": 426,
+  "model": "jev-1.13.0"
+ }
+]

@@ -1,0 +1,1 @@
+{"provider":"typesafe","model":"jev-1.13.0","timeout_ms":20000,"decisions":{"control":{"mode":"shadow","threshold":0.9}}}

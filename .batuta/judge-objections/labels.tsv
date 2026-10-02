@@ -1,0 +1,58 @@
+id	label	note	kind	proof	verifier_only	regex_environment	objection
+core/dashboard-20260906-232338/task_2/e1/c1	substantive_gap		kept	none	false	false	PanelModel and the five-state summary test are missing.
+core/dashboard-20260906-232338/task_2/e1/c2	substantive_gap		kept	none	false	false	Selected-task and active-task Detail logic and tests are missing.
+core/dashboard-20260906-232338/task_2/e1/c3	substantive_gap		kept	none	false	false	Four gate columns and their tests are missing; existing rendering shows only an aggregate gate result.
+core/dashboard-20260906-232338/task_2/e1/c4	substantive_gap		kept	none	false	false	RenderPanel reads the journal directly; it does not render TSV from PanelModel.
+core/followups-20260906-164938/task_1/e2/c2	substantive_gap		kept	failed	false	false	`cmd/batuta/main.go` still omits `gate` from `commands`, so the capabilities tests that the suite depends on still fail.
+core/followups-20260906-164938/task_1/e2/c3	substantive_gap		kept	failed	false	false	the same missing `gate` capability wiring keeps `go test ./...` from passing unchanged.
+core/judge-claims-v21-20260921-111251/task_3/e1/c1	substantive_gap		kept	failed	false	false	.batuta/judge-replay-v21-raw.txt does not exist or is empty
+core/judge-claims-v21-20260921-111251/task_3/e1/c2	substantive_gap		kept	failed	false	false	"Version 2.1 replay" section missing from .batuta/judge-benchmark.md
+core/judge-classify-fixes-20260922-112834/task_3/e1/c1	substantive_gap		kept	failed	false	false	docs/judge.md does not describe the Decisions paragraphs or the 4000-byte bound (it has "4 000 bytes")
+core/judge-classify-fixes-20260922-112834/task_3/e1/c2	substantive_gap		kept	failed	false	false	the plain-form example line starts with "classify-bench task_1" instead of "task_1 plan="
+core/judge-classify-fixes-20260922-112834/task_3/e1/c3	substantive_gap		kept	failed	false	false	lines 279-284 still describe judge_intent and judge_result trace records
+core/judge-corpus-20260921-185659/task_4/e1/c4	substantive_gap		kept	failed	false	false	docs/judge.md does not document the judge corpus run subcommand
+core/loop-deadends-20260908-023216/task_2/e2/c1	substantive_gap		kept	none	false	false	Diff is empty; snapshot commits, worktree_snapshotted journal events, and required tests are missing.
+core/loop-deadends-20260908-023216/task_2/e2/c2	substantive_gap		kept	none	false	false	Remove immediately force-deletes branches without terminal-record or reachability checks; required tests are missing.
+core/loop-deadends-20260908-023216/task_2/e2/c3	substantive_gap		kept	none	false	false	Snapshot SHA reporting and TestTrailListsSnapshots are missing.
+core/roadmap-20260906-215846/task_1/e2/c2	substantive_gap		kept	none	false	false	ParseRoadmap returns success for an empty file, so a completely missing title line does not return ErrReauthoringRequired with line 1
+core/roadmap-20260906-215846/task_4/e2/c3	substantive_gap	objection disputes the criterion, not the work; a real conflict with an existing test	kept	passed	true	false	TestRoadmapStopsOnABlockedPhase explicitly expects --resume to reject blocked deliveries; recovery requires a new delivery.
+core/watch-20260906-151242/task_3/e2/c3	environment_only	sandbox blocked the run; no defect named	kept	passed	true	true	Code and test exist, but sandbox restrictions prevented verifying integration.
+core/watch-20260906-151242/task_3/e2/c4	environment_only	sandbox blocked the run; no defect named	kept	passed	true	true	Resume tests exist, but sandbox restrictions prevented verifying chain integrity and resume behavior.
+core/watch-20260906-151242/task_3/e2/c5	environment_only	verifier could not run the suite; no defect named	kept	passed	true	true	Suite success is unverified; test content alone cannot establish passing results.
+core/watch-20260906-155043/task_5/e2/c1	substantive_gap		kept	passed	true	false	loop/panel.go requires an extra delivery argument; the specified RenderPanel(records, now) API is missing.
+core/watch-style-20260907-191610/task_2/e2/c1	substantive_gap		kept	passed	true	false	filled cells use green when done >= total even if the eased percentage is below 100%
+core/watch-style-20260907-191610/task_2/e2/c6	substantive_gap		kept	passed	true	false	PgUp/PgDn is treated as dim description text instead of a reverse key chip
+core/watch-style-20260907-191610/task_2/e2/c7	substantive_gap		kept	passed	true	false	TestPaintLogLines does not test codex or claude prefixes
+core/watch-tui-20260907-162044/task_3/e1/c2	substantive_gap		kept	passed	true	false	panelIsTerminal mistakes non-TTY character devices such as /dev/null for terminals, selecting Bubble Tea instead of plain frames.
+core/watch-tui-20260907-162044/task_3/e1/c3	substantive_gap		kept	passed	true	false	StyleForWriter uses a hand-written character-device check in loop/panel_render.go instead of the framework’s terminal helper.
+core/watch-tui-20260907-170834/task_5/e3/c2	substantive_gap		kept	passed	true	false	fitPanelHeight truncates or removes log history before viewport rendering, so scrolling cannot reach older lines in constrained-height terminals
+core/watch-tui-20260907-170834/task_5/e3/c5	substantive_gap		kept	passed	true	false	the compact key line used below width 100 omits `l log`, and the test covers only width 120
+skills/qa-skills-20260909-154719/task_5/e1/c2	substantive_gap		kept	none	false	false	skills/batuta-qa-run/references/probes.md does not exist
+skills/qa-skills-20260909-154719/task_5/e1/c3	substantive_gap		kept	none	false	false	skills/batuta-qa-run/references/probes.md does not exist
+skills/qa-skills-20260909-154719/task_5/e1/c4	substantive_gap		kept	none	false	false	skills/batuta-qa-run/references/probes.md does not exist
+menuflix/phase-02-cardapio-sem-deploy-20260906-224436/task_3/e1/c1	substantive_gap		kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-cardapio-sem-deploy-20260906-224436/task_3/e1/c2	substantive_gap		kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-cardapio-sem-deploy-20260908-192743/task_17/e1/c1	substantive_gap	[redacted: private repository geeknaveia/menuflix]	kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-cardapio-sem-deploy-20260908-192743/task_17/e1/c2	substantive_gap	[redacted: private repository geeknaveia/menuflix]	kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-quality-20260910-100848/task_2/e1/c1	substantive_gap		kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-quality-20260910-100848/task_2/e1/c3	substantive_gap		kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-quality-close-20260910-134229/task_1/e1/c2	substantive_gap	[redacted: private repository geeknaveia/menuflix]	kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-quality-close-20260910-134229/task_1/e1/c3	substantive_gap	[redacted: private repository geeknaveia/menuflix]	kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-visual-corrections-20260909-133447/task_8/e2/c2	substantive_gap		kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-visual-corrections-close-20260910-023637/task_1/e3/c1	substantive_gap	[redacted: private repository geeknaveia/menuflix]	kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-visual-corrections-close-20260910-023637/task_1/e3/c2	substantive_gap	[redacted: private repository geeknaveia/menuflix]	kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-visual-corrections-recovery-20260909-154920/task_9/e3/c2	substantive_gap		kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-02-visual-corrections-recovery-20260909-154920/task_9/e3/c4	substantive_gap		kept	passed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-cart-corrections-20260912-221800/task_1/e2/c2	environment_only	[redacted: private repository geeknaveia/menuflix]	kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-cart-corrections-20260912-221800/task_1/e2/c3	environment_only	[redacted: private repository geeknaveia/menuflix]	kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-cart-corrections-20260912-221800/task_1/e2/c4	environment_only	[redacted: private repository geeknaveia/menuflix]	kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-cart-corrections-20260912-221800/task_3/e1/c3	substantive_gap		kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-cart-loop-recovery-20260911-201549/task_1/e1/c1	substantive_gap		kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-cart-loop-recovery-20260911-201549/task_1/e1/c2	substantive_gap		kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-manual-recommendations-20260913-110621/task_1/e2/c1	substantive_gap		kept	none	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-manual-recommendations-20260913-110621/task_1/e2/c2	substantive_gap		kept	none	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-manual-recommendations-20260913-110621/task_1/e2/c3	substantive_gap		kept	none	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-recommendations-recovery-20260913-152110/task_3/e2/c4	mixed	[redacted: private repository geeknaveia/menuflix]	kept	failed	false	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-sync-final-20260915-172923/task_22/e2/c1	environment_only	[redacted: private repository geeknaveia/menuflix]	kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-sync-final-20260915-172923/task_22/e2/c2	environment_only	[redacted: private repository geeknaveia/menuflix]	kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
+menuflix/phase-03-sync-final-20260915-172923/task_22/e2/c3	environment_only	[redacted: private repository geeknaveia/menuflix]	kept	passed	true	false	[redacted: private repository geeknaveia/menuflix]
