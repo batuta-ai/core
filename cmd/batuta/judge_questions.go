@@ -22,7 +22,7 @@ import (
 	"github.com/batuta-ai/core/routing"
 )
 
-const questionsUsage = "usage: batuta judge questions build --journal <dir> [--journal <dir>...] --out <file> | sheet --corpus <file> --out <file> | labels --corpus <file> --sheet <file> [--json] | bench --corpus <file> --sheet <file> [--split calibrate|test] [--threshold <n>] [--config <path>] [--workspace <dir>] [--base-url <url>] [--json]"
+const questionsUsage = "usage: batuta judge questions build --journal <dir> [--journal <dir>...] --out <file> | sheet --corpus <file> --out <file> | labels --corpus <file> --sheet <file> [--json] | bench --corpus <file> --sheet <file> [--split calibrate|test] [--passage full|units] [--all] [--threshold <n>] [--config <path>] [--workspace <dir>] [--base-url <url>] [--json]"
 const questionsSheetHeader = "id\tkind\tanswer_in_passage\tnote\tcode_kind\tquestion\tpassage"
 
 var questionsKinds = []string{"scope_change", "environment", "continue", "other"}
