@@ -209,6 +209,32 @@ func TestQuestionsBenchUnitUnavailable(t *testing.T) {
 	}
 }
 
+func TestQuestionsBenchUnitMismatchUnavailable(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "other", "")
+	server, _ := questionsUnitServer(t, func(p string) string {
+		if strings.Contains(p, "Beta") {
+			return `{"answers":{"answer":{"type":"choice","choice":"answered_here","confidence":0.99,"probabilities":{"answered_here":0.99}},"extra":{"type":"choice","choice":"answered_here","confidence":0.5}},"usage":{"input_tokens":13}}`
+		}
+		return questionsUnitReply("not_addressed", .95, .2)
+	})
+	out, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("err=%v output=%s", err, out)
+	}
+	var rec questionsBenchRecordResult
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "unavailable" || rec.InputTokens == nil || *rec.InputTokens != 41 || rec.UnavailableCalls == nil || *rec.UnavailableCalls != 1 {
+		t.Fatalf("record=%+v", rec)
+	}
+	if rec.BestUnit == nil || *rec.BestUnit == 1 || len(rec.UnitResults) != 5 || rec.UnitResults[1].Status != "unavailable" || rec.UnitResults[1].Probability != 0 {
+		t.Fatalf("record=%+v", rec)
+	}
+}
+
 type scriptedQuestionsJudge struct {
 	index   int
 	replies []judge.Response

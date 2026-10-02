@@ -332,10 +332,10 @@ func questionsBenchUnitRecordFor(ctx context.Context, j judge.Judge, buildReason
 		*record.Calls++
 		response, err := j.Ask(ctx, questions.BuildRequest(question.Question, questions.UnitPacket(question.Passage, unit)))
 		tokens += response.Usage.InputTokens
-		answer, usable := response.Answers["answer"]
+		answer := response.Answers["answer"]
 		decision := questions.Decide(answer, threshold)
 		result := questionsBenchUnitResult{Status: decision.Status}
-		if err != nil && (!benchV2AnswerMismatch(err) || !usable || decision.Status == "unavailable") || decision.Status == "unavailable" {
+		if err != nil || decision.Status == "unavailable" {
 			result.Status = "unavailable"
 			*record.UnavailableCalls++
 			if threshold == 0 {
@@ -369,11 +369,7 @@ func questionsBenchUnitRecordFor(ctx context.Context, j judge.Judge, buildReason
 				if decision.Status == "firm" && answer.Choice == "not_addressed" {
 					record.Status = "not_addressed"
 				}
-				if err != nil {
-					record.Reason = judge.ReasonAnswerMismatch
-				} else {
-					record.Reason = ""
-				}
+				record.Reason = ""
 			}
 		}
 		record.UnitResults = append(record.UnitResults, result)
