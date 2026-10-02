@@ -230,6 +230,18 @@ func TestQuestionsBenchUnitMismatchUnavailable(t *testing.T) {
 	if rec.Status != "unavailable" || rec.InputTokens == nil || *rec.InputTokens != 41 || rec.UnavailableCalls == nil || *rec.UnavailableCalls != 1 {
 		t.Fatalf("record=%+v", rec)
 	}
+	var final struct {
+		Summary struct {
+			UnavailableCalls *int `json:"unavailable_calls"`
+		} `json:"summary"`
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.Summary.UnavailableCalls == nil || *final.Summary.UnavailableCalls != 1 {
+		t.Fatalf("summary=%+v output=%s", final.Summary, out)
+	}
 	if rec.BestUnit == nil || *rec.BestUnit == 1 || len(rec.UnitResults) != 5 || rec.UnitResults[1].Status != "unavailable" || rec.UnitResults[1].Probability != 0 {
 		t.Fatalf("record=%+v", rec)
 	}
@@ -245,6 +257,21 @@ func (j *scriptedQuestionsJudge) Ask(_ context.Context, _ judge.Request) (judge.
 	i := j.index
 	j.index++
 	return j.replies[i], j.errors[i]
+}
+
+func TestQuestionsBenchValidUnitBeatsUnavailable(t *testing.T) {
+	t.Parallel()
+	question := questionsBenchRecord("o", "other", "test")
+	question.Passage = "Title\n" + strings.Repeat("Scope: One\n", 11)
+	judgeScript := &scriptedQuestionsJudge{replies: make([]judge.Response, 11), errors: make([]error, 11)}
+	judgeScript.errors[0] = &judge.UnavailableError{Reason: judge.ReasonTimeout}
+	for i := 1; i < 11; i++ {
+		judgeScript.replies[i] = judge.Response{Answers: map[string]judge.Answer{"answer": {Type: judge.QuestionChoice, Choice: "not_addressed", Confidence: .95, Probabilities: map[string]float64{"answered_here": 0}}}}
+	}
+	record := questionsBenchUnitRecordFor(context.Background(), judgeScript, "", question, questionsLabel{Kind: "other", AnswerInPassage: "yes"}, .9, false)
+	if record.BestUnit == nil || *record.BestUnit != 1 || record.Status != "not_addressed" || record.Option != "not_addressed" {
+		t.Fatalf("record=%+v", record)
+	}
 }
 
 func TestQuestionsBenchPartialUnavailable(t *testing.T) {

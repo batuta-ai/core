@@ -327,6 +327,7 @@ func questionsBenchUnitRecordFor(ctx context.Context, j judge.Judge, buildReason
 	start := time.Now()
 	record.UnitResults = make([]questionsBenchUnitResult, 0, len(units))
 	var tokens int
+	bestValid := false
 	for i, unit := range units {
 		record.Called = true
 		*record.Calls++
@@ -359,7 +360,8 @@ func questionsBenchUnitRecordFor(ctx context.Context, j judge.Judge, buildReason
 			if result.Probability >= threshold {
 				*record.UnitsAtThreshold++
 			}
-			if *record.BestUnit == -1 || result.Probability > *record.BestProbability {
+			if !bestValid || result.Probability > *record.BestProbability {
+				bestValid = true
 				*record.BestUnit = i
 				*record.BestProbability = result.Probability
 				record.Option = answer.Choice
