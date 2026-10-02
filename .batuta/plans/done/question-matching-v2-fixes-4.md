@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Close the major of the supervision review of delivery `question-matching-v2-fixes-3-20261002-224218` (verdict FIX_BEFORE_SHIP) and the gap it exposes: section 17 says a question with more than 10% of its units unavailable is unavailable and excluded from the decision, but `questionsBenchCountRecords` still counts such a question in the criterion 2 totals, and `questions_excluded` does not count it. Code kinds need no judge call, so criterion 1 and the confusion table keep every question. Nothing in section 17 changes.
-**Created:** 2026-10-02 · **Status:** approved
+**Created:** 2026-10-02 · **Status:** done
 
 ## Tasks
-- [ ] 1. an unavailable question leaves the criterion 2 totals and is counted as excluded; the confusion table keeps it — backend/medium
+- [x] 1. an unavailable question leaves the criterion 2 totals and is counted as excluded; the confusion table keeps it — backend/medium
       Scope: cmd/batuta/judge_questions_bench.go, cmd/batuta/judge_questions_bench_test.go, docs/judge.md
       Accept: a question whose record is unavailable, in full or units mode, is not counted in the criterion 2 totals for yes or for no, in the run summary and per split → go test ./cmd/batuta -run TestQuestionsBenchUnavailableLeavesCriterion2; the summary's `questions_excluded` counts the questions without a plan plus the unavailable questions, and `unavailable` keeps counting the unavailable ones → go test ./cmd/batuta -run TestQuestionsBenchExcludedCounts; an unavailable question still appears in the confusion table and in criterion 1 with its code kind and label → go test ./cmd/batuta -run TestQuestionsBenchUnavailableKeepsCriterion1; the all-unavailable fixture asserts all of the above for a question whose label contributes to criterion 1 → go test ./cmd/batuta -run TestQuestionsBenchAllUnitsUnavailable; the earlier bench cases still hold → go test ./cmd/batuta -run 'TestQuestionsBench'; docs/judge.md says an unavailable question is excluded from criterion 2 and kept in criterion 1 → grep -q 'excluded from criterion 2' docs/judge.md; the packages stay green → go test ./cmd/batuta ./questions
 

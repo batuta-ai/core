@@ -367,6 +367,7 @@
 - [x] unit mode treats every call that returns an error as unavailable → claude (sonnet), commit 443bb86ac744 (trail: .batuta/runs/2026-10-02-question-matching-v2-fixes-task-1.md, delivery question-matching-v2-fixes-20261002-222354, plan question-matching-v2-fixes, 2026-10-02)
 - [x] the best unit is the first valid unit over any unavailable unit, and the summary's unavailable count is tested → claude (sonnet), commit 156d3660cd6e (trail: .batuta/runs/2026-10-02-question-matching-v2-fixes-2-task-1.md, delivery question-matching-v2-fixes-2-20261002-223317, plan question-matching-v2-fixes-2, 2026-10-02)
 - [x] a question whose unit calls all fail is tested end to end → agy (gemini-3.8-flash-low), commit 693cfb308096 (trail: .batuta/runs/2026-10-02-question-matching-v2-fixes-3-task-1.md, delivery question-matching-v2-fixes-3-20261002-224218, plan question-matching-v2-fixes-3, 2026-10-02)
+- [x] an unavailable question leaves the criterion 2 totals and is counted as excluded; the confusion table keeps it → claude (sonnet), 1 retry, commit 3d9458bed02b (trail: .batuta/runs/2026-10-02-question-matching-v2-fixes-4-task-1.md, delivery question-matching-v2-fixes-4-20261002-225246, plan question-matching-v2-fixes-4, 2026-10-02)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
