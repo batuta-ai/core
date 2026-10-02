@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0-beta.45](https://github.com/batuta-ai/core/compare/v1.1.0-beta.44...v1.1.0-beta.45) (2026-10-02)
+
+
+### Features
+
+* batuta judge questions bench: Jev on the residue, scored against the ([6c65cd9](https://github.com/batuta-ai/core/commit/6c65cd99a8ab2f3dccbf821efececad43934b1c2))
+* batuta judge questions build, sheet and labels: the corpus, the ([f46cb85](https://github.com/batuta-ai/core/commit/f46cb85d74a3e0c76f5b3331f4a3fcef85817d05))
+* build compares --out with every selected journal file; the UTF-8 ([48ade1d](https://github.com/batuta-ai/core/commit/48ade1dbcaa74edb4b90d7a765fe5786aa275d63))
+* judge questions: build and sheet refuse an output that is an input ([4b9c84b](https://github.com/batuta-ai/core/commit/4b9c84bfb333a916f12e6adfcd76f9e3661ad2a2))
+* questions package: code kind, task passage, the Jev request and its ([be38f45](https://github.com/batuta-ai/core/commit/be38f4578d3d9a1f34bcb457d7202d0bb8c4bef5))
+* questions: trailing period on a path token, secret entries, a ([6e5308d](https://github.com/batuta-ai/core/commit/6e5308da138c39afcb4cf2d921d5d2cb6a2bb33d))
+* **questions:** question-to-plan matching — code kinds, task passage, Jev on the residue; run 1 negative; objection triage parked ([926fddd](https://github.com/batuta-ai/core/commit/926fddd6e38040c7161a94ba90f9627420f63d0e))
+
 ## [1.1.0-beta.44](https://github.com/batuta-ai/core/compare/v1.1.0-beta.43...v1.1.0-beta.44) (2026-09-29)
 
 
