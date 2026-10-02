@@ -364,6 +364,7 @@
 - [x] build compares --out with every selected journal file; the UTF-8 bound test crosses the limit → claude (sonnet), commit 919239717492 (trail: .batuta/runs/2026-10-01-question-matching-fixes-2-task-1.md, delivery question-matching-fixes-2-20261001-184806, plan question-matching-fixes-2, 2026-10-01)
 - [x] questions.Units and questions.UnitPacket: the unit split and the one-unit passage → claude (sonnet), commit b33cc9a9fc85 (trail: .batuta/runs/2026-10-02-question-matching-v2-task-1.md, delivery question-matching-v2-20261002-215013, plan question-matching-v2, 2026-10-02)
 - [x] judge questions bench: --passage full|units and --all, one call per unit, the best unit decides → codex (gpt-6-sol), commit 795f3b64fb00 (trail: .batuta/runs/2026-10-02-question-matching-v2-task-2.md, delivery question-matching-v2-20261002-215013, plan question-matching-v2, 2026-10-02)
+- [x] unit mode treats every call that returns an error as unavailable → claude (sonnet), commit 443bb86ac744 (trail: .batuta/runs/2026-10-02-question-matching-v2-fixes-task-1.md, delivery question-matching-v2-fixes-20261002-222354, plan question-matching-v2-fixes, 2026-10-02)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

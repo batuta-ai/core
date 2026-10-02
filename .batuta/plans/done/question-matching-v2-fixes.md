@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Close the one blocker of the supervision review of delivery `question-matching-v2-20261002-215013` (verdict REWORK): in unit mode the bench treats an `answer_mismatch` error that still carries a usable `answer` as a successful call. Section 17 says a unit whose call is unavailable scores zero and is counted; every non-nil error is such a call. Nothing in section 17 changes.
-**Created:** 2026-10-02 · **Status:** approved
+**Created:** 2026-10-02 · **Status:** done
 
 ## Tasks
-- [ ] 1. unit mode treats every call that returns an error as unavailable — backend/medium
+- [x] 1. unit mode treats every call that returns an error as unavailable — backend/medium
       Scope: cmd/batuta/judge_questions_bench.go, cmd/batuta/judge_questions_bench_test.go
       Accept: in unit mode a call whose `Ask` returns a non-nil error, including an `answer_mismatch` with a usable `answer`, has the status unavailable, scores zero for P(`answered_here`), is counted in the unit and run unavailable counts, is never the best unit over a unit that answered, and its input-token usage is still added → go test ./cmd/batuta -run TestQuestionsBenchUnitMismatchUnavailable; the earlier unit-mode cases still hold → go test ./cmd/batuta -run 'TestQuestionsBenchUnit'; full-passage mode keeps its existing handling of a usable answer on `answer_mismatch` → go test ./cmd/batuta -run TestQuestionsBenchUnavailable; the packages stay green → go test ./cmd/batuta ./questions
 
