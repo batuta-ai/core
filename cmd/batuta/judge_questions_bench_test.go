@@ -247,6 +247,47 @@ func TestQuestionsBenchUnitMismatchUnavailable(t *testing.T) {
 	}
 }
 
+func TestQuestionsBenchAllUnitsUnavailable(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "other", "")
+	server, _ := questionsUnitServer(t, func(string) string {
+		return `{"answers":{"wrong":{"type":"choice","choice":"answered_here","confidence":0.95}},"usage":{"input_tokens":7}}`
+	})
+	out, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("err=%v output=%s", err, out)
+	}
+	var rec questionsBenchRecordResult
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "unavailable" || rec.BestUnit == nil || *rec.BestUnit != 0 || rec.UnavailableCalls == nil || *rec.UnavailableCalls != 5 {
+		t.Fatalf("record=%+v", rec)
+	}
+	var final struct {
+		Summary struct {
+			UnavailableCalls  *int                      `json:"unavailable_calls"`
+			QuestionsExcluded *int                      `json:"questions_excluded"`
+			Criterion1        questionsBenchCriterion1 `json:"criterion1"`
+			Criterion2        questionsBenchCriterion2 `json:"criterion2"`
+		} `json:"summary"`
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.Summary.UnavailableCalls == nil || *final.Summary.UnavailableCalls != 5 {
+		t.Fatalf("summary=%+v output=%s", final.Summary, out)
+	}
+	if final.Summary.QuestionsExcluded == nil || *final.Summary.QuestionsExcluded != 1 {
+		t.Fatalf("summary=%+v output=%s", final.Summary, out)
+	}
+	if final.Summary.Criterion2.Yes.Total != 0 || final.Summary.Criterion2.NoUnclear.Total != 0 {
+		t.Fatalf("criterion2=%+v want excluded", final.Summary.Criterion2)
+	}
+}
+
 type scriptedQuestionsJudge struct {
 	index   int
 	replies []judge.Response
