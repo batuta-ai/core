@@ -367,3 +367,30 @@ Decision, per tier and overall, with the threshold 0.9 of section 15:
 Reported beside it, deciding nothing: every item's option, confidence and probabilities; the lowest P(expected option) among correct items and the highest among wrong ones; input tokens.
 
 Shadow only. A negative result is the headline; nothing is restated at another threshold.
+
+## 17. Question-to-plan matching v2: one short unit per call, decision rule frozen before the build (2026-10-02)
+
+Agreed with the maintainer on 2026-10-02, before any v2 code was built. This section is not edited afterwards.
+
+Why v2. Run 1 (section 15) sent Jev the task's whole plan passage, up to 4000 bytes, and got no firm `answered_here` on the 12 `other` questions whose passage answers them. The positive control (section 16) sent the same request shape with passages under 200 bytes and got 36 firm correct answers of 40, none firm and wrong. The packet is the difference. v2 keeps every word of the passage but never shows Jev more than one unit of it at a time: code splits the passage into short units, Jev scores each unit against the question in its own call, and code takes the best unit. Nothing else changes: same corpus, same labels, same question wording, same options, same threshold.
+
+Why not a lexical cut. Before freezing this, a mock of "keep the three units sharing the most tokens with the question" was tried on the 48 core questions: it kept the labeller's quoted deciding fragment in at most 3 of 6 `other` cases and 9 of 25 overall, and only at 1500 bytes. Word overlap does not find the deciding sentence in these passages; the labeller's notes also paraphrase, so that check is reported below and decides nothing.
+
+Known contamination, stated before the run. The design was chosen after reading run 1's calls, the control and the mock above. The labels are run 1's, judged on the full passage.
+
+Corpus and labels: `.batuta/judge-questions/corpus.jsonl` and `labels.tsv` as committed on 2026-10-01 (`32a3635`, redacted), unchanged. The run reads the unredacted corpus rebuilt locally by the same `build` command with the same ids; only ids, labels, options and numbers are published, never the text of menuflix units.
+
+Units, by code. The full passage of section 15 is split into units in order: the title line is not a unit; each `Scope: ` line is one unit; each `Accept: ` line is split on semicolons into one unit per criterion; each context paragraph is split into sentences on a sentence end (`.`, `!`, `?`) followed by whitespace, and on line breaks. A unit is trimmed; an empty unit is dropped; a unit longer than 400 bytes is cut at the last complete UTF-8 character at or before byte 400. Every unit is scored; nothing is pre-selected.
+
+Jev. For each unit, one request of section 15's shape (`question_match`, the `choice` question `answer` with the same three options and wording) over `{question, passage}` where the passage is the title line, a line break and the unit. Model `jev-1.13.0`, `provider: typesafe`, `timeout_ms: 20000`, one trial per unit, sequential. A unit whose call is unavailable scores 0 and is counted; if more than 10% of a question's units are unavailable the question is unavailable and excluded from the decision, and if more than 10% of all calls are unavailable the run is repeated once and both are reported.
+
+Decision per question, by code. The best unit is the one with the highest P(`answered_here`); ties go to the earlier unit. The question's answer is firm `answered_here` when the best unit's chosen option is `answered_here` and its confidence is at least 0.9; otherwise the question changes nothing, with the status of the best unit recorded (`below_threshold`, `insufficient`, `not_addressed`, `unavailable`). v2 calls Jev on every question, so the per-unit packet is also observed on the three code kinds; only `other` decides.
+
+Decision, on the 17 questions whose code kind is `other` (12 labelled `yes`, 5 labelled `no`), the same set as section 15 criterion 2:
+1. v2 adds if at least 6 of the 12 `yes` questions are firm `answered_here` and none of the 5 `no` questions is.
+2. The comparison with run 1 (0 of 12 and 2 of 5) is reported beside it; v2 is not called better on the comparison alone.
+3. If criterion 1 holds, question matching ships as an annotation on the ask file, in shadow, at this per-unit cost, and the next step is a corpus of questions recorded after 2026-10-02 to retest without the contaminations above. If it fails, the lead is closed and Jev stays out of batuta's decisions until a new corpus with positives exists.
+
+Reported beside it, deciding nothing: per question the unit count, the best unit's index, option, confidence and P(`answered_here`), and the number of units whose P(`answered_here`) is at least 0.9 (the false-positive pressure of taking a maximum over many units); per code kind, firm `answered_here` against the label; for `yes` questions whose label note quotes a fragment, whether the best unit contains it; unit byte lengths; calls, unavailable calls, input tokens, wall time.
+
+Shadow only: nothing answers a question on any of this. A negative result is the headline; nothing is restated at another threshold, unit rule or bound.
