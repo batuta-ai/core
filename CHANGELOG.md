@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0-beta.46](https://github.com/batuta-ai/core/compare/v1.1.0-beta.45...v1.1.0-beta.46) (2026-10-03)
+
+
+### Features
+
+* a question whose unit calls all fail is tested end to end ([693cfb3](https://github.com/batuta-ai/core/commit/693cfb308096a41a1dfe829c526579a0bc8fa75f))
+* an unavailable question leaves the criterion 2 totals and is counted ([3d9458b](https://github.com/batuta-ai/core/commit/3d9458bed02ba17d9337f6654a03fc28dccd3edc))
+* judge questions bench: --passage full|units and --all, one call per ([795f3b6](https://github.com/batuta-ai/core/commit/795f3b64fb00ec2760ddf32ae1d4b95dd28434d7))
+* questions.Units and questions.UnitPacket: the unit split and the ([b33cc9a](https://github.com/batuta-ai/core/commit/b33cc9a9fc854bb3b551b8e415a10b4f4f1fa295))
+* **questions:** question-to-plan matching v2 — one short unit per Jev call; run 1 negative, lead closed ([1630248](https://github.com/batuta-ai/core/commit/1630248c7b5d02ec1225246480ebf10c6d3a5067))
+* the best unit is the first valid unit over any unavailable unit, and ([156d366](https://github.com/batuta-ai/core/commit/156d3660cd6e68e156dcaca9705144d49c272d66))
+* unit mode treats every call that returns an error as unavailable ([443bb86](https://github.com/batuta-ai/core/commit/443bb86ac744443e86c6e1a8b90df451d772e5d8))
+
 ## [1.1.0-beta.45](https://github.com/batuta-ai/core/compare/v1.1.0-beta.44...v1.1.0-beta.45) (2026-10-02)
 
 
