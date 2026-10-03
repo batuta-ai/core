@@ -5,10 +5,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -85,6 +88,430 @@ func questionsBenchRun(t *testing.T, root, corpus, sheet, url string, extra ...s
 }
 
 const questionsBenchReply = `{"model":"jev-test","answers":{"answer":{"type":"choice","choice":"answered_here","confidence":0.95,"probabilities":{"answered_here":0.95,"not_addressed":0.03,"insufficient":0.02}}},"usage":{"input_tokens":17}}`
+
+func questionsUnitReply(option string, confidence, probability float64) string {
+	return fmt.Sprintf(`{"model":"jev-test","answers":{"answer":{"type":"choice","choice":%q,"confidence":%g,"probabilities":{"answered_here":%g}}},"usage":{"input_tokens":7}}`, option, confidence, probability)
+}
+
+func questionsUnitServer(t *testing.T, reply func(string) string) (*httptest.Server, *[]string) {
+	t.Helper()
+	var passages []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			State struct{ Question, Passage string }
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode: %v", err)
+			return
+		}
+		passages = append(passages, body.State.Passage)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(reply(body.State.Passage)))
+	}))
+	t.Cleanup(server.Close)
+	return server, &passages
+}
+
+func questionsUnitFixture(t *testing.T, kind, label, note string) (string, string, string) {
+	t.Helper()
+	r := questionsBenchRecord("u", kind, "test")
+	r.Passage = "Title\nScope: Alpha\nAccept: Beta; Gamma\n\nDelta. Epsilon."
+	return questionsBenchFixture(t, []questionCorpusRecord{r}, []questionsLabel{{Kind: label, AnswerInPassage: "yes", Note: note}})
+}
+
+func TestQuestionsBenchUnitsCalls(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "other", "")
+	server, passages := questionsUnitServer(t, func(string) string { return questionsUnitReply("not_addressed", .96, .04) })
+	_, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"Title\nScope: Alpha", "Title\nAccept: Beta", "Title\nAccept: Gamma", "Title\nDelta.", "Title\nEpsilon."}
+	if !reflect.DeepEqual(*passages, want) {
+		t.Fatalf("passages=%q want=%q", *passages, want)
+	}
+}
+
+func TestQuestionsBenchAll(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"full", "units"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			records := []questionCorpusRecord{questionsBenchRecord("e", "environment", "test"), questionsBenchRecord("o", "other", "test")}
+			for i := range records {
+				records[i].Passage = "Title\nScope: Use JSON."
+			}
+			root, corpus, sheet := questionsBenchFixture(t, records, []questionsLabel{{Kind: "environment", AnswerInPassage: "no"}, {Kind: "other", AnswerInPassage: "yes"}})
+			server, passages := questionsUnitServer(t, func(string) string { return questionsBenchReply })
+			_, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", mode, "--json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			without := len(*passages)
+			*passages = nil
+			_, err = questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", mode, "--all", "--json")
+			if err != nil || len(*passages) != 2*without {
+				t.Fatalf("err=%v without=%d with=%d", err, without, len(*passages))
+			}
+		})
+	}
+}
+
+func TestQuestionsBenchBestUnit(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "other", "")
+	server, _ := questionsUnitServer(t, func(p string) string {
+		switch {
+		case strings.Contains(p, "Alpha"):
+			return questionsUnitReply("answered_here", .91, .8)
+		case strings.Contains(p, "Beta"):
+			return questionsUnitReply("not_addressed", .95, .9)
+		case strings.Contains(p, "Gamma"):
+			return questionsUnitReply("answered_here", .99, .9)
+		default:
+			return questionsUnitReply("insufficient", .8, .1)
+		}
+	})
+	out, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec questionsBenchRecordResult
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.BestUnit == nil || *rec.BestUnit != 1 || rec.Option != "not_addressed" || rec.Status != "not_addressed" {
+		t.Fatalf("record=%+v", rec)
+	}
+}
+
+func TestQuestionsBenchUnitUnavailable(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "other", "")
+	server, _ := questionsUnitServer(t, func(p string) string {
+		if strings.Contains(p, "Beta") {
+			return `{"answers":{"wrong":{"type":"choice","choice":"answered_here","confidence":0.95}},"usage":{"input_tokens":13}}`
+		}
+		return questionsUnitReply("answered_here", .95, .95)
+	})
+	out, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("err=%v output=%s", err, out)
+	}
+	var rec questionsBenchRecordResult
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "unavailable" || rec.InputTokens == nil || *rec.InputTokens != 41 || rec.UnavailableCalls == nil || *rec.UnavailableCalls != 1 {
+		t.Fatalf("record=%+v", rec)
+	}
+}
+
+func TestQuestionsBenchUnitMismatchUnavailable(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "other", "")
+	server, _ := questionsUnitServer(t, func(p string) string {
+		if strings.Contains(p, "Beta") {
+			return `{"answers":{"answer":{"type":"choice","choice":"answered_here","confidence":0.99,"probabilities":{"answered_here":0.99}},"extra":{"type":"choice","choice":"answered_here","confidence":0.5}},"usage":{"input_tokens":13}}`
+		}
+		return questionsUnitReply("not_addressed", .95, .2)
+	})
+	out, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("err=%v output=%s", err, out)
+	}
+	var rec questionsBenchRecordResult
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "unavailable" || rec.InputTokens == nil || *rec.InputTokens != 41 || rec.UnavailableCalls == nil || *rec.UnavailableCalls != 1 {
+		t.Fatalf("record=%+v", rec)
+	}
+	var final struct {
+		Summary struct {
+			UnavailableCalls *int `json:"unavailable_calls"`
+		} `json:"summary"`
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.Summary.UnavailableCalls == nil || *final.Summary.UnavailableCalls != 1 {
+		t.Fatalf("summary=%+v output=%s", final.Summary, out)
+	}
+	if rec.BestUnit == nil || *rec.BestUnit == 1 || len(rec.UnitResults) != 5 || rec.UnitResults[1].Status != "unavailable" || rec.UnitResults[1].Probability != 0 {
+		t.Fatalf("record=%+v", rec)
+	}
+}
+
+func TestQuestionsBenchAllUnitsUnavailable(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "scope_change", "")
+	server, _ := questionsUnitServer(t, func(string) string {
+		return `{"answers":{"wrong":{"type":"choice","choice":"answered_here","confidence":0.95}},"usage":{"input_tokens":7}}`
+	})
+	out, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("err=%v output=%s", err, out)
+	}
+	var rec questionsBenchRecordResult
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Status != "unavailable" || rec.BestUnit == nil || *rec.BestUnit != 0 || rec.UnavailableCalls == nil || *rec.UnavailableCalls != 5 {
+		t.Fatalf("record=%+v", rec)
+	}
+	var final struct {
+		Summary struct {
+			UnavailableCalls  *int                      `json:"unavailable_calls"`
+			QuestionsExcluded *int                      `json:"questions_excluded"`
+			Confusion         map[string]map[string]int `json:"confusion"`
+			Criterion1        questionsBenchCriterion1  `json:"criterion1"`
+			Criterion2        questionsBenchCriterion2  `json:"criterion2"`
+		} `json:"summary"`
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &final); err != nil {
+		t.Fatal(err)
+	}
+	if final.Summary.UnavailableCalls == nil || *final.Summary.UnavailableCalls != 5 {
+		t.Fatalf("summary=%+v output=%s", final.Summary, out)
+	}
+	if final.Summary.QuestionsExcluded == nil || *final.Summary.QuestionsExcluded != 1 {
+		t.Fatalf("summary=%+v output=%s", final.Summary, out)
+	}
+	if final.Summary.Criterion2.Yes.Total != 0 || final.Summary.Criterion2.NoUnclear.Total != 0 {
+		t.Fatalf("criterion2=%+v want excluded", final.Summary.Criterion2)
+	}
+	if final.Summary.Confusion["other"]["scope_change"] != 1 || final.Summary.Criterion1.Kinds["scope_change"].Recall.Total != 1 || final.Summary.Criterion1.Kinds["scope_change"].Recall.Count != 0 {
+		t.Fatalf("confusion=%v criterion1=%+v want the unavailable question kept", final.Summary.Confusion, final.Summary.Criterion1)
+	}
+}
+
+func questionsBenchUnavailableRun(t *testing.T, mode string) ([]questionsBenchRecordResult, questionsBenchSummary) {
+	t.Helper()
+	corpus := []questionCorpusRecord{
+		questionsBenchRecord("u", "other", "calibrate"),
+		questionsBenchRecord("a", "other", "test"),
+		questionsBenchRecord("s", "scope_change", "test"),
+		questionsBenchRecord("p", "other", "test"),
+	}
+	corpus[3].PlanFound = false
+	for i := range corpus {
+		corpus[i].Passage = "Title\nScope: One"
+	}
+	labels := map[string]questionsLabel{
+		"u": {Kind: "scope_change", AnswerInPassage: "yes"},
+		"a": {Kind: "other", AnswerInPassage: "no"},
+		"s": {Kind: "scope_change"},
+		"p": {Kind: "other", AnswerInPassage: "yes"},
+	}
+	answer := judge.Response{Answers: map[string]judge.Answer{"answer": {Type: judge.QuestionChoice, Choice: "answered_here", Confidence: .95, Probabilities: map[string]float64{"answered_here": .95}}}}
+	script := &scriptedQuestionsJudge{replies: []judge.Response{{}, answer}, errors: []error{&judge.UnavailableError{Reason: judge.ReasonTimeout}, nil}}
+	return questionsBenchRecordsMode(context.Background(), script, "", corpus, labels, "", .9, mode, false)
+}
+
+func TestQuestionsBenchUnavailableLeavesCriterion2(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"full", "units"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			_, summary := questionsBenchUnavailableRun(t, mode)
+			if summary.Criterion2.Yes.Total != 0 || summary.Criterion2.NoUnclear.Total != 1 || summary.Criterion2.NoUnclear.Count != 1 {
+				t.Fatalf("criterion2=%+v", summary.Criterion2)
+			}
+			if got := summary.BySplit["calibrate"].Criterion2; got.Yes.Total != 0 || got.NoUnclear.Total != 0 {
+				t.Fatalf("calibrate criterion2=%+v", got)
+			}
+			if got := summary.BySplit["test"].Criterion2; got.Yes.Total != 0 || got.NoUnclear.Total != 1 {
+				t.Fatalf("test criterion2=%+v", got)
+			}
+		})
+	}
+}
+
+func TestQuestionsBenchExcludedCounts(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"full", "units"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			_, summary := questionsBenchUnavailableRun(t, mode)
+			if summary.Excluded != 2 || summary.Unavailable != 1 || summary.BySplit["calibrate"].Excluded != 1 || summary.BySplit["calibrate"].Unavailable != 1 || summary.BySplit["test"].Excluded != 1 || summary.BySplit["test"].Unavailable != 0 {
+				t.Fatalf("summary=%+v", summary)
+			}
+			if mode == "units" && (summary.QuestionsExcluded == nil || *summary.QuestionsExcluded != 2 || *summary.BySplit["calibrate"].QuestionsExcluded != 1 || *summary.BySplit["test"].QuestionsExcluded != 1) {
+				t.Fatalf("questions_excluded=%+v", summary)
+			}
+		})
+	}
+}
+
+func TestQuestionsBenchUnavailableKeepsCriterion1(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"full", "units"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			records, summary := questionsBenchUnavailableRun(t, mode)
+			if records[0].Status != "unavailable" || records[0].CodeKind != "other" || records[0].Kind != "scope_change" {
+				t.Fatalf("record=%+v", records[0])
+			}
+			if summary.Questions != 3 || summary.Confusion["other"]["scope_change"] != 1 || summary.Confusion["other"]["other"] != 1 || summary.Confusion["scope_change"]["scope_change"] != 1 {
+				t.Fatalf("confusion=%v questions=%d", summary.Confusion, summary.Questions)
+			}
+			if got := summary.Criterion1.Kinds["scope_change"]; got.Recall.Total != 2 || got.Recall.Count != 1 {
+				t.Fatalf("criterion1=%+v", got)
+			}
+		})
+	}
+}
+
+type scriptedQuestionsJudge struct {
+	index   int
+	replies []judge.Response
+	errors  []error
+}
+
+func (j *scriptedQuestionsJudge) Ask(_ context.Context, _ judge.Request) (judge.Response, error) {
+	i := j.index
+	j.index++
+	return j.replies[i], j.errors[i]
+}
+
+func TestQuestionsBenchValidUnitBeatsUnavailable(t *testing.T) {
+	t.Parallel()
+	question := questionsBenchRecord("o", "other", "test")
+	question.Passage = "Title\n" + strings.Repeat("Scope: One\n", 11)
+	judgeScript := &scriptedQuestionsJudge{replies: make([]judge.Response, 11), errors: make([]error, 11)}
+	judgeScript.errors[0] = &judge.UnavailableError{Reason: judge.ReasonTimeout}
+	for i := 1; i < 11; i++ {
+		judgeScript.replies[i] = judge.Response{Answers: map[string]judge.Answer{"answer": {Type: judge.QuestionChoice, Choice: "not_addressed", Confidence: .95, Probabilities: map[string]float64{"answered_here": 0}}}}
+	}
+	record := questionsBenchUnitRecordFor(context.Background(), judgeScript, "", question, questionsLabel{Kind: "other", AnswerInPassage: "yes"}, .9, false)
+	if record.BestUnit == nil || *record.BestUnit != 1 || record.Status != "not_addressed" || record.Option != "not_addressed" {
+		t.Fatalf("record=%+v", record)
+	}
+}
+
+func TestQuestionsBenchPartialUnavailable(t *testing.T) {
+	t.Parallel()
+	question := questionsBenchRecord("o", "other", "test")
+	question.Passage = "Title\n" + strings.Repeat("Scope: One\n", 11)
+	judgeScript := &scriptedQuestionsJudge{replies: make([]judge.Response, 11), errors: make([]error, 11)}
+	judgeScript.replies[0] = judge.Response{Usage: judge.Usage{InputTokens: 13}}
+	judgeScript.errors[0] = &judge.UnavailableError{Reason: judge.ReasonTimeout}
+	for i := 1; i < 11; i++ {
+		judgeScript.replies[i] = judge.Response{Answers: map[string]judge.Answer{"answer": {Type: judge.QuestionChoice, Choice: "answered_here", Confidence: .95, Probabilities: map[string]float64{"answered_here": .95}}}, Usage: judge.Usage{InputTokens: 7}}
+	}
+	record := questionsBenchUnitRecordFor(context.Background(), judgeScript, "", question, questionsLabel{Kind: "other", AnswerInPassage: "yes"}, .9, false)
+	if record.Status != "firm" || record.Unavailable != "" || record.BestUnit == nil || *record.BestUnit != 1 || record.UnavailableCalls == nil || *record.UnavailableCalls != 1 || record.InputTokens == nil || *record.InputTokens != 83 || record.UnitResults[0].Probability != 0 {
+		t.Fatalf("record=%+v", record)
+	}
+}
+
+func TestQuestionsBenchUnitsRecord(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "other", `quote “Beta”`)
+	server, _ := questionsUnitServer(t, func(p string) string {
+		if strings.Contains(p, "Beta") {
+			return questionsUnitReply("answered_here", .95, .95)
+		}
+		return questionsUnitReply("not_addressed", .95, .05)
+	})
+	out, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec questionsBenchRecordResult
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if rec.PassageMode != "units" || rec.Units == nil || *rec.Units != 5 || rec.BestUnit == nil || *rec.BestUnit != 1 || rec.BestProbability == nil || *rec.BestProbability != .95 || rec.UnitsAtThreshold == nil || *rec.UnitsAtThreshold != 1 || rec.UnitBytesMax == nil || *rec.UnitBytesMax != 13 || rec.Calls == nil || *rec.Calls != 5 || rec.Retrieval != "kept" {
+		t.Fatalf("record=%+v", rec)
+	}
+}
+
+func TestQuestionsBenchUnitsJSONNoText(t *testing.T) {
+	t.Parallel()
+	root, corpus, sheet := questionsUnitFixture(t, "other", "other", "")
+	server, _ := questionsUnitServer(t, func(string) string { return questionsUnitReply("answered_here", .95, .95) })
+	out, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec questionsBenchRecordResult
+	if err := json.Unmarshal([]byte(strings.Split(out, "\n")[0]), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.UnitResults) != 5 || strings.Contains(out, "Scope: Alpha") || strings.Contains(out, "Accept: Beta") || rec.UnitResults[0].Option != "answered_here" || rec.UnitResults[0].Confidence != .95 || rec.UnitResults[0].Probability != .95 {
+		t.Fatalf("record=%+v output=%s", rec, out)
+	}
+}
+
+func TestQuestionsBenchSummaryV2(t *testing.T) {
+	t.Parallel()
+	corpus := []questionCorpusRecord{questionsBenchRecord("o", "other", "test"), questionsBenchRecord("e", "environment", "test")}
+	corpus[0].Passage = "Title\nScope: One\nAccept: Two; Three"
+	corpus[1].Passage = "Title\nScope: Four"
+	labels := map[string]questionsLabel{"o": {Kind: "other", AnswerInPassage: "yes", Note: `"Two"`}, "e": {Kind: "environment", AnswerInPassage: "no"}}
+	response := judge.Response{Answers: map[string]judge.Answer{"answer": {Type: judge.QuestionChoice, Choice: "answered_here", Confidence: .95, Probabilities: map[string]float64{"answered_here": .95}}}, Usage: judge.Usage{InputTokens: 7}}
+	records, summary := questionsBenchRecordsMode(context.Background(), staticBenchJudge{response: response}, "", corpus, labels, "", .9, "units", true)
+	if len(records) != 2 || summary.Calls != 4 || summary.InputTokens != 28 || summary.UnavailableCalls == nil || *summary.UnavailableCalls != 0 || summary.QuestionsExcluded == nil || *summary.QuestionsExcluded != 0 || summary.UnitsDistribution.Min != 1 || summary.UnitsDistribution.Max != 3 || summary.UnitsDistribution.Median != 2 || summary.UnitsAtThresholdDistribution.Median != 2 || summary.WallTimeMs == nil || summary.FirmByCodeKind["environment"].No.Count != 1 || summary.FirmByCodeKind["environment"].No.Total != 1 || summary.Retrieval["dropped"] != 1 {
+		t.Fatalf("records=%+v summary=%+v", records, summary)
+	}
+}
+
+func TestQuestionsBenchCriterionOtherOnly(t *testing.T) {
+	t.Parallel()
+	corpus := []questionCorpusRecord{questionsBenchRecord("o", "other", "test"), questionsBenchRecord("e", "environment", "test")}
+	for i := range corpus {
+		corpus[i].Passage = "Title\nScope: One"
+	}
+	labels := map[string]questionsLabel{"o": {Kind: "other", AnswerInPassage: "yes"}, "e": {Kind: "environment", AnswerInPassage: "yes"}}
+	response := judge.Response{Answers: map[string]judge.Answer{"answer": {Type: judge.QuestionChoice, Choice: "answered_here", Confidence: .95, Probabilities: map[string]float64{"answered_here": .95}}}}
+	for _, all := range []bool{false, true} {
+		t.Run(fmt.Sprint(all), func(t *testing.T) {
+			t.Parallel()
+			_, summary := questionsBenchRecordsMode(context.Background(), staticBenchJudge{response: response}, "", corpus, labels, "", .9, "units", all)
+			if summary.Criterion2.Yes.Total != 1 || summary.Criterion2.Yes.Count != 1 {
+				t.Fatalf("summary=%+v", summary)
+			}
+		})
+	}
+}
+
+func TestQuestionsBenchLabelFreeUnits(t *testing.T) {
+	t.Parallel()
+	r := questionsBenchRecord("o", "other", "test")
+	r.Passage = "Title\nScope: Alpha\nAccept: Beta; Gamma"
+	root, corpus, sheet := questionsBenchFixture(t, []questionCorpusRecord{r}, []questionsLabel{{Kind: "other", AnswerInPassage: "yes", Note: "private label"}})
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		bodies = append(bodies, string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(questionsBenchReply))
+	}))
+	t.Cleanup(server.Close)
+	if _, err := questionsBenchRun(t, root, corpus, sheet, server.URL, "--passage", "units", "--json"); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 3 {
+		t.Fatalf("calls=%d", len(bodies))
+	}
+	for _, body := range bodies {
+		if strings.Contains(body, r.Passage) || strings.Contains(body, r.Answer) || strings.Contains(body, "private label") || strings.Contains(body, "Beta; Gamma") {
+			t.Fatalf("body=%s", body)
+		}
+	}
+}
 
 func TestQuestionsBenchCallsOnlyOther(t *testing.T) {
 	t.Parallel()

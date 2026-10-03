@@ -109,7 +109,7 @@ rules for the code kinds and task passage are frozen in
 batuta judge questions build --journal <dir> [--journal <dir>...] --out <file>
 batuta judge questions sheet --corpus <file> --out <file>
 batuta judge questions labels --corpus <file> --sheet <file> [--json]
-batuta judge questions bench --corpus <file> --sheet <file> [--split calibrate|test] [--threshold <n>] [--config <path>] [--workspace <dir>] [--base-url <url>] [--json]
+batuta judge questions bench --corpus <file> --sheet <file> [--split calibrate|test] [--passage full|units] [--all] [--threshold <n>] [--config <path>] [--workspace <dir>] [--base-url <url>] [--json]
 ```
 
 `build` walks every `*.jsonl` under each journal directory. It finds the
@@ -148,6 +148,19 @@ labels stay local. Its default firm confidence threshold is 0.9, with an
 explicit `--threshold` taking precedence over the `question_match` decision
 threshold in judge config. The threshold must be between 0 and 1. `--split`
 limits the scored records to one half of the corpus.
+
+`--passage full` is the run 1 default. `--passage units` splits each passage
+into short units and sends the title plus one unit per sequential request. The
+unit with the highest probability for `answered_here` decides the question;
+ties keep the earlier unit. More than 10% unavailable units make a question
+unavailable. An unavailable question, in either mode, is
+excluded from criterion 2 and counted in `excluded` (and `questions_excluded`
+in unit mode) next to the questions without a plan; it stays in the confusion
+table and in criterion 1. `--all` calls the judge for every code kind in either mode;
+without it only `other` is called. Criterion 2 always counts only `other`.
+Unit mode reports per-unit options, confidence and probability, counts and
+retrieval of quoted label fragments, without printing unit text. The frozen
+unit and decision rules are in `.batuta/judge-research.md` section 17.
 
 The bench emits a record for every scored question and a summary. Plain
 output is TSV; `--json` writes one compact JSON object per record followed by
