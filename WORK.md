@@ -1,5 +1,10 @@
 # WORK — core
 
+
+## Console prerequisite — 2026-10-04
+- [x] Exact native answer API for Console19: explicit opening/root/task/execution/question identity under core ownership, typed invalid/stale/owned/missing states, unchanged legacy APIs/messages and honest external-effect semantics. TDD red/green, native answer/resume/re-question and16-way concurrency; Go1.27.1 Mac/Linux fullGo/vet/build/full-loop race plus all5 goreleaser builds; ClaudeSonnet final4/4, all findings judged → self/session critical, verification retry1, no escalation. Qualified product source82e2a35; local branch batuta/console-answer-qualified. Trail .batuta/runs/2026-10-04-console-answer-identity.md.
+- [ ] Publish a qualified core version and adopt its exact pin in Console; Console19 remains incomplete. This new prerequisite does not resume the prior site/benchmark handoff.
+
 ## Current status — 2026-10-02: question matching v2 negative, lead closed, branch not pushed
 - [ ] Branch `feat/question-matching-v2` (local, not pushed, no PR): section 17 frozen in `b668331`, the build (plans `question-matching-v2` and `-fixes` to `-fixes-4`, final review SHIP), the run records in `.batuta/judge-questions/bench-v2.jsonl` (no unit text), and the record in `.batuta/judge-benchmark.md` "Question-to-plan matching v2, run 1".
 - [ ] v2, one short unit per call, 2,562 calls: firm `answered_here` 3/12 on other yes (run 1: 0/12) and 2/5 on other no (same two licence questions). **Negative**; by section 17 the lead is closed and Jev stays out of batuta's decisions until a new corpus with positives exists. Five Jev decisions tried, none added to code in a frozen run; the positive control (section 16) shows the request format is sound.

@@ -226,7 +226,7 @@ func takePresence(ctx context.Context, path, delivery string, now time.Time, tim
 		return nil, err
 	}
 	if owner != nil && now.Sub(owner.RefreshedAt) <= presenceFresh {
-		return nil, fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", delivery, owner.PID, owner.StartedAt.Format(time.RFC3339))
+		return nil, deliveryOwnedError(fmt.Sprintf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", delivery, owner.PID, owner.StartedAt.Format(time.RFC3339)))
 	}
 	if err := removeStalePresence(path, owner, info, now); err != nil {
 		return nil, fmt.Errorf("loop: remove stale presence lock: %w", err)
