@@ -391,6 +391,7 @@
 - [x] loop supervision reads the review failures and keeps old review directories readable → codex (gpt-6-sol), 1 retry, commit 53c1a1a03649 (trail: .batuta/runs/2026-10-05-review-contract-preflight-task-3.md, delivery review-contract-preflight-20261005-181638, plan review-contract-preflight, 2026-10-05)
 - [x] executor: a capability probe for a route → claude (sonnet), commit d7ed3b57bc6a (trail: .batuta/runs/2026-10-05-review-contract-preflight-task-4.md, delivery review-contract-preflight-20261005-181638, plan review-contract-preflight, 2026-10-05)
 - [x] batuta dispatch --preflight → claude (sonnet), commit a511e5481288 (trail: .batuta/runs/2026-10-05-review-contract-preflight-task-5.md, delivery review-contract-preflight-20261005-181638, plan review-contract-preflight, 2026-10-05)
+- [x] batuta loop probes each route once per delivery and escalates an incapable route → codex (gpt-6-sol), commit 171776afc31f (trail: .batuta/runs/2026-10-05-review-contract-preflight-loop-task-1.md, delivery review-contract-preflight-loop-20261005-201151, plan review-contract-preflight-loop, 2026-10-05)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Task 6 of `.batuta/plans/review-contract-preflight.md`, re-planned with a wider Scope: before the first attempt of a route in a delivery, `batuta loop` checks with `executor.ProbeCapability` that the executor can run commands, journals the result, reuses it for the rest of the delivery, and turns an incapable route into an immediate one-row escalation without submitting the brief.
-**Created:** 2026-10-05 · **Status:** approved
+**Created:** 2026-10-05 · **Status:** done
 
 ## Tasks
-- [ ] 1. batuta loop probes each route once per delivery and escalates an incapable route — backend/high
+- [x] 1. batuta loop probes each route once per delivery and escalates an incapable route — backend/high
       Scope: loop/attempt.go, loop/capability.go, loop/capability_test.go, loop/loop_test.go, loop/runner.go, loop/attempt_test.go, loop/answer_question_test.go, cmd/batuta/main_test.go, cmd/batuta/main_unix_test.go, docs/loop.md
       Accept: before the first attempt of a route (executor, model, effort, transport) in a delivery the loop runs the probe in that attempt's worktree and journals a `capability_probe` record with executor, model, effort, transport, pass, reason and duration → go test ./loop -run TestLoopProbesRouteOnce; later attempts on the same route in the same delivery, including after `--resume`, reuse the journalled result and run no probe → go test ./loop -run TestLoopProbeReusedAfterResume; a failing probe records the attempt as failure code `executor_incapable` with the probe's reason and tail as feedback, never submits the brief, never enters a submission-uncertain state, and escalates one row up without the same-runtime retry → go test ./loop -run TestLoopIncapableEscalates; a route that is incapable at the top of the ladder blocks the task with `executor_incapable` → go test ./loop -run TestLoopIncapableAtTopBlocks; docs/loop.md documents the record and the failure code → grep -q 'capability_probe' docs/loop.md; the command-level loop tests pass with their fake executors answering the probe → go test ./cmd/batuta
 
