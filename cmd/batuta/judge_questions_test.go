@@ -139,6 +139,65 @@ func TestQuestionsBuildSummary(t *testing.T) {
 	}
 }
 
+func buildQuestionsAt(t *testing.T, journalDir, out string) error {
+	t.Helper()
+	return runJudge([]string{"questions", "build", "--journal", journalDir, "--out", out}, &bytes.Buffer{}, &bytes.Buffer{})
+}
+
+func TestQuestionsBuildUnparsedPlan(t *testing.T) {
+	t.Parallel()
+	journalDir, root := questionsFixture(t, "demo", fixtureQuestion("Which format?", 1, "q1"))
+	planPath := filepath.Join(root, ".batuta", "plans", "demo.md")
+	if err := os.WriteFile(planPath, []byte("not a plan\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(root, "corpus.jsonl")
+	if err := buildQuestionsAt(t, journalDir, out); err != nil {
+		t.Fatal(err)
+	}
+	corpus, err := readQuestionsCorpus(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(corpus.records) != 1 || corpus.records[0].PlanFound || corpus.records[0].PassageFound || corpus.summary.WithoutPlan != 1 {
+		t.Fatalf("corpus = %+v", corpus)
+	}
+	if got := corpus.summary.UnparsedPlans; len(got) != 1 || got[0] != planPath {
+		t.Fatalf("unparsed_plans = %v, want [%s]", got, planPath)
+	}
+}
+
+func TestQuestionsBuildUnparsedPlansEmpty(t *testing.T) {
+	t.Parallel()
+	journalDir, root := questionsFixture(t, "demo", fixtureQuestion("Which format?", 1, "q1"))
+	out := filepath.Join(root, "corpus.jsonl")
+	if err := buildQuestionsAt(t, journalDir, out); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"unparsed_plans":[]`) {
+		t.Fatalf("summary line lacks empty unparsed_plans: %s", data)
+	}
+}
+
+func TestQuestionsBuildUnreadablePlanFails(t *testing.T) {
+	t.Parallel()
+	journalDir, root := questionsFixture(t, "demo", fixtureQuestion("Which format?", 1, "q1"))
+	planPath := filepath.Join(root, ".batuta", "plans", "demo.md")
+	if err := os.Remove(planPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(planPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := buildQuestionsAt(t, journalDir, filepath.Join(root, "corpus.jsonl")); err == nil {
+		t.Fatal("build succeeded with a directory in place of the plan")
+	}
+}
+
 func TestQuestionsSheet(t *testing.T) {
 	t.Parallel()
 	dir, root := questionsFixture(t, "demo", fixtureQuestion("Which\tformat?", 1, "q1"))

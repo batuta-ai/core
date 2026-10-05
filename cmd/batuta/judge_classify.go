@@ -261,17 +261,9 @@ func runJudgeClassifyBench(args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	plans := make([]routing.Plan, 0, len(planPaths))
-	for _, path := range planPaths {
-		payload, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("judge classify bench: %s: %w", path, err)
-		}
-		plan, err := routing.ParsePlan(strings.TrimSuffix(filepath.Base(path), ".md"), payload)
-		if err != nil {
-			return fmt.Errorf("judge classify bench: %s: %w", path, err)
-		}
-		plans = append(plans, plan)
+	plans, planPaths, err := readBenchPlans(planPaths, stderr)
+	if err != nil {
+		return err
 	}
 	deliveries, err := readBenchJournals(journalDirs)
 	if err != nil {
@@ -291,6 +283,35 @@ func runJudgeClassifyBench(args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "threshold=%s\n", corpusThresholdLabel(threshold))
 	}
 	return classifyBenchTasks(context.Background(), stdout, j, buildReason, plans, deliveries, threshold, *asJSON)
+}
+
+// readBenchPlans parses each plan file. A file that does not parse is skipped
+// with a line on stderr; the returned paths stay parallel to the plans. It
+// fails when a file cannot be read or when no plan parses.
+func readBenchPlans(paths []string, stderr io.Writer) ([]routing.Plan, []string, error) {
+	plans := make([]routing.Plan, 0, len(paths))
+	parsedPaths := make([]string, 0, len(paths))
+	var firstParseErr error
+	for _, path := range paths {
+		payload, err := os.ReadFile(path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("judge classify bench: %s: %w", path, err)
+		}
+		plan, err := routing.ParsePlan(strings.TrimSuffix(filepath.Base(path), ".md"), payload)
+		if err != nil {
+			if firstParseErr == nil {
+				firstParseErr = fmt.Errorf("judge classify bench: %s: %w", path, err)
+			}
+			fmt.Fprintf(stderr, "judge classify bench: skipped %s: %v\n", path, err)
+			continue
+		}
+		plans = append(plans, plan)
+		parsedPaths = append(parsedPaths, path)
+	}
+	if len(plans) == 0 {
+		return nil, nil, firstParseErr
+	}
+	return plans, parsedPaths, nil
 }
 
 // benchDelivery is one delivery journal read for the bench: its name decides
