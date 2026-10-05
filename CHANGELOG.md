@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0-beta.48](https://github.com/batuta-ai/core/compare/v1.1.0-beta.47...v1.1.0-beta.48) (2026-10-05)
+
+
+### Bug Fixes
+
+* **gates:** set aside 'not a git repository' and 'cannot be inspected' verifier objections ([0ce3c23](https://github.com/batuta-ai/core/commit/0ce3c23755a7d05186db8c7e1df60fa4856372fe))
+* **judge:** keep going when a plan does not parse in questions build and classify bench ([0434445](https://github.com/batuta-ai/core/commit/0434445e2c5fa3cf43728aa3f42563ac3e182cb9))
+* verifier environment objections and plan parse failures in judge benches ([aea063d](https://github.com/batuta-ai/core/commit/aea063d8109a5d816929155b3135c2e7198fdcae))
+
 ## [1.1.0-beta.47](https://github.com/batuta-ai/core/compare/v1.1.0-beta.46...v1.1.0-beta.47) (2026-10-05)
 
 
