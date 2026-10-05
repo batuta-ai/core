@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -46,12 +47,13 @@ type questionCorpusRecord struct {
 }
 
 type questionCorpusSummary struct {
-	Journals    int            `json:"journals"`
-	Questions   int            `json:"questions"`
-	WithAnswer  int            `json:"with_answer"`
-	WithoutPlan int            `json:"without_plan"`
-	ByCodeKind  map[string]int `json:"by_code_kind"`
-	BySplit     map[string]int `json:"by_split"`
+	Journals      int            `json:"journals"`
+	Questions     int            `json:"questions"`
+	WithAnswer    int            `json:"with_answer"`
+	WithoutPlan   int            `json:"without_plan"`
+	ByCodeKind    map[string]int `json:"by_code_kind"`
+	BySplit       map[string]int `json:"by_split"`
+	UnparsedPlans []string       `json:"unparsed_plans"`
 }
 
 type questionsCorpus struct {
@@ -184,7 +186,7 @@ func questionsRefuseCorpusOut(out, corpus string) error {
 }
 
 func buildQuestionsCorpus(dirs []string) (questionsCorpus, error) {
-	corpus := questionsCorpus{summary: questionCorpusSummary{ByCodeKind: map[string]int{}, BySplit: map[string]int{}}}
+	corpus := questionsCorpus{summary: questionCorpusSummary{ByCodeKind: map[string]int{}, BySplit: map[string]int{}, UnparsedPlans: []string{}}}
 	for _, dir := range dirs {
 		err := filepath.WalkDir(dir, func(path string, entry os.DirEntry, walkErr error) error {
 			if walkErr != nil {
@@ -203,9 +205,12 @@ func buildQuestionsCorpus(dirs []string) (questionsCorpus, error) {
 				return fmt.Errorf("%s: %w", path, err)
 			}
 			corpus.summary.Journals++
-			built, err := questionsFromJournal(root, strings.TrimSuffix(entry.Name(), ".jsonl"), records)
+			built, unparsed, err := questionsFromJournal(root, strings.TrimSuffix(entry.Name(), ".jsonl"), records)
 			if err != nil {
 				return fmt.Errorf("%s: %w", path, err)
+			}
+			if unparsed != "" && !slices.Contains(corpus.summary.UnparsedPlans, unparsed) {
+				corpus.summary.UnparsedPlans = append(corpus.summary.UnparsedPlans, unparsed)
 			}
 			for _, record := range built {
 				corpus.records = append(corpus.records, record)
@@ -225,6 +230,7 @@ func buildQuestionsCorpus(dirs []string) (questionsCorpus, error) {
 			return questionsCorpus{}, fmt.Errorf("judge questions build: %s: %w", dir, err)
 		}
 	}
+	slices.Sort(corpus.summary.UnparsedPlans)
 	return corpus, nil
 }
 
@@ -238,27 +244,27 @@ type answerKey struct {
 	execution int
 }
 
-func questionsFromJournal(root, delivery string, records []journal.Record) ([]questionCorpusRecord, error) {
+func questionsFromJournal(root, delivery string, records []journal.Record) ([]questionCorpusRecord, string, error) {
 	if len(records) == 0 || records[0].Kind != loop.KindOpened {
-		return nil, errors.New("missing delivery_opened record")
+		return nil, "", errors.New("missing delivery_opened record")
 	}
 	opened, err := questionsDetail(records[0].Detail)
 	if err != nil {
-		return nil, fmt.Errorf("delivery_opened: %w", err)
+		return nil, "", fmt.Errorf("delivery_opened: %w", err)
 	}
 	slug, err := questionsString(opened, "slug")
 	if err != nil {
-		return nil, fmt.Errorf("delivery_opened: %w", err)
+		return nil, "", fmt.Errorf("delivery_opened: %w", err)
 	}
 	if !questionsSlug.MatchString(slug) {
-		return nil, errors.New("delivery_opened: slug: invalid value")
+		return nil, "", errors.New("delivery_opened: slug: invalid value")
 	}
 	if _, err := questionsString(opened, "plan_path"); err != nil {
-		return nil, fmt.Errorf("delivery_opened: %w", err)
+		return nil, "", fmt.Errorf("delivery_opened: %w", err)
 	}
-	plan, planOK, err := questionsPlan(root, slug)
+	plan, planOK, unparsed, err := questionsPlan(root, slug)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var queued []journalQuestion
 	answers := map[answerKey]string{}
@@ -267,42 +273,42 @@ func questionsFromJournal(root, delivery string, records []journal.Record) ([]qu
 			continue
 		}
 		if record.TaskID == "" {
-			return nil, fmt.Errorf("record %d: task_id: empty", i+1)
+			return nil, "", fmt.Errorf("record %d: task_id: empty", i+1)
 		}
 		detail, err := questionsDetail(record.Detail)
 		if err != nil {
-			return nil, fmt.Errorf("record %d: %w", i+1, err)
+			return nil, "", fmt.Errorf("record %d: %w", i+1, err)
 		}
 		execution, err := questionsInt(detail, "execution")
 		if err != nil {
-			return nil, fmt.Errorf("record %d: %w", i+1, err)
+			return nil, "", fmt.Errorf("record %d: %w", i+1, err)
 		}
 		if execution < 1 {
-			return nil, fmt.Errorf("record %d: execution: must be positive", i+1)
+			return nil, "", fmt.Errorf("record %d: execution: must be positive", i+1)
 		}
 		text, err := questionsString(detail, "question")
 		if err != nil {
-			return nil, fmt.Errorf("record %d: %w", i+1, err)
+			return nil, "", fmt.Errorf("record %d: %w", i+1, err)
 		}
 		key := answerKey{record.TaskID, execution}
 		if record.Kind == loop.KindAnswer {
 			answer, err := questionsString(detail, "answer")
 			if err != nil {
-				return nil, fmt.Errorf("record %d: %w", i+1, err)
+				return nil, "", fmt.Errorf("record %d: %w", i+1, err)
 			}
 			answers[key] = answer
 			continue
 		}
 		requestID, err := questionsString(detail, "request_id")
 		if err != nil {
-			return nil, fmt.Errorf("record %d: %w", i+1, err)
+			return nil, "", fmt.Errorf("record %d: %w", i+1, err)
 		}
 		if requestID == "" {
-			return nil, fmt.Errorf("record %d: request_id: empty", i+1)
+			return nil, "", fmt.Errorf("record %d: request_id: empty", i+1)
 		}
 		for _, field := range []string{"run_id", "ask_path"} {
 			if _, err := questionsString(detail, field); err != nil {
-				return nil, fmt.Errorf("record %d: %w", i+1, err)
+				return nil, "", fmt.Errorf("record %d: %w", i+1, err)
 			}
 		}
 		queued = append(queued, journalQuestion{record.TaskID, execution, requestID, text})
@@ -330,25 +336,27 @@ func questionsFromJournal(root, delivery string, records []journal.Record) ([]qu
 		r.CodeKind = questions.Kind(q.text, r.Scope)
 		result = append(result, r)
 	}
-	return result, nil
+	return result, unparsed, nil
 }
 
-func questionsPlan(root, slug string) (routing.Plan, bool, error) {
+// questionsPlan reports a plan file that exists but does not parse through
+// its path, not an error, so the journal keeps its questions.
+func questionsPlan(root, slug string) (routing.Plan, bool, string, error) {
 	for _, path := range []string{filepath.Join(root, ".batuta", "plans", slug+".md"), filepath.Join(root, ".batuta", "plans", "done", slug+".md")} {
 		payload, err := os.ReadFile(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
-			return routing.Plan{}, false, err
+			return routing.Plan{}, false, "", err
 		}
 		plan, err := routing.ParsePlan(slug, payload)
 		if err != nil {
-			return routing.Plan{}, false, fmt.Errorf("%s: %w", path, err)
+			return routing.Plan{}, false, path, nil
 		}
-		return plan, true, nil
+		return plan, true, "", nil
 	}
-	return routing.Plan{}, false, nil
+	return routing.Plan{}, false, "", nil
 }
 
 func questionsBound(s string) string {

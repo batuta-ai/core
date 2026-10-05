@@ -1012,3 +1012,57 @@ func TestClassifyBenchV2LabelFree(t *testing.T) {
 		}
 	}
 }
+
+func TestClassifyBenchSkipsUnparsedPlan(t *testing.T) {
+	for _, rubric := range []string{"v1", "v2", "v3"} {
+		t.Run(rubric, func(t *testing.T) {
+			var server *httptest.Server
+			var root, good string
+			if rubric == "v3" {
+				root, good = benchV3Fixture(t, "skip-a")
+				server, _ = benchV3Server(t)
+			} else {
+				server, _ = classifyTestServer(t, map[string]classifyRoute{})
+				root = judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+				good = classifyTestPlanPath(t, root)
+			}
+			bad := writeBadPlan(t, root)
+			var stdout, stderr strings.Builder
+			args := []string{"judge", "classify", "bench", "--rubric", rubric, "--plan", bad, "--plan", good, "--workspace", root, "--base-url", server.URL}
+			if err := run(args, &stdout, &stderr); err != nil {
+				t.Fatalf("bench %s = %v\nstderr: %s", rubric, err, stderr.String())
+			}
+			lines := strings.Split(strings.TrimSuffix(stderr.String(), "\n"), "\n")
+			if len(lines) != 1 || !strings.HasPrefix(lines[0], "judge classify bench: skipped "+bad+": ") {
+				t.Fatalf("stderr = %q", stderr.String())
+			}
+			if strings.Contains(stdout.String(), "bad-bench") {
+				t.Fatalf("stdout covers the bad plan: %s", stdout.String())
+			}
+		})
+	}
+}
+
+func TestClassifyBenchAllPlansUnparsedFails(t *testing.T) {
+	for _, rubric := range []string{"v1", "v2", "v3"} {
+		t.Run(rubric, func(t *testing.T) {
+			root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+			bad := writeBadPlan(t, root)
+			var stdout, stderr strings.Builder
+			err := run([]string{"judge", "classify", "bench", "--rubric", rubric, "--plan", bad, "--workspace", root}, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), bad) {
+				t.Fatalf("bench %s = %v, want an error naming %s", rubric, err, bad)
+			}
+		})
+	}
+}
+
+func TestClassifyBenchMissingPlanBesideGoodFails(t *testing.T) {
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	good := classifyTestPlanPath(t, root)
+	var stdout, stderr strings.Builder
+	err := run([]string{"judge", "classify", "bench", "--plan", good, "--plan", filepath.Join(root, "absent.md"), "--workspace", root}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("bench = nil, want an error for a missing plan file")
+	}
+}

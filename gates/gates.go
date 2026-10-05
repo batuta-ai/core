@@ -408,7 +408,7 @@ func VerifierPrompt(taskTitle string, criteria []Criterion, proofs []Verdict, ba
 const SignalNoTaskLines = "the verifier printed no TASK n: DONE|INCOMPLETE lines"
 
 var verifierLine = regexp.MustCompile(`(?m)^\s*TASK\s+([0-9]+)\s*:\s*(DONE|INCOMPLETE)\b\s*(?:[—:-]+\s*(.*))?$`)
-var verifierEnvironmentObjection = regexp.MustCompile(`(?i)sandbox|could not run|cannot run|unable to run|not permitted|permission|unverified|could not verify|cannot verify|unable to verify|not verified|no network`)
+var verifierEnvironmentObjection = regexp.MustCompile(`(?i)sandbox|could not run|cannot run|unable to run|not permitted|permission|unverified|could not verify|cannot verify|unable to verify|not verified|no network|not a git repository|cannot be inspected`)
 
 // HasTaskLines reports whether output holds a line Verifier parses as the
 // answer to a criterion.

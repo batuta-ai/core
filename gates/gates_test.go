@@ -163,6 +163,22 @@ func TestVerifierSetsAsideEnvironmentObjectionsWhenTheProofPassed(t *testing.T) 
 			wantDetail: "criterion 2: environment objection set aside, its proof passed — sandbox restrictions prevented verifying integration.",
 		},
 		{
+			name:       "not a git repository",
+			proofs:     []Verdict{{Pass: true}, {Pass: true}},
+			reason:     "fatal: not a git repository (or any of the parent directories): .git",
+			wantPass:   true,
+			wantSignal: "2/2 DONE (1 environment objection(s) set aside)",
+			wantDetail: "criterion 2: environment objection set aside, its proof passed — fatal: not a git repository (or any of the parent directories): .git",
+		},
+		{
+			name:       "cannot be inspected",
+			proofs:     []Verdict{{Pass: true}, {Pass: true}},
+			reason:     "the worktree cannot be inspected from this session.",
+			wantPass:   true,
+			wantSignal: "2/2 DONE (1 environment objection(s) set aside)",
+			wantDetail: "criterion 2: environment objection set aside, its proof passed — the worktree cannot be inspected from this session.",
+		},
+		{
 			name:       "failed proof",
 			proofs:     []Verdict{{Pass: true}, {Pass: false}},
 			reason:     "sandbox restrictions prevented verifying integration.",
