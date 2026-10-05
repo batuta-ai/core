@@ -43,7 +43,7 @@ Usage:
   batuta capabilities
   batuta inventory [--workspace <dir>] [--timeout <duration>]
   batuta doctor    [--workspace <dir>] [--json] [--timeout <duration>]
-  batuta dispatch  --brief-file <path> --executor <id> --model <id> [--effort <value>] --cwd <worktree> [--transport cli|acp|auto] [--timeout 45m]
+  batuta dispatch  --brief-file <path> --executor <id> --model <id> [--effort <value>] --cwd <worktree> [--transport cli|acp|auto] [--timeout 45m] [--preflight]
   batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [--transport cli|acp|auto] [<plan>]
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
@@ -567,6 +567,7 @@ func runDispatch(args []string, stdout, stderr io.Writer) error {
 	cwd := flags.String("cwd", "", "worktree directory")
 	transport := flags.String("transport", "cli", "cli, acp or auto (no headless native tools)")
 	timeout := flags.Duration("timeout", 45*time.Minute, "time budget for the single attempt")
+	preflight := flags.Bool("preflight", false, "probe that the executor can run commands before the brief")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -610,7 +611,7 @@ func runDispatch(args []string, stdout, stderr io.Writer) error {
 	defer stop()
 	report, err = executor.Dispatch(ctx, executor.DispatchOptions{Adapter: adapter,
 		Request:   executor.Request{Brief: string(brief), Cwd: directory, Model: *model, Effort: *effort},
-		Transport: executor.NewNativeTransport(*transport), Timeout: *timeout})
+		Transport: executor.NewNativeTransport(*transport), Timeout: *timeout, Preflight: *preflight})
 	return finish(err)
 }
 

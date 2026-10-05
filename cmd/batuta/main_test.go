@@ -69,9 +69,22 @@ func TestDispatchWorker(t *testing.T) {
 	if err != nil {
 		os.Exit(93)
 	}
-	f.WriteString("call\n")
+	probe := strings.Contains(args[1], executor.CapabilityMarker)
+	if probe {
+		f.WriteString("probe\n")
+	} else {
+		f.WriteString("call\n")
+	}
 	f.Close()
 	fmt.Fprintln(os.Stderr, "worker stderr")
+	if probe {
+		if os.Getenv("BATUTA_PROBE_INCAPABLE") == "1" {
+			fmt.Println("I cannot run commands here")
+		} else {
+			fmt.Println(executor.CapabilityMarker)
+		}
+		os.Exit(0)
+	}
 	switch args[1] {
 	case "fail":
 		os.Exit(7)
@@ -166,6 +179,55 @@ func TestDispatchCommandReportsOneAttempt(t *testing.T) {
 				t.Fatalf("attempts=%q, report=%+v, err=%v", calls, report, err)
 			}
 		})
+	}
+}
+
+func TestDispatchPreflightPass(t *testing.T) {
+	root, args := dispatchCommandFixture(t, "success")
+	var stdout, stderr bytes.Buffer
+	if err := run(append(args, "--preflight"), &stdout, &stderr); err != nil {
+		t.Fatalf("exit = %v; stdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	var report executor.DispatchReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err, stdout.String())
+	}
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if report.ExitClass != "completed" || report.ExitCode != 0 || report.Backend != "cli" || report.Receipt.Submission.State != executor.SubmissionSubmitted {
+		t.Fatalf("report = %s", &stdout)
+	}
+	if report.Preflight == nil || !report.Preflight.Pass || report.Preflight.Reason != "" {
+		t.Fatalf("preflight = %+v", report.Preflight)
+	}
+	calls, err := os.ReadFile(filepath.Join(root, "calls"))
+	if err != nil || string(calls) != "probe\ncall\n" {
+		t.Fatalf("calls = %q, %v", calls, err)
+	}
+}
+
+func TestDispatchPreflightIncapable(t *testing.T) {
+	root, args := dispatchCommandFixture(t, "success")
+	t.Setenv("BATUTA_PROBE_INCAPABLE", "1")
+	var stdout, stderr bytes.Buffer
+	err := run(append(args, "--preflight"), &stdout, &stderr)
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 6 || exit.State != "executor_incapable" {
+		t.Fatalf("exit = %v; stdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	var report executor.DispatchReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err, stdout.String())
+	}
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if report.ExitClass != "executor_incapable" || report.ExitCode != 6 || report.Receipt.Submission.State != executor.SubmissionNotSubmitted || report.Backend != "" {
+		t.Fatalf("report = %s", &stdout)
+	}
+	if report.Preflight == nil || report.Preflight.Pass || report.Preflight.Reason != executor.ProbeNoMarker || !strings.Contains(report.Preflight.Tail, "cannot run commands") {
+		t.Fatalf("preflight = %+v", report.Preflight)
+	}
+	calls, err := os.ReadFile(filepath.Join(root, "calls"))
+	if err != nil || string(calls) != "probe\n" {
+		t.Fatalf("brief was sent after a failed probe: %q, %v", calls, err)
 	}
 }
 
