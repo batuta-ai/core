@@ -23,20 +23,67 @@ type Report struct {
 	Spec       *SpecSweep     `json:"spec,omitempty"`
 	Suppressed int            `json:"suppressed_overlaps"`
 	Verdict    Decision       `json:"verdict"`
+
+	ReviewFailures []ReviewFailure `json:"review_failures"`
+}
+
+// ReviewFailure records why a cohort or the spec sweep produced no coverage.
+// Cohort is the zero-based manifest index in decimal, or "spec".
+type ReviewFailure struct {
+	Kind     string `json:"kind"`
+	Cohort   string `json:"cohort"`
+	Reason   string `json:"reason"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+	Tail     string `json:"tail,omitempty"`
+}
+
+const failureKindOperational = "operational"
+
+func newReviewFailure(scope, reason string, attempts []SessionAttempt) ReviewFailure {
+	failure := ReviewFailure{Kind: failureKindOperational, Cohort: scope, Reason: reason}
+	if len(attempts) == 0 {
+		return failure
+	}
+	last := attempts[len(attempts)-1].Result
+	if last.ExitCode != 0 {
+		code := last.ExitCode
+		failure.ExitCode = &code
+	}
+	failure.Tail = reviewOutputTail(bytes.Join([][]byte{last.Stdout, last.Stderr}, nil))
+	return failure
+}
+
+func (f ReviewFailure) line() string {
+	scope := "spec"
+	if f.Cohort != "spec" {
+		index, _ := strconv.Atoi(f.Cohort)
+		scope = fmt.Sprintf("cohort %d", index+1)
+	}
+	line := fmt.Sprintf("%s · %s · %s", f.Kind, scope, cleanReportText(f.Reason))
+	if f.ExitCode != nil {
+		line += fmt.Sprintf(" · exit %d", *f.ExitCode)
+	}
+	return line
 }
 
 // BuildReport merges duplicate findings, orders them by severity and derives
 // the verdict. Incomplete reviewer coverage is never allowed to ship.
 func BuildReport(manifest Manifest, cohorts []CohortResult, spec *SpecSweep) Report {
-	report := Report{Manifest: manifest, Cohorts: append([]CohortResult(nil), cohorts...), Spec: spec}
+	report := Report{Manifest: manifest, Cohorts: append([]CohortResult(nil), cohorts...), Spec: spec, ReviewFailures: []ReviewFailure{}}
 	var findings []Finding
 	covered := len(cohorts) == len(manifest.Cohorts)
 	for _, cohort := range cohorts {
 		findings = append(findings, cohort.Findings...)
 		report.Suppressed += len(cohort.Suppressed)
 		covered = covered && cohort.Covered && (cohort.Lint == nil || cohort.Lint.Error == "")
+		if !cohort.Covered {
+			report.ReviewFailures = append(report.ReviewFailures, newReviewFailure(strconv.Itoa(cohort.Cohort), cohort.Reason, cohort.Attempts))
+		}
 	}
 	report.Findings = Merge(findings, nil).Findings
+	if report.Findings == nil {
+		report.Findings = []Finding{}
+	}
 	slices.SortStableFunc(report.Findings, func(a, b Finding) int {
 		if rank := severityRank(b.Severity) - severityRank(a.Severity); rank != 0 {
 			return rank
@@ -46,6 +93,9 @@ func BuildReport(manifest Manifest, cohorts []CohortResult, spec *SpecSweep) Rep
 	var criteria []Criterion
 	if spec != nil {
 		covered = covered && spec.Covered
+		if !spec.Covered {
+			report.ReviewFailures = append(report.ReviewFailures, newReviewFailure("spec", spec.Reason, spec.Attempts))
+		}
 		criteria = spec.VerdictCriteria()
 	}
 	report.Verdict = Verdict(report.Findings, criteria)
@@ -144,6 +194,16 @@ func PrintReport(w io.Writer, report Report) error {
 			}
 		}
 	}
+	if len(report.ReviewFailures) > 0 {
+		if _, err := fmt.Fprintln(w, "\nReview failures:"); err != nil {
+			return err
+		}
+		for _, failure := range report.ReviewFailures {
+			if _, err := fmt.Fprintln(w, "- "+failure.line()); err != nil {
+				return err
+			}
+		}
+	}
 	_, err := fmt.Fprintf(w, "\nSuppressed overlaps: %d\nVerdict: %s\n", report.Suppressed, report.Verdict)
 	return err
 }
@@ -165,6 +225,10 @@ func WriteArtifacts(directory string, report Report, state IncrementalState) err
 	if err != nil {
 		return err
 	}
+	failures, err := jsonPayload(report.ReviewFailures)
+	if err != nil {
+		return err
+	}
 	var printed bytes.Buffer
 	if err := PrintReport(&printed, report); err != nil {
 		return err
@@ -177,6 +241,7 @@ func WriteArtifacts(directory string, report Report, state IncrementalState) err
 		{"findings.json", findings},
 		{"review.md", printed.Bytes()},
 		{"state.json", statePayload},
+		{reviewFailuresArtifact, failures},
 	}
 	for _, artifact := range artifacts {
 		if err := writeArtifact(directory, artifact.name, artifact.payload); err != nil {
@@ -198,6 +263,8 @@ func WriteArtifacts(directory string, report Report, state IncrementalState) err
 	}
 	return pruneStaleTails(directory, current)
 }
+
+const reviewFailuresArtifact = "review_failures.json"
 
 const cohortTailPattern = "cohort-*.tail.txt"
 
@@ -307,7 +374,7 @@ func markdownCell(value string) string {
 // can create anything, including the output tail of each uncovered cohort.
 func ArtifactPaths(directory string, report Report) []string {
 	var paths []string
-	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json", reviewFailuresArtifact} {
 		paths = append(paths, filepath.Join(directory, name))
 	}
 	for _, cohort := range report.Cohorts {

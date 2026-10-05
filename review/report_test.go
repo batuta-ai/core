@@ -147,14 +147,14 @@ func TestReportEscapesControlCharacters(t *testing.T) {
 func TestArtifactsRefuseGitlinkDestination(t *testing.T) {
 	root := reviewRepo(t)
 	source := reviewRepo(t)
-	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json", "review_failures.json"} {
 		writeTestFile(t, source, "reports/"+name, "tracked artifact\n")
 	}
 	gitTest(t, source, "add", ".")
 	gitTest(t, source, "commit", "-qm", "artifacts")
 	gitTest(t, root, "-c", "protocol.file.allow=always", "submodule", "add", source, "module")
 	gitTest(t, root, "commit", "-qm", "submodule")
-	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json", "review_failures.json"} {
 		writeTestFile(t, root, "module/reports/"+name, "local edits\n")
 	}
 	for _, directory := range []string{"module/reports", "module/new-reports"} {
@@ -189,7 +189,7 @@ func TestArtifactPathsIncludeCohortTails(t *testing.T) {
 	t.Parallel()
 	directory := filepath.Join(t.TempDir(), "artifacts")
 	got := ArtifactPaths(directory, uncoveredTailReport())
-	want := []string{"manifest.json", "findings.json", "review.md", "state.json", "cohort-2.tail.txt"}
+	want := []string{"manifest.json", "findings.json", "review.md", "state.json", "review_failures.json", "cohort-2.tail.txt"}
 	if len(got) != len(want) {
 		t.Fatalf("ArtifactPaths() = %v, want %v under %s", got, want, directory)
 	}
@@ -284,6 +284,139 @@ func TestIncrementalReviewPrunesStaleTailInsideGuard(t *testing.T) {
 	for _, filename := range guard {
 		if strings.HasSuffix(filename, "cohort-8.tail.txt") || strings.HasSuffix(filename, "cohort-notes.txt") {
 			t.Errorf("guard lists a file the review never prunes: %s", filename)
+		}
+	}
+}
+
+func TestReportFindingsNeverNull(t *testing.T) {
+	t.Parallel()
+	report := BuildReport(Manifest{Base: "base"}, nil, nil)
+	payload, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(fields["findings"]); got != "[]" {
+		t.Errorf("report findings = %s, want []", got)
+	}
+	out := filepath.Join(t.TempDir(), "review")
+	if err := WriteArtifacts(out, report, IncrementalState{}); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(filepath.Join(out, "findings.json"))
+	if err != nil || strings.TrimSpace(string(written)) != "[]" {
+		t.Errorf("findings.json = %q, %v; want []", written, err)
+	}
+}
+
+func reviewFailuresReport() Report {
+	manifest := Manifest{Cohorts: []Cohort{{Files: []string{"a.go"}}, {Files: []string{"b.go"}}, {Files: []string{"c.go"}}}}
+	failed := SessionAttempt{Result: executor.Result{ExitCode: 2, Stdout: []byte("out line\n"), Stderr: []byte("boom\n")}}
+	clean := SessionAttempt{Result: executor.Result{Stdout: []byte("no verdict\n")}}
+	spec := &SpecSweep{Reason: "sweep failed", Attempts: []SessionAttempt{failed}}
+	return BuildReport(manifest, []CohortResult{
+		{Cohort: 0, Files: []string{"a.go"}, Covered: true},
+		{Cohort: 1, Files: []string{"b.go"}, Reason: "reviewer failed", Attempts: []SessionAttempt{clean, failed}},
+		{Cohort: 2, Files: []string{"c.go"}, Reason: "never ran"},
+	}, spec)
+}
+
+func TestReportReviewFailures(t *testing.T) {
+	t.Parallel()
+	if got := BuildReport(Manifest{}, nil, nil).ReviewFailures; got == nil || len(got) != 0 {
+		t.Errorf("complete coverage ReviewFailures = %#v, want empty non-nil list", got)
+	}
+	exit := 2
+	got := reviewFailuresReport().ReviewFailures
+	if len(got) != 3 {
+		t.Fatalf("ReviewFailures = %+v, want 3 entries", got)
+	}
+	cases := []struct {
+		scope    string
+		reason   string
+		exitCode *int
+		tail     string
+	}{
+		{"1", "reviewer failed", &exit, "boom"},
+		{"2", "never ran", nil, ""},
+		{"spec", "sweep failed", &exit, "boom"},
+	}
+	for i, tc := range cases {
+		failure := got[i]
+		if failure.Kind != "operational" || failure.Cohort != tc.scope || failure.Reason != tc.reason {
+			t.Errorf("failure %d = %+v, want operational/%s/%s", i, failure, tc.scope, tc.reason)
+		}
+		if (failure.ExitCode == nil) != (tc.exitCode == nil) || (tc.exitCode != nil && *failure.ExitCode != *tc.exitCode) {
+			t.Errorf("failure %d exit code = %v, want %v", i, failure.ExitCode, tc.exitCode)
+		}
+		if !strings.Contains(failure.Tail, tc.tail) || (tc.tail == "" && failure.Tail != "") {
+			t.Errorf("failure %d tail = %q, want it to contain %q", i, failure.Tail, tc.tail)
+		}
+	}
+	payload, err := json.Marshal(got[0])
+	if err != nil || !strings.Contains(string(payload), `"exit_code":2`) || !strings.Contains(string(payload), `"cohort":"1"`) {
+		t.Errorf("failure JSON = %s, %v", payload, err)
+	}
+}
+
+func TestWriteArtifactsReviewFailures(t *testing.T) {
+	t.Parallel()
+	read := func(report Report) []ReviewFailure {
+		out := filepath.Join(t.TempDir(), "review")
+		if err := WriteArtifacts(out, report, IncrementalState{}); err != nil {
+			t.Fatal(err)
+		}
+		payload, err := os.ReadFile(filepath.Join(out, "review_failures.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var failures []ReviewFailure
+		if err := json.Unmarshal(payload, &failures); err != nil || failures == nil {
+			t.Fatalf("review_failures.json = %q, %v; want a JSON list", payload, err)
+		}
+		return failures
+	}
+	if got := read(BuildReport(Manifest{}, nil, nil)); len(got) != 0 {
+		t.Errorf("complete coverage wrote %+v, want []", got)
+	}
+	if got := read(reviewFailuresReport()); len(got) != 3 {
+		t.Errorf("uncovered review wrote %d failures, want 3", len(got))
+	}
+	if !slices.Contains(ArtifactPaths("dir", Report{}), filepath.Join("dir", "review_failures.json")) {
+		t.Error("ArtifactPaths omits review_failures.json")
+	}
+}
+
+func TestPrintReportReviewFailures(t *testing.T) {
+	t.Parallel()
+	var clean bytes.Buffer
+	if err := PrintReport(&clean, BuildReport(Manifest{}, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(clean.String(), "Review failures:") {
+		t.Errorf("complete review prints a failures section:\n%s", clean.String())
+	}
+	report := reviewFailuresReport()
+	var printed bytes.Buffer
+	if err := PrintReport(&printed, report); err != nil {
+		t.Fatal(err)
+	}
+	text := printed.String()
+	section := strings.Index(text, "Review failures:\n")
+	if section < 0 {
+		t.Fatalf("no Review failures section:\n%s", text)
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if last := lines[len(lines)-1]; last != "Verdict: "+string(report.Verdict) {
+		t.Errorf("last line = %q, want the verdict line", last)
+	}
+	body := text[section:]
+	for _, want := range []string{"cohort 2 · reviewer failed · exit 2", "cohort 3 · never ran", "spec · sweep failed · exit 2"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("section lacks %q:\n%s", want, body)
 		}
 	}
 }
