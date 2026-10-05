@@ -426,6 +426,9 @@ func TestGitClientPreflightRejectsInsecureExistingScratchWithoutChangingPermissi
 	if err := os.Mkdir(scratch, 0o755); err != nil {
 		t.Fatalf("Mkdir() error = %v", err)
 	}
+	if err := os.Chmod(scratch, 0o755); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
 	client := GitClient{Executable: fixture.git, Runner: publication.ExecRunner{}, scratchRootForTest: scratch}
 	_, err := client.Preflight(context.Background(), PreflightRequest{
 		OperationID: integrationDigest([]byte("permissions-op")), RequestDigest: integrationDigest([]byte("permissions-request")),

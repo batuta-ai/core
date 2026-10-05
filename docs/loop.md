@@ -401,6 +401,33 @@ asked.
   the log; the focused box has a blue border. Log progress is bold cyan, log
   errors are red, and prompts are bold. `NO_COLOR` disables all ANSI styling.
 
+## Answering from an integration
+
+Use `loop.AnswerQuestion(ctx, workspace, target, text)` with an explicit absolute
+workspace and the `QuestionTarget` observed from that delivery's journal:
+`DeliveryID`, exact `TaskID`, `Execution`, `QuestionID`, and the first
+`delivery_opened` record's `OpenedDigest`. The writer checks the opening and
+pending attempt again under native delivery ownership. A continuation can
+repeat a prompt and question ID, so the execution is required. Numeric task
+aliases and a workspace inferred from the current directory are not used by
+this API.
+
+`ErrInvalidQuestionTarget` means the supplied identity is malformed;
+`ErrStaleQuestion` means it no longer selects that pending question, including
+an opening from another workspace. `ErrDeliveryOwned` identifies a live native
+owner. Missing or empty journals return `journal.ErrUnknownDelivery`. Journal
+and ownership errors remain errors rather than successful answers. A nonempty
+returned delivery with an error means the answer was appended and cleanup
+failed. An append or sync error can have uncertain effect even with an empty
+returned delivery: inspect the journal before offering another submission.
+Cancellation observed before append prevents the answer; cancellation after
+append cannot undo it. Stale native-owner takeover can still append its normal
+presence audit record.
+
+The older `Answer` and `AnswerDelivery` entry points retain their existing
+signatures and behavior. `AnswerDelivery` does not receive an expected
+execution or opening digest and cannot provide these stronger identity checks.
+
 ## Roadmap
 
 A roadmap is the level above the plan: the delivery as a whole, split into

@@ -864,6 +864,13 @@ func answer(workspace, taskRef, text string, now time.Time) (string, error) {
 }
 
 func answerSelected(workspace, delivery, taskRef string, execution int, questionID, text string, now time.Time) (string, error) {
+	return answerSelectedContext(context.Background(), workspace, delivery, taskRef, execution, questionID, text, now, nil)
+}
+
+func answerSelectedContext(ctx context.Context, workspace, delivery, taskRef string, execution int, questionID, text string, now time.Time, target *QuestionTarget) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	root, store, err := openStore(workspace)
 	if err != nil {
 		return "", err
@@ -871,11 +878,14 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 	_ = root
 	if delivery != "" {
 		if state, _ := Presence(root, delivery, now); state == "running" {
+			if target != nil {
+				return "", ErrDeliveryOwned
+			}
 			return "", errors.New("loop still running · wait for waiting_input")
 		}
 	}
 	taskID := taskRef
-	if _, err := strconv.Atoi(taskRef); err == nil {
+	if _, err := strconv.Atoi(taskRef); err == nil && target == nil {
 		taskID = "task_" + taskRef
 	}
 	if strings.TrimSpace(text) == "" {
@@ -894,15 +904,29 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 	var ownershipErr error
 	for _, id := range ids {
 		records, err := store.Read(id)
+		if target != nil {
+			if err != nil {
+				return "", err
+			}
+			if len(records) == 0 {
+				return "", journal.ErrUnknownDelivery
+			}
+		}
 		if err != nil || len(records) == 0 {
 			continue
 		}
 		last := records[len(records)-1]
 		var graph routing.DeliveryGraph
-		if json.Unmarshal(last.Graph, &graph) != nil {
+		if err := json.Unmarshal(last.Graph, &graph); err != nil {
+			if target != nil {
+				return "", fmt.Errorf("%w: invalid question graph", journal.ErrInvalidRecord)
+			}
 			continue
 		}
 		task := graphTask(&graph, taskID)
+		if target != nil && !questionTargetMatches(root, records, task, *target) {
+			return "", ErrStaleQuestion
+		}
 		terminal := terminalState(records) != ""
 		if task != nil {
 			owner, err := liveDeliveryOwner(root, id, now)
@@ -910,6 +934,9 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 				return "", err
 			}
 			if owner != nil {
+				if target != nil {
+					return "", ErrDeliveryOwned
+				}
 				err := fmt.Errorf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", id, owner.PID, owner.StartedAt.Format(time.RFC3339))
 				if delivery != "" || (!terminal && (task.State == routing.GraphTaskWaitingInput || task.State == routing.GraphTaskRunning)) {
 					return "", err
@@ -935,9 +962,12 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 		if attempt.Question == nil {
 			continue
 		}
-		ownership, err := acquireDeliveryOwnership(context.Background(), root, id, now)
+		ownership, err := acquireDeliveryOwnership(ctx, root, id, now)
 		if err != nil {
 			if state, _ := Presence(root, id, now); delivery != "" && state == "running" {
+				if target != nil {
+					return "", ErrDeliveryOwned
+				}
 				return "", errors.New("loop still running · wait for waiting_input")
 			}
 			return "", err
@@ -946,15 +976,33 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 		if err != nil {
 			return "", errors.Join(err, ownership.stop())
 		}
+		if len(records) == 0 {
+			if err := ownership.stop(); err != nil {
+				return "", err
+			}
+			if target != nil {
+				return "", journal.ErrUnknownDelivery
+			}
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return "", errors.Join(err, ownership.stop())
+		}
 		last = records[len(records)-1]
 		graph = routing.DeliveryGraph{}
 		if json.Unmarshal(last.Graph, &graph) != nil {
+			if target != nil {
+				return "", errors.Join(journal.ErrInvalidRecord, ownership.stop())
+			}
 			if err := ownership.stop(); err != nil {
 				return "", err
 			}
 			continue
 		}
 		task = graphTask(&graph, taskID)
+		if target != nil && !questionTargetMatches(root, records, task, *target) {
+			return "", errors.Join(ErrStaleQuestion, ownership.stop())
+		}
 		if terminalState(records) != "" || task == nil || task.State != routing.GraphTaskWaitingInput || len(task.Attempts) == 0 {
 			if err := ownership.stop(); err != nil {
 				return "", err
@@ -980,6 +1028,9 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 		}
 		graphJSON, _ := json.Marshal(graph)
 		detail, _ := json.Marshal(map[string]any{"execution": attempt.Execution, "answer": text, "question": attempt.Question.Prompt})
+		if err := ctx.Err(); err != nil {
+			return "", errors.Join(err, ownership.stop())
+		}
 		if _, err := store.Append(id, journal.Record{Kind: KindAnswer, TaskID: taskID, Detail: detail, Graph: graphJSON}); err != nil {
 			return "", errors.Join(err, ownership.stop())
 		}
