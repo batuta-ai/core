@@ -1,5 +1,13 @@
 # WORK — core
 
+## Current status — 2026-10-05: two code follow-ups shipped on a branch, host on beta.47
+- [x] Verifier environment pattern also sets aside `not a git repository` and `cannot be inspected` → agy (gemini-3.8-flash-low), one retry after a provider 503, commit 0ce3c23 (trail: .batuta/runs/2026-10-05-verifier-env-objection.md)
+- [x] A plan that does not parse no longer aborts `judge questions build` (plan_found false, new `unparsed_plans` summary field) or `judge classify bench` v1/v2/v3 (skipped with one stderr line) → claude (sonnet), one retry: the claude sandbox cannot write the Go build cache unless the conductor exports GOCACHE, and cannot bind httptest listeners, so the conductor ran those tests; commit 0434445 (trail: .batuta/runs/2026-10-05-judge-plan-parse.md)
+- [ ] Both on branch `fix/judge-parse-verifier-env`, PR pending.
+- [x] Host batuta#105 pins core v1.1.0-beta.47 (admin merge; protect-main now requires one review), release 0.6.10; this machine reinstalled with `--force-skills` and runs beta.47, plugin 0.6.10 (restart the host to load it).
+- [x] The three articles and the Instagram series are published (03–05/10); handoff of 2026-10-03 absorbed here.
+- [ ] Next: the Tempo retrospective backlog (review contract, capability preflight, `loop --recover`, `.batuta` isolation, grants, `trail --metrics`) through `/batuta-plan`; remove the leftover `~/Projects/batuta/batuta-host-pin` worktree; the OpenCode Zen `systemone` re-probe.
+
 
 ## Console prerequisite — 2026-10-04
 - [x] Exact native answer API for Console19: explicit opening/root/task/execution/question identity under core ownership, typed invalid/stale/owned/missing states, unchanged legacy APIs/messages and honest external-effect semantics. TDD red/green, native answer/resume/re-question and16-way concurrency; Go1.27.1 Mac/Linux fullGo/vet/build/full-loop race plus all5 goreleaser builds; ClaudeSonnet final4/4, all findings judged → self/session critical, verification retry1, no escalation. Qualified product source82e2a35; local branch batuta/console-answer-qualified. Trail .batuta/runs/2026-10-04-console-answer-identity.md.
