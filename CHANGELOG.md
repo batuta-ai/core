@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.47](https://github.com/batuta-ai/core/compare/v1.1.0-beta.46...v1.1.0-beta.47) (2026-10-05)
+
+
+### Bug Fixes
+
+* **loop:** bind integration answers to opening and execution ([#145](https://github.com/batuta-ai/core/issues/145)) ([77576fa](https://github.com/batuta-ai/core/commit/77576fabd3e97b307c6081d4e4197c5142ed1883))
+
 ## [1.1.0-beta.46](https://github.com/batuta-ai/core/compare/v1.1.0-beta.45...v1.1.0-beta.46) (2026-10-03)
 
 
