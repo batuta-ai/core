@@ -20,6 +20,74 @@ list, with the same invariants:
 5. **One commit per task**, integrated onto the branch that was checked out
    when the delivery opened.
 
+## Approved snapshots through the Go API
+
+SDK callers can set `Options.ApprovedSnapshot` to an `ApprovedPlanSnapshot`
+containing `Slug`, the exact repository-relative `Path`, an opaque UTF-8 `ReceiptID`,
+`ContentDigest` (lowercase SHA-256 over the entire content), and `Content`.
+The content must be nonempty and at most 1 MiB. The path must be the canonical
+active or legacy Batuta plan path for that slug. `Options.Plan` may be empty,
+or must identify this same snapshot. `New` owns a copy of the bytes and metadata
+and uses the native plan parser without loading the editable plan.
+
+The receipt must be nonempty, at most 1024 bytes, and have no leading or trailing
+whitespace. Invalid UTF-8 is refused before execution because JSON cannot retain
+it losslessly in the opening journal. The receipt is an explicit attestation by
+a trusted caller. Core does not
+verify a human identity or a Console database transaction. The caller must
+validate authorization and persist the receipt, exact bytes and complete
+application binding before execution. This explicit attestation can approve a
+snapshot whose original header says `proposed`; Core changes only its in-memory
+execution status. Legacy execution still requires an approved source header.
+
+The opening journal binds the full content digest and receipt to the slug,
+path, native task digest and workspace. The task digest alone excludes some
+prose, status and line-ending changes and is insufficient to identify an
+approved version. Both `Resume` and `Abandon` require the original snapshot,
+including recovery of pending finalization or supervised review. Missing input
+returns `ErrSnapshotRequired`; a different pair or binding returns
+`ErrSnapshotMismatch`. A legacy delivery cannot acquire snapshot approval on
+resume. The caller must retain the exact bytes durably: Core stores the
+identity in the journal and provides no mutable-file fallback.
+
+Snapshot execution and recovery do not tick, archive, chmod, write or stage
+the editable plan, even when it was edited or removed. The native journal,
+delivery graph and `WORK.md` record progress. Only unstaged edits, deletion or
+untracked content at the exact bound plan path can coexist with native Git
+integration. All staged state, other dirty paths and candidates that change
+the protected plan remain rejected. Failed integration restores only its
+candidate paths and preserves the external plan edit. This opt-in preservation
+is also available as `integration.GitClient.PreservedPlanPath`; its zero value
+retains the existing clean-tree contract. Branch continuity, scope checks,
+gates and other native preconditions still apply.
+
+On Windows, integration scratch directories use native DACL checks. Their
+owners and allowed access entries must be limited to the current user, SYSTEM
+and Administrators, including inherited entries. New scratch roots have a
+protected inheritable DACL and the current user as owner. Unsafe existing ACLs
+and junction or reparse-point paths are refused without changing them. Unix
+scratch directories retain the private permission requirement.
+
+`RunSupervisionReview` requires the same snapshot in
+`SupervisionReviewOptions.ApprovedSnapshot`. A runner using `Options.Supervisor`
+passes its owned snapshot to the review configuration automatically. Review
+uses the approved bytes, including prose outside the committed source, rather
+than resolving a source or archived plan with only a matching task digest.
+The review job binds the approval pair and validates its full spec digest.
+Review evidence remains separate from permission to merge or publish.
+
+An optional `Options.DeliveryID` lets a caller persist a fresh native identity
+before calling `Run`. It must satisfy `journal.ValidDeliveryID`. `New` rejects
+an existing journal with `ErrDeliveryExists`; `Run` checks again under native
+delivery ownership, so two prepared callers cannot open or execute that same
+identity twice. An existing delivery must use `Resume`; this API is not an
+automatic retry or application admission service. An interrupted start still
+requires the caller to reconcile the native journal and its durable request.
+
+This SDK contract does not by itself qualify provider authentication,
+credential isolation, process ownership, or full Console web/TUI operation on
+any platform. Those need separate native operational tests.
+
 ## Progress protocol
 
 An executor session may stream progress to the loop with plain-text lines on
@@ -327,7 +395,10 @@ asked.
   committed before a new delivery.
 - **User-authored command lines** (`Test:`, `Install:`, proofs) run through
   `sh -c` with stdin closed, a timeout and bounded output; they come from
-  files the user wrote and approved. **Executor lines never see a shell**:
+  files the user wrote and approved. Native Windows requires a POSIX shell on
+  PATH, for example the `bin` directory of Git for Windows. Review snapshot Git
+  commands enable `core.longpaths` for that invocation on Windows without
+  changing repository or global configuration. **Executor lines never see a shell**:
   the adapter's `run` is tokenized once, placeholders are substituted per
   token, and shell syntax in an adapter line is a parse error.
 - **Interrupted attempts** (a killed loop) are recorded as `stalled` on

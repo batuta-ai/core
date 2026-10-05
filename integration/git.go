@@ -22,8 +22,11 @@ import (
 var conventionalCommitSubject = regexp.MustCompile(`^[a-z][a-z0-9-]*(\([A-Za-z0-9][A-Za-z0-9._/-]*\))?!?: [^[:space:]].*$`)
 
 type GitClient struct {
-	Executable         string
-	Runner             publication.CommandRunner
+	Executable string
+	Runner     publication.CommandRunner
+	// PreservedPlanPath permits only unstaged changes at this exact canonical
+	// Batuta plan path. Candidates that change it remain forbidden.
+	PreservedPlanPath  string
 	scratchRootForTest string
 }
 
@@ -46,7 +49,11 @@ func (c GitClient) Candidate(ctx context.Context, request CandidateRequest) (Can
 		return CandidateEvidence{}, ErrInvalidCandidate
 	}
 	top, err := c.run(ctx, worktreeRoot, "rev-parse", "--show-toplevel")
-	if err != nil || strings.TrimSpace(string(top.Stdout)) != worktreeRoot {
+	if err != nil {
+		return CandidateEvidence{}, ErrInvalidCandidate
+	}
+	topRoot, err := filepath.EvalSymlinks(filepath.FromSlash(strings.TrimSpace(string(top.Stdout))))
+	if err != nil || topRoot != worktreeRoot {
 		return CandidateEvidence{}, ErrInvalidCandidate
 	}
 	worktreeCommon, err := c.commonDir(ctx, worktreeRoot)
@@ -145,9 +152,13 @@ func (c GitClient) Preflight(ctx context.Context, request PreflightRequest) (res
 	if err != nil || integrationIdentity != request.Candidates[0].RepositoryIdentity {
 		return PreflightResult{}, ErrForeignState
 	}
-	status, err := c.run(ctx, integrationRoot, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil || len(status.Stdout) != 0 {
+	if err := c.integrationState(ctx, integrationRoot); err != nil {
 		return PreflightResult{}, ErrForeignState
+	}
+	for _, candidate := range request.Candidates {
+		if err := c.checkPreservedPlan(ctx, integrationRoot, candidate.BaseSHA, candidate.CommitSHA); err != nil {
+			return PreflightResult{}, err
+		}
 	}
 	headResult, err := c.run(ctx, integrationRoot, "rev-parse", "HEAD")
 	if err != nil {
@@ -228,9 +239,8 @@ func (c GitClient) Apply(ctx context.Context, request ApplyRequest) (ApplyResult
 	if err != nil || root != request.IntegrationRoot {
 		return ApplyResult{}, ErrInvalidCandidate
 	}
-	status, err := c.run(ctx, root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil || len(status.Stdout) != 0 {
-		return ApplyResult{}, ErrForeignState
+	if err := c.integrationState(ctx, root); err != nil {
+		return ApplyResult{}, err
 	}
 	headResult, err := c.run(ctx, root, "rev-parse", "HEAD")
 	if err != nil {
@@ -239,6 +249,9 @@ func (c GitClient) Apply(ctx context.Context, request ApplyRequest) (ApplyResult
 	head, err := singleGitSHA(headResult.Stdout)
 	if err != nil || head != request.ExpectedHeadSHA {
 		return ApplyResult{}, ErrForeignState
+	}
+	if err := c.checkPreservedPlan(ctx, root, request.ExpectedHeadSHA, request.CandidateCommitSHA); err != nil {
+		return ApplyResult{}, err
 	}
 	applied, _, err := c.applyDeterministic(ctx, deterministicApplyRequest{
 		Root: root, OperationID: request.OperationID, RequestDigest: request.RequestDigest,
@@ -265,9 +278,8 @@ func (c GitClient) Reconcile(ctx context.Context, request ReconcileRequest) (App
 	if err != nil || root != request.IntegrationRoot {
 		return ApplyResult{}, ErrInvalidCandidate
 	}
-	status, err := c.run(ctx, root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil || len(status.Stdout) != 0 {
-		return ApplyResult{}, ErrForeignState
+	if err := c.integrationState(ctx, root); err != nil {
+		return ApplyResult{}, err
 	}
 	headResult, err := c.run(ctx, root, "rev-parse", "HEAD")
 	if err != nil {
@@ -276,6 +288,11 @@ func (c GitClient) Reconcile(ctx context.Context, request ReconcileRequest) (App
 	head, err := singleGitSHA(headResult.Stdout)
 	if err != nil {
 		return ApplyResult{}, ErrForeignState
+	}
+	for _, commit := range request.Preflight.AcceptedResultCommitSHAs {
+		if err := c.checkPreservedPlan(ctx, root, request.Preflight.StartingHeadSHA, commit); err != nil {
+			return ApplyResult{}, err
+		}
 	}
 	result := ApplyResult{StartingHeadSHA: request.Preflight.StartingHeadSHA, ResultingHeadSHA: head,
 		AcceptedTaskIDs: []string{}, AcceptedCommitSHAs: []string{}}
@@ -547,7 +564,7 @@ func (c GitClient) applyDeterministic(
 		if conflicted {
 			proof = digest(append([]byte(request.TaskID+"\x00"+request.CandidateCommitSHA+"\x00"), commandResult.Stderr...))
 		}
-		clean := c.restoreAfterCherryPickFailure(ctx, request.Root)
+		clean := c.restoreAfterCherryPickFailure(ctx, request.Root, request.CandidateCommitSHA)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return deterministicApplyResult{}, "", ctxErr
 		}
@@ -575,22 +592,46 @@ func (c GitClient) applyDeterministic(
 	if _, err := c.run(ctx, request.Root, "update-ref", "HEAD", commit, parent); err != nil {
 		return deterministicApplyResult{}, "", err
 	}
-	status, err := c.run(ctx, request.Root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	if err != nil || len(status.Stdout) != 0 {
+	if err := c.integrationState(ctx, request.Root); err != nil {
 		return deterministicApplyResult{}, "", ErrForeignState
 	}
 	return deterministicApplyResult{CommitSHA: commit, TreeSHA: tree}, "", nil
 }
 
-func (c GitClient) restoreAfterCherryPickFailure(ctx context.Context, root string) bool {
+func (c GitClient) restoreAfterCherryPickFailure(ctx context.Context, root, candidate string) bool {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
+	if c.PreservedPlanPath != "" {
+		// Whole-tree abort/reset would overwrite the caller's unapproved edit.
+		// Restore only paths owned by the failed candidate, never the plan.
+		changed, err := c.run(cleanupCtx, root, "diff-tree", "--no-commit-id", "--name-only", "-r", "-z", candidate)
+		if err != nil {
+			return false
+		}
+		paths, err := parseNULPaths(changed.Stdout)
+		if err != nil {
+			return false
+		}
+		args := []string{"restore", "--source=HEAD", "--staged", "--worktree", "--"}
+		for _, path := range paths {
+			if path == c.PreservedPlanPath {
+				return false
+			}
+			args = append(args, ":(literal)"+path)
+		}
+		if len(paths) > 0 {
+			if _, err := c.run(cleanupCtx, root, args...); err != nil {
+				return false
+			}
+		}
+		_, _ = c.run(cleanupCtx, root, "cherry-pick", "--quit")
+		return c.integrationState(cleanupCtx, root) == nil
+	}
 	_, _ = c.run(cleanupCtx, root, "cherry-pick", "--abort")
 	if _, err := c.run(cleanupCtx, root, "read-tree", "--reset", "-u", "HEAD"); err != nil {
 		return false
 	}
-	status, err := c.run(cleanupCtx, root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-	return err == nil && len(status.Stdout) == 0
+	return c.integrationState(cleanupCtx, root) == nil
 }
 
 func (c GitClient) hasCherryPickConflict(ctx context.Context, root string) bool {
@@ -723,12 +764,20 @@ func (c GitClient) secureScratchRoot(ctx context.Context, repositoryRoot string)
 }
 
 func ensurePrivateDirectory(path string) error {
-	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+	parent := filepath.Dir(path)
+	resolvedParent, err := filepath.EvalSymlinks(parent)
+	if err != nil || !filepath.IsAbs(path) || filepath.Clean(path) != path || resolvedParent != parent {
+		return errors.New("integration: scratch root must not traverse symlinks")
+	}
+	if err := makePrivateDirectory(path); err != nil && !errors.Is(err, os.ErrExist) {
 		return errors.New("integration: create private scratch directory failed")
 	}
 	info, err := os.Lstat(path)
-	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 {
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("integration: scratch directory is not private")
+	}
+	if err := checkDirectoryPrivacy(path, info); err != nil {
+		return err
 	}
 	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil || resolved != path {
@@ -977,4 +1026,49 @@ func lowerHex(value string) bool {
 func digest(payload []byte) string {
 	value := sha256.Sum256(payload)
 	return "sha256:" + hex.EncodeToString(value[:])
+}
+
+func (c GitClient) integrationState(ctx context.Context, root string) error {
+	if c.PreservedPlanPath != "" && !validPreservedPlanPath(c.PreservedPlanPath) {
+		return ErrInvalidCandidate
+	}
+	status, err := c.run(ctx, root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+	if err != nil {
+		return err
+	}
+	if len(status.Stdout) == 0 {
+		return nil
+	}
+	if status.Stdout[len(status.Stdout)-1] != 0 {
+		return ErrForeignState
+	}
+	for _, entry := range strings.Split(string(status.Stdout[:len(status.Stdout)-1]), "\x00") {
+		if len(entry) < 4 || c.PreservedPlanPath == "" || entry[3:] != c.PreservedPlanPath || (entry[:3] != " M " && entry[:3] != " D " && entry[:3] != "?? ") {
+			return ErrForeignState
+		}
+	}
+	return nil
+}
+
+func validPreservedPlanPath(path string) bool {
+	for _, prefix := range []string{".batuta/plans/", ".batuta/plan-"} {
+		if strings.HasPrefix(path, prefix) && strings.HasSuffix(path, ".md") && canonicalSlug(strings.TrimSuffix(strings.TrimPrefix(path, prefix), ".md")) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c GitClient) checkPreservedPlan(ctx context.Context, root, base, commit string) error {
+	if c.PreservedPlanPath == "" {
+		return nil
+	}
+	changed, err := c.run(ctx, root, "diff", "--name-only", "-z", base, commit, "--", ":(literal)"+c.PreservedPlanPath)
+	if err != nil {
+		return err
+	}
+	if len(changed.Stdout) != 0 {
+		return ErrForeignState
+	}
+	return nil
 }
