@@ -78,6 +78,33 @@ func TestProbeCapabilityBoundsTail(t *testing.T) {
 	}
 }
 
+func TestProbeCapabilityRedactsSecrets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		result Result
+	}{
+		{"stdout", Result{Stdout: []byte("before\nOPENAI_API_KEY=sk-test-123\nafter\n")}},
+		{"stderr", Result{Stderr: []byte("before\nOPENAI_API_KEY=sk-test-123\nafter\n")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &probeBackend{run: func(Execution) Result { return tt.result }}
+			probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, tempDir(t), time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(probe.Tail, "OPENAI_API_KEY") || strings.Contains(probe.Tail, "sk-test-123") {
+				t.Fatalf("tail leaks secret: %q", probe.Tail)
+			}
+			if !strings.Contains(probe.Tail, "before") || !strings.Contains(probe.Tail, "after") {
+				t.Fatalf("tail lost neighbouring lines: %q", probe.Tail)
+			}
+		})
+	}
+}
+
 func TestProbeCapabilityReasons(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

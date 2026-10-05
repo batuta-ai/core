@@ -4,13 +4,87 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/journal"
 )
+
+type stubProbeBackend func(executor.Execution) (executor.Result, error)
+
+func (b stubProbeBackend) Execute(_ context.Context, e executor.Execution) (executor.Result, error) {
+	return b(e)
+}
+
+// probeLeaks runs a delivery whose probe backend is stubbed and returns every
+// journaled capability_probe and executor_incapable failure detail.
+func probeLeaks(t *testing.T, backend stubProbeBackend) (root string, details []string) {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.probeBackend = backend
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v\n%s", err, out.String())
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		detail := string(record.Detail)
+		if record.Kind == KindCapabilityProbe || record.Kind == KindFailure && strings.Contains(detail, `"blocker":"executor_incapable"`) {
+			details = append(details, detail)
+		}
+	}
+	return r.root, details
+}
+
+func requireRedacted(t *testing.T, root string, details []string) {
+	t.Helper()
+	var probes, failures int
+	for _, detail := range details {
+		if strings.Contains(detail, `"blocker":"executor_incapable"`) {
+			failures++
+		} else {
+			probes++
+		}
+		for _, leak := range []string{"OPENAI_API_KEY", "sk-test-123", root} {
+			if strings.Contains(detail, leak) {
+				t.Fatalf("detail leaks %q: %s", leak, detail)
+			}
+		}
+		if !strings.Contains(detail, "neighbour") {
+			t.Fatalf("detail lost neighbouring line: %s", detail)
+		}
+	}
+	if probes == 0 || failures == 0 {
+		t.Fatalf("probes=%d failures=%d in %v", probes, failures, details)
+	}
+}
+
+func TestLoopProbeTailRedacted(t *testing.T) {
+	t.Parallel()
+	var root string
+	backend := stubProbeBackend(func(e executor.Execution) (executor.Result, error) {
+		root = e.Invocation.Dir
+		return executor.Result{Finished: true, Stdout: []byte("neighbour at " + root + "/file.txt\nOPENAI_API_KEY=sk-test-123\n")}, nil
+	})
+	root, details := probeLeaks(t, backend)
+	requireRedacted(t, root, details)
+}
+
+func TestLoopProbeErrorRedacted(t *testing.T) {
+	t.Parallel()
+	backend := stubProbeBackend(func(e executor.Execution) (executor.Result, error) {
+		return executor.Result{}, errors.New("neighbour failed in " + e.Invocation.Dir + "/x\nOPENAI_API_KEY=sk-test-123")
+	})
+	root, details := probeLeaks(t, backend)
+	requireRedacted(t, root, details)
+}
 
 func probeModels(t *testing.T, f fixture) []string {
 	t.Helper()

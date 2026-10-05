@@ -106,9 +106,9 @@ func hasMarkerLine(stdout []byte) bool {
 }
 
 func probeTail(result Result) string {
-	tail := Tail(result.Stdout, probeTailLines)
+	tail := DropSecretLines(Tail(result.Stdout, probeTailLines))
 	if tail == "" {
-		tail = Tail(result.Stderr, probeTailLines)
+		tail = DropSecretLines(Tail(result.Stderr, probeTailLines))
 	}
 	if len(tail) > probeTailBytes {
 		tail = tail[len(tail)-probeTailBytes:]

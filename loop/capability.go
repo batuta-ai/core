@@ -61,11 +61,11 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 		if ctx.Err() != nil {
 			err = ctx.Err()
 		}
-		detail := capabilityProbeDetail{capabilityRoute: route, Pass: probe.Pass, Reason: probe.Reason, DurationMS: probe.Duration.Milliseconds(), Tail: probe.Tail}
+		detail := capabilityProbeDetail{capabilityRoute: route, Pass: probe.Pass, Reason: probe.Reason, DurationMS: probe.Duration.Milliseconds(), Tail: r.redactDetail(probe.Tail)}
 		if err != nil && ctx.Err() == nil {
 			detail.Pass = false
 			detail.Reason = "probe_error"
-			tail := []rune(err.Error())
+			tail := []rune(r.redactDetail(err.Error()))
 			if len(tail) > 2048 {
 				tail = tail[len(tail)-2048:]
 			}
