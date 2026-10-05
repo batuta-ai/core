@@ -46,7 +46,7 @@ case "$1" in
 --version) echo 'codex 1.0.0';;
 debug) echo '{"models":[{"slug":"review-model"}]}';;
 doctor|plugin) echo '{}';;
-run) echo implemented > source.txt; git add source.txt; git -c user.name=Test -c user.email=test@example.com -c commit.gpgsign=false commit -qm 'feat: implement source';;
+run) case "$*" in *BATUTA-CAPABLE*) echo BATUTA-CAPABLE; exit 0;; esac; echo implemented > source.txt; git add source.txt; git -c user.name=Test -c user.email=test@example.com -c commit.gpgsign=false commit -qm 'feat: implement source';;
 *) exit 91;;
 esac
 `
@@ -159,7 +159,7 @@ func TestLoopSupervisionSignalCancellation(t *testing.T) {
 				t.Fatal(err)
 			}
 			fake := filepath.Join(skills, "codex")
-			worker := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n--version) echo 'codex 1.0.0';;\ndebug) echo '{\"models\":[{\"slug\":\"review-model\"}]}';;\ndoctor|plugin) echo '{}';;\nrun) exec '%s' -test.run=^TestLoopSupervisionCancellationWorker$;;\n*) exit 91;;\nesac\n", binary)
+			worker := fmt.Sprintf("#!/bin/sh\ncase \"$1\" in\n--version) echo 'codex 1.0.0';;\ndebug) echo '{\"models\":[{\"slug\":\"review-model\"}]}';;\ndoctor|plugin) echo '{}';;\nrun) case \"$*\" in *BATUTA-CAPABLE*) echo BATUTA-CAPABLE; exit 0;; esac; exec '%s' -test.run=^TestLoopSupervisionCancellationWorker$;;\n*) exit 91;;\nesac\n", binary)
 			adapter := fmt.Sprintf("---\nname: codex\nexecutable: %s\nrun: %s run {model_flags} \"{brief}\"\nmodel_flags: --model {model}\nreadonly: unused\navailable: codex --version\nmodels: codex debug models\nfinished: exit_code\n---\n", fake, fake)
 			for path, data := range map[string]string{fake: worker, filepath.Join(skills, "adapters/codex.md"): adapter} {
 				if err := os.WriteFile(path, []byte(data), 0700); err != nil {

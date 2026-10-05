@@ -39,6 +39,15 @@ while [ $# -gt 1 ]; do
 done
 text=$1
 state="${FAKE_STATE:-/tmp}"
+if printf '%s\n' "$text" | grep -q 'BATUTA-CAPABLE'; then
+  printf '%s\n' "$model" >> "$state/probes"
+  if [ "${FAKE_SCENARIO:-default}" = incapable-all ] || { [ "${FAKE_SCENARIO:-default}" = incapable-low ] && [ "$model" = fake-low ]; }; then
+    echo 'shell command unavailable' >&2
+    exit 0
+  fi
+  echo BATUTA-CAPABLE
+  exit 0
+fi
 if [ "$mode" = "verify" ]; then
   if [ "${FAKE_SCENARIO:-default}" = satisfied-unverified ]; then exit 0; fi
   if [ "${FAKE_SCENARIO:-default}" = satisfied-proof-fails ]; then printf '%s\n' "$text" > "$state/verifier-prompt"; fi
@@ -462,6 +471,11 @@ func (f commandRunnerFunc) Run(ctx context.Context, command publication.Command)
 	return f(ctx, command)
 }
 
+func (f fixture) isTaskCommand(command publication.Command) bool {
+	return command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" &&
+		!strings.Contains(strings.Join(command.Args, " "), "BATUTA-CAPABLE")
+}
+
 type writerFunc func([]byte) (int, error)
 
 func (f writerFunc) Write(payload []byte) (int, error) {
@@ -478,7 +492,7 @@ func TestLoopStreamsExecutorOutputToTheRunLog(t *testing.T) {
 	stdoutObserved := false
 	stderrObserved := false
 	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
-		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" && !stdoutObserved {
+		if f.isTaskCommand(command) && !stdoutObserved {
 			stdoutObserver := command.Observer
 			stderrObserver := command.StderrObserver
 			command.Observer = writerFunc(func(payload []byte) (int, error) {
@@ -554,7 +568,7 @@ func TestLoopJournalsProgressWhileTheExecutorRuns(t *testing.T) {
 	var r *Runner
 	observed := 0
 	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
-		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+		if f.isTaskCommand(command) {
 			for _, state := range []string{"START", "DONE"} {
 				if command.Observer == nil {
 					return publication.CommandResult{ExitCode: -1}, errors.New("executor has no stdout observer")
@@ -808,7 +822,7 @@ func TestRunWaitsForInFlightAttempts(t *testing.T) {
 	opts.Parallel = 2
 	opts.MaxLimitWaits = -1
 	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
-		if command.Executable != f.fake || len(command.Args) == 0 || command.Args[0] != "run" {
+		if !f.isTaskCommand(command) {
 			return (publication.ExecRunner{}).Run(ctx, command)
 		}
 		if strings.Contains(strings.Join(command.Args, " "), "# Brief — Add greeting one") {
@@ -976,7 +990,7 @@ func TestLoopResumesAnExecutorKilledMidRun(t *testing.T) {
 	opts := f.options("default", &out)
 	opts.Parallel = 1
 	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
-		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+		if f.isTaskCommand(command) {
 			if _, err := fmt.Fprintln(command.Observer, "BATUTA-PROGRESS 1 START"); err != nil {
 				return publication.CommandResult{ExitCode: -1}, err
 			}
@@ -2734,7 +2748,7 @@ func TestLoopWritesPresenceLock(t *testing.T) {
 	var r *Runner
 	observed := 0
 	opts.Runner = commandRunnerFunc(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
-		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+		if f.isTaskCommand(command) {
 			lock := readPresenceLock(t, filepath.Join(f.root, journal.Dir, r.Delivery()+".lock"))
 			if lock.PID != os.Getpid() || lock.Host == "" || lock.StartedAt.IsZero() || lock.RefreshedAt.Before(lock.StartedAt) {
 				t.Errorf("running lock: %+v", lock)
@@ -2838,7 +2852,7 @@ func TestInterruptSummaryNamesWorktrees(t *testing.T) {
 	opts := f.options("slow", &out)
 	opts.Parallel = 1
 	opts.Runner = commandRunnerFunc(func(commandCtx context.Context, command publication.Command) (publication.CommandResult, error) {
-		if command.Executable == f.fake && len(command.Args) > 0 && command.Args[0] == "run" {
+		if f.isTaskCommand(command) {
 			cancel()
 		}
 		return (publication.ExecRunner{}).Run(commandCtx, command)

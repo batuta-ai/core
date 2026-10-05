@@ -174,6 +174,13 @@ asked.
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
+- **Capability probe.** Before the first attempt on each executor, model,
+  effort, and transport route in a delivery, the loop asks the executor's CLI
+  to run a short command in that attempt's worktree. A `capability_probe` journal
+  record carries `executor`, `model`, `effort`, `transport`, `pass`, `reason`,
+  `duration_ms`, and a bounded output `tail`. Later attempts on the same
+  route, including after `--resume`, reuse that verdict without probing again.
+  A failing probe does not submit the task brief.
 - **Usage-limit fallback.** The legacy CLI policy is unchanged:
   `--max-limit-waits` (default 20) bounds the waits in one attempt. At that
   cap, or when a named reset is more than
@@ -253,6 +260,9 @@ asked.
   the task; other ready tasks and later waves continue whenever their
   dependencies permit. The blocker tells the operator why:
   - `timed_out` marks the attempt stalled, then follows the ordinary policy.
+  - `executor_incapable` records a failed capability probe with its reason and
+    output tail as feedback. It escalates directly to the next external route
+    without a same-runtime retry; at the top of the ladder it blocks the task.
   - `verifier_incomplete`, `tests_failed`, `scope_violation`, `no_changes`,
     `candidate_invalid`, `question_unsafe`, and `install_failed` follow the
     ordinary policy. So do `executor_failed` and `proof_failed`, the remaining

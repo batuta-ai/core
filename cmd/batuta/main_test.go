@@ -2069,6 +2069,7 @@ case "$1" in
   run)
     test "$2" = chosen-model
     test "$3" = high
+    case "$4" in *BATUTA-CAPABLE*) echo BATUTA-CAPABLE; exit 0;; esac
     cp "$4" "$BATUTA_SUPERVISION_CALLS/brief-$(cat "$BATUTA_SUPERVISION_CALLS/next").md"
     if grep -q '^The answer: ' "$4"; then
       echo 3 > "$BATUTA_SUPERVISION_CALLS/next"

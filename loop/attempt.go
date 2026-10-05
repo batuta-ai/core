@@ -25,6 +25,7 @@ import (
 const (
 	blockerSubmissionUncertain = "submission_uncertain"
 	blockerExecutorFailed      = "executor_failed"
+	blockerExecutorIncapable   = "executor_incapable"
 	blockerRateLimited         = "rate_limited"
 	blockerTimedOut            = "timed_out"
 	blockerNoChanges           = "no_changes"
@@ -229,6 +230,13 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	if err := r.ensureWorktree(ctx, &ac, attempt); err != nil {
 		return err
 	}
+	probe, err := r.probeRoute(ctx, ac)
+	if err != nil {
+		return err
+	}
+	if !probe.Pass {
+		return r.recordIncapable(ctx, ac, probe)
+	}
 	if ac.worktree.Fresh && strings.TrimSpace(r.profile.Install) != "" {
 		if code, output, err := r.shell.Run(ctx, ac.worktree.Root, r.profile.Install); err != nil || code != 0 {
 			return r.recordFailure(ctx, ac, nil, blockerInstall, []string{fmt.Sprintf("install command `%s` exited %d\n%s", r.profile.Install, code, executor.Tail([]byte(output), 20))})
@@ -318,6 +326,18 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 				return err
 			}
 			if switched {
+				adapter, err := r.adapterLocked(ac.runtime.Provider)
+				if err != nil {
+					return err
+				}
+				ac.adapter = adapter
+				probe, err := r.probeRoute(ctx, ac)
+				if err != nil {
+					return err
+				}
+				if !probe.Pass {
+					return r.recordIncapable(ctx, ac, probe)
+				}
 				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath)
 				if err != nil {
 					return err
