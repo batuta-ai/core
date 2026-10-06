@@ -67,9 +67,9 @@ func ProbeCapability(ctx context.Context, backend Backend, adapter Adapter, rout
 	}
 	probe := ProbeResult{ExitCode: result.ExitCode, Duration: result.Duration, Tail: probeTail(result)}
 	switch {
-	case !hasHead:
+	case !hasHead || !tracked:
 		probe.Reason = ProbeNoRepository
-	case tracked && (statusChanged(ctx, dir, before) || headChanged(ctx, dir, head)):
+	case statusChanged(ctx, dir, before) || headChanged(ctx, dir, head):
 		probe.Reason = ProbeTreeChanged
 	case result.TimedOut:
 		probe.Reason = ProbeTimeout

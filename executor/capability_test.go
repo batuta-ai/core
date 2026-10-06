@@ -294,3 +294,25 @@ func TestProbeCapabilityRunsRealSubprocess(t *testing.T) {
 		t.Fatalf("probe = %+v", probe)
 	}
 }
+
+func TestProbeCapabilityStatusUnreadable(t *testing.T) {
+	t.Parallel()
+	dir := gitRepo(t)
+	head := probeHead(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, ".git", "index"), []byte("not an index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", dir, "status", "--porcelain").CombinedOutput(); err == nil {
+		t.Fatalf("status still readable: %s", out)
+	}
+	backend := &probeBackend{run: func(Execution) Result {
+		return Result{Stdout: []byte(CapabilityMarker + " " + head + "\n")}
+	}}
+	probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, dir, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if probe.Pass || probe.Reason != ProbeNoRepository {
+		t.Fatalf("probe = %+v", probe)
+	}
+}
