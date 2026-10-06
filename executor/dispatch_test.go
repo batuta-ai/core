@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -78,6 +79,33 @@ func TestDispatchCancellationRetainsIntentAndNeverReplays(t *testing.T) {
 	payload, err := os.ReadFile(filepath.Join(report.Artifacts.Directory, report.Artifacts.Receipt))
 	if err != nil || json.Unmarshal(payload, &saved) != nil || saved.ExitClass != "uncertain" {
 		t.Fatalf("lost receipt: %s, %v", payload, err)
+	}
+}
+
+func TestDispatchPreflightCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	opts := dispatchTestOptions(t, dispatchBackendFunc(func(ctx context.Context, _ Execution) (Result, error) {
+		cancel()
+		return Result{}, ctx.Err()
+	}))
+	opts.Preflight = true
+	report, _ := Dispatch(ctx, opts)
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if report.ExitClass != "uncertain" || report.ExitCode != 130 {
+		t.Fatalf("canceled preflight: class=%q code=%d", report.ExitClass, report.ExitCode)
+	}
+}
+
+func TestDispatchPreflightUnavailable(t *testing.T) {
+	opts := dispatchTestOptions(t, dispatchBackendFunc(func(context.Context, Execution) (Result, error) {
+		return Result{}, errors.New("cannot start")
+	}))
+	opts.Preflight = true
+	report, _ := Dispatch(context.Background(), opts)
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if report.ExitClass != "unavailable" || report.ExitCode != 2 {
+		t.Fatalf("unstartable preflight: class=%q code=%d", report.ExitClass, report.ExitCode)
 	}
 }
 

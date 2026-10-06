@@ -139,7 +139,9 @@ trail      One line per journal record of a delivery (the latest by
            default).
 review     Read-only, cohort-based delivery review through the configured
            executor adapter. Writes manifest.json, findings.json, review.md
-           and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK.
+           and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK,
+           4 review_incomplete (a cohort failed; review_failures.json
+           names it).
            The cohort driver uses CLI independently of dispatch transport.
 
 judge      Manual probes of a System One decision model (Jev): typed noul,

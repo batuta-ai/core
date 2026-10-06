@@ -235,6 +235,9 @@ func runPreflight(ctx context.Context, report *DispatchReport, backend Backend, 
 	probe, err := ProbeCapability(ctx, backend, opts.Adapter, route, opts.Request.Cwd, min(opts.Timeout, preflightTimeout))
 	if err != nil {
 		report.ExitClass, report.ExitCode = "unavailable", 2
+		if ctx.Err() != nil {
+			report.ExitClass, report.ExitCode = "uncertain", 130
+		}
 		return false, err
 	}
 	report.Preflight = &PreflightReport{Pass: probe.Pass, Reason: probe.Reason, DurationMS: probe.Duration.Milliseconds(), Tail: probe.Tail}

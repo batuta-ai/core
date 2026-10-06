@@ -553,6 +553,14 @@ func TestUsage(t *testing.T) {
 	}
 }
 
+func TestUsageNamesReviewExit4(t *testing.T) {
+	for _, want := range []string{"4 review_incomplete", "review_failures.json"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage is missing %q", want)
+		}
+	}
+}
+
 func TestReviewWritesArtefacts(t *testing.T) {
 	root, base := reviewCommandRepo(t)
 	t.Chdir(root)
