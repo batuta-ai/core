@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Close items 4.6 and 4.1(b) of `.batuta/feedback/2026-09-21-tempo-mvp-triage.md`. `batuta review` never writes `null` findings, records why coverage is incomplete as structured review failures, and exits 4 for an incomplete review so exit 3 means product defects only. Before a route does real work, `batuta loop` (once per route per delivery) and `batuta dispatch --preflight` (on request) check that the executor can run commands, and a route that cannot fails as `executor_incapable` before any brief is submitted.
-**Created:** 2026-10-05 · **Status:** approved
+**Created:** 2026-10-05 · **Status:** done
 
 ## Tasks
 - [x] 1. review: findings always a list, structured review failures in the report and a new artifact — backend/medium
@@ -23,7 +23,7 @@
       Depends on: 4
       Scope: cmd/batuta/main.go, cmd/batuta/main_test.go, executor/dispatch.go, executor/dispatch_test.go, docs/dispatch.md
       Accept: `batuta dispatch --preflight` runs the probe in `--cwd` with the same executor, model, effort and CLI transport before the brief, and a passing probe changes nothing else in the receipt except a `preflight` object (pass, reason, duration) → go test ./cmd/batuta -run TestDispatchPreflightPass; a failing probe ends the dispatch with exit class `executor_incapable`, exit code 6, the probe's reason and tail in the receipt, submission state `not_submitted` and the brief never sent → go test ./cmd/batuta -run TestDispatchPreflightIncapable; without the flag dispatch behaves exactly as today → go test ./cmd/batuta -run 'TestDispatch'; docs/dispatch.md documents the flag and exit code 6 → grep -q 'executor_incapable' docs/dispatch.md
-- [ ] 6. batuta loop probes each route once per delivery and escalates an incapable route — backend/high
+- [x] 6. batuta loop probes each route once per delivery and escalates an incapable route — backend/high
       Depends on: 4
       Scope: loop/attempt.go, loop/capability.go, loop/capability_test.go, loop/loop_test.go, loop/runner.go, docs/loop.md
       Accept: before the first attempt of a route (executor, model, effort, transport) in a delivery the loop runs the probe in that attempt's worktree and journals a `capability_probe` record with executor, model, effort, transport, pass, reason and duration → go test ./loop -run TestLoopProbesRouteOnce; later attempts on the same route in the same delivery, including after `--resume`, reuse the journalled result and run no probe → go test ./loop -run TestLoopProbeReusedAfterResume; a failing probe records the attempt as failure code `executor_incapable` with the probe's reason and tail as feedback, never submits the brief, never enters a submission-uncertain state, and escalates one row up without the same-runtime retry → go test ./loop -run TestLoopIncapableEscalates; a route that is incapable at the top of the ladder blocks the task with `executor_incapable` → go test ./loop -run TestLoopIncapableAtTopBlocks; docs/loop.md documents the record and the failure code → grep -q 'capability_probe' docs/loop.md
