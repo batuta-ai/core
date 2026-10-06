@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -346,8 +347,23 @@ func ExistingTailPaths(directory string) []string {
 	return paths
 }
 
+// embeddedSecret matches a secret-shaped assignment anywhere in a line and a
+// quoted field whose key names a secret, as JSON events carry them.
+var embeddedSecret = regexp.MustCompile(`\b[A-Z][A-Z0-9_]*=|(?i)"[^"]*(?:token|api_?key|password|secret)[^"]*"\s*:`)
+
+func dropEmbeddedSecretLines(value string) string {
+	lines := strings.Split(value, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if !embeddedSecret.MatchString(line) {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
 func reviewOutputTail(payload []byte) string {
-	redacted := executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, 40), ""))
+	redacted := dropEmbeddedSecretLines(executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, 40), "")))
 	if len(redacted) <= 4096 {
 		return redacted
 	}

@@ -472,6 +472,38 @@ func TestReviewFailureTailRawFallback(t *testing.T) {
 	}
 }
 
+func TestReviewFailureTailRawSecrets(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		line   string
+		secret string
+	}{
+		{name: "assignment inside a string", line: `{"type":"text","text":"API_KEY=sk-example"}`, secret: "sk-example"},
+		{name: "token field", line: `{"type":"auth","token":"tok-example"}`, secret: "tok-example"},
+		{name: "api_key field", line: `{"api_key": "key-example"}`, secret: "key-example"},
+		{name: "password field upper case", line: `{"PASSWORD":"pw-example"}`, secret: "pw-example"},
+		{name: "secret field", line: `{"event":{"Secret":"shh-example"}}`, secret: "shh-example"},
+		{name: "escaped field", line: `{"text":"{\"token\":\"nested-example\"}"}`, secret: "nested-example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			attempts := []SessionAttempt{{Result: executor.Result{
+				ExitCode:  1,
+				RawStdout: []byte(`{"type":"text","text":"kept event"}` + "\n" + tc.line + "\n"),
+				Stderr:    []byte("stderr note\n"),
+			}}}
+			failure := newReviewFailure("1", "reviewer failed", attempts)
+			if strings.Contains(failure.Tail, tc.secret) || strings.Contains(failure.Tail, tc.line) {
+				t.Errorf("tail = %q, want the secret line dropped", failure.Tail)
+			}
+			if !strings.Contains(failure.Tail, "kept event") || !strings.Contains(failure.Tail, "stderr note") {
+				t.Errorf("tail = %q, want the other lines kept", failure.Tail)
+			}
+		})
+	}
+}
+
 func TestReviewFailureTailDecoded(t *testing.T) {
 	t.Parallel()
 	attempts := []SessionAttempt{{Result: executor.Result{
