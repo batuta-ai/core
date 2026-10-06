@@ -5,23 +5,23 @@
 **Created:** 2026-10-06 · **Status:** approved
 
 ## Tasks
-- [ ] 1. executor tails drop secret-bearing lines and the probe tail falls back to raw output — backend/medium
+- [x] 1. executor tails drop secret-bearing lines and the probe tail falls back to raw output — backend/medium
       Scope: executor/tail.go, executor/tail_test.go, executor/capability.go, executor/capability_test.go
       Accept: a new exported helper in `executor/tail.go` removes every line that contains a secret-shaped assignment anywhere in it (for example `provider error: OPENAI_API_KEY=sk-test-123`) and keeps the other lines; `DropSecretLines` and `IsSecretLine` keep their behaviour → go test ./executor -run TestDropSecretBearingLines -v 2>&1 | grep -q -- '--- PASS: TestDropSecretBearingLines'; the probe tail applies that helper to decoded stdout, then to stderr, then to bounded raw stdout when the earlier sources are empty → go test ./executor -run TestProbeTailSources -v 2>&1 | grep -q -- '--- PASS: TestProbeTailSources'
-- [ ] 2. review failure tails redact stdout and stderr separately — backend/medium
+- [x] 2. review failure tails redact stdout and stderr separately — backend/medium
       Depends on: 1
       Scope: review/report.go, review/report_test.go
       Accept: a review failure whose stdout ends without a newline and whose stderr starts with a secret-shaped assignment carries a tail without that secret, because each stream is tailed and redacted on its own (with the task 1 helper) and only then joined by a newline under the existing size bound → go test ./review -run TestReviewFailureTailSeparateStreams -v 2>&1 | grep -q -- '--- PASS: TestReviewFailureTailSeparateStreams'; the existing tail tests stay green → go test ./review -run 'TestReviewFailureTail' -v 2>&1 | grep -q -- '--- PASS: TestReviewFailureTailRawFallback'
-- [ ] 3. the no-tests proof rule knows `[no test files]` and the coverage form — backend/medium
+- [x] 3. the no-tests proof rule knows `[no test files]` and the coverage form — backend/medium
       Scope: gates/gates.go, gates/gates_test.go
       Accept: a proof exiting 0 whose output is only `? <pkg> [no test files]` lines, or `ok <pkg> <time> coverage: <text> [no tests to run]` lines, fails as no test ran → go test ./gates -run TestProofsNoTestFiles -v 2>&1 | grep -q -- '--- PASS: TestProofsNoTestFiles'; a proof mixing those lines with a package that ran tests (`ok <pkg> <time>` with or without a coverage suffix, or `--- PASS:` lines) passes → go test ./gates -run TestProofsMixedNoTestFiles -v 2>&1 | grep -q -- '--- PASS: TestProofsMixedNoTestFiles'
 - [ ] 4. the loop probes a route over the route's own transport — backend/high
       Scope: loop/capability.go, loop/capability_test.go, loop/runner.go, loop/attempt.go, loop/loop_test.go, docs/loop.md
       Accept: a route whose recorded transport is ACP is probed through the ACP backend the task would use, and a CLI route through the CLI backend; the `capability_probe` record's transport is the one that ran the probe → go test ./loop -run TestLoopProbeUsesRouteTransport -v 2>&1 | grep -q -- '--- PASS: TestLoopProbeUsesRouteTransport'; with `--transport auto`, a route that falls back to CLI before submission is probed over CLI and recorded as such → go test ./loop -run TestLoopProbeAutoFallback -v 2>&1 | grep -q -- '--- PASS: TestLoopProbeAutoFallback'; the existing capability tests stay green → go test ./loop -run 'TestLoopProbe|TestLoopIncapable' -v 2>&1 | grep -q -- '--- PASS: TestLoopProbesRouteOnce'
-- [ ] 5. a canceled dispatch preflight stays interrupted, and the usage text names exit 4 — backend/medium
+- [x] 5. a canceled dispatch preflight stays interrupted, and the usage text names exit 4 — backend/medium
       Scope: executor/dispatch.go, executor/dispatch_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go
       Accept: canceling the parent context while the preflight probe runs ends the dispatch with the interrupted exit class and code 130, not `unavailable` → go test ./executor -run TestDispatchPreflightCanceled -v 2>&1 | grep -q -- '--- PASS: TestDispatchPreflightCanceled'; a probe that cannot start still ends `unavailable` with code 2 → go test ./executor -run TestDispatchPreflightUnavailable -v 2>&1 | grep -q -- '--- PASS: TestDispatchPreflightUnavailable'; the review section of the built-in usage text lists exit 4 `review_incomplete` and `review_failures.json` → go test ./cmd/batuta -run TestUsageNamesReviewExit4 -v 2>&1 | grep -q -- '--- PASS: TestUsageNamesReviewExit4'
-- [ ] 6. a supervision review job stays within its read limit — backend/medium
+- [x] 6. a supervision review job stays within its read limit — backend/medium
       Scope: loop/supervision_review.go, loop/supervision_review_test.go
       Accept: a review whose `review_failures.json` holds enough failures that copying their full tails into `job.json` would pass the 1 MiB read limit produces a `job.json` that loads again, with the failures kept (kind, cohort, reason, exit code) and their tails bounded or dropped so the file fits → go test ./loop -run TestSupervisionReviewJobWithinLimit -v 2>&1 | grep -q -- '--- PASS: TestSupervisionReviewJobWithinLimit'; the existing supervision review tests stay green → go test ./loop -run 'TestSupervisionReview' -v 2>&1 | grep -q -- '--- PASS: TestSupervisionReviewFailuresRecorded'
 
