@@ -17,18 +17,20 @@ const (
 	probeTailBytes = 2048
 
 	// The probe brief stays one paragraph and never names the task.
-	probeBrief = "Run the shell command `git status --porcelain && echo ok` in the current directory. " +
+	probeBrief = "Run the shell command `git rev-parse HEAD` in the current directory. " +
 		"Do not create, edit or delete any file. " +
-		"When the command has run, print the line " + CapabilityMarker + " on a line of its own and stop."
+		"When the command has run, print " + CapabilityMarker + " <sha> on a line of its own, replacing <sha> with the command's output, and stop."
 )
 
 // Probe failure reasons.
 const (
-	ProbeNoMarker    = "no_marker"
-	ProbeUnfinished  = "unfinished"
-	ProbeTimeout     = "timeout"
-	ProbeLimit       = "limit"
-	ProbeTreeChanged = "tree_changed"
+	ProbeNoMarker       = "no_marker"
+	ProbeMarkerMismatch = "marker_mismatch"
+	ProbeNoRepository   = "no_repository"
+	ProbeUnfinished     = "unfinished"
+	ProbeTimeout        = "timeout"
+	ProbeLimit          = "limit"
+	ProbeTreeChanged    = "tree_changed"
 )
 
 // ProbeRoute is the part of a route the probe varies besides the adapter:
@@ -48,9 +50,9 @@ type ProbeResult struct {
 }
 
 // ProbeCapability asks the adapter's executor to run a command in dir and
-// reports whether it did. The `git status --porcelain` of dir must be the
-// same afterwards; a dir that is not a git work tree skips that check. A
-// command that could not start is an error, not a verdict.
+// reports whether it did. The marker must carry the HEAD of dir, and the
+// worktree status and HEAD must remain unchanged. A command that could not
+// start is an error, not a verdict.
 func ProbeCapability(ctx context.Context, backend Backend, adapter Adapter, route ProbeRoute, dir string, timeout time.Duration) (ProbeResult, error) {
 	request := Request{Brief: probeBrief, Cwd: dir, Model: route.Model, Effort: route.Effort}
 	invocation, err := adapter.Command(request)
@@ -58,26 +60,44 @@ func ProbeCapability(ctx context.Context, backend Backend, adapter Adapter, rout
 		return ProbeResult{}, err
 	}
 	before, tracked := porcelainStatus(ctx, dir)
+	head, hasHead := headSHA(ctx, dir)
 	result, err := backend.Execute(ctx, Execution{Adapter: adapter, Request: request, Invocation: invocation, Timeout: timeout})
 	if err != nil {
 		return ProbeResult{}, err
 	}
 	probe := ProbeResult{ExitCode: result.ExitCode, Duration: result.Duration, Tail: probeTail(result)}
 	switch {
+	case !hasHead:
+		probe.Reason = ProbeNoRepository
+	case tracked && (statusChanged(ctx, dir, before) || headChanged(ctx, dir, head)):
+		probe.Reason = ProbeTreeChanged
 	case result.TimedOut:
 		probe.Reason = ProbeTimeout
 	case result.RateLimited:
 		probe.Reason = ProbeLimit
 	case !result.Finished:
 		probe.Reason = ProbeUnfinished
-	case tracked && statusChanged(ctx, dir, before):
-		probe.Reason = ProbeTreeChanged
-	case !hasMarkerLine(result.Stdout):
-		probe.Reason = ProbeNoMarker
 	default:
-		probe.Pass = true
+		probe.Reason = markerReason(result.Stdout, head)
+		probe.Pass = probe.Reason == ""
 	}
 	return probe, nil
+}
+
+func headSHA(ctx context.Context, dir string) (string, bool) {
+	command := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+	command.Dir = dir
+	var out bytes.Buffer
+	command.Stdout = &out
+	if err := command.Run(); err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(out.String()), true
+}
+
+func headChanged(ctx context.Context, dir, before string) bool {
+	after, ok := headSHA(ctx, dir)
+	return !ok || after != before
 }
 
 func porcelainStatus(ctx context.Context, dir string) (string, bool) {
@@ -96,13 +116,22 @@ func statusChanged(ctx context.Context, dir, before string) bool {
 	return !ok || after != before
 }
 
-func hasMarkerLine(stdout []byte) bool {
+func markerReason(stdout []byte, head string) string {
+	found := false
 	for _, line := range strings.Split(string(stdout), "\n") {
-		if strings.TrimSpace(line) == CapabilityMarker {
-			return true
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != CapabilityMarker {
+			continue
+		}
+		found = true
+		if len(fields) == 2 && fields[1] == head {
+			return ""
 		}
 	}
-	return false
+	if found {
+		return ProbeMarkerMismatch
+	}
+	return ProbeNoMarker
 }
 
 func probeTail(result Result) string {

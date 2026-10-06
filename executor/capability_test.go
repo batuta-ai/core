@@ -36,14 +36,134 @@ func gitRepo(t *testing.T) string {
 	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
+	if out, err := exec.Command("git", "-C", dir, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--allow-empty", "-qm", "initial").CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %v: %s", err, out)
+	}
 	return dir
+}
+
+func probeHead(t *testing.T, dir string) string {
+	t.Helper()
+	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v: %s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestProbeCapabilityRequiresHead(t *testing.T) {
+	t.Parallel()
+	dir := gitRepo(t)
+	head := probeHead(t, dir)
+	backend := &probeBackend{run: func(e Execution) Result {
+		if e.Request.Cwd != dir || !strings.Contains(e.Request.Brief, "git rev-parse HEAD") || !strings.Contains(e.Request.Brief, CapabilityMarker+" <sha>") {
+			t.Errorf("request = %+v", e.Request)
+		}
+		return Result{Stdout: []byte("working\n  " + CapabilityMarker + " " + head + "  \n")}
+	}}
+	probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, dir, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !probe.Pass || probe.Reason != "" {
+		t.Fatalf("probe = %+v", probe)
+	}
+}
+
+func TestProbeCapabilityMarkerReasons(t *testing.T) {
+	t.Parallel()
+	dir := gitRepo(t)
+	head := probeHead(t, dir)
+	tests := []struct {
+		name   string
+		dir    string
+		stdout string
+		want   string
+	}{
+		{"bare marker", dir, CapabilityMarker + "\n", ProbeMarkerMismatch},
+		{"wrong SHA", dir, CapabilityMarker + " " + strings.Repeat("0", len(head)) + "\n", ProbeMarkerMismatch},
+		{"extra field", dir, CapabilityMarker + " " + head + " copied\n", ProbeMarkerMismatch},
+		{"missing marker", dir, "command unavailable\n", ProbeNoMarker},
+		{"embedded marker", dir, "I will print " + CapabilityMarker + " " + head + " soon\n", ProbeNoMarker},
+		{"no repository", tempDir(t), CapabilityMarker + " " + head + "\n", ProbeNoRepository},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			backend := &probeBackend{run: func(Execution) Result { return Result{Stdout: []byte(tt.stdout)} }}
+			probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, tt.dir, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if probe.Pass || probe.Reason != tt.want {
+				t.Fatalf("probe = %+v, want %s", probe, tt.want)
+			}
+		})
+	}
+}
+
+func TestProbeCapabilityTreeChangedFirst(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		result Result
+	}{
+		{"unfinished", Result{ExitCode: 1}},
+		{"timeout", Result{ExitCode: -1, TimedOut: true}},
+		{"limit", Result{RateLimited: true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := gitRepo(t)
+			backend := &probeBackend{run: func(e Execution) Result {
+				if err := os.WriteFile(filepath.Join(e.Invocation.Dir, "stray.txt"), []byte("changed"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				result := tt.result
+				result.Stdout = []byte(CapabilityMarker + " " + probeHead(t, dir) + "\n")
+				return result
+			}}
+			probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, dir, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if probe.Pass || probe.Reason != ProbeTreeChanged {
+				t.Fatalf("probe = %+v", probe)
+			}
+		})
+	}
+	t.Run("committed change", func(t *testing.T) {
+		t.Parallel()
+		dir := gitRepo(t)
+		oldHead := probeHead(t, dir)
+		backend := &probeBackend{run: func(e Execution) Result {
+			if err := os.WriteFile(filepath.Join(dir, "change.txt"), []byte("changed"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for _, args := range [][]string{{"add", "change.txt"}, {"-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "changed"}} {
+				if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+					t.Fatalf("git %v: %v: %s", args, err, out)
+				}
+			}
+			return Result{Stdout: []byte(CapabilityMarker + " " + oldHead + "\n")}
+		}}
+		probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, dir, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if probe.Pass || probe.Reason != ProbeTreeChanged {
+			t.Fatalf("probe = %+v", probe)
+		}
+	})
 }
 
 func TestProbeCapability(t *testing.T) {
 	t.Parallel()
 	dir := gitRepo(t)
+	head := probeHead(t, dir)
 	backend := &probeBackend{run: func(Execution) Result {
-		return Result{Stdout: []byte("working\n  BATUTA-CAPABLE  \n"), Duration: 3 * time.Second}
+		return Result{Stdout: []byte("working\n  BATUTA-CAPABLE " + head + "  \n"), Duration: 3 * time.Second}
 	}}
 	probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{Model: DefaultModel}, dir, time.Minute)
 	if err != nil {
@@ -59,7 +179,7 @@ func TestProbeCapability(t *testing.T) {
 		t.Fatalf("execution = %+v", backend.got)
 	}
 	brief := backend.got.Request.Brief
-	if strings.Contains(brief, "\n") || !strings.Contains(brief, "git status --porcelain && echo ok") {
+	if strings.Contains(brief, "\n") || !strings.Contains(brief, "git rev-parse HEAD") {
 		t.Fatalf("brief = %q", brief)
 	}
 }
@@ -121,8 +241,12 @@ func TestProbeCapabilityReasons(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			backend := &probeBackend{run: func(Execution) Result { return test.result }}
-			probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, tempDir(t), time.Minute)
+			dir := gitRepo(t)
+			head := probeHead(t, dir)
+			result := test.result
+			result.Stdout = []byte(strings.ReplaceAll(string(result.Stdout), CapabilityMarker+"\n", CapabilityMarker+" "+head+"\n"))
+			backend := &probeBackend{run: func(Execution) Result { return result }}
+			probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, dir, time.Minute)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -158,7 +282,7 @@ func TestProbeCapabilityRunsRealSubprocess(t *testing.T) {
 	}
 	dir := gitRepo(t)
 	script := filepath.Join(tempDir(t), "capable")
-	if err := os.WriteFile(script, []byte("#!/bin/sh\ngit status --porcelain >/dev/null && echo BATUTA-CAPABLE\n"), 0o755); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nsha=$(git rev-parse HEAD) || exit 1\nprintf 'BATUTA-CAPABLE %s\\n' \"$sha\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	adapter := Adapter{Name: "fake", Run: script + " {brief}", Finished: "exit_code"}

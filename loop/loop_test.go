@@ -45,7 +45,8 @@ if printf '%s\n' "$text" | grep -q 'BATUTA-CAPABLE'; then
     echo 'shell command unavailable' >&2
     exit 0
   fi
-  echo BATUTA-CAPABLE
+  sha=$(git rev-parse HEAD)
+  printf 'BATUTA-CAPABLE %s\n' "$sha"
   exit 0
 fi
 if [ "$mode" = "verify" ]; then

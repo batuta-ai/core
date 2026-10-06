@@ -176,7 +176,9 @@ asked.
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
 - **Capability probe.** Before the first attempt on each executor, model,
   effort, and transport route in a delivery, the loop asks the executor's CLI
-  to run a short command in that attempt's worktree. A `capability_probe` journal
+  to run `git rev-parse HEAD` in that attempt's worktree. The probe passes only
+  when an isolated `BATUTA-CAPABLE <sha>` line matches the SHA the host reads
+  there and the worktree status and HEAD remain unchanged. A `capability_probe` journal
   record carries `executor`, `model`, `effort`, `transport`, `pass`, `reason`,
   `duration_ms`, and a bounded output `tail`. Later attempts on the same
   route, including after `--resume`, reuse that verdict without probing again.

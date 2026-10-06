@@ -81,13 +81,16 @@ accepted.
 ### Capability preflight
 
 `--preflight` asks the same executor, model, effort and CLI transport to run
-one shell command in `--cwd` before the brief is sent. The probe brief is one
-paragraph and never mentions the task. A passing probe changes nothing in the
+`git rev-parse HEAD` in `--cwd` before the brief is sent. The probe brief is one
+paragraph and never mentions the task. It passes only when an isolated
+`BATUTA-CAPABLE <sha>` line contains the SHA the host reads from that directory,
+and the worktree status and HEAD remain unchanged. A passing probe changes nothing in the
 report except a `preflight` object with `pass`, `duration_ms`, and no `reason`.
 
 A failing probe ends the dispatch as `executor_incapable` with exit code 6. The
-`preflight` object then carries the failure `reason` (`no_marker`, `unfinished`,
-`timeout`, `limit` or `tree_changed`) and a bounded `tail` of the executor
+`preflight` object then carries the failure `reason` (`no_marker`,
+`marker_mismatch`, `no_repository`, `unfinished`, `timeout`, `limit` or
+`tree_changed`) and a bounded `tail` of the executor
 output. The receipt's submission state stays `not_submitted`: the brief was
 never sent. A probe that cannot start leaves the route `unavailable` (exit
 code 2). Without the flag dispatch does not probe.

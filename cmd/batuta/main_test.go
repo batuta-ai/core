@@ -81,7 +81,11 @@ func TestDispatchWorker(t *testing.T) {
 		if os.Getenv("BATUTA_PROBE_INCAPABLE") == "1" {
 			fmt.Println("I cannot run commands here")
 		} else {
-			fmt.Println(executor.CapabilityMarker)
+			head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+			if err != nil {
+				os.Exit(94)
+			}
+			fmt.Printf("%s %s\n", executor.CapabilityMarker, strings.TrimSpace(string(head)))
 		}
 		os.Exit(0)
 	}
@@ -115,6 +119,12 @@ func dispatchCommandFixture(t *testing.T, brief string) (string, []string) {
 	if err := os.WriteFile(briefPath, []byte(brief), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("calls\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "add", "brief.md", ".gitignore")
+	reviewGit(t, root, "commit", "-qm", "test: initialize dispatch fixture")
 	t.Setenv("BATUTA_SKILLS", skills)
 	t.Setenv("BATUTA_DISPATCH_FIXTURE", "1")
 	return root, []string{"dispatch", "--brief-file", briefPath, "--executor", "fixture", "--model", "chosen-model", "--effort", "high", "--cwd", root}
@@ -2069,7 +2079,7 @@ case "$1" in
   run)
     test "$2" = chosen-model
     test "$3" = high
-    case "$4" in *BATUTA-CAPABLE*) echo BATUTA-CAPABLE; exit 0;; esac
+    case "$4" in *BATUTA-CAPABLE*) sha=$(git rev-parse HEAD); printf 'BATUTA-CAPABLE %s\n' "$sha"; exit 0;; esac
     cp "$4" "$BATUTA_SUPERVISION_CALLS/brief-$(cat "$BATUTA_SUPERVISION_CALLS/next").md"
     if grep -q '^The answer: ' "$4"; then
       echo 3 > "$BATUTA_SUPERVISION_CALLS/next"
