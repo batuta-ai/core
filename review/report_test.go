@@ -472,6 +472,22 @@ func TestReviewFailureTailRawFallback(t *testing.T) {
 	}
 }
 
+func TestReviewFailureTailSeparateStreams(t *testing.T) {
+	t.Parallel()
+	attempts := []SessionAttempt{{Result: executor.Result{
+		ExitCode: 1,
+		Stdout:   []byte("progress line"),
+		Stderr:   []byte("API_KEY=sk-secret-value\nstderr note\n"),
+	}}}
+	failure := newReviewFailure("1", "reviewer failed", attempts)
+	if strings.Contains(failure.Tail, "sk-secret-value") || strings.Contains(failure.Tail, "API_KEY") {
+		t.Errorf("tail = %q, want the stderr secret dropped", failure.Tail)
+	}
+	if want := "progress line\nstderr note"; failure.Tail != want {
+		t.Errorf("tail = %q, want %q", failure.Tail, want)
+	}
+}
+
 func TestReviewFailureTailRawSecrets(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {

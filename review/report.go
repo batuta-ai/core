@@ -54,7 +54,7 @@ func newReviewFailure(scope, reason string, attempts []SessionAttempt) ReviewFai
 	if len(stdout) == 0 {
 		stdout = last.RawStdout
 	}
-	failure.Tail = reviewOutputTail(bytes.Join([][]byte{stdout, last.Stderr}, nil))
+	failure.Tail = boundTail(joinTails(redactStreamTail(stdout), redactStreamTail(last.Stderr)))
 	return failure
 }
 
@@ -362,8 +362,25 @@ func dropEmbeddedSecretLines(value string) string {
 	return strings.Join(kept, "\n")
 }
 
+func redactStreamTail(payload []byte) string {
+	return dropEmbeddedSecretLines(executor.DropSecretBearingLines(executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, 40), ""))))
+}
+
+func joinTails(parts ...string) string {
+	var kept []string
+	for _, part := range parts {
+		if part != "" {
+			kept = append(kept, part)
+		}
+	}
+	return strings.Join(kept, "\n")
+}
+
 func reviewOutputTail(payload []byte) string {
-	redacted := dropEmbeddedSecretLines(executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, 40), "")))
+	return boundTail(redactStreamTail(payload))
+}
+
+func boundTail(redacted string) string {
 	if len(redacted) <= 4096 {
 		return redacted
 	}
