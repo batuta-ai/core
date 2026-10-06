@@ -49,7 +49,11 @@ func newReviewFailure(scope, reason string, attempts []SessionAttempt) ReviewFai
 		code := last.ExitCode
 		failure.ExitCode = &code
 	}
-	failure.Tail = reviewOutputTail(bytes.Join([][]byte{last.Stdout, last.Stderr}, nil))
+	stdout := last.Stdout
+	if len(stdout) == 0 {
+		stdout = last.RawStdout
+	}
+	failure.Tail = reviewOutputTail(bytes.Join([][]byte{stdout, last.Stderr}, nil))
 	return failure
 }
 

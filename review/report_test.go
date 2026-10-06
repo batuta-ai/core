@@ -450,3 +450,41 @@ func TestReviewExitCode(t *testing.T) {
 		})
 	}
 }
+
+func TestReviewFailureTailRawFallback(t *testing.T) {
+	t.Parallel()
+	attempts := []SessionAttempt{{Result: executor.Result{
+		ExitCode:  1,
+		RawStdout: []byte("raw line one\nraw line two\nAPI_KEY=sk-secret-value\n"),
+		Stderr:    []byte("stderr note\n"),
+	}}}
+	failure := newReviewFailure("1", "reviewer failed", attempts)
+	if !strings.Contains(failure.Tail, "raw line two") || !strings.Contains(failure.Tail, "stderr note") {
+		t.Errorf("tail = %q, want raw stdout and stderr", failure.Tail)
+	}
+	if strings.Contains(failure.Tail, "sk-secret-value") {
+		t.Errorf("tail = %q, want secret lines dropped", failure.Tail)
+	}
+	big := strings.Repeat("0123456789abcdef\n", 600)
+	failure = newReviewFailure("1", "reviewer failed", []SessionAttempt{{Result: executor.Result{RawStdout: []byte(big)}}})
+	if len(failure.Tail) == 0 || len(failure.Tail) > 4096 {
+		t.Errorf("tail length = %d, want within (0, 4096]", len(failure.Tail))
+	}
+}
+
+func TestReviewFailureTailDecoded(t *testing.T) {
+	t.Parallel()
+	attempts := []SessionAttempt{{Result: executor.Result{
+		ExitCode:  1,
+		Stdout:    []byte("decoded text\n"),
+		RawStdout: []byte("raw-json-event\n"),
+		Stderr:    []byte("stderr note\n"),
+	}}}
+	failure := newReviewFailure("1", "reviewer failed", attempts)
+	if !strings.Contains(failure.Tail, "decoded text") || !strings.Contains(failure.Tail, "stderr note") {
+		t.Errorf("tail = %q, want decoded stdout and stderr", failure.Tail)
+	}
+	if strings.Contains(failure.Tail, "raw-json-event") {
+		t.Errorf("tail = %q, want raw stdout ignored when decoded has content", failure.Tail)
+	}
+}
