@@ -1,0 +1,44 @@
+# Plan — review contract and capability preflight: fixes from the branch review
+<!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
+
+**Goal:** Close the six blockers of the `batuta review --base main` run over branch `feat/review-contract-preflight` (2026-10-05) and the gate weakness that let one of them through: `batuta review` really exits 4 for an incomplete review, the loop's supervision agrees with that exit contract in the mixed case, the capability probe passes only when the executor ran a command whose output it cannot copy from the brief, review failure tails survive an output decoder, and a proof that ran no test fails.
+**Created:** 2026-10-06 · **Status:** approved
+
+## Tasks
+- [ ] 1. batuta review exits 4 when the review is incomplete — backend/medium
+      Scope: review/report.go, review/report_test.go, cmd/batuta/main.go, cmd/batuta/main_test.go
+      Accept: `batuta review` exits 4 with state `review_incomplete` when the verdict is REWORK, the report has review failures and no blocker finding or violated criterion would make the verdict REWORK on its own → go test ./cmd/batuta -run TestReviewExitIncomplete -v 2>&1 | grep -q -- '--- PASS: TestReviewExitIncomplete'; it exits 3 when a blocker finding or a violated criterion makes the verdict REWORK, also when review failures exist alongside, 2 for FIX_BEFORE_SHIP and 0 for SHIP → go test ./cmd/batuta -run TestReviewExitMixed -v 2>&1 | grep -q -- '--- PASS: TestReviewExitMixed'; the rule lives in one exported function of package `review` that `runReview` calls → go test ./review -run TestReviewExitCode -v 2>&1 | grep -q -- '--- PASS: TestReviewExitCode'
+- [ ] 2. loop supervision accepts the review exit contract in the mixed case — backend/medium
+      Scope: loop/supervision_review.go, loop/supervision_review_test.go
+      Accept: a supervision review whose verdict is REWORK, whose `review_failures.json` has entries and whose exit code is 3 (findings also require rework) or 4 (failures only) classifies as `incomplete_coverage` with the failures recorded, instead of failing with `review verdict and exit status disagree` → go test ./loop -run TestSupervisionReviewMixedExit -v 2>&1 | grep -q -- '--- PASS: TestSupervisionReviewMixedExit'; with no review failures, REWORK still requires exit 3, FIX_BEFORE_SHIP 2 and SHIP 0, and exit 4 without failures is rejected → go test ./loop -run TestSupervisionReviewExitWithoutFailures -v 2>&1 | grep -q -- '--- PASS: TestSupervisionReviewExitWithoutFailures'; the existing supervision review tests stay green → go test ./loop -run 'TestSupervisionReview'
+- [ ] 3. the capability probe proves a command ran and reports a changed tree first — backend/high
+      Scope: executor/capability.go, executor/capability_test.go, executor/dispatch_test.go, loop/capability_test.go, loop/loop_test.go, loop/attempt_test.go, loop/answer_question_test.go, cmd/batuta/main_test.go, cmd/batuta/main_unix_test.go, docs/dispatch.md, docs/loop.md
+      Accept: the probe brief asks the executor to run `git rev-parse HEAD` in the directory and print `BATUTA-CAPABLE <sha>` with that output, and the probe passes only when an isolated marker line carries the SHA the host reads with `git rev-parse HEAD` in the same directory → go test ./executor -run TestProbeCapabilityRequiresHead -v 2>&1 | grep -q -- '--- PASS: TestProbeCapabilityRequiresHead'; a marker without a SHA or with another SHA fails with reason `marker_mismatch`, a missing marker with `no_marker`, and a directory where the host cannot read `HEAD` with `no_repository` → go test ./executor -run TestProbeCapabilityMarkerReasons -v 2>&1 | grep -q -- '--- PASS: TestProbeCapabilityMarkerReasons'; a probe that changes the tree fails with `tree_changed` even when its session did not finish, timed out or hit a limit → go test ./executor -run TestProbeCapabilityTreeChangedFirst -v 2>&1 | grep -q -- '--- PASS: TestProbeCapabilityTreeChangedFirst'; the fake executors of the loop and command tests answer the new probe and those packages stay green → go test ./loop ./cmd/batuta ./executor; docs/dispatch.md and docs/loop.md describe the SHA check → grep -q 'rev-parse HEAD' docs/loop.md
+- [ ] 4. review failure tails fall back to the raw output when the decoder leaves none — backend/medium
+      Depends on: 1
+      Scope: review/report.go, review/report_test.go
+      Accept: a review failure built from an attempt whose decoded stdout is empty and whose raw stdout is not carries the bounded, redacted tail of the raw stdout → go test ./review -run TestReviewFailureTailRawFallback -v 2>&1 | grep -q -- '--- PASS: TestReviewFailureTailRawFallback'; when decoded stdout has content it stays the source of the tail → go test ./review -run TestReviewFailureTailDecoded -v 2>&1 | grep -q -- '--- PASS: TestReviewFailureTailDecoded'
+- [ ] 5. a proof that ran no test fails — backend/medium
+      Depends on: 3
+      Scope: gates/gates.go, gates/gates_test.go, docs/loop.md
+      Accept: a proof command that exits 0 but whose output reports that no test ran (Go's `testing: warning: no tests to run` or `[no tests to run]`, Jest's `No tests found, exiting with code 0`) fails with a signal naming the cause → go test ./gates -run TestProofsNoTestsRan -v 2>&1 | grep -q -- '--- PASS: TestProofsNoTestsRan'; a proof whose output contains those words only inside other text that is not the runner's own summary, and a proof that ran tests, still pass → go test ./gates -run TestProofsTestsRan -v 2>&1 | grep -q -- '--- PASS: TestProofsTestsRan'; docs/loop.md states the rule → grep -q 'no tests to run' docs/loop.md
+
+## Decisions and context
+
+Go standard library only, conventional commits, table-driven tests with `t.Parallel()`, temp dirs through `tempDir(t)`. `cmd/batuta` must build on linux, darwin and windows. Every CLI form prints compact JSON or TSV. Release tooling (`CHANGELOG.md`, `.release-please-manifest.json`, `release-please-config.json`, `.goreleaser.yaml`, `.github/workflows/*`) is never touched.
+
+Environment setup is never a question. `GOCACHE` is already set to a writable directory in the executor's environment: run `go test` plainly, with no `GOCACHE=` prefix. Run the tests named in your task's Accept lines. If the sandbox blocks a loopback listener, write the tests and say so in the report: the conductor's gate runs the whole suite.
+
+Every proof in this plan greps the `-v` output for the named `--- PASS:` line because `go test -run <name>` exits 0 when no test matches; task 2 of the first plan (`review-contract-preflight`, commit `dd01f1e`) passed its gates that way while changing only `docs/review.md`. Each named test must exist with exactly that name.
+
+The findings come from `.batuta/reviews/` of the branch review on 2026-10-05: exit 4 never implemented (`runReview` in `cmd/batuta/main.go` maps every non-SHIP, non-FIX verdict to 3); supervision expecting exit 4 whenever `review_failures.json` has entries (`loop/supervision_review.go` ~505–513); `unfinished` checked before `tree_changed` and a marker the executor can copy from the brief (`executor/capability.go` ~66–77, `probeBrief` ~20); the failure tail reading decoded `Stdout` only (`review/report.go` `newReviewFailure` ~52; `executor.Result.RawStdout` holds the undecoded stream).
+
+**Task 1.** `BuildReport` sets `Verdict` from findings and criteria, then forces REWORK when coverage is incomplete; `Report.ReviewFailures` lists the operational failures. The rule must distinguish "REWORK because findings or criteria say so" from "REWORK only because coverage is incomplete", whatever the review failures say.
+
+**Task 2.** Supervision reads `findings.json`, `review_failures.json` and the last line of `review.md`; it cannot always tell from the artifacts whether findings alone require rework, so with failures present both 3 and 4 are consistent with REWORK.
+
+**Task 3.** The probe exists to catch an executor that may edit files but cannot run commands: a marker it can echo from the brief proves nothing. The fake executors that answer the probe live in `cmd/batuta/main_test.go`, `cmd/batuta/main_unix_test.go`, `loop/loop_test.go`, `loop/attempt_test.go`, `loop/answer_question_test.go` and `executor/dispatch_test.go`; they may change only so that they print the marker with the real `HEAD` of their working directory. No production flag or branch may skip the probe in tests.
+
+**Task 5.** `gates.Proofs` (`gates/gates.go` ~349) runs each proof through the shell runner and passes on exit 0; the same function serves the loop, `batuta gate proofs` and the review's spec sweep (`review/spec.go` ~134), so the rule applies to all three. Match the runners' own summary lines, not any occurrence of the words.
+
+After the plan, by the conductor: `batuta review --base main --full --spec .batuta/plans/review-contract-preflight.md` over the whole branch again, then the PR.
