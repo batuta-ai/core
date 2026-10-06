@@ -365,3 +365,47 @@ func TestReportDecidesSummarizesAndCanonicalizes(t *testing.T) {
 		t.Fatalf("canonical form is not stable:\n%s\n%s", canonical, again)
 	}
 }
+
+func TestProofsNoTestFiles(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{"package without tests", `printf '?   \tgithub.com/x/y\t[no test files]\n'`},
+		{"every package without test files", `printf '?   \ta\t[no test files]\n?   \tb\t[no test files]\n'`},
+		{"coverage summary", `printf 'ok  \tgithub.com/x/y\t0.15s\tcoverage: 0.0%% of statements [no tests to run]\n'`},
+		{"coverage without statements", `printf 'ok  \tpkg\t(cached)\tcoverage: [no statements] [no tests to run]\n'`},
+		{"test files and coverage mixed", `printf '?   \ta\t[no test files]\nok  \tb\t0.1s\tcoverage: 0.0%% of statements [no tests to run]\n'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := proofVerdict(t, tt.command)
+			if v.Pass || !strings.Contains(v.Signal, "no tests to run") {
+				t.Fatalf("verdict = %#v", v)
+			}
+		})
+	}
+}
+
+func TestProofsMixedNoTestFiles(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		command string
+	}{
+		{"package ran", `printf '?   \ta\t[no test files]\nok  \tb\t0.02s\n'`},
+		{"package ran with coverage", `printf '?   \ta\t[no test files]\nok  \tb\t0.02s\tcoverage: 61.5%% of statements\n'`},
+		{"cached package ran with coverage", `printf 'ok  \ta\t0.01s\tcoverage: 0.0%% of statements [no tests to run]\nok  \tb\t(cached)\tcoverage: 80.0%% of statements\n'`},
+		{"verbose pass line", `printf '?   \ta\t[no test files]\n--- PASS: TestX (0.00s)\n'`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if v := proofVerdict(t, tt.command); !v.Pass {
+				t.Fatalf("verdict = %#v", v)
+			}
+		})
+	}
+}
