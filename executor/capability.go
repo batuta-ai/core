@@ -135,9 +135,12 @@ func markerReason(stdout []byte, head string) string {
 }
 
 func probeTail(result Result) string {
-	tail := DropSecretLines(Tail(result.Stdout, probeTailLines))
-	if tail == "" {
-		tail = DropSecretLines(Tail(result.Stderr, probeTailLines))
+	var tail string
+	for _, source := range [][]byte{result.Stdout, result.Stderr, result.RawStdout} {
+		tail = DropSecretBearingLines(Tail(source, probeTailLines))
+		if tail != "" {
+			break
+		}
 	}
 	if len(tail) > probeTailBytes {
 		tail = tail[len(tail)-probeTailBytes:]

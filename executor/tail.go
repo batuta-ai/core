@@ -8,6 +8,7 @@ import (
 
 var (
 	secretLine   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
+	secretAssign = regexp.MustCompile(`[A-Z][A-Z0-9_]*=`)
 	absolutePath = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/|\\)[^\s"'=]+`)
 )
 
@@ -26,6 +27,23 @@ func DropSecretLines(value string) string {
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if IsSecretLine(line) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// DropSecretBearingLines removes every line that holds a secret-shaped
+// assignment anywhere in it, such as "provider error: OPENAI_API_KEY=sk-x".
+func DropSecretBearingLines(value string) string {
+	if value == "" {
+		return ""
+	}
+	lines := strings.Split(value, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if secretAssign.MatchString(line) {
 			continue
 		}
 		kept = append(kept, line)

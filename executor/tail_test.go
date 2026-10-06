@@ -59,3 +59,28 @@ func TestDropSecretLines(t *testing.T) {
 		t.Fatalf("DropSecretLines(empty) = %q", got)
 	}
 }
+
+func TestDropSecretBearingLines(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, want string }{
+		{"line start", "kept\nAPI_KEY=abc\nkept too", "kept\nkept too"},
+		{"mid line", "before\nprovider error: OPENAI_API_KEY=sk-test-123\nafter", "before\nafter"},
+		{"indented", "kept\n  TOKEN=x", "kept"},
+		{"lowercase assignment", "lower=case\nkept", "lower=case\nkept"},
+		{"empty", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := DropSecretBearingLines(tc.in); got != tc.want {
+				t.Fatalf("DropSecretBearingLines(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+	if !IsSecretLine("  TOKEN=x") || IsSecretLine("note: TOKEN=x") {
+		t.Fatal("IsSecretLine changed behaviour")
+	}
+	if got, want := DropSecretLines("note: TOKEN=x\nTOKEN=y\nok"), "note: TOKEN=x\nok"; got != want {
+		t.Fatalf("DropSecretLines = %q, want %q", got, want)
+	}
+}

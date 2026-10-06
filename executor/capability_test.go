@@ -316,3 +316,28 @@ func TestProbeCapabilityStatusUnreadable(t *testing.T) {
 		t.Fatalf("probe = %+v", probe)
 	}
 }
+
+func TestProbeTailSources(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		result Result
+		want   string
+	}{
+		{"stdout first", Result{Stdout: []byte("out\n"), Stderr: []byte("err\n"), RawStdout: []byte("raw\n")}, "out"},
+		{"stderr when stdout empty", Result{Stderr: []byte("err\n"), RawStdout: []byte("raw\n")}, "err"},
+		{"raw when both empty", Result{RawStdout: []byte("raw\n")}, "raw"},
+		{"stdout all secret falls to stderr", Result{Stdout: []byte("note: A_KEY=1\n"), Stderr: []byte("err\n")}, "err"},
+		{"raw secret dropped", Result{RawStdout: []byte("before\nprovider error: OPENAI_API_KEY=sk-test-123\nafter\n")}, "before\nafter"},
+		{"raw bounded to tail lines", Result{RawStdout: []byte(strings.Repeat("x\n", 50) + "last\n")}, strings.Repeat("x\n", probeTailLines-1) + "last"},
+		{"nothing", Result{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := probeTail(tt.result); got != tt.want {
+				t.Fatalf("probeTail = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
