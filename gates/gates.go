@@ -344,10 +344,20 @@ func ParseCriteria(accept []string) []Criterion {
 	return criteria
 }
 
-// noTestsRan matches the runners' own summary lines for a run that selected
-// no test: go test's warning and `ok <pkg> <time> [no tests to run]`, Jest's
-// exit-0 notice. The words inside other text do not match.
-var noTestsRan = regexp.MustCompile(`(?m)^(?:testing: warning: no tests to run|ok[ \t]+\S+[ \t]+\S+[ \t]+\[no tests to run\]|No tests found, exiting with code 0)[ \t]*\r?$`)
+// noTestsSignal matches the runners' own summary lines for a run that
+// selected no test: go test's warning and `ok <pkg> <time> [no tests to run]`,
+// Jest's exit-0 notice. The words inside other text do not match.
+var noTestsSignal = regexp.MustCompile(`(?m)^(?:testing: warning: no tests to run|ok[ \t]+\S+[ \t]+\S+[ \t]+\[no tests to run\]|No tests found, exiting with code 0)[ \t]*\r?$`)
+
+// testsRanSignal matches go test output proving a package ran a test: a
+// `--- PASS:` line or an `ok <pkg> <time>` line without the no-tests suffix.
+var testsRanSignal = regexp.MustCompile(`(?m)^(?:[ \t]*--- PASS:|ok[ \t]+\S+[ \t]+(?:\(cached\)|[0-9.]+s)(?:[ \t]+coverage:.*)?[ \t]*\r?$)`)
+
+// noTestsRan is true when the output carries a no-tests signal and no package
+// ran a test, so a multi-package proof passes when any package did.
+func noTestsRan(output string) bool {
+	return noTestsSignal.MatchString(output) && !testsRanSignal.MatchString(output)
+}
 
 // Proofs re-runs each criterion's proof in dir. A proof that exits 0 but
 // whose runner reports that no test ran fails. Criteria without a proof
@@ -361,7 +371,7 @@ func Proofs(ctx context.Context, shell ShellRunner, dir string, criteria []Crite
 			continue
 		}
 		code, output, err := shell.Run(ctx, dir, criterion.Proof)
-		ranNothing := code == 0 && err == nil && noTestsRan.MatchString(output)
+		ranNothing := code == 0 && err == nil && noTestsRan(output)
 		verdict := Verdict{Name: name, Pass: code == 0 && err == nil && !ranNothing, Detail: bound(tail(output))}
 		switch {
 		case err != nil:
