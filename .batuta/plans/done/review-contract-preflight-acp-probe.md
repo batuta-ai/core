@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Task 4 of `.batuta/plans/review-contract-preflight-fixes-3.md`, re-planned with the ACP test fixtures in Scope: the capability probe runs over the transport the task will use, ACP or CLI, and the `capability_probe` record names the transport that ran it.
-**Created:** 2026-10-06 · **Status:** approved
+**Created:** 2026-10-06 · **Status:** done
 
 ## Tasks
-- [ ] 1. the loop probes a route over the route's own transport — backend/high
+- [x] 1. the loop probes a route over the route's own transport — backend/high
       Scope: loop/capability.go, loop/capability_test.go, loop/runner.go, loop/attempt.go, loop/loop_test.go, loop/attempt_test.go, loop/settle_test.go, loop/finished_telemetry_test.go, loop/supervision_policy_test.go, loop/supervision_test.go, cmd/batuta/main_test.go, docs/loop.md
       Accept: a route whose recorded transport is ACP is probed through the ACP backend the task would use, and a CLI route through the CLI backend; the `capability_probe` record's transport is the one that ran the probe → go test ./loop -run TestLoopProbeUsesRouteTransport -v 2>&1 | grep -q -- '--- PASS: TestLoopProbeUsesRouteTransport'; with `--transport auto`, a route that falls back to CLI before submission is probed over CLI and recorded as such → go test ./loop -run TestLoopProbeAutoFallback -v 2>&1 | grep -q -- '--- PASS: TestLoopProbeAutoFallback'; the existing capability tests stay green → go test ./loop -run 'TestLoopProbe|TestLoopIncapable' -v 2>&1 | grep -q -- '--- PASS: TestLoopProbesRouteOnce'; the loop and command packages stay green with their fake executors and ACP fixtures answering the probe → go test ./loop ./cmd/batuta
 

@@ -405,6 +405,7 @@
 - [x] the no-tests proof rule knows `[no test files]` and the coverage form → claude (sonnet), commit 7161ec6e3dd2 (trail: .batuta/runs/2026-10-06-review-contract-preflight-fixes-3-task-3.md, delivery review-contract-preflight-fixes-3-20261006-193702, plan review-contract-preflight-fixes-3, 2026-10-06)
 - [x] a canceled dispatch preflight stays interrupted, and the usage text names exit 4 → claude (sonnet), commit 04627629b255 (trail: .batuta/runs/2026-10-06-review-contract-preflight-fixes-3-task-5.md, delivery review-contract-preflight-fixes-3-20261006-193702, plan review-contract-preflight-fixes-3, 2026-10-06)
 - [x] a supervision review job stays within its read limit → claude (sonnet), commit 942f8a4abc27 (trail: .batuta/runs/2026-10-06-review-contract-preflight-fixes-3-task-6.md, delivery review-contract-preflight-fixes-3-20261006-193702, plan review-contract-preflight-fixes-3, 2026-10-06)
+- [x] the loop probes a route over the route's own transport → codex (gpt-6-sol), commit 12427e1dd416 (trail: .batuta/runs/2026-10-06-review-contract-preflight-acp-probe-task-1.md, delivery review-contract-preflight-acp-probe-20261006-210516, plan review-contract-preflight-acp-probe, 2026-10-06)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
