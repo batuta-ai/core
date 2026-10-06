@@ -1442,7 +1442,7 @@ func TestReviewKeepsCheckpointWhenUncovered(t *testing.T) {
 			defer restore()
 			err := run([]string{"review", "--base", base, "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{})
 			var exit *ExitError
-			if !errors.As(err, &exit) || exit.Code != 3 {
+			if !errors.As(err, &exit) || exit.Code != 4 {
 				t.Fatalf("review = %v", err)
 			}
 			var state struct {
@@ -1471,7 +1471,7 @@ func TestReviewCarriesPendingCohorts(t *testing.T) {
 	err := run([]string{"review", "--base", base, "--worktree", "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{})
 	restore()
 	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != 3 {
+	if !errors.As(err, &exit) || exit.Code != 4 {
 		t.Fatalf("review = %v", err)
 	}
 	var prompts []string
@@ -2764,5 +2764,83 @@ func TestReviewGuardExcludesStaleTails(t *testing.T) {
 	}
 	if err := reviewSessionError(context.Background(), guarded, root, before, nil, nil); err != nil {
 		t.Fatalf("pruning a stale tail tripped the guard: %v", err)
+	}
+}
+
+// reviewExitRunner leaves every cohort without a findings block, so coverage
+// is incomplete, and answers the criteria sweep with status.
+func reviewExitRunner(t *testing.T, status review.CriterionStatus) func() {
+	t.Helper()
+	return stubReviewRunner(t, func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+		if !strings.Contains(command.Args[len(command.Args)-1], "<<<CRITERIA") {
+			return publication.CommandResult{Stdout: []byte("no findings block\n")}, nil
+		}
+		result, err := json.Marshal(review.SpecResult{ID: "task-1.1", Status: status, Path: "change.go:3"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return publication.CommandResult{Stdout: []byte("<<<CRITERIA\n" + string(result) + "\nCRITERIA>>>\n")}, nil
+	})
+}
+
+func runReviewWithSpec(t *testing.T) error {
+	t.Helper()
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	spec := filepath.Join(root, ".batuta", "plans", "delivery.md")
+	if err := os.MkdirAll(filepath.Dir(spec), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := "# Plan — Spec\n**Goal:** Review\n**Status:** approved\n## Tasks\n- [ ] 1. Check — docs/low\n      Accept: delivery is reviewed\n"
+	if err := os.WriteFile(spec, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return run([]string{"review", "--base", base, "--spec", spec, "--out", filepath.Join(root, "out")}, &bytes.Buffer{}, &bytes.Buffer{})
+}
+
+func TestReviewExitIncomplete(t *testing.T) {
+	restore := reviewExitRunner(t, review.CriterionSatisfied)
+	defer restore()
+	var exit *ExitError
+	err := runReviewWithSpec(t)
+	if !errors.As(err, &exit) || exit.Code != 4 || exit.State != "review_incomplete" {
+		t.Fatalf("review error = %#v, want exit 4 review_incomplete", err)
+	}
+}
+
+func TestReviewExitMixed(t *testing.T) {
+	t.Run("violated criterion with review failures", func(t *testing.T) {
+		restore := reviewExitRunner(t, review.CriterionViolated)
+		defer restore()
+		var exit *ExitError
+		err := runReviewWithSpec(t)
+		if !errors.As(err, &exit) || exit.Code != 3 || exit.State != string(review.Rework) {
+			t.Fatalf("review error = %#v, want exit 3 REWORK", err)
+		}
+	})
+	for _, tc := range []struct {
+		name     string
+		severity review.Severity
+		want     int
+	}{
+		{name: "ship", want: 0},
+		{name: "fix before ship", severity: review.Major, want: 2},
+		{name: "blocker", severity: review.Blocker, want: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, base := reviewCommandRepo(t)
+			t.Chdir(root)
+			var findings []review.Finding
+			if tc.severity != "" {
+				findings = []review.Finding{{Severity: tc.severity, Kind: review.Defect, File: "change.go", Line: 3, Premise: "Wrong result", Path: "Call path", Verdict: "Fails", Fix: "Correct it"}}
+			}
+			restore := stubReviewSessions(t, findings, nil)
+			defer restore()
+			err := run([]string{"review", "--base", base, "--out", filepath.Join(root, "out")}, &bytes.Buffer{}, &bytes.Buffer{})
+			var exit *ExitError
+			if tc.want == 0 && err != nil || tc.want != 0 && (!errors.As(err, &exit) || exit.Code != tc.want) {
+				t.Fatalf("review error = %#v, want exit %d", err, tc.want)
+			}
+		})
 	}
 }

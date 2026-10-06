@@ -1210,14 +1210,10 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	if err := review.PrintReport(stdout, report); err != nil {
 		return err
 	}
-	switch report.Verdict {
-	case review.Ship:
-		return nil
-	case review.FixBeforeShip:
-		return &ExitError{Code: 2, State: string(report.Verdict)}
-	default:
-		return &ExitError{Code: 3, State: string(report.Verdict)}
+	if code, state := review.ReviewExitCode(report); code != 0 {
+		return &ExitError{Code: code, State: state}
 	}
+	return nil
 }
 
 // reviewGuardPaths lists every file the review may create or prune: the

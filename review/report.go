@@ -105,6 +105,32 @@ func BuildReport(manifest Manifest, cohorts []CohortResult, spec *SpecSweep) Rep
 	return report
 }
 
+// ReviewIncomplete is the exit state of a REWORK verdict that comes only from
+// incomplete coverage.
+const ReviewIncomplete = "review_incomplete"
+
+// ReviewExitCode maps a report to the process exit code and state of
+// `batuta review`. REWORK exits 4 only when review failures exist and the
+// findings and criteria alone would not force REWORK; otherwise it exits 3.
+func ReviewExitCode(report Report) (int, string) {
+	switch report.Verdict {
+	case Ship:
+		return 0, string(report.Verdict)
+	case FixBeforeShip:
+		return 2, string(report.Verdict)
+	}
+	if len(report.ReviewFailures) > 0 {
+		var criteria []Criterion
+		if report.Spec != nil {
+			criteria = report.Spec.VerdictCriteria()
+		}
+		if Verdict(report.Findings, criteria) != Rework {
+			return 4, ReviewIncomplete
+		}
+	}
+	return 3, string(report.Verdict)
+}
+
 // PrintReport writes the complete human walkthrough. WriteArtifacts uses this
 // same function so review.md is byte-for-byte identical to stdout.
 func PrintReport(w io.Writer, report Report) error {

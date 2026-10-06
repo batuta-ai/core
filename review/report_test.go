@@ -420,3 +420,33 @@ func TestPrintReportReviewFailures(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewExitCode(t *testing.T) {
+	blocker := Finding{Severity: Blocker, Kind: Defect, File: "a.go", Line: 1, Premise: "Build fails", Path: "Compile", Verdict: "Stops", Fix: "Restore"}
+	major := Finding{Severity: Major, Kind: Defect, File: "a.go", Line: 1, Premise: "Wrong", Path: "Call", Verdict: "Fails", Fix: "Fix"}
+	failure := []ReviewFailure{{Kind: failureKindOperational, Cohort: "0", Reason: "reviewer failed"}}
+	violated := &SpecSweep{Covered: true, Results: []SpecResult{{ID: "task-1.1", Status: CriterionViolated}}}
+	satisfied := &SpecSweep{Covered: true, Results: []SpecResult{{ID: "task-1.1", Status: CriterionSatisfied}}}
+	for _, tc := range []struct {
+		name      string
+		report    Report
+		wantCode  int
+		wantState string
+	}{
+		{name: "ship", report: Report{Verdict: Ship}, wantCode: 0, wantState: "SHIP"},
+		{name: "fix before ship", report: Report{Verdict: FixBeforeShip, Findings: []Finding{major}}, wantCode: 2, wantState: "FIX_BEFORE_SHIP"},
+		{name: "rework from blocker", report: Report{Verdict: Rework, Findings: []Finding{blocker}}, wantCode: 3, wantState: "REWORK"},
+		{name: "blocker with failures", report: Report{Verdict: Rework, Findings: []Finding{blocker}, ReviewFailures: failure}, wantCode: 3, wantState: "REWORK"},
+		{name: "violated criterion with failures", report: Report{Verdict: Rework, Spec: violated, ReviewFailures: failure}, wantCode: 3, wantState: "REWORK"},
+		{name: "failures only", report: Report{Verdict: Rework, ReviewFailures: failure}, wantCode: 4, wantState: "review_incomplete"},
+		{name: "major and satisfied criterion with failures", report: Report{Verdict: Rework, Findings: []Finding{major}, Spec: satisfied, ReviewFailures: failure}, wantCode: 4, wantState: "review_incomplete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			code, state := ReviewExitCode(tc.report)
+			if code != tc.wantCode || state != tc.wantState {
+				t.Fatalf("ReviewExitCode = %d %q, want %d %q", code, state, tc.wantCode, tc.wantState)
+			}
+		})
+	}
+}
