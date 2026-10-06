@@ -505,14 +505,15 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 	if len(job.ReviewFailures) > 0 {
 		complete = false
 	}
-	expectedExit := map[string]int{"SHIP": 0, "FIX_BEFORE_SHIP": 2, "REWORK": 3}[verdict[1]]
+	exitOK := job.ExitCode == map[string]int{"SHIP": 0, "FIX_BEFORE_SHIP": 2, "REWORK": 3}[verdict[1]]
 	if len(job.ReviewFailures) > 0 {
 		if verdict[1] != "REWORK" {
 			return errors.New("loop: review failures disagree with verdict")
 		}
-		expectedExit = 4
+		// Findings alone may also require rework, so failures leave 3 and 4 both consistent.
+		exitOK = job.ExitCode == 3 || job.ExitCode == 4
 	}
-	if job.ExitCode != expectedExit {
+	if !exitOK {
 		return errors.New("loop: review verdict and exit status disagree")
 	}
 	job.Outcome, job.Acceptance = verdict[1], "pending"
