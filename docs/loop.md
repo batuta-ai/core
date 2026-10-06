@@ -237,7 +237,11 @@ asked.
   with blocker `needs_conducting_session` (core #18, self handoff).
 - **Criterion syntax.** `Accept: <criterion> → <proof>; …` where the proof
   is a command run in the worktree with `sh -c`; exit 0 means the
-  criterion holds. A criterion without an arrow has no mechanical proof
+  criterion holds, unless the runner's own summary line says no test ran
+  (`testing: warning: no tests to run`, `ok <pkg> <time> [no tests to
+  run]`, Jest's `No tests found, exiting with code 0`): that proof fails.
+  The same rule holds for `batuta gate proofs` and the review's spec
+  sweep. A criterion without an arrow has no mechanical proof
   and is left to the verifier. Entries split on `;`, so a proof may not
   contain one (core #18, criteria). `Scope:` entries must be contained in
   the repository (no absolute path, no `..`); a changed path matches an

@@ -344,7 +344,13 @@ func ParseCriteria(accept []string) []Criterion {
 	return criteria
 }
 
-// Proofs re-runs each criterion's proof in dir. Criteria without a proof
+// noTestsRan matches the runners' own summary lines for a run that selected
+// no test: go test's warning and `ok <pkg> <time> [no tests to run]`, Jest's
+// exit-0 notice. The words inside other text do not match.
+var noTestsRan = regexp.MustCompile(`(?m)^(?:testing: warning: no tests to run|ok[ \t]+\S+[ \t]+\S+[ \t]+\[no tests to run\]|No tests found, exiting with code 0)[ \t]*\r?$`)
+
+// Proofs re-runs each criterion's proof in dir. A proof that exits 0 but
+// whose runner reports that no test ran fails. Criteria without a proof
 // pass here with a signal and are left to the verifier.
 func Proofs(ctx context.Context, shell ShellRunner, dir string, criteria []Criterion) []Verdict {
 	verdicts := make([]Verdict, 0, len(criteria))
@@ -355,10 +361,13 @@ func Proofs(ctx context.Context, shell ShellRunner, dir string, criteria []Crite
 			continue
 		}
 		code, output, err := shell.Run(ctx, dir, criterion.Proof)
-		verdict := Verdict{Name: name, Pass: code == 0 && err == nil, Detail: bound(tail(output))}
+		ranNothing := code == 0 && err == nil && noTestsRan.MatchString(output)
+		verdict := Verdict{Name: name, Pass: code == 0 && err == nil && !ranNothing, Detail: bound(tail(output))}
 		switch {
 		case err != nil:
 			verdict.Signal = criterion.Text + " — could not run `" + criterion.Proof + "`: " + err.Error()
+		case ranNothing:
+			verdict.Signal = criterion.Text + " — `" + criterion.Proof + "` exited 0 but ran no test (no tests to run)"
 		case code == 0:
 			verdict.Signal = criterion.Text + " — `" + criterion.Proof + "` passed"
 		default:
