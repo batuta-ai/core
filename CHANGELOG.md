@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.49](https://github.com/batuta-ai/core/compare/v1.1.0-beta.48...v1.1.0-beta.49) (2026-10-06)
+
+
+### Features
+
+* **loop:** execute approved immutable plan snapshots ([#149](https://github.com/batuta-ai/core/issues/149)) ([9ccc216](https://github.com/batuta-ai/core/commit/9ccc21683a16d75aeb5597417278e6c5ab22d5d0))
+
 ## [1.1.0-beta.48](https://github.com/batuta-ai/core/compare/v1.1.0-beta.47...v1.1.0-beta.48) (2026-10-05)
 
 
