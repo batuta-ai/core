@@ -197,8 +197,12 @@ func (lock presenceLock) writeAtomic(path string) (os.FileInfo, error) {
 }
 
 func acquireDeliveryOwnership(ctx context.Context, workspace, delivery string, now time.Time, timing ...presenceTiming) (*deliveryOwnership, error) {
+	return acquireCheckedDeliveryOwnership(ctx, workspace, delivery, now, nil, timing...)
+}
+
+func acquireCheckedDeliveryOwnership(ctx context.Context, workspace, delivery string, now time.Time, check func() error, timing ...presenceTiming) (*deliveryOwnership, error) {
 	path := filepath.Join(workspace, journal.Dir, delivery+".lock")
-	ownership, err := takePresence(ctx, path, delivery, now, timing...)
+	ownership, err := takeCheckedPresence(ctx, path, delivery, now, check, timing...)
 	if err != nil {
 		return nil, err
 	}
@@ -213,20 +217,32 @@ func acquireDeliveryOwnership(ctx context.Context, workspace, delivery string, n
 }
 
 func takePresence(ctx context.Context, path, delivery string, now time.Time, timing ...presenceTiming) (*deliveryOwnership, error) {
+	return takeCheckedPresence(ctx, path, delivery, now, nil, timing...)
+}
+
+func takeCheckedPresence(ctx context.Context, path, delivery string, now time.Time, check func() error, timing ...presenceTiming) (*deliveryOwnership, error) {
 	release, err := guardPresence(path)
 	if err != nil {
 		return nil, err
 	}
 	defer release()
 	owner, info, err := inspectPresenceGuarded(path)
-	if errors.Is(err, os.ErrNotExist) {
+	missing := errors.Is(err, os.ErrNotExist)
+	if !missing {
+		if err := presenceInspectionError(info, err, now); err != nil {
+			return nil, err
+		}
+		if owner != nil && now.Sub(owner.RefreshedAt) <= presenceFresh {
+			return nil, deliveryOwnedError(fmt.Sprintf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", delivery, owner.PID, owner.StartedAt.Format(time.RFC3339)))
+		}
+	}
+	if check != nil {
+		if err := check(); err != nil {
+			return nil, err
+		}
+	}
+	if missing {
 		return acquirePresenceGuarded(ctx, path, now, timing...)
-	}
-	if err := presenceInspectionError(info, err, now); err != nil {
-		return nil, err
-	}
-	if owner != nil && now.Sub(owner.RefreshedAt) <= presenceFresh {
-		return nil, deliveryOwnedError(fmt.Sprintf("delivery %s is owned by pid %d since %s\nstop it or wait for waiting_input", delivery, owner.PID, owner.StartedAt.Format(time.RFC3339)))
 	}
 	if err := removeStalePresence(path, owner, info, now); err != nil {
 		return nil, fmt.Errorf("loop: remove stale presence lock: %w", err)

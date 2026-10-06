@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -333,12 +334,25 @@ func TestAnswerQuestionNativeRunnerQuestion(t *testing.T) {
 func TestAnswerQuestionNativeRepeatedResume(t *testing.T) {
 	t.Parallel()
 	f := setup(t)
+	profile := filepath.Join(f.root, ".batuta", "profile.md")
+	data, err := os.ReadFile(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profile, bytes.Replace(data, []byte("Execution: parallel"), []byte("Execution: sequential"), 1), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/profile.md")
+	f.run(t, "commit", "-q", "-m", "test: deterministic human pause")
 	fixture := strings.ReplaceAll(fakeExecutor, "choose the second behavior", "choose the first behavior")
 	if err := os.WriteFile(f.fake, []byte(fixture), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	var out bytes.Buffer
-	runner, err := New(context.Background(), f.options("question-at-ceiling", &out))
+	opts := f.options("question-at-ceiling", &out)
+	// AnswerQuestion uses wall time; both runners must use the same clock.
+	opts.Now = nil
+	runner, err := New(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +374,8 @@ func TestAnswerQuestionNativeRepeatedResume(t *testing.T) {
 	if id, err := AnswerQuestion(context.Background(), f.root, first, "first"); err != nil || id != runner.Delivery() {
 		t.Fatalf("first native answer: %q %v", id, err)
 	}
-	opts := f.options("question-at-ceiling", &out)
+	opts = f.options("question-at-ceiling", &out)
+	opts.Now = nil
 	opts.Resume = runner.Delivery()
 	resumed, err := Resume(context.Background(), opts)
 	if err != nil {
@@ -370,6 +385,14 @@ func TestAnswerQuestionNativeRepeatedResume(t *testing.T) {
 		t.Fatalf("resumed run: %s %v\n%s", state, err, &out)
 	}
 	second := shown()
+	answeredRecords := answerRecords(t, runner.store, runner.Delivery())
+	var resumedGraph routing.DeliveryGraph
+	if err := json.Unmarshal(answeredRecords[len(answeredRecords)-1].Graph, &resumedGraph); err != nil {
+		t.Fatal(err)
+	}
+	if len(resumedGraph.Pauses) != 2 || resumedGraph.Pauses[0].EndedAt == nil || resumedGraph.Pauses[1].EndedAt != nil {
+		t.Fatalf("repeated question did not close and reopen the human pause: %+v", resumedGraph.Pauses)
+	}
 	if second.Execution != 2 || second.QuestionID != first.QuestionID || second.OpenedDigest != first.OpenedDigest {
 		t.Fatalf("unexpected repeated native identity: first=%+v second=%+v", first, second)
 	}

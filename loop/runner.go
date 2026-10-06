@@ -89,6 +89,8 @@ type Options struct {
 	Workspace         string
 	Skills            string
 	Plan              string // path (.batuta/plans/<slug>.md or legacy .batuta/plan-<slug>.md) or slug
+	ApprovedSnapshot  *ApprovedPlanSnapshot
+	DeliveryID        string // optional caller-selected identity for a fresh delivery
 	Resume            string // delivery to continue
 	Parallel          int    // 0 → the profile's Execution line
 	TaskTimeout       time.Duration
@@ -192,19 +194,21 @@ type attemptWorktree struct {
 }
 
 type openedDetail struct {
-	Supervision bool                      `json:"supervision,omitempty"`
-	Slug        string                    `json:"slug"`
-	Roadmap     string                    `json:"roadmap,omitempty"`
-	Phase       int                       `json:"phase,omitempty"`
-	PhaseTitle  string                    `json:"phase_title,omitempty"`
-	PlanPath    string                    `json:"plan_path"`
-	PlanDigest  string                    `json:"plan_digest"`
-	Branch      string                    `json:"branch"`
-	Head        string                    `json:"head"`
-	Parallel    int                       `json:"parallel"`
-	Workspace   string                    `json:"workspace"`
-	Generation  routing.RoutingGeneration `json:"generation"`
-	Tasks       []taskSummary             `json:"tasks"`
+	ApprovalReceiptID string                    `json:"approval_receipt_id,omitempty"`
+	PlanContentDigest string                    `json:"plan_content_digest,omitempty"`
+	Supervision       bool                      `json:"supervision,omitempty"`
+	Slug              string                    `json:"slug"`
+	Roadmap           string                    `json:"roadmap,omitempty"`
+	Phase             int                       `json:"phase,omitempty"`
+	PhaseTitle        string                    `json:"phase_title,omitempty"`
+	PlanPath          string                    `json:"plan_path"`
+	PlanDigest        string                    `json:"plan_digest"`
+	Branch            string                    `json:"branch"`
+	Head              string                    `json:"head"`
+	Parallel          int                       `json:"parallel"`
+	Workspace         string                    `json:"workspace"`
+	Generation        routing.RoutingGeneration `json:"generation"`
+	Tasks             []taskSummary             `json:"tasks"`
 }
 
 type taskSummary struct {
@@ -271,6 +275,15 @@ func New(ctx context.Context, opts Options) (*Runner, error) {
 		return nil, fmt.Errorf("loop: graph: %w", err)
 	}
 	r.graph = graph
+	if opts.DeliveryID != "" {
+		r.delivery = opts.DeliveryID
+		if _, err := os.Lstat(r.store.Path(r.delivery)); err == nil {
+			return nil, ErrDeliveryExists
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		return r, nil
+	}
 	r.delivery = r.plan.Slug + "-" + r.now().UTC().Format("20060102-150405")
 	baseID := r.delivery
 	for suffix := 2; ; suffix++ {
@@ -294,7 +307,11 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 	if !journal.ValidDeliveryID(opts.Resume) {
 		return nil, fmt.Errorf("loop: %q is not a delivery id", opts.Resume)
 	}
-	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
+	check := func() error {
+		_, _, err := r.readBoundOpening(opts.Resume)
+		return err
+	}
+	ownership, err := acquireCheckedDeliveryOwnership(ctx, r.root, opts.Resume, r.now(), check, presenceTiming{now: r.now, sleep: r.sleep})
 	if err != nil {
 		return nil, err
 	}
@@ -304,16 +321,9 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 			resumeErr = errors.Join(resumeErr, r.releaseOwnership())
 		}
 	}()
-	records, err := r.store.Read(opts.Resume)
+	records, opened, err := r.readBoundOpening(opts.Resume)
 	if err != nil {
-		return nil, fmt.Errorf("loop: %w", err)
-	}
-	if len(records) == 0 || records[0].Kind != KindOpened {
-		return nil, errors.New("loop: the journal does not start with delivery_opened")
-	}
-	var opened openedDetail
-	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
-		return nil, fmt.Errorf("loop: journal: %w", err)
+		return nil, err
 	}
 	r.opts.Supervision = opened.Supervision
 	// Completed supervised deliveries remain resumable for review even after
@@ -368,6 +378,14 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 }
 
 func prepare(ctx context.Context, opts Options) (*Runner, error) {
+	var err error
+	opts.ApprovedSnapshot, err = ownApprovedSnapshot(opts.ApprovedSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	if opts.DeliveryID != "" && !journal.ValidDeliveryID(opts.DeliveryID) {
+		return nil, errors.New("loop: invalid fresh delivery id")
+	}
 	if opts.Supervisor != nil {
 		opts.Supervision = true
 	}
@@ -476,7 +494,7 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	return &Runner{
 		opts: opts, root: root, git: git,
 		gitState: publication.GitClient{Executable: git.Git, Runner: opts.Runner},
-		integ:    integration.GitClient{Executable: git.Git, Runner: opts.Runner},
+		integ:    integration.GitClient{Executable: git.Git, Runner: opts.Runner, PreservedPlanPath: approvedSnapshotPath(opts.ApprovedSnapshot)},
 		store:    store, profile: profile, skills: skills, table: table,
 		branch: branch, openedHead: head, parallel: parallel, shell: shell,
 		backend: backend, verifier: verifier,
@@ -500,6 +518,9 @@ func loopTransport(config *executor.TransportBackend, cli executor.Backend) exec
 }
 
 func (r *Runner) loadPlan(reference string) error {
+	if r.opts.ApprovedSnapshot != nil {
+		return r.loadApprovedSnapshot(reference)
+	}
 	slug := strings.TrimSpace(reference)
 	if slug == "" {
 		loader, err := routing.NewPlanLoader(r.root)
@@ -572,6 +593,7 @@ func (r *Runner) preflight(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	entries = r.foreignSnapshotEntries(entries)
 	if len(entries) > 0 {
 		managedOnly := true
 		for _, entry := range entries {
@@ -810,7 +832,11 @@ func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
 
 func (r *Runner) runOwned(ctx context.Context, opened func() error) (state string, runErr error) {
 	if r.ownership == nil {
-		ownership, err := acquireDeliveryOwnership(ctx, r.root, r.delivery, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
+		var check func() error
+		if !r.journaled {
+			check = r.requireNewDelivery
+		}
+		ownership, err := acquireCheckedDeliveryOwnership(ctx, r.root, r.delivery, r.now(), check, presenceTiming{now: r.now, sleep: r.sleep})
 		if err != nil {
 			return "", err
 		}
@@ -914,6 +940,11 @@ func (r *Runner) releaseOwnership() error {
 }
 
 func (r *Runner) open() error {
+	// Delivery ownership serializes cooperative callers, including two New
+	// instances prepared before either caller opened its journal.
+	if err := r.requireNewDelivery(); err != nil {
+		return err
+	}
 	tasks := make([]taskSummary, 0, len(r.plan.Tasks))
 	for _, task := range r.plan.Tasks {
 		hint := ""
@@ -929,12 +960,42 @@ func (r *Runner) open() error {
 		Branch: r.branch, Head: r.openedHead, Parallel: r.parallel, Workspace: r.root,
 		Generation: r.generation, Tasks: tasks,
 	}
+	if snapshot := r.opts.ApprovedSnapshot; snapshot != nil {
+		detail.ApprovalReceiptID, detail.PlanContentDigest = snapshot.ReceiptID, snapshot.ContentDigest
+	}
 	if err := r.record(KindOpened, "", detail); err != nil {
 		return err
 	}
 	r.journaled = true
 	fmt.Fprintf(r.out, "delivery %s opened on %s @ %s — journal %s\n", r.delivery, r.branch, short(r.openedHead), filepath.Join(journal.Dir, r.delivery+".jsonl"))
 	return nil
+}
+
+func (r *Runner) requireNewDelivery() error {
+	if _, err := os.Lstat(r.store.Path(r.delivery)); err == nil {
+		return ErrDeliveryExists
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+func (r *Runner) readBoundOpening(delivery string) ([]journal.Record, openedDetail, error) {
+	records, err := r.store.Read(delivery)
+	if err != nil {
+		return nil, openedDetail{}, fmt.Errorf("loop: %w", err)
+	}
+	if len(records) == 0 || records[0].Kind != KindOpened {
+		return nil, openedDetail{}, errors.New("loop: the journal does not start with delivery_opened")
+	}
+	var opened openedDetail
+	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
+		return nil, openedDetail{}, fmt.Errorf("loop: journal: %w", err)
+	}
+	if err := r.validateSnapshotOpening(opened); err != nil {
+		return nil, openedDetail{}, err
+	}
+	return records, opened, nil
 }
 
 // record appends a journal record carrying the graph as it stands. Callers

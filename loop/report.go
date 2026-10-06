@@ -462,12 +462,16 @@ func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary)
 	if staged.ExitCode != 0 || staged.StdoutTruncated || staged.StderrTruncated {
 		return errors.New("loop: cannot inspect staged bookkeeping paths")
 	}
-	allowed := map[string]bool{"WORK.md": true, ".batuta/roadmap.md": true, filepath.ToSlash(r.plan.Path): true, ".batuta/plans/done/" + r.plan.Slug + ".md": true}
+	allowed := map[string]bool{"WORK.md": true, ".batuta/roadmap.md": true}
 	current, err := filepath.Rel(r.root, r.planPath)
 	if err != nil {
 		return err
 	}
-	allowed[filepath.ToSlash(current)] = true
+	if r.opts.ApprovedSnapshot == nil {
+		allowed[filepath.ToSlash(r.plan.Path)] = true
+		allowed[".batuta/plans/done/"+r.plan.Slug+".md"] = true
+		allowed[filepath.ToSlash(current)] = true
+	}
 	for _, path := range strings.Split(string(staged.Stdout), "\x00") {
 		if path != "" && !allowed[path] {
 			return fmt.Errorf("loop: staged path outside bookkeeping: %q; unstage it before retrying", path)
@@ -483,9 +487,12 @@ func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary)
 	}
 	// Stage even when retrying an already ticked plan. The source may already
 	// be archived, or its removal may already have been committed.
-	paths := []string{r.planPath}
+	var paths []string
+	if r.opts.ApprovedSnapshot == nil {
+		paths = append(paths, r.planPath)
+	}
 	original := filepath.Join(r.root, r.plan.Path)
-	if original != r.planPath {
+	if r.opts.ApprovedSnapshot == nil && original != r.planPath {
 		tracked, err := r.git.Runner.Run(ctx, publication.Command{
 			Executable: r.git.Git, Args: []string{"ls-files", "-z", "--", r.plan.Path}, Directory: r.root,
 		})
@@ -503,10 +510,12 @@ func (r *Runner) bookkeeping(ctx context.Context, state string, summary Summary)
 		return err
 	}
 	args := append([]string{"add", "-A", "--"}, paths...)
-	if _, err := r.git.Runner.Run(ctx, publication.Command{
-		Executable: r.git.Git, Args: args, Directory: r.root,
-	}); err != nil {
-		return fmt.Errorf("loop: stage plan bookkeeping: %w", err)
+	if len(paths) > 0 {
+		if _, err := r.git.Runner.Run(ctx, publication.Command{
+			Executable: r.git.Git, Args: args, Directory: r.root,
+		}); err != nil {
+			return fmt.Errorf("loop: stage plan bookkeeping: %w", err)
+		}
 	}
 	if _, err := r.git.Commit(ctx, r.bookkeepingMessage(state, summary)+"\n", "WORK.md"); err != nil {
 		return fmt.Errorf("loop: bookkeeping commit: %w", err)
@@ -556,6 +565,9 @@ var (
 )
 
 func (r *Runner) tickPlan(summary Summary) (bool, error) {
+	if r.opts.ApprovedSnapshot != nil {
+		return false, nil
+	}
 	payload, err := os.ReadFile(r.planPath)
 	if errors.Is(err, os.ErrNotExist) {
 		// Archival may have succeeded before staging or journaling failed.
@@ -1055,21 +1067,21 @@ func Abandon(ctx context.Context, opts Options) (state string, abandonErr error)
 	if err != nil {
 		return "", err
 	}
-	ownership, err := acquireDeliveryOwnership(ctx, r.root, opts.Resume, r.now(), presenceTiming{now: r.now, sleep: r.sleep})
+	if !journal.ValidDeliveryID(opts.Resume) {
+		return "", fmt.Errorf("loop: %q is not a delivery id", opts.Resume)
+	}
+	check := func() error {
+		_, _, err := r.readBoundOpening(opts.Resume)
+		return err
+	}
+	ownership, err := acquireCheckedDeliveryOwnership(ctx, r.root, opts.Resume, r.now(), check, presenceTiming{now: r.now, sleep: r.sleep})
 	if err != nil {
 		return "", err
 	}
 	r.ownership = ownership
 	defer func() { abandonErr = errors.Join(abandonErr, r.releaseOwnership()) }()
-	records, err := r.store.Read(opts.Resume)
+	records, opened, err := r.readBoundOpening(opts.Resume)
 	if err != nil {
-		return "", fmt.Errorf("loop: %w", err)
-	}
-	if len(records) == 0 || records[0].Kind != KindOpened {
-		return "", errors.New("loop: the journal does not start with delivery_opened")
-	}
-	var opened openedDetail
-	if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
 		return "", err
 	}
 	if detail := pendingFinalization(records); detail != nil {
@@ -1103,7 +1115,7 @@ func Abandon(ctx context.Context, opts Options) (state string, abandonErr error)
 			}
 		}
 	}
-	if entries, err := r.git.Status(ctx, r.root, false); err == nil && len(entries) > 0 {
+	if entries, err := r.git.Status(ctx, r.root, false); err == nil && len(r.foreignSnapshotEntries(entries)) > 0 {
 		return "", fmt.Errorf("%w: commit or stash before abandoning (the bookkeeping commit needs a clean tree)", worktree.ErrDirty)
 	}
 	return r.finish(ctx, StateAbandoned)

@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -23,6 +24,8 @@ import (
 // SupervisionReviewJob is evidence for a separate acceptance stage. Reported
 // means the engine returned artifacts, not that a conductor approved delivery.
 type SupervisionReviewJob struct {
+	ApprovalReceiptID string            `json:"approval_receipt_id,omitempty"`
+	PlanContentDigest string            `json:"plan_content_digest,omitempty"`
 	Outcome           string            `json:"outcome,omitempty"`
 	Acceptance        string            `json:"acceptance"`
 	ID                string            `json:"id,omitempty"`
@@ -48,10 +51,11 @@ type SupervisionReviewJob struct {
 // The same core executable probes its engine before using the routed readonly
 // adapters and independent proof checks in `review`. No fallback is installed.
 type SupervisionReviewOptions struct {
-	Executable string
-	Skills     string
-	Runner     publication.CommandRunner
-	Timeout    time.Duration
+	ApprovedSnapshot *ApprovedPlanSnapshot
+	Executable       string
+	Skills           string
+	Runner           publication.CommandRunner
+	Timeout          time.Duration
 }
 
 var supervisionCommit = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
@@ -84,11 +88,20 @@ func supervisionReviewCandidateInWorkspace(workspace, delivery string, records [
 	}
 	job.FinalCommit, job.Base, job.SpecDigest = terminal.FinalCommit, opened.Head, opened.PlanDigest
 	job.SpecPath, job.Slug = opened.PlanPath, opened.Slug
+	job.ApprovalReceiptID, job.PlanContentDigest = opened.ApprovalReceiptID, opened.PlanContentDigest
+	if (job.ApprovalReceiptID == "") != (job.PlanContentDigest == "") {
+		job.Reason = "approved snapshot identity is incomplete"
+		return job
+	}
 	if !supervisionCommit.MatchString(job.FinalCommit) || !supervisionCommit.MatchString(job.Base) || len(job.SpecDigest) != 64 || job.SpecPath == "" || job.Slug == "" {
 		job.Reason = "immutable final commit, original base or spec identity is unknown"
 		return job
 	}
-	identity, _ := json.Marshal([]string{delivery, job.FinalCommit, job.Base, job.SpecDigest})
+	identityFields := []string{delivery, job.FinalCommit, job.Base, job.SpecDigest}
+	if job.ApprovalReceiptID != "" {
+		identityFields = append(identityFields, job.ApprovalReceiptID, job.PlanContentDigest)
+	}
+	identity, _ := json.Marshal(identityFields)
 	job.ID = fmt.Sprintf("%x", sha256.Sum256(identity))
 	return job
 }
@@ -105,6 +118,31 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	observer, err := normalizeSupervisionOptions(observer)
 	if err != nil {
 		return nil, err
+	}
+	opts.ApprovedSnapshot, err = ownApprovedSnapshot(opts.ApprovedSnapshot)
+	if err != nil {
+		return nil, err
+	}
+	openingRecords, err := readSupervisionRecords(observer)
+	if err != nil {
+		return nil, err
+	}
+	if len(openingRecords) > 0 && openingRecords[0].Kind == KindOpened {
+		var opened openedDetail
+		if err := json.Unmarshal(openingRecords[0].Detail, &opened); err != nil {
+			return nil, err
+		}
+		root, err := filepath.EvalSymlinks(observer.Workspace)
+		if err != nil {
+			return nil, err
+		}
+		binding := &Runner{root: root, opts: Options{ApprovedSnapshot: opts.ApprovedSnapshot}}
+		if err := binding.validateSnapshotOpening(opened); err != nil {
+			return nil, err
+		}
+		if opened.ApprovalReceiptID != "" || opened.PlanContentDigest != "" {
+			observer.Workspace = root
+		}
 	}
 	observation, err := ObserveSupervision(observer)
 	if err != nil {
@@ -138,7 +176,7 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 		if err := json.Unmarshal(data, &saved); err != nil {
 			return nil, err
 		}
-		if saved.ID != job.ID || saved.Delivery != job.Delivery || saved.FinalCommit != job.FinalCommit || saved.Base != job.Base || saved.SpecDigest != job.SpecDigest || saved.SpecPath != job.SpecPath || saved.Slug != job.Slug {
+		if saved.ID != job.ID || saved.Delivery != job.Delivery || saved.FinalCommit != job.FinalCommit || saved.Base != job.Base || saved.SpecDigest != job.SpecDigest || saved.SpecPath != job.SpecPath || saved.Slug != job.Slug || !approvedReviewIdentityMatches(&saved, job) {
 			return nil, errors.New("loop: review job identity mismatch")
 		}
 		job = &saved
@@ -202,7 +240,7 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	job.Snapshot = filepath.Join(directory, "source")
 	job.Spec = filepath.Join(directory, job.Slug+".md")
 	job.Artifacts = filepath.Join(directory, "artifacts")
-	if err := prepareSupervisionReviewSnapshot(reviewCtx, observer, job); err != nil {
+	if err := prepareSupervisionReviewSnapshot(reviewCtx, observer, job, opts.ApprovedSnapshot); err != nil {
 		return fail(err)
 	}
 	if active, err := supervisionReviewActiveRunner(observer); err != nil || active {
@@ -315,14 +353,18 @@ func supervisionReviewGit(ctx context.Context, root string, args ...string) ([]b
 	if err != nil {
 		return nil, err
 	}
-	result, err := (publication.ExecRunner{}).Run(ctx, publication.Command{Executable: git, Directory: root, Args: args})
+	commandArgs := args
+	if runtime.GOOS == "windows" {
+		commandArgs = append([]string{"-c", "core.longpaths=true"}, args...)
+	}
+	result, err := (publication.ExecRunner{}).Run(ctx, publication.Command{Executable: git, Directory: root, Args: commandArgs})
 	if err != nil || result.ExitCode != 0 || result.StdoutTruncated || result.StderrTruncated {
 		return nil, errors.Join(fmt.Errorf("loop: review snapshot git %s failed: %s", args[0], strings.TrimSpace(string(result.Stderr))), err)
 	}
 	return result.Stdout, nil
 }
 
-func prepareSupervisionReviewSnapshot(ctx context.Context, opts SupervisionOptions, job *SupervisionReviewJob) error {
+func prepareSupervisionReviewSnapshot(ctx context.Context, opts SupervisionOptions, job *SupervisionReviewJob, approved *ApprovedPlanSnapshot) error {
 	// An interrupted preparation has no launch intent and can be rebuilt. Never
 	// remove a snapshot after launch; its evidence belongs to that attempt.
 	if err := os.RemoveAll(job.Snapshot); err != nil {
@@ -337,26 +379,34 @@ func prepareSupervisionReviewSnapshot(ctx context.Context, opts SupervisionOptio
 	if _, err := supervisionReviewGit(ctx, job.Snapshot, "merge-base", "--is-ancestor", job.Base, job.FinalCommit); err != nil {
 		return err
 	}
-	// Resolve the original contract from the original base first. Archived paths
-	// are fallback candidates only when their parsed contract digest still matches.
-	for _, source := range []struct{ commit, path string }{{job.Base, job.SpecPath}, {job.FinalCommit, job.SpecPath}, {job.FinalCommit, ".batuta/plans/done/" + job.Slug + ".md"}} {
-		data, err := supervisionReviewGit(ctx, job.Snapshot, "show", source.commit+":"+source.path)
-		if err != nil {
-			continue
-		}
-		plan, err := routing.ParsePlan(job.Slug, data)
-		if err != nil || plan.Set.Digest != job.SpecDigest {
-			continue
-		}
-		if err := os.WriteFile(job.Spec, data, 0600); err != nil {
+	if approved != nil {
+		if err := os.WriteFile(job.Spec, approved.Content, 0600); err != nil {
 			return err
 		}
-		job.SpecContentDigest = fmt.Sprintf("%x", sha256.Sum256(data))
-		break
+		job.SpecContentDigest = approved.ContentDigest
+	} else {
+		// Resolve the original contract from the original base first. Archived paths
+		// are fallback candidates only when their parsed contract digest still matches.
+		for _, source := range []struct{ commit, path string }{{job.Base, job.SpecPath}, {job.FinalCommit, job.SpecPath}, {job.FinalCommit, ".batuta/plans/done/" + job.Slug + ".md"}} {
+			data, err := supervisionReviewGit(ctx, job.Snapshot, "show", source.commit+":"+source.path)
+			if err != nil {
+				continue
+			}
+			plan, err := routing.ParsePlan(job.Slug, data)
+			if err != nil || plan.Set.Digest != job.SpecDigest {
+				continue
+			}
+			if err := os.WriteFile(job.Spec, data, 0600); err != nil {
+				return err
+			}
+			job.SpecContentDigest = fmt.Sprintf("%x", sha256.Sum256(data))
+			break
+		}
+		if job.SpecContentDigest == "" {
+			return errors.New("loop: exact delivered spec digest cannot be resolved")
+		}
 	}
-	if job.SpecContentDigest == "" {
-		return errors.New("loop: exact delivered spec digest cannot be resolved")
-	}
+
 	exclude := filepath.Join(job.Snapshot, ".git", "info", "exclude")
 	file, err := os.OpenFile(exclude, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
 	if err != nil {
@@ -388,7 +438,7 @@ func validateSupervisionReviewSnapshot(ctx context.Context, job *SupervisionRevi
 	if err != nil {
 		return err
 	}
-	if fmt.Sprintf("%x", sha256.Sum256(spec)) != job.SpecContentDigest {
+	if fmt.Sprintf("%x", sha256.Sum256(spec)) != job.SpecContentDigest || (job.PlanContentDigest != "" && job.SpecContentDigest != job.PlanContentDigest) {
 		return errors.New("loop: reviewed spec changed")
 	}
 	return nil
@@ -490,7 +540,7 @@ func loadSupervisionReview(opts SupervisionOptions, candidate *SupervisionReview
 	if err := json.Unmarshal(data, &saved); err != nil {
 		return nil, err
 	}
-	if saved.ID != candidate.ID || saved.Delivery != candidate.Delivery || saved.Base != candidate.Base || saved.FinalCommit != candidate.FinalCommit || saved.SpecDigest != candidate.SpecDigest || saved.SpecPath != candidate.SpecPath || saved.Slug != candidate.Slug {
+	if saved.ID != candidate.ID || saved.Delivery != candidate.Delivery || saved.Base != candidate.Base || saved.FinalCommit != candidate.FinalCommit || saved.SpecDigest != candidate.SpecDigest || saved.SpecPath != candidate.SpecPath || saved.Slug != candidate.Slug || !approvedReviewIdentityMatches(&saved, candidate) {
 		return nil, errors.New("loop: review job identity mismatch")
 	}
 	saved.Acceptance = "pending"
@@ -527,7 +577,7 @@ func loadSupervisionReviewReceipt(opts SupervisionOptions, job *SupervisionRevie
 	if err := json.Unmarshal(data, &saved); err != nil {
 		return nil, err
 	}
-	if saved.ID != job.ID || saved.Delivery != job.Delivery || saved.Base != job.Base || saved.FinalCommit != job.FinalCommit || saved.SpecDigest != job.SpecDigest || saved.SpecPath != job.SpecPath || saved.Slug != job.Slug {
+	if saved.ID != job.ID || saved.Delivery != job.Delivery || saved.Base != job.Base || saved.FinalCommit != job.FinalCommit || saved.SpecDigest != job.SpecDigest || saved.SpecPath != job.SpecPath || saved.Slug != job.Slug || !approvedReviewIdentityMatches(&saved, job) {
 		return nil, errors.New("loop: review outcome receipt identity mismatch")
 	}
 	// Receipts use the writer's exact encoding; decoding must not turn a
@@ -570,4 +620,8 @@ func supervisionReviewEvent(opts SupervisionOptions, job *SupervisionReviewJob, 
 	}
 	event := &SupervisionEvent{ID: opts.Delivery + ":review:" + job.ID + ":" + digest[7:], Delivery: opts.Delivery, Sequence: sequence, Kind: "review", At: job.FinishedAt, ReviewID: job.ID, ReviewOutcome: job.Outcome, ReviewState: job.State, Evidence: SupervisionEvidence{Path: filepath.ToSlash(path), Digest: digest}, Action: "Review evidence awaits conductor judgment; completion and SHIP grant no merge, publication or correction authority."}
 	return event, nil
+}
+
+func approvedReviewIdentityMatches(left, right *SupervisionReviewJob) bool {
+	return left.ApprovalReceiptID == right.ApprovalReceiptID && left.PlanContentDigest == right.PlanContentDigest
 }
