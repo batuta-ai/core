@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -982,5 +983,53 @@ func TestSupervisionReconciledDeletionEntersReview(t *testing.T) {
 	}
 	if terminalEvents != 1 || reviewEvents != 1 {
 		t.Fatalf("terminal/review identities collided: %+v", observation.Pending)
+	}
+}
+
+func TestSupervisionReviewJobWithinLimit(t *testing.T) {
+	t.Parallel()
+	opts, _, spec := supervisionReviewFixture(t)
+	launches := 0
+	engine := fakeSupervisionReview(t, opts, spec, &launches)
+	original := engine.Runner
+	const count = 400
+	engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+		result, err := original.Run(ctx, c)
+		if len(c.Args) <= 2 {
+			return result, err
+		}
+		writeSupervisionReviewEvidence(t, c, "REWORK", false)
+		failures := make([]SupervisionReviewFailure, count)
+		for i := range failures {
+			code := 7
+			failures[i] = SupervisionReviewFailure{Kind: "operational", Cohort: strconv.Itoa(i), Reason: "reviewer exited before coverage", ExitCode: &code, Tail: strings.Repeat("x", 4096)}
+		}
+		data, err := json.Marshal(failures)
+		if err != nil {
+			return result, err
+		}
+		if err := os.WriteFile(filepath.Join(c.Args[7], "review_failures.json"), data, 0600); err != nil {
+			return result, err
+		}
+		result.ExitCode = 4
+		return result, supervisionReviewExitError(t, ctx, 4)
+	})
+	job, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil || job.State != "reported" || len(job.ReviewFailures) != count {
+		t.Fatalf("run: %+v, %v", job, err)
+	}
+	replayed, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil || replayed.State != "reported" || len(replayed.ReviewFailures) != count || launches != 1 {
+		t.Fatalf("replay: %+v, launches=%d, %v", replayed, launches, err)
+	}
+	tails := 0
+	for i, failure := range replayed.ReviewFailures {
+		if failure.Kind != "operational" || failure.Cohort != strconv.Itoa(i) || failure.Reason != "reviewer exited before coverage" || failure.ExitCode == nil || *failure.ExitCode != 7 {
+			t.Fatalf("failure %d changed: %+v", i, failure)
+		}
+		tails += len(failure.Tail)
+	}
+	if tails > supervisionReviewTailBudget {
+		t.Fatalf("tails total %d bytes, budget %d", tails, supervisionReviewTailBudget)
 	}
 }

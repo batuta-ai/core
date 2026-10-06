@@ -471,6 +471,7 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 		if len(failuresData) == 0 || failuresData[0] != '[' || json.Unmarshal(failuresData, &job.ReviewFailures) != nil {
 			return errors.New("loop: malformed review evidence: review_failures.json must be a JSON list")
 		}
+		boundSupervisionReviewTails(job.ReviewFailures)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("loop: malformed review evidence: %w", err)
 	}
@@ -537,6 +538,22 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 		}
 	}
 	return nil
+}
+
+// job.json is read back with a 1 MiB limit, so failure tails share a budget
+// well under it; the full tails stay in review_failures.json.
+const supervisionReviewTailBudget = 256 << 10
+
+func boundSupervisionReviewTails(failures []SupervisionReviewFailure) {
+	remaining := supervisionReviewTailBudget
+	for i := range failures {
+		tail := failures[i].Tail
+		if len(tail) > remaining {
+			tail = strings.ToValidUTF8(tail[len(tail)-remaining:], "")
+		}
+		failures[i].Tail = tail
+		remaining -= len(tail)
+	}
 }
 
 func loadSupervisionReview(opts SupervisionOptions, candidate *SupervisionReviewJob) (*SupervisionReviewJob, error) {
