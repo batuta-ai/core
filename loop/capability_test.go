@@ -11,7 +11,9 @@ import (
 	"testing"
 
 	"github.com/batuta-ai/core/executor"
+	"github.com/batuta-ai/core/executor/acp"
 	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/routing"
 )
 
 type stubProbeBackend func(executor.Execution) (executor.Result, error)
@@ -112,6 +114,132 @@ func probeRecords(t *testing.T, records []journal.Record) []capabilityProbeDetai
 		probes = append(probes, detail)
 	}
 	return probes
+}
+
+func TestLoopProbeUsesRouteTransport(t *testing.T) {
+	for _, mode := range []string{"cli", "acp"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options("default", &out)
+			taskPrompts, probeOpens, acpOpens, acpShutdowns, activeSessions := 0, 0, 0, 0, 0
+			if mode == "acp" {
+				transport := loopACPTransport(t, func(e executor.Execution) (string, string) {
+					taskPrompts++
+					if e.Request.Brief != "task brief" {
+						t.Errorf("ACP task session brief = %q", e.Request.Brief)
+					}
+					return "task answer\n", "end_turn"
+				})
+				open := transport.ACP.Open
+				transport.ACP.Open = func(ctx context.Context, e executor.Execution) (*acp.Connection, func() error, error) {
+					if activeSessions != 0 {
+						t.Error("ACP task opened while probe session was still active")
+					}
+					if strings.Contains(e.Request.Brief, executor.CapabilityMarker) {
+						probeOpens++
+					}
+					conn, shutdown, err := open(ctx, e)
+					if err != nil {
+						return conn, shutdown, err
+					}
+					acpOpens++
+					activeSessions++
+					return conn, func() error {
+						defer func() { activeSessions--; acpShutdowns++ }()
+						return shutdown()
+					}, nil
+				}
+				opts.Transport = transport
+			}
+			r, err := New(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			adapter, err := r.adapterLocked("codex")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode == "acp" {
+				adapter.ACP = &executor.ACPLaunch{Run: "codex-acp", Version: "fixture-v1"}
+			}
+			if err := r.open(); err != nil {
+				t.Fatal(err)
+			}
+			ac := attemptContext{taskID: "task_1", adapter: adapter, runtime: routing.RuntimeValue{Provider: "codex", Model: "fake-low", Reasoning: "low"}, worktree: attemptWorktree{Root: f.root}}
+			probe, err := r.probeRoute(context.Background(), ac)
+			if err != nil || !probe.Pass || probe.Transport != mode {
+				t.Fatalf("probe = %+v, %v", probe, err)
+			}
+			if taskPrompts != 0 {
+				t.Fatalf("task prompts during probe = %d", taskPrompts)
+			}
+			if mode == "acp" {
+				if probeOpens != 1 || acpOpens != 1 || acpShutdowns != 1 || activeSessions != 0 {
+					t.Fatalf("after probe: probe opens=%d opens=%d shutdowns=%d active=%d", probeOpens, acpOpens, acpShutdowns, activeSessions)
+				}
+				request := executor.Request{Brief: "task brief", Cwd: f.root, Model: "fake-low", Effort: "low"}
+				invocation, err := adapter.Command(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				result, err := r.backend.Execute(context.Background(), executor.Execution{Adapter: adapter, Request: request, Invocation: invocation})
+				if err != nil || !result.Finished || taskPrompts != 1 || probeOpens != 1 || acpOpens != 2 || acpShutdowns != 2 || activeSessions != 0 {
+					t.Fatalf("task = %+v, %v; task prompts=%d probe opens=%d opens=%d shutdowns=%d active=%d", result, err, taskPrompts, probeOpens, acpOpens, acpShutdowns, activeSessions)
+				}
+			}
+			if mode == "cli" {
+				if models := probeModels(t, f); strings.Join(models, ",") != "fake-low" {
+					t.Fatalf("CLI probes = %v", models)
+				}
+			} else if _, err := os.Stat(filepath.Join(f.state, "probes")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("CLI probe file exists or cannot be inspected: %v", err)
+			}
+			probes := probeRecords(t, readJournal(t, f, r.Delivery()))
+			if len(probes) != 1 || probes[0].Transport != mode || !probes[0].Pass {
+				t.Fatalf("journaled probes = %+v", probes)
+			}
+		})
+	}
+}
+
+func TestLoopProbeAutoFallback(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	transport := loopACPTransport(t, func(executor.Execution) (string, string) {
+		t.Error("unqualified ACP probe was submitted")
+		return "", "end_turn"
+	})
+	transport.Mode = "auto"
+	transport.Qualifications = nil
+	opts.Transport = transport
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter, err := r.adapterLocked("codex")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter.ACP = &executor.ACPLaunch{Run: "codex-acp", Version: "fixture-v1"}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	ac := attemptContext{taskID: "task_1", adapter: adapter, runtime: routing.RuntimeValue{Provider: "codex", Model: "fake-low", Reasoning: "low"}, worktree: attemptWorktree{Root: f.root}}
+	probe, err := r.probeRoute(context.Background(), ac)
+	if err != nil || !probe.Pass || probe.Transport != "cli" {
+		t.Fatalf("probe = %+v, %v", probe, err)
+	}
+	if models := probeModels(t, f); strings.Join(models, ",") != "fake-low" {
+		t.Fatalf("CLI probes = %v", models)
+	}
+	probes := probeRecords(t, readJournal(t, f, r.Delivery()))
+	if len(probes) != 1 || probes[0].Transport != "cli" || probes[0].RequestedTransport != "auto" || !probes[0].Pass {
+		t.Fatalf("journaled probes = %+v", probes)
+	}
 }
 
 func TestLoopProbesRouteOnce(t *testing.T) {

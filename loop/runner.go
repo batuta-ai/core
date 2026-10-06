@@ -469,8 +469,8 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	subprocess := executor.NewSubprocess()
 	subprocess.Runner = opts.Runner
 	subprocess.Environment = opts.Environment
-	probeBackend := executor.CLIBackend{Subprocess: subprocess}
-	backend := loopTransport(opts.Transport, probeBackend)
+	cliBackend := executor.CLIBackend{Subprocess: subprocess}
+	backend := loopTransport(opts.Transport, cliBackend)
 	verifier := loopTransport(opts.VerifierTransport, executor.CLIBackend{Subprocess: subprocess})
 	parallel := profile.Parallelism()
 	if opts.Parallel > 0 {
@@ -487,7 +487,7 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		integ:    integration.GitClient{Executable: git.Git, Runner: opts.Runner},
 		store:    store, profile: profile, skills: skills, table: table,
 		branch: branch, openedHead: head, parallel: parallel, shell: shell,
-		backend: backend, probeBackend: probeBackend, verifier: verifier,
+		backend: backend, probeBackend: backend, verifier: verifier,
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
 		now: opts.Now, out: out,
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},

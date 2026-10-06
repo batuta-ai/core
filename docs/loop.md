@@ -175,12 +175,16 @@ asked.
   ignored: the user's table is the routing decision (core #18, task
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
 - **Capability probe.** Before the first attempt on each executor, model,
-  effort, and transport route in a delivery, the loop asks the executor's CLI
-  to run `git rev-parse HEAD` in that attempt's worktree. The probe passes only
-  when an isolated `BATUTA-CAPABLE <sha>` line matches the SHA the host reads
-  there and the worktree status and HEAD remain unchanged. A `capability_probe` journal
-  record carries `executor`, `model`, `effort`, `transport`, `pass`, `reason`,
-  `duration_ms`, and a bounded output `tail`. Later attempts on the same
+  effort, and transport route in a delivery, the loop asks the executor over
+  the route's selected transport to run `git rev-parse HEAD` in that attempt's
+  worktree. An ACP probe uses its own session, which closes before the task
+  starts. With `auto`, a pre-submission fallback probes over CLI. The probe
+  passes only when an isolated `BATUTA-CAPABLE <sha>` line matches the SHA the
+  host reads there and the worktree status and HEAD remain unchanged. A
+  `capability_probe` journal record carries `executor`, `model`, `effort`,
+  the transport that ran the probe, `pass`, `reason`, `duration_ms`, and a
+  bounded output `tail`. An auto route also records `requested_transport` so
+  a resumed run can reuse the correct verdict. Later attempts on the same
   route, including after `--resume`, reuse that verdict without probing again.
   A failing probe does not submit the task brief.
 - **Usage-limit fallback.** The legacy CLI policy is unchanged:
