@@ -38,6 +38,11 @@ func (r *Runner) runSupervised(ctx context.Context, config SuperviseOptions) (st
 	if err != nil {
 		return "", err
 	}
+	if config.Review != nil && r.opts.ApprovedSnapshot != nil {
+		review := *config.Review
+		review.ApprovedSnapshot = r.opts.ApprovedSnapshot
+		config.Review = &review
+	}
 	// Both paths can share a caller's unguarded writer, such as bytes.Buffer.
 	if config.Output == nil {
 		config.Output = r.out
