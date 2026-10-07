@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.1.0-beta.50](https://github.com/batuta-ai/core/compare/v1.1.0-beta.49...v1.1.0-beta.50) (2026-10-07)
+
+
+### Features
+
+* a canceled dispatch preflight stays interrupted, and the usage text ([0462762](https://github.com/batuta-ai/core/commit/04627629b255ffe4f154b402b01d9e3bfd05a587))
+* a multi-package proof fails as "no test ran" only when no package ([b6166f0](https://github.com/batuta-ai/core/commit/b6166f0fd8732f4ff09da3cf9572742f363390d8))
+* a supervision review job stays within its read limit ([942f8a4](https://github.com/batuta-ai/core/commit/942f8a4abc27b5d80904f15ecd28fe023999e71b))
+* executor tails drop secret-bearing lines and the probe tail falls ([9aa7fc0](https://github.com/batuta-ai/core/commit/9aa7fc02d76a371812401830ff813da08813fbff))
+* review contract and capability preflight (Tempo retro 4.6, 4.1b) ([fcc0f9e](https://github.com/batuta-ai/core/commit/fcc0f9ea57a1de45d57fa7f925bad5102d15fa3b))
+* review failure tails never carry a secret value from raw JSON events ([efcff5d](https://github.com/batuta-ai/core/commit/efcff5d8da8bd7fc8748540dec3f03bcea929476))
+* review failure tails redact stdout and stderr separately ([c860272](https://github.com/batuta-ai/core/commit/c860272b8472731786839cb0abf9a6534fe883a0))
+* the capability probe fails when the initial tree status cannot be ([9a73a0a](https://github.com/batuta-ai/core/commit/9a73a0ada0e6d0e8cf66b3fa3e7aaab68d66ea32))
+* the loop probes a route over the route's own transport ([12427e1](https://github.com/batuta-ai/core/commit/12427e1dd4168d2842b5e19d56dc399e157e30ad))
+* the no-tests proof rule knows `[no test files]` and the coverage ([7161ec6](https://github.com/batuta-ai/core/commit/7161ec6e3dd26a903c93bf8f0cc077e19eedb333))
+
+
+### Bug Fixes
+
+* **loop:** drop secret-bearing lines from probe errors; usage names dispatch exit 6 ([cd2612a](https://github.com/batuta-ai/core/commit/cd2612a8130e10c6de583a56305e5e75f023914f))
+
 ## [1.1.0-beta.49](https://github.com/batuta-ai/core/compare/v1.1.0-beta.48...v1.1.0-beta.49) (2026-10-06)
 
 
