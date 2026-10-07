@@ -24,28 +24,37 @@ import (
 // SupervisionReviewJob is evidence for a separate acceptance stage. Reported
 // means the engine returned artifacts, not that a conductor approved delivery.
 type SupervisionReviewJob struct {
-	ApprovalReceiptID string            `json:"approval_receipt_id,omitempty"`
-	PlanContentDigest string            `json:"plan_content_digest,omitempty"`
-	Outcome           string            `json:"outcome,omitempty"`
-	Acceptance        string            `json:"acceptance"`
-	ID                string            `json:"id,omitempty"`
-	Delivery          string            `json:"delivery"`
-	FinalCommit       string            `json:"final_commit,omitempty"`
-	Base              string            `json:"base,omitempty"`
-	SpecDigest        string            `json:"spec_digest,omitempty"`
-	SpecPath          string            `json:"spec_path,omitempty"`
-	Slug              string            `json:"slug,omitempty"`
-	State             string            `json:"state"`
-	Reason            string            `json:"reason,omitempty"`
-	Snapshot          string            `json:"snapshot,omitempty"`
-	Spec              string            `json:"spec,omitempty"`
-	SpecContentDigest string            `json:"spec_content_digest,omitempty"`
-	Artifacts         string            `json:"artifacts,omitempty"`
-	ArtifactDigests   map[string]string `json:"artifact_digests,omitempty"`
-	Attempts          int               `json:"attempts"`
-	LaunchedAt        time.Time         `json:"launched_at,omitempty"`
-	FinishedAt        time.Time         `json:"finished_at,omitempty"`
-	ExitCode          int               `json:"exit_code,omitempty"`
+	ApprovalReceiptID string                     `json:"approval_receipt_id,omitempty"`
+	PlanContentDigest string                     `json:"plan_content_digest,omitempty"`
+	Outcome           string                     `json:"outcome,omitempty"`
+	Acceptance        string                     `json:"acceptance"`
+	ID                string                     `json:"id,omitempty"`
+	Delivery          string                     `json:"delivery"`
+	FinalCommit       string                     `json:"final_commit,omitempty"`
+	Base              string                     `json:"base,omitempty"`
+	SpecDigest        string                     `json:"spec_digest,omitempty"`
+	SpecPath          string                     `json:"spec_path,omitempty"`
+	Slug              string                     `json:"slug,omitempty"`
+	State             string                     `json:"state"`
+	Reason            string                     `json:"reason,omitempty"`
+	Snapshot          string                     `json:"snapshot,omitempty"`
+	Spec              string                     `json:"spec,omitempty"`
+	SpecContentDigest string                     `json:"spec_content_digest,omitempty"`
+	Artifacts         string                     `json:"artifacts,omitempty"`
+	ArtifactDigests   map[string]string          `json:"artifact_digests,omitempty"`
+	ReviewFailures    []SupervisionReviewFailure `json:"review_failures,omitempty"`
+	Attempts          int                        `json:"attempts"`
+	LaunchedAt        time.Time                  `json:"launched_at,omitempty"`
+	FinishedAt        time.Time                  `json:"finished_at,omitempty"`
+	ExitCode          int                        `json:"exit_code,omitempty"`
+}
+
+type SupervisionReviewFailure struct {
+	Kind     string `json:"kind"`
+	Cohort   string `json:"cohort"`
+	Reason   string `json:"reason"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+	Tail     string `json:"tail,omitempty"`
 }
 
 // The same core executable probes its engine before using the routed readonly
@@ -263,11 +272,11 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 		return persist()
 	}
 	var exitErr *exec.ExitError
-	verdictExit := (result.ExitCode == 2 || result.ExitCode == 3) && errors.As(runErr, &exitErr)
+	verdictExit := (result.ExitCode == 2 || result.ExitCode == 3 || result.ExitCode == 4) && errors.As(runErr, &exitErr)
 	if (runErr != nil && !verdictExit) || reviewCtx.Err() != nil || result.StdoutTruncated || result.StderrTruncated {
 		return fail(errors.Join(errors.New("loop: review engine execution failed"), runErr, reviewCtx.Err()))
 	}
-	if result.ExitCode != 0 && result.ExitCode != 2 && result.ExitCode != 3 {
+	if result.ExitCode != 0 && result.ExitCode != 2 && result.ExitCode != 3 && result.ExitCode != 4 {
 		return fail(fmt.Errorf("loop: review engine exited %d", result.ExitCode))
 	}
 	if err := validateSupervisionReviewSnapshot(reviewCtx, job); err != nil {
@@ -290,7 +299,10 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	if err := classifySupervisionReview(job); err != nil {
 		return fail(err)
 	}
-	job.State, job.Reason = "reported", "review evidence awaits conductor judgment"
+	job.State = "reported"
+	if job.Reason == "" {
+		job.Reason = "review evidence awaits conductor judgment"
+	}
 	job.FinishedAt = observer.Now()
 	return persist()
 }
@@ -460,6 +472,23 @@ func supervisionReviewArtifacts(job *SupervisionReviewJob, record bool) error {
 			return fmt.Errorf("loop: review artifact %s changed", name)
 		}
 	}
+	const failures = "review_failures.json"
+	data, err := readSupervisionFile(filepath.Join(job.Artifacts, failures), 32<<20)
+	if errors.Is(err, os.ErrNotExist) {
+		if !record && job.ArtifactDigests[failures] != "" {
+			return fmt.Errorf("loop: review artifact %s unavailable", failures)
+		}
+		return nil
+	}
+	if err != nil || len(data) == 0 {
+		return errors.Join(fmt.Errorf("loop: review artifact %s unavailable", failures), err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(data))
+	if record {
+		job.ArtifactDigests[failures] = digest
+	} else if job.ArtifactDigests[failures] != digest {
+		return fmt.Errorf("loop: review artifact %s changed", failures)
+	}
 	return nil
 }
 
@@ -486,6 +515,16 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 	if err := errors.Join(read("manifest.json", &manifest), read("state.json", &state), read("findings.json", &findings)); err != nil {
 		return fmt.Errorf("loop: malformed review evidence: %w", err)
 	}
+	job.ReviewFailures = nil
+	failuresData, err := readSupervisionFile(filepath.Join(job.Artifacts, "review_failures.json"), 32<<20)
+	if err == nil {
+		if len(failuresData) == 0 || failuresData[0] != '[' || json.Unmarshal(failuresData, &job.ReviewFailures) != nil {
+			return errors.New("loop: malformed review evidence: review_failures.json must be a JSON list")
+		}
+		boundSupervisionReviewTails(job.ReviewFailures)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("loop: malformed review evidence: %w", err)
+	}
 	if manifest.Base != job.Base || (state.Head != job.Base && state.Head != job.FinalCommit) {
 		return errors.New("loop: review evidence identity mismatch")
 	}
@@ -498,10 +537,6 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 	coverage := regexp.MustCompile(`(?m)^Coverage: ([0-9]+)/([0-9]+) cohorts$`).FindAllStringSubmatch(report, -1)
 	if len(verdict) != 2 || len(coverage) != 1 || !strings.HasPrefix(report, "Review walkthrough\n\nBase: "+job.Base+"\n") || !strings.Contains(report, "\nCriteria:\n| Criterion | Status | Evidence |\n") {
 		return errors.New("loop: review verdict or coverage evidence is unavailable")
-	}
-	expectedExit := map[string]int{"SHIP": 0, "FIX_BEFORE_SHIP": 2, "REWORK": 3}[verdict[1]]
-	if job.ExitCode != expectedExit {
-		return errors.New("loop: review verdict and exit status disagree")
 	}
 	covered, err := strconv.Atoi(coverage[0][1])
 	if err != nil {
@@ -518,11 +553,57 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 	for _, file := range manifest.Files {
 		complete = complete && (file.Selected || file.Ignored)
 	}
+	if len(job.ReviewFailures) > 0 {
+		complete = false
+	}
+	exitOK := job.ExitCode == map[string]int{"SHIP": 0, "FIX_BEFORE_SHIP": 2, "REWORK": 3}[verdict[1]]
+	if len(job.ReviewFailures) > 0 {
+		if verdict[1] != "REWORK" {
+			return errors.New("loop: review failures disagree with verdict")
+		}
+		// Findings alone may also require rework, so failures leave 3 and 4 both consistent.
+		exitOK = job.ExitCode == 3 || job.ExitCode == 4
+	}
+	if !exitOK {
+		return errors.New("loop: review verdict and exit status disagree")
+	}
 	job.Outcome, job.Acceptance = verdict[1], "pending"
 	if !complete {
 		job.Outcome = "incomplete_coverage"
+		if len(job.ReviewFailures) > 0 {
+			failure := job.ReviewFailures[0]
+			cohort := "spec"
+			if failure.Cohort != "spec" {
+				index, err := strconv.Atoi(failure.Cohort)
+				if err == nil && index >= 0 {
+					cohort = fmt.Sprintf("cohort %d", index+1)
+				} else {
+					cohort = "cohort " + failure.Cohort
+				}
+			}
+			job.Reason = fmt.Sprintf("review incomplete: %s: %s", cohort, failure.Reason)
+			if failure.ExitCode != nil {
+				job.Reason += fmt.Sprintf(" (exit %d)", *failure.ExitCode)
+			}
+		}
 	}
 	return nil
+}
+
+// job.json is read back with a 1 MiB limit, so failure tails share a budget
+// well under it; the full tails stay in review_failures.json.
+const supervisionReviewTailBudget = 256 << 10
+
+func boundSupervisionReviewTails(failures []SupervisionReviewFailure) {
+	remaining := supervisionReviewTailBudget
+	for i := range failures {
+		tail := failures[i].Tail
+		if len(tail) > remaining {
+			tail = strings.ToValidUTF8(tail[len(tail)-remaining:], "")
+		}
+		failures[i].Tail = tail
+		remaining -= len(tail)
+	}
 }
 
 func loadSupervisionReview(opts SupervisionOptions, candidate *SupervisionReviewJob) (*SupervisionReviewJob, error) {

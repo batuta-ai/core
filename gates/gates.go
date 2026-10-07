@@ -344,7 +344,24 @@ func ParseCriteria(accept []string) []Criterion {
 	return criteria
 }
 
-// Proofs re-runs each criterion's proof in dir. Criteria without a proof
+// noTestsSignal matches the runners' own summary lines for a run that
+// selected no test: go test's warning, `ok <pkg> <time> [no tests to run]` (with
+// or without a coverage summary), `? <pkg> [no test files]` and Jest's exit-0
+// notice. The words inside other text do not match.
+var noTestsSignal = regexp.MustCompile(`(?m)^(?:testing: warning: no tests to run|\?[ \t]+\S+[ \t]+\[no test files\]|ok[ \t]+\S+[ \t]+\S+(?:[ \t]+coverage:[^\r\n]*?)?[ \t]+\[no tests to run\]|No tests found, exiting with code 0)[ \t]*\r?$`)
+
+// testsRanSignal matches go test output proving a package ran a test: a
+// `--- PASS:` line or an `ok <pkg> <time>` line without the no-tests suffix.
+var testsRanSignal = regexp.MustCompile(`(?m)^(?:[ \t]*--- PASS:|ok[ \t]+\S+[ \t]+(?:\(cached\)|[0-9.]+s)(?:[ \t]+coverage:[ \t]+(?:\[no statements\]|[^\[\r\n]*))?[ \t]*\r?$)`)
+
+// noTestsRan is true when the output carries a no-tests signal and no package
+// ran a test, so a multi-package proof passes when any package did.
+func noTestsRan(output string) bool {
+	return noTestsSignal.MatchString(output) && !testsRanSignal.MatchString(output)
+}
+
+// Proofs re-runs each criterion's proof in dir. A proof that exits 0 but
+// whose runner reports that no test ran fails. Criteria without a proof
 // pass here with a signal and are left to the verifier.
 func Proofs(ctx context.Context, shell ShellRunner, dir string, criteria []Criterion) []Verdict {
 	verdicts := make([]Verdict, 0, len(criteria))
@@ -355,10 +372,13 @@ func Proofs(ctx context.Context, shell ShellRunner, dir string, criteria []Crite
 			continue
 		}
 		code, output, err := shell.Run(ctx, dir, criterion.Proof)
-		verdict := Verdict{Name: name, Pass: code == 0 && err == nil, Detail: bound(tail(output))}
+		ranNothing := code == 0 && err == nil && noTestsRan(output)
+		verdict := Verdict{Name: name, Pass: code == 0 && err == nil && !ranNothing, Detail: bound(tail(output))}
 		switch {
 		case err != nil:
 			verdict.Signal = criterion.Text + " — could not run `" + criterion.Proof + "`: " + err.Error()
+		case ranNothing:
+			verdict.Signal = criterion.Text + " — `" + criterion.Proof + "` exited 0 but ran no test (no tests to run)"
 		case code == 0:
 			verdict.Signal = criterion.Text + " — `" + criterion.Proof + "` passed"
 		default:

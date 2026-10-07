@@ -231,9 +231,11 @@ successful reviews; nothing is installed as a fallback.
 
 The job record is `.batuta/reviews/supervision/<job-id>/job.json`. The immutable
 spec copy is `.batuta/reviews/supervision/<job-id>/<slug>.md`, and the isolated
-source snapshot is the sibling `source/` directory. Only the engine's
-digest-bound `manifest.json`, `findings.json`, `review.md`, and `state.json` live
-in the `artifacts/` subdirectory beneath that job directory.
+source snapshot is the sibling `source/` directory. The engine's digest-bound
+`manifest.json`, `findings.json`, `review.md`, `state.json`, and
+`review_failures.json` live in the `artifacts/` subdirectory beneath that job
+directory. Older four-artifact reviews without `review_failures.json` remain
+readable. Review failures identify the cohort and reason for incomplete coverage.
 Execution state (`pending`, `launching`, `reported`, `failed`, `uncertain`) is
 separate from outcome (`SHIP`, `FIX_BEFORE_SHIP`, `REWORK`,
 `incomplete_coverage`, `execution_failed`). The engine's exit status, canonical

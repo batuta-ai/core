@@ -20,6 +20,19 @@ type DispatchOptions struct {
 	Request   Request
 	Transport TransportBackend
 	Timeout   time.Duration
+	// Preflight runs the capability probe on the same route before the brief.
+	Preflight bool
+}
+
+// preflightTimeout bounds the capability probe, however long the attempt may run.
+const preflightTimeout = 5 * time.Minute
+
+// PreflightReport is the outcome of the capability probe that ran before the brief.
+type PreflightReport struct {
+	Pass       bool   `json:"pass"`
+	Reason     string `json:"reason,omitempty"`
+	DurationMS int64  `json:"duration_ms"`
+	Tail       string `json:"tail,omitempty"`
 }
 
 // DispatchArtifacts names files relative to the private directory. Keep these
@@ -46,6 +59,7 @@ type DispatchReport struct {
 	ExitCode           int               `json:"exit_code"`
 	WorkerExitCode     int               `json:"worker_exit_code"`
 	Truncated          bool              `json:"truncated,omitempty"`
+	Preflight          *PreflightReport  `json:"preflight,omitempty"`
 	Receipt            Receipt           `json:"receipt"`
 	Artifacts          DispatchArtifacts `json:"artifacts"`
 }
@@ -161,20 +175,28 @@ func Dispatch(ctx context.Context, opts DispatchOptions) (report DispatchReport,
 	if cli == nil {
 		cli = CLIBackend{Subprocess: NewSubprocess()}
 	}
-	transport.CLI = dispatchCLI{backend: cli, selected: func() { report.Backend = "cli" }}
-	if transport.Mode == "acp" {
-		report.Backend = "acp"
+	var execErr error
+	incapable := false
+	if opts.Preflight {
+		incapable, execErr = runPreflight(ctx, &report, cli, opts)
 	}
-	result, execErr := transport.Execute(ctx, Execution{Adapter: opts.Adapter, Request: opts.Request, Invocation: invocation, Timeout: opts.Timeout, Stdout: stdout, Stderr: stderr})
-	if result.Receipt != nil {
-		report.Receipt = *result.Receipt
+	if !incapable && execErr == nil {
+		transport.CLI = dispatchCLI{backend: cli, selected: func() { report.Backend = "cli" }}
+		if transport.Mode == "acp" {
+			report.Backend = "acp"
+		}
+		var result Result
+		result, execErr = transport.Execute(ctx, Execution{Adapter: opts.Adapter, Request: opts.Request, Invocation: invocation, Timeout: opts.Timeout, Stdout: stdout, Stderr: stderr})
+		if result.Receipt != nil {
+			report.Receipt = *result.Receipt
+		}
+		if report.Backend == "" && report.Receipt.Transport.Outcome != TransportNotStarted {
+			report.Backend = "acp"
+		}
+		report.WorkerExitCode = result.ExitCode
+		report.Truncated = result.Truncated || stdout.truncated || stderr.truncated
+		report.ExitClass, report.ExitCode = dispatchExit(ctx, result, report.Receipt, execErr)
 	}
-	if report.Backend == "" && report.Receipt.Transport.Outcome != TransportNotStarted {
-		report.Backend = "acp"
-	}
-	report.WorkerExitCode = result.ExitCode
-	report.Truncated = result.Truncated || stdout.truncated || stderr.truncated
-	report.ExitClass, report.ExitCode = dispatchExit(ctx, result, report.Receipt, execErr)
 	if stdout.err != nil || stderr.err != nil {
 		report.ExitClass, report.ExitCode = "uncertain", 5
 	}
@@ -203,6 +225,27 @@ func Dispatch(ctx context.Context, opts DispatchOptions) (report DispatchReport,
 		}
 	}
 	return report, errors.Join(execErr, stdout.err, stderr.err)
+}
+
+// runPreflight probes the route over the CLI transport and records the
+// outcome in the report. A failing probe ends the dispatch as executor_incapable;
+// a probe that could not start leaves the route unavailable.
+func runPreflight(ctx context.Context, report *DispatchReport, backend Backend, opts DispatchOptions) (bool, error) {
+	route := ProbeRoute{Model: opts.Request.Model, Effort: opts.Request.Effort}
+	probe, err := ProbeCapability(ctx, backend, opts.Adapter, route, opts.Request.Cwd, min(opts.Timeout, preflightTimeout))
+	if err != nil {
+		report.ExitClass, report.ExitCode = "unavailable", 2
+		if ctx.Err() != nil {
+			report.ExitClass, report.ExitCode = "uncertain", 130
+		}
+		return false, err
+	}
+	report.Preflight = &PreflightReport{Pass: probe.Pass, Reason: probe.Reason, DurationMS: probe.Duration.Milliseconds(), Tail: probe.Tail}
+	if probe.Pass {
+		return false, nil
+	}
+	report.ExitClass, report.ExitCode = "executor_incapable", 6
+	return true, nil
 }
 
 type dispatchCLI struct {

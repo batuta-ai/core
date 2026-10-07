@@ -69,9 +69,26 @@ func TestDispatchWorker(t *testing.T) {
 	if err != nil {
 		os.Exit(93)
 	}
-	f.WriteString("call\n")
+	probe := strings.Contains(args[1], executor.CapabilityMarker)
+	if probe {
+		f.WriteString("probe\n")
+	} else {
+		f.WriteString("call\n")
+	}
 	f.Close()
 	fmt.Fprintln(os.Stderr, "worker stderr")
+	if probe {
+		if os.Getenv("BATUTA_PROBE_INCAPABLE") == "1" {
+			fmt.Println("I cannot run commands here")
+		} else {
+			head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+			if err != nil {
+				os.Exit(94)
+			}
+			fmt.Printf("%s %s\n", executor.CapabilityMarker, strings.TrimSpace(string(head)))
+		}
+		os.Exit(0)
+	}
 	switch args[1] {
 	case "fail":
 		os.Exit(7)
@@ -102,6 +119,12 @@ func dispatchCommandFixture(t *testing.T, brief string) (string, []string) {
 	if err := os.WriteFile(briefPath, []byte(brief), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("calls\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "add", "brief.md", ".gitignore")
+	reviewGit(t, root, "commit", "-qm", "test: initialize dispatch fixture")
 	t.Setenv("BATUTA_SKILLS", skills)
 	t.Setenv("BATUTA_DISPATCH_FIXTURE", "1")
 	return root, []string{"dispatch", "--brief-file", briefPath, "--executor", "fixture", "--model", "chosen-model", "--effort", "high", "--cwd", root}
@@ -166,6 +189,55 @@ func TestDispatchCommandReportsOneAttempt(t *testing.T) {
 				t.Fatalf("attempts=%q, report=%+v, err=%v", calls, report, err)
 			}
 		})
+	}
+}
+
+func TestDispatchPreflightPass(t *testing.T) {
+	root, args := dispatchCommandFixture(t, "success")
+	var stdout, stderr bytes.Buffer
+	if err := run(append(args, "--preflight"), &stdout, &stderr); err != nil {
+		t.Fatalf("exit = %v; stdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	var report executor.DispatchReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err, stdout.String())
+	}
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if report.ExitClass != "completed" || report.ExitCode != 0 || report.Backend != "cli" || report.Receipt.Submission.State != executor.SubmissionSubmitted {
+		t.Fatalf("report = %s", &stdout)
+	}
+	if report.Preflight == nil || !report.Preflight.Pass || report.Preflight.Reason != "" {
+		t.Fatalf("preflight = %+v", report.Preflight)
+	}
+	calls, err := os.ReadFile(filepath.Join(root, "calls"))
+	if err != nil || string(calls) != "probe\ncall\n" {
+		t.Fatalf("calls = %q, %v", calls, err)
+	}
+}
+
+func TestDispatchPreflightIncapable(t *testing.T) {
+	root, args := dispatchCommandFixture(t, "success")
+	t.Setenv("BATUTA_PROBE_INCAPABLE", "1")
+	var stdout, stderr bytes.Buffer
+	err := run(append(args, "--preflight"), &stdout, &stderr)
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 6 || exit.State != "executor_incapable" {
+		t.Fatalf("exit = %v; stdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	var report executor.DispatchReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err, stdout.String())
+	}
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if report.ExitClass != "executor_incapable" || report.ExitCode != 6 || report.Receipt.Submission.State != executor.SubmissionNotSubmitted || report.Backend != "" {
+		t.Fatalf("report = %s", &stdout)
+	}
+	if report.Preflight == nil || report.Preflight.Pass || report.Preflight.Reason != executor.ProbeNoMarker || !strings.Contains(report.Preflight.Tail, "cannot run commands") {
+		t.Fatalf("preflight = %+v", report.Preflight)
+	}
+	calls, err := os.ReadFile(filepath.Join(root, "calls"))
+	if err != nil || string(calls) != "probe\n" {
+		t.Fatalf("brief was sent after a failed probe: %q, %v", calls, err)
 	}
 }
 
@@ -478,6 +550,20 @@ func TestUsage(t *testing.T) {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage is missing %q", want)
 		}
+	}
+}
+
+func TestUsageNamesReviewExit4(t *testing.T) {
+	for _, want := range []string{"4 review_incomplete", "a cohort failed or the spec sweep is uncovered", "review_failures.json"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage is missing %q", want)
+		}
+	}
+}
+
+func TestUsageNamesDispatchExit6(t *testing.T) {
+	if !strings.Contains(usage, "6 executor_incapable") {
+		t.Errorf("usage is missing %q", "6 executor_incapable")
 	}
 }
 
@@ -1380,7 +1466,7 @@ func TestReviewKeepsCheckpointWhenUncovered(t *testing.T) {
 			defer restore()
 			err := run([]string{"review", "--base", base, "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{})
 			var exit *ExitError
-			if !errors.As(err, &exit) || exit.Code != 3 {
+			if !errors.As(err, &exit) || exit.Code != 4 {
 				t.Fatalf("review = %v", err)
 			}
 			var state struct {
@@ -1409,7 +1495,7 @@ func TestReviewCarriesPendingCohorts(t *testing.T) {
 	err := run([]string{"review", "--base", base, "--worktree", "--out", "out"}, &bytes.Buffer{}, &bytes.Buffer{})
 	restore()
 	var exit *ExitError
-	if !errors.As(err, &exit) || exit.Code != 3 {
+	if !errors.As(err, &exit) || exit.Code != 4 {
 		t.Fatalf("review = %v", err)
 	}
 	var prompts []string
@@ -2007,6 +2093,7 @@ case "$1" in
   run)
     test "$2" = chosen-model
     test "$3" = high
+    case "$4" in *BATUTA-CAPABLE*) sha=$(git rev-parse HEAD); printf 'BATUTA-CAPABLE %s\n' "$sha"; exit 0;; esac
     cp "$4" "$BATUTA_SUPERVISION_CALLS/brief-$(cat "$BATUTA_SUPERVISION_CALLS/next").md"
     if grep -q '^The answer: ' "$4"; then
       echo 3 > "$BATUTA_SUPERVISION_CALLS/next"
@@ -2701,5 +2788,83 @@ func TestReviewGuardExcludesStaleTails(t *testing.T) {
 	}
 	if err := reviewSessionError(context.Background(), guarded, root, before, nil, nil); err != nil {
 		t.Fatalf("pruning a stale tail tripped the guard: %v", err)
+	}
+}
+
+// reviewExitRunner leaves every cohort without a findings block, so coverage
+// is incomplete, and answers the criteria sweep with status.
+func reviewExitRunner(t *testing.T, status review.CriterionStatus) func() {
+	t.Helper()
+	return stubReviewRunner(t, func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+		if !strings.Contains(command.Args[len(command.Args)-1], "<<<CRITERIA") {
+			return publication.CommandResult{Stdout: []byte("no findings block\n")}, nil
+		}
+		result, err := json.Marshal(review.SpecResult{ID: "task-1.1", Status: status, Path: "change.go:3"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return publication.CommandResult{Stdout: []byte("<<<CRITERIA\n" + string(result) + "\nCRITERIA>>>\n")}, nil
+	})
+}
+
+func runReviewWithSpec(t *testing.T) error {
+	t.Helper()
+	root, base := reviewCommandRepo(t)
+	t.Chdir(root)
+	spec := filepath.Join(root, ".batuta", "plans", "delivery.md")
+	if err := os.MkdirAll(filepath.Dir(spec), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plan := "# Plan — Spec\n**Goal:** Review\n**Status:** approved\n## Tasks\n- [ ] 1. Check — docs/low\n      Accept: delivery is reviewed\n"
+	if err := os.WriteFile(spec, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return run([]string{"review", "--base", base, "--spec", spec, "--out", filepath.Join(root, "out")}, &bytes.Buffer{}, &bytes.Buffer{})
+}
+
+func TestReviewExitIncomplete(t *testing.T) {
+	restore := reviewExitRunner(t, review.CriterionSatisfied)
+	defer restore()
+	var exit *ExitError
+	err := runReviewWithSpec(t)
+	if !errors.As(err, &exit) || exit.Code != 4 || exit.State != "review_incomplete" {
+		t.Fatalf("review error = %#v, want exit 4 review_incomplete", err)
+	}
+}
+
+func TestReviewExitMixed(t *testing.T) {
+	t.Run("violated criterion with review failures", func(t *testing.T) {
+		restore := reviewExitRunner(t, review.CriterionViolated)
+		defer restore()
+		var exit *ExitError
+		err := runReviewWithSpec(t)
+		if !errors.As(err, &exit) || exit.Code != 3 || exit.State != string(review.Rework) {
+			t.Fatalf("review error = %#v, want exit 3 REWORK", err)
+		}
+	})
+	for _, tc := range []struct {
+		name     string
+		severity review.Severity
+		want     int
+	}{
+		{name: "ship", want: 0},
+		{name: "fix before ship", severity: review.Major, want: 2},
+		{name: "blocker", severity: review.Blocker, want: 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, base := reviewCommandRepo(t)
+			t.Chdir(root)
+			var findings []review.Finding
+			if tc.severity != "" {
+				findings = []review.Finding{{Severity: tc.severity, Kind: review.Defect, File: "change.go", Line: 3, Premise: "Wrong result", Path: "Call path", Verdict: "Fails", Fix: "Correct it"}}
+			}
+			restore := stubReviewSessions(t, findings, nil)
+			defer restore()
+			err := run([]string{"review", "--base", base, "--out", filepath.Join(root, "out")}, &bytes.Buffer{}, &bytes.Buffer{})
+			var exit *ExitError
+			if tc.want == 0 && err != nil || tc.want != 0 && (!errors.As(err, &exit) || exit.Code != tc.want) {
+				t.Fatalf("review error = %#v, want exit %d", err, tc.want)
+			}
+		})
 	}
 }

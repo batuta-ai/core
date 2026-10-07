@@ -242,6 +242,19 @@ asked.
   reported in `--dry-run` when it disagrees with the table and otherwise
   ignored: the user's table is the routing decision (core #18, task
   overrides). `reasoning` follows the lane (`low|medium|high|xhigh`).
+- **Capability probe.** Before the first attempt on each executor, model,
+  effort, and transport route in a delivery, the loop asks the executor over
+  the route's selected transport to run `git rev-parse HEAD` in that attempt's
+  worktree. An ACP probe uses its own session, which closes before the task
+  starts. With `auto`, a pre-submission fallback probes over CLI. The probe
+  passes only when an isolated `BATUTA-CAPABLE <sha>` line matches the SHA the
+  host reads there and the worktree status and HEAD remain unchanged. A
+  `capability_probe` journal record carries `executor`, `model`, `effort`,
+  the transport that ran the probe, `pass`, `reason`, `duration_ms`, and a
+  bounded output `tail`. An auto route also records `requested_transport` so
+  a resumed run can reuse the correct verdict. Later attempts on the same
+  route, including after `--resume`, reuse that verdict without probing again.
+  A failing probe does not submit the task brief.
 - **Usage-limit fallback.** The legacy CLI policy is unchanged:
   `--max-limit-waits` (default 20) bounds the waits in one attempt. At that
   cap, or when a named reset is more than
@@ -296,7 +309,11 @@ asked.
   with blocker `needs_conducting_session` (core #18, self handoff).
 - **Criterion syntax.** `Accept: <criterion> → <proof>; …` where the proof
   is a command run in the worktree with `sh -c`; exit 0 means the
-  criterion holds. A criterion without an arrow has no mechanical proof
+  criterion holds, unless the runner's own summary line says no test ran
+  (`testing: warning: no tests to run`, `ok <pkg> <time> [no tests to
+  run]`, Jest's `No tests found, exiting with code 0`): that proof fails.
+  The same rule holds for `batuta gate proofs` and the review's spec
+  sweep. A criterion without an arrow has no mechanical proof
   and is left to the verifier. Entries split on `;`, so a proof may not
   contain one (core #18, criteria). `Scope:` entries must be contained in
   the repository (no absolute path, no `..`); a changed path matches an
@@ -321,6 +338,9 @@ asked.
   the task; other ready tasks and later waves continue whenever their
   dependencies permit. The blocker tells the operator why:
   - `timed_out` marks the attempt stalled, then follows the ordinary policy.
+  - `executor_incapable` records a failed capability probe with its reason and
+    output tail as feedback. It escalates directly to the next external route
+    without a same-runtime retry; at the top of the ladder it blocks the task.
   - `verifier_incomplete`, `tests_failed`, `scope_violation`, `no_changes`,
     `candidate_invalid`, `question_unsafe`, and `install_failed` follow the
     ordinary policy. So do `executor_failed` and `proof_failed`, the remaining

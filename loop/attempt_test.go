@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -503,7 +504,19 @@ func loopACPTransport(t *testing.T, serve func(executor.Execution) (string, stri
 					reply = fmt.Sprintf(`{"sessionId":"task","configOptions":[{"id":"model","category":"model","type":"select","currentValue":%q,"options":[{"value":%q}]},{"id":"effort","category":"thought_level","type":"select","currentValue":%q,"options":[{"value":%q}]}]}`, e.Request.Model, e.Request.Model, e.Request.Effort, e.Request.Effort)
 				}
 				if method == "session/prompt" {
-					output, stop := serve(e)
+					output, stop := "", "end_turn"
+					if strings.Contains(e.Request.Brief, executor.CapabilityMarker) {
+						command := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
+						command.Dir = e.Request.Cwd
+						head, err := command.Output()
+						if err != nil {
+							t.Error(err)
+							return
+						}
+						output = executor.CapabilityMarker + " " + strings.TrimSpace(string(head)) + "\n"
+					} else {
+						output, stop = serve(e)
+					}
 					fmt.Fprintln(peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"tool_call_update","status":"completed","title":"BATUTA-PROGRESS 9 DONE"}}}`)
 					fmt.Fprintln(peer, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"task","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"private-thought-canary"}}}}`)
 					fmt.Fprintf(peer, "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"task\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":%q}}}}\n", output)
@@ -554,7 +567,11 @@ func loopACPBeforeSubmission(t *testing.T, shutdown func() error) *executor.Tran
 		t.Error("unexpected prompt submission")
 		return "", ""
 	})
+	probeOpen := b.ACP.Open
 	b.ACP.Open = func(ctx context.Context, e executor.Execution) (*acp.Connection, func() error, error) {
+		if strings.Contains(e.Request.Brief, executor.CapabilityMarker) {
+			return probeOpen(ctx, e)
+		}
 		if err := os.WriteFile(filepath.Join(e.Request.Cwd, "shared.txt"), []byte("unverified startup work"), 0644); err != nil {
 			return nil, nil, err
 		}

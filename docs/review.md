@@ -139,6 +139,7 @@ artifact files. Batuta writes each file atomically:
 
 - `manifest.json`: the complete diff inventory and cohort assignment.
 - `findings.json`: accepted, deduplicated, unsuppressed findings.
+- `review_failures.json`: structured operational failures recording why coverage is incomplete.
 - `review.md`: the same human walkthrough printed to stdout.
 - `state.json`: a copy of the covered checkpoint and any pending cohorts.
 
@@ -150,6 +151,9 @@ The conductor, not a reviewer, derives the verdict from accepted evidence:
 - otherwise → `SHIP`.
 
 Exit code `0` means `SHIP`, `2` means `FIX_BEFORE_SHIP`, and `3` means
-`REWORK`. Setup or runtime errors that prevent a report exit with `1`.
+`REWORK` caused by findings or violated criteria. Exit code `4` means
+`review_incomplete` when the verdict is `REWORK` due to review failures without
+findings that would independently require rework. Setup or runtime errors that
+prevent a report exit with `1`.
 
 Design distilled from `deep-review` in pedronauck/skills (https://github.com/pedronauck/skills) — cohorts, evidence discipline, taxonomy, linter overlap and the mechanical verdict; no text, scripts, state or publishing were adopted. The repository declared no licence when this was written (commit 18a0576, 2026-09-04).

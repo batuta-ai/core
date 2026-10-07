@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -540,12 +541,206 @@ func TestSupervisionReviewOutcomesAndOutbox(t *testing.T) {
 	}
 }
 
+func TestSupervisionReviewFailuresRecorded(t *testing.T) {
+	t.Parallel()
+	opts, _, spec := supervisionReviewFixture(t)
+	launches := 0
+	engine := fakeSupervisionReview(t, opts, spec, &launches)
+	original := engine.Runner
+	engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+		result, err := original.Run(ctx, c)
+		if len(c.Args) <= 2 {
+			return result, err
+		}
+		writeSupervisionReviewEvidence(t, c, "REWORK", false)
+		failures := `[{"kind":"operational","cohort":"0","reason":"reviewer exited before coverage","exit_code":7}]`
+		if err := os.WriteFile(filepath.Join(c.Args[7], "review_failures.json"), []byte(failures), 0600); err != nil {
+			return result, err
+		}
+		result.ExitCode = 4
+		return result, supervisionReviewExitError(t, ctx, 4)
+	})
+	job, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil || job.State != "reported" || job.Outcome != "incomplete_coverage" || len(job.ReviewFailures) != 1 || job.ReviewFailures[0].Kind != "operational" || job.ReviewFailures[0].Cohort != "0" || job.ReviewFailures[0].Reason != "reviewer exited before coverage" || job.ReviewFailures[0].ExitCode == nil || *job.ReviewFailures[0].ExitCode != 7 || !strings.Contains(job.Reason, "cohort 1") {
+		t.Fatalf("failure evidence: %+v, %v", job, err)
+	}
+	if job.ArtifactDigests["review_failures.json"] == "" {
+		t.Fatalf("failure artifact missing digest: %+v", job.ArtifactDigests)
+	}
+	replayed, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil || replayed.State != "reported" || len(replayed.ReviewFailures) != 1 || launches != 1 {
+		t.Fatalf("replay: %+v, launches=%d, %v", replayed, launches, err)
+	}
+}
+
+func TestSupervisionReviewMixedExit(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		verdict string
+		exit    int
+		outcome string
+	}{
+		{"findings and failures", "REWORK", 3, "incomplete_coverage"},
+		{"failures only", "REWORK", 4, "incomplete_coverage"},
+		{"fix verdict", "FIX_BEFORE_SHIP", 4, "execution_failed"},
+		{"exit 2", "REWORK", 2, "execution_failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opts, _, spec := supervisionReviewFixture(t)
+			launches := 0
+			engine := fakeSupervisionReview(t, opts, spec, &launches)
+			original := engine.Runner
+			engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				result, err := original.Run(ctx, c)
+				if len(c.Args) <= 2 {
+					return result, err
+				}
+				writeSupervisionReviewEvidence(t, c, tc.verdict, false)
+				failures := `[{"kind":"operational","cohort":"0","reason":"reviewer exited before coverage","exit_code":7}]`
+				if err := os.WriteFile(filepath.Join(c.Args[7], "review_failures.json"), []byte(failures), 0600); err != nil {
+					return result, err
+				}
+				result.ExitCode = tc.exit
+				return result, supervisionReviewExitError(t, ctx, tc.exit)
+			})
+			job, err := RunSupervisionReview(context.Background(), opts, engine)
+			if err != nil || job.Outcome != tc.outcome {
+				t.Fatalf("mixed exit: %+v, %v", job, err)
+			}
+			if tc.outcome == "incomplete_coverage" && (len(job.ReviewFailures) != 1 || !strings.Contains(job.Reason, "cohort 1")) {
+				t.Fatalf("failures not recorded: %+v", job)
+			}
+		})
+	}
+}
+
+func TestSupervisionReviewExitWithoutFailures(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		verdict string
+		exit    int
+		outcome string
+	}{
+		{"SHIP", 0, "SHIP"}, {"FIX_BEFORE_SHIP", 2, "FIX_BEFORE_SHIP"}, {"REWORK", 3, "REWORK"},
+		{"REWORK", 4, "execution_failed"}, {"SHIP", 4, "execution_failed"}, {"FIX_BEFORE_SHIP", 3, "execution_failed"},
+	} {
+		t.Run(fmt.Sprintf("%s exit %d", tc.verdict, tc.exit), func(t *testing.T) {
+			t.Parallel()
+			opts, _, spec := supervisionReviewFixture(t)
+			launches := 0
+			engine := fakeSupervisionReview(t, opts, spec, &launches)
+			original := engine.Runner
+			engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				result, err := original.Run(ctx, c)
+				if len(c.Args) <= 2 {
+					return result, err
+				}
+				writeSupervisionReviewEvidence(t, c, tc.verdict, true)
+				result.ExitCode = tc.exit
+				if tc.exit != 0 {
+					err = supervisionReviewExitError(t, ctx, tc.exit)
+				}
+				return result, err
+			})
+			job, err := RunSupervisionReview(context.Background(), opts, engine)
+			if err != nil || job.Outcome != tc.outcome {
+				t.Fatalf("exit contract: %+v, %v", job, err)
+			}
+		})
+	}
+}
+
+func TestSupervisionReviewLegacyArtifacts(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		covered bool
+		outcome string
+	}{
+		{name: "complete", covered: true, outcome: "SHIP"},
+		{name: "incomplete", covered: false, outcome: "incomplete_coverage"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opts, _, spec := supervisionReviewFixture(t)
+			launches := 0
+			engine := fakeSupervisionReview(t, opts, spec, &launches)
+			original := engine.Runner
+			engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				result, err := original.Run(ctx, c)
+				if len(c.Args) <= 2 {
+					return result, err
+				}
+				verdict := "SHIP"
+				if !tc.covered {
+					verdict = "REWORK"
+					result.ExitCode = 3
+					err = supervisionReviewExitError(t, ctx, 3)
+				}
+				writeSupervisionReviewEvidence(t, c, verdict, tc.covered)
+				if err := os.WriteFile(filepath.Join(c.Args[7], "findings.json"), []byte("null"), 0600); err != nil {
+					return result, err
+				}
+				return result, err
+			})
+			job, err := RunSupervisionReview(context.Background(), opts, engine)
+			if err != nil || job.State != "reported" || job.Outcome != tc.outcome || len(job.ReviewFailures) != 0 {
+				t.Fatalf("legacy review: %+v, %v", job, err)
+			}
+			if _, present := job.ArtifactDigests["review_failures.json"]; present {
+				t.Fatalf("legacy review gained failure artifact digest: %+v", job.ArtifactDigests)
+			}
+			replayed, err := RunSupervisionReview(context.Background(), opts, engine)
+			if err != nil || replayed.State != "reported" || replayed.Outcome != tc.outcome || launches != 1 {
+				t.Fatalf("legacy replay: %+v, launches=%d, %v", replayed, launches, err)
+			}
+		})
+	}
+}
+
+func TestSupervisionReviewMalformedFailures(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, payload string
+	}{
+		{name: "null", payload: "null"},
+		{name: "object", payload: `{ "kind": "operational" }`},
+		{name: "string", payload: `"failed"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			opts, _, spec := supervisionReviewFixture(t)
+			launches := 0
+			engine := fakeSupervisionReview(t, opts, spec, &launches)
+			original := engine.Runner
+			engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				result, err := original.Run(ctx, c)
+				if len(c.Args) <= 2 {
+					return result, err
+				}
+				if err := os.WriteFile(filepath.Join(c.Args[7], "review_failures.json"), []byte(tc.payload), 0600); err != nil {
+					return result, err
+				}
+				return result, nil
+			})
+			job, err := RunSupervisionReview(context.Background(), opts, engine)
+			if err != nil || job.State != "failed" || job.Outcome != "execution_failed" || !strings.Contains(job.Reason, "malformed review evidence") {
+				t.Fatalf("malformed failures accepted: %+v, %v", job, err)
+			}
+		})
+	}
+}
+
 func TestSupervisionReviewExitHelper(t *testing.T) {
 	switch os.Getenv("BATUTA_REVIEW_EXIT") {
 	case "2":
 		os.Exit(2)
 	case "3":
 		os.Exit(3)
+	case "4":
+		os.Exit(4)
 	}
 }
 
@@ -788,5 +983,53 @@ func TestSupervisionReconciledDeletionEntersReview(t *testing.T) {
 	}
 	if terminalEvents != 1 || reviewEvents != 1 {
 		t.Fatalf("terminal/review identities collided: %+v", observation.Pending)
+	}
+}
+
+func TestSupervisionReviewJobWithinLimit(t *testing.T) {
+	t.Parallel()
+	opts, _, spec := supervisionReviewFixture(t)
+	launches := 0
+	engine := fakeSupervisionReview(t, opts, spec, &launches)
+	original := engine.Runner
+	const count = 400
+	engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+		result, err := original.Run(ctx, c)
+		if len(c.Args) <= 2 {
+			return result, err
+		}
+		writeSupervisionReviewEvidence(t, c, "REWORK", false)
+		failures := make([]SupervisionReviewFailure, count)
+		for i := range failures {
+			code := 7
+			failures[i] = SupervisionReviewFailure{Kind: "operational", Cohort: strconv.Itoa(i), Reason: "reviewer exited before coverage", ExitCode: &code, Tail: strings.Repeat("x", 4096)}
+		}
+		data, err := json.Marshal(failures)
+		if err != nil {
+			return result, err
+		}
+		if err := os.WriteFile(filepath.Join(c.Args[7], "review_failures.json"), data, 0600); err != nil {
+			return result, err
+		}
+		result.ExitCode = 4
+		return result, supervisionReviewExitError(t, ctx, 4)
+	})
+	job, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil || job.State != "reported" || len(job.ReviewFailures) != count {
+		t.Fatalf("run: %+v, %v", job, err)
+	}
+	replayed, err := RunSupervisionReview(context.Background(), opts, engine)
+	if err != nil || replayed.State != "reported" || len(replayed.ReviewFailures) != count || launches != 1 {
+		t.Fatalf("replay: %+v, launches=%d, %v", replayed, launches, err)
+	}
+	tails := 0
+	for i, failure := range replayed.ReviewFailures {
+		if failure.Kind != "operational" || failure.Cohort != strconv.Itoa(i) || failure.Reason != "reviewer exited before coverage" || failure.ExitCode == nil || *failure.ExitCode != 7 {
+			t.Fatalf("failure %d changed: %+v", i, failure)
+		}
+		tails += len(failure.Tail)
+	}
+	if tails > supervisionReviewTailBudget {
+		t.Fatalf("tails total %d bytes, budget %d", tails, supervisionReviewTailBudget)
 	}
 }

@@ -147,14 +147,14 @@ func TestReportEscapesControlCharacters(t *testing.T) {
 func TestArtifactsRefuseGitlinkDestination(t *testing.T) {
 	root := reviewRepo(t)
 	source := reviewRepo(t)
-	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json", "review_failures.json"} {
 		writeTestFile(t, source, "reports/"+name, "tracked artifact\n")
 	}
 	gitTest(t, source, "add", ".")
 	gitTest(t, source, "commit", "-qm", "artifacts")
 	gitTest(t, root, "-c", "protocol.file.allow=always", "submodule", "add", source, "module")
 	gitTest(t, root, "commit", "-qm", "submodule")
-	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json"} {
+	for _, name := range []string{"manifest.json", "findings.json", "review.md", "state.json", "review_failures.json"} {
 		writeTestFile(t, root, "module/reports/"+name, "local edits\n")
 	}
 	for _, directory := range []string{"module/reports", "module/new-reports"} {
@@ -189,7 +189,7 @@ func TestArtifactPathsIncludeCohortTails(t *testing.T) {
 	t.Parallel()
 	directory := filepath.Join(t.TempDir(), "artifacts")
 	got := ArtifactPaths(directory, uncoveredTailReport())
-	want := []string{"manifest.json", "findings.json", "review.md", "state.json", "cohort-2.tail.txt"}
+	want := []string{"manifest.json", "findings.json", "review.md", "state.json", "review_failures.json", "cohort-2.tail.txt"}
 	if len(got) != len(want) {
 		t.Fatalf("ArtifactPaths() = %v, want %v under %s", got, want, directory)
 	}
@@ -285,5 +285,254 @@ func TestIncrementalReviewPrunesStaleTailInsideGuard(t *testing.T) {
 		if strings.HasSuffix(filename, "cohort-8.tail.txt") || strings.HasSuffix(filename, "cohort-notes.txt") {
 			t.Errorf("guard lists a file the review never prunes: %s", filename)
 		}
+	}
+}
+
+func TestReportFindingsNeverNull(t *testing.T) {
+	t.Parallel()
+	report := BuildReport(Manifest{Base: "base"}, nil, nil)
+	payload, err := json.Marshal(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(fields["findings"]); got != "[]" {
+		t.Errorf("report findings = %s, want []", got)
+	}
+	out := filepath.Join(t.TempDir(), "review")
+	if err := WriteArtifacts(out, report, IncrementalState{}); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(filepath.Join(out, "findings.json"))
+	if err != nil || strings.TrimSpace(string(written)) != "[]" {
+		t.Errorf("findings.json = %q, %v; want []", written, err)
+	}
+}
+
+func reviewFailuresReport() Report {
+	manifest := Manifest{Cohorts: []Cohort{{Files: []string{"a.go"}}, {Files: []string{"b.go"}}, {Files: []string{"c.go"}}}}
+	failed := SessionAttempt{Result: executor.Result{ExitCode: 2, Stdout: []byte("out line\n"), Stderr: []byte("boom\n")}}
+	clean := SessionAttempt{Result: executor.Result{Stdout: []byte("no verdict\n")}}
+	spec := &SpecSweep{Reason: "sweep failed", Attempts: []SessionAttempt{failed}}
+	return BuildReport(manifest, []CohortResult{
+		{Cohort: 0, Files: []string{"a.go"}, Covered: true},
+		{Cohort: 1, Files: []string{"b.go"}, Reason: "reviewer failed", Attempts: []SessionAttempt{clean, failed}},
+		{Cohort: 2, Files: []string{"c.go"}, Reason: "never ran"},
+	}, spec)
+}
+
+func TestReportReviewFailures(t *testing.T) {
+	t.Parallel()
+	if got := BuildReport(Manifest{}, nil, nil).ReviewFailures; got == nil || len(got) != 0 {
+		t.Errorf("complete coverage ReviewFailures = %#v, want empty non-nil list", got)
+	}
+	exit := 2
+	got := reviewFailuresReport().ReviewFailures
+	if len(got) != 3 {
+		t.Fatalf("ReviewFailures = %+v, want 3 entries", got)
+	}
+	cases := []struct {
+		scope    string
+		reason   string
+		exitCode *int
+		tail     string
+	}{
+		{"1", "reviewer failed", &exit, "boom"},
+		{"2", "never ran", nil, ""},
+		{"spec", "sweep failed", &exit, "boom"},
+	}
+	for i, tc := range cases {
+		failure := got[i]
+		if failure.Kind != "operational" || failure.Cohort != tc.scope || failure.Reason != tc.reason {
+			t.Errorf("failure %d = %+v, want operational/%s/%s", i, failure, tc.scope, tc.reason)
+		}
+		if (failure.ExitCode == nil) != (tc.exitCode == nil) || (tc.exitCode != nil && *failure.ExitCode != *tc.exitCode) {
+			t.Errorf("failure %d exit code = %v, want %v", i, failure.ExitCode, tc.exitCode)
+		}
+		if !strings.Contains(failure.Tail, tc.tail) || (tc.tail == "" && failure.Tail != "") {
+			t.Errorf("failure %d tail = %q, want it to contain %q", i, failure.Tail, tc.tail)
+		}
+	}
+	payload, err := json.Marshal(got[0])
+	if err != nil || !strings.Contains(string(payload), `"exit_code":2`) || !strings.Contains(string(payload), `"cohort":"1"`) {
+		t.Errorf("failure JSON = %s, %v", payload, err)
+	}
+}
+
+func TestWriteArtifactsReviewFailures(t *testing.T) {
+	t.Parallel()
+	read := func(report Report) []ReviewFailure {
+		out := filepath.Join(t.TempDir(), "review")
+		if err := WriteArtifacts(out, report, IncrementalState{}); err != nil {
+			t.Fatal(err)
+		}
+		payload, err := os.ReadFile(filepath.Join(out, "review_failures.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var failures []ReviewFailure
+		if err := json.Unmarshal(payload, &failures); err != nil || failures == nil {
+			t.Fatalf("review_failures.json = %q, %v; want a JSON list", payload, err)
+		}
+		return failures
+	}
+	if got := read(BuildReport(Manifest{}, nil, nil)); len(got) != 0 {
+		t.Errorf("complete coverage wrote %+v, want []", got)
+	}
+	if got := read(reviewFailuresReport()); len(got) != 3 {
+		t.Errorf("uncovered review wrote %d failures, want 3", len(got))
+	}
+	if !slices.Contains(ArtifactPaths("dir", Report{}), filepath.Join("dir", "review_failures.json")) {
+		t.Error("ArtifactPaths omits review_failures.json")
+	}
+}
+
+func TestPrintReportReviewFailures(t *testing.T) {
+	t.Parallel()
+	var clean bytes.Buffer
+	if err := PrintReport(&clean, BuildReport(Manifest{}, nil, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(clean.String(), "Review failures:") {
+		t.Errorf("complete review prints a failures section:\n%s", clean.String())
+	}
+	report := reviewFailuresReport()
+	var printed bytes.Buffer
+	if err := PrintReport(&printed, report); err != nil {
+		t.Fatal(err)
+	}
+	text := printed.String()
+	section := strings.Index(text, "Review failures:\n")
+	if section < 0 {
+		t.Fatalf("no Review failures section:\n%s", text)
+	}
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+	if last := lines[len(lines)-1]; last != "Verdict: "+string(report.Verdict) {
+		t.Errorf("last line = %q, want the verdict line", last)
+	}
+	body := text[section:]
+	for _, want := range []string{"cohort 2 · reviewer failed · exit 2", "cohort 3 · never ran", "spec · sweep failed · exit 2"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("section lacks %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestReviewExitCode(t *testing.T) {
+	blocker := Finding{Severity: Blocker, Kind: Defect, File: "a.go", Line: 1, Premise: "Build fails", Path: "Compile", Verdict: "Stops", Fix: "Restore"}
+	major := Finding{Severity: Major, Kind: Defect, File: "a.go", Line: 1, Premise: "Wrong", Path: "Call", Verdict: "Fails", Fix: "Fix"}
+	failure := []ReviewFailure{{Kind: failureKindOperational, Cohort: "0", Reason: "reviewer failed"}}
+	violated := &SpecSweep{Covered: true, Results: []SpecResult{{ID: "task-1.1", Status: CriterionViolated}}}
+	satisfied := &SpecSweep{Covered: true, Results: []SpecResult{{ID: "task-1.1", Status: CriterionSatisfied}}}
+	for _, tc := range []struct {
+		name      string
+		report    Report
+		wantCode  int
+		wantState string
+	}{
+		{name: "ship", report: Report{Verdict: Ship}, wantCode: 0, wantState: "SHIP"},
+		{name: "fix before ship", report: Report{Verdict: FixBeforeShip, Findings: []Finding{major}}, wantCode: 2, wantState: "FIX_BEFORE_SHIP"},
+		{name: "rework from blocker", report: Report{Verdict: Rework, Findings: []Finding{blocker}}, wantCode: 3, wantState: "REWORK"},
+		{name: "blocker with failures", report: Report{Verdict: Rework, Findings: []Finding{blocker}, ReviewFailures: failure}, wantCode: 3, wantState: "REWORK"},
+		{name: "violated criterion with failures", report: Report{Verdict: Rework, Spec: violated, ReviewFailures: failure}, wantCode: 3, wantState: "REWORK"},
+		{name: "failures only", report: Report{Verdict: Rework, ReviewFailures: failure}, wantCode: 4, wantState: "review_incomplete"},
+		{name: "major and satisfied criterion with failures", report: Report{Verdict: Rework, Findings: []Finding{major}, Spec: satisfied, ReviewFailures: failure}, wantCode: 4, wantState: "review_incomplete"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			code, state := ReviewExitCode(tc.report)
+			if code != tc.wantCode || state != tc.wantState {
+				t.Fatalf("ReviewExitCode = %d %q, want %d %q", code, state, tc.wantCode, tc.wantState)
+			}
+		})
+	}
+}
+
+func TestReviewFailureTailRawFallback(t *testing.T) {
+	t.Parallel()
+	attempts := []SessionAttempt{{Result: executor.Result{
+		ExitCode:  1,
+		RawStdout: []byte("raw line one\nraw line two\nAPI_KEY=sk-secret-value\n"),
+		Stderr:    []byte("stderr note\n"),
+	}}}
+	failure := newReviewFailure("1", "reviewer failed", attempts)
+	if !strings.Contains(failure.Tail, "raw line two") || !strings.Contains(failure.Tail, "stderr note") {
+		t.Errorf("tail = %q, want raw stdout and stderr", failure.Tail)
+	}
+	if strings.Contains(failure.Tail, "sk-secret-value") {
+		t.Errorf("tail = %q, want secret lines dropped", failure.Tail)
+	}
+	big := strings.Repeat("0123456789abcdef\n", 600)
+	failure = newReviewFailure("1", "reviewer failed", []SessionAttempt{{Result: executor.Result{RawStdout: []byte(big)}}})
+	if len(failure.Tail) == 0 || len(failure.Tail) > 4096 {
+		t.Errorf("tail length = %d, want within (0, 4096]", len(failure.Tail))
+	}
+}
+
+func TestReviewFailureTailSeparateStreams(t *testing.T) {
+	t.Parallel()
+	attempts := []SessionAttempt{{Result: executor.Result{
+		ExitCode: 1,
+		Stdout:   []byte("progress line"),
+		Stderr:   []byte("API_KEY=sk-secret-value\nstderr note\n"),
+	}}}
+	failure := newReviewFailure("1", "reviewer failed", attempts)
+	if strings.Contains(failure.Tail, "sk-secret-value") || strings.Contains(failure.Tail, "API_KEY") {
+		t.Errorf("tail = %q, want the stderr secret dropped", failure.Tail)
+	}
+	if want := "progress line\nstderr note"; failure.Tail != want {
+		t.Errorf("tail = %q, want %q", failure.Tail, want)
+	}
+}
+
+func TestReviewFailureTailRawSecrets(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		line   string
+		secret string
+	}{
+		{name: "assignment inside a string", line: `{"type":"text","text":"API_KEY=sk-example"}`, secret: "sk-example"},
+		{name: "token field", line: `{"type":"auth","token":"tok-example"}`, secret: "tok-example"},
+		{name: "api_key field", line: `{"api_key": "key-example"}`, secret: "key-example"},
+		{name: "password field upper case", line: `{"PASSWORD":"pw-example"}`, secret: "pw-example"},
+		{name: "secret field", line: `{"event":{"Secret":"shh-example"}}`, secret: "shh-example"},
+		{name: "escaped field", line: `{"text":"{\"token\":\"nested-example\"}"}`, secret: "nested-example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			attempts := []SessionAttempt{{Result: executor.Result{
+				ExitCode:  1,
+				RawStdout: []byte(`{"type":"text","text":"kept event"}` + "\n" + tc.line + "\n"),
+				Stderr:    []byte("stderr note\n"),
+			}}}
+			failure := newReviewFailure("1", "reviewer failed", attempts)
+			if strings.Contains(failure.Tail, tc.secret) || strings.Contains(failure.Tail, tc.line) {
+				t.Errorf("tail = %q, want the secret line dropped", failure.Tail)
+			}
+			if !strings.Contains(failure.Tail, "kept event") || !strings.Contains(failure.Tail, "stderr note") {
+				t.Errorf("tail = %q, want the other lines kept", failure.Tail)
+			}
+		})
+	}
+}
+
+func TestReviewFailureTailDecoded(t *testing.T) {
+	t.Parallel()
+	attempts := []SessionAttempt{{Result: executor.Result{
+		ExitCode:  1,
+		Stdout:    []byte("decoded text\n"),
+		RawStdout: []byte("raw-json-event\n"),
+		Stderr:    []byte("stderr note\n"),
+	}}}
+	failure := newReviewFailure("1", "reviewer failed", attempts)
+	if !strings.Contains(failure.Tail, "decoded text") || !strings.Contains(failure.Tail, "stderr note") {
+		t.Errorf("tail = %q, want decoded stdout and stderr", failure.Tail)
+	}
+	if strings.Contains(failure.Tail, "raw-json-event") {
+		t.Errorf("tail = %q, want raw stdout ignored when decoded has content", failure.Tail)
 	}
 }

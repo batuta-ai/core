@@ -43,7 +43,7 @@ Usage:
   batuta capabilities
   batuta inventory [--workspace <dir>] [--timeout <duration>]
   batuta doctor    [--workspace <dir>] [--json] [--timeout <duration>]
-  batuta dispatch  --brief-file <path> --executor <id> --model <id> [--effort <value>] --cwd <worktree> [--transport cli|acp|auto] [--timeout 45m]
+  batuta dispatch  --brief-file <path> --executor <id> --model <id> [--effort <value>] --cwd <worktree> [--transport cli|acp|auto] [--timeout 45m] [--preflight]
   batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [--transport cli|acp|auto] [<plan>]
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
@@ -69,7 +69,8 @@ capabilities  The subcommands this binary ships, as JSON. Skills probe it
 dispatch   One bounded external attempt, compact JSON and private artifacts in
            the temporary directory. Exit 0 completed, 1 worker failed,
            2 invalid/unavailable, 3 waiting_input, 4 rate_limited,
-           5 uncertain, 124 timed out, 130 interrupted. Evidence is retained;
+           5 uncertain, 6 executor_incapable (--preflight), 124 timed out,
+           130 interrupted. Evidence is retained;
            uncertain work is never replayed. Run acceptance gates separately.
            CLI is the default. ACP requires qualified runtime evidence;
            this release has no qualified ACP launches. Auto falls back to CLI
@@ -139,7 +140,9 @@ trail      One line per journal record of a delivery (the latest by
            default).
 review     Read-only, cohort-based delivery review through the configured
            executor adapter. Writes manifest.json, findings.json, review.md
-           and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK.
+           and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK,
+           4 review_incomplete (a cohort failed or the spec sweep is uncovered;
+           review_failures.json names it).
            The cohort driver uses CLI independently of dispatch transport.
 
 judge      Manual probes of a System One decision model (Jev): typed noul,
@@ -567,6 +570,7 @@ func runDispatch(args []string, stdout, stderr io.Writer) error {
 	cwd := flags.String("cwd", "", "worktree directory")
 	transport := flags.String("transport", "cli", "cli, acp or auto (no headless native tools)")
 	timeout := flags.Duration("timeout", 45*time.Minute, "time budget for the single attempt")
+	preflight := flags.Bool("preflight", false, "probe that the executor can run commands before the brief")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -610,7 +614,7 @@ func runDispatch(args []string, stdout, stderr io.Writer) error {
 	defer stop()
 	report, err = executor.Dispatch(ctx, executor.DispatchOptions{Adapter: adapter,
 		Request:   executor.Request{Brief: string(brief), Cwd: directory, Model: *model, Effort: *effort},
-		Transport: executor.NewNativeTransport(*transport), Timeout: *timeout})
+		Transport: executor.NewNativeTransport(*transport), Timeout: *timeout, Preflight: *preflight})
 	return finish(err)
 }
 
@@ -1209,14 +1213,10 @@ func runReview(args []string, stdout, stderr io.Writer) error {
 	if err := review.PrintReport(stdout, report); err != nil {
 		return err
 	}
-	switch report.Verdict {
-	case review.Ship:
-		return nil
-	case review.FixBeforeShip:
-		return &ExitError{Code: 2, State: string(report.Verdict)}
-	default:
-		return &ExitError{Code: 3, State: string(report.Verdict)}
+	if code, state := review.ReviewExitCode(report); code != 0 {
+		return &ExitError{Code: code, State: state}
 	}
+	return nil
 }
 
 // reviewGuardPaths lists every file the review may create or prune: the

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
@@ -47,6 +48,14 @@ func TestApprovedSnapshotWorkerHelper(t *testing.T) {
 	}
 	if mode == "models" {
 		fmt.Println("fake-low\nfake-mid\nfake-high")
+		os.Exit(0)
+	}
+	if strings.Contains(brief, executor.CapabilityMarker) {
+		head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+		if err != nil {
+			os.Exit(13)
+		}
+		fmt.Println(executor.CapabilityMarker + " " + strings.TrimSpace(string(head)))
 		os.Exit(0)
 	}
 	if mode == "verify" {

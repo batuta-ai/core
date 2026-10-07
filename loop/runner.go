@@ -36,6 +36,7 @@ const (
 	KindWorktree          journal.Kind = "worktree_attached"
 	KindSnapshot          journal.Kind = "worktree_snapshotted"
 	KindStarted           journal.Kind = "executor_started"
+	KindCapabilityProbe   journal.Kind = "capability_probe"
 	KindDispatchIntent    journal.Kind = "dispatch_intent"
 	KindDispatchResult    journal.Kind = "dispatch_result"
 	KindVerifierIntent    journal.Kind = "verifier_dispatch_intent"
@@ -119,34 +120,35 @@ type Options struct {
 
 // Runner holds one delivery in flight.
 type Runner struct {
-	opts       Options
-	root       string
-	git        worktree.GitProvider
-	gitState   publication.GitClient
-	integ      integration.GitClient
-	store      *journal.Store
-	profile    Profile
-	skills     string
-	plan       routing.Plan
-	planPath   string
-	roadmap    string
-	phase      int
-	phaseTitle string
-	table      routing.RoutingTable
-	generation routing.RoutingGeneration
-	graph      *routing.DeliveryGraph
-	delivery   string
-	branch     string
-	openedHead string
-	parallel   int
-	shell      gates.ShellRunner
-	backend    executor.Backend
-	verifier   executor.Backend
-	adapters   map[string]executor.Adapter
-	sections   []string
-	missing    []string
-	now        func() time.Time
-	out        *lockedWriter
+	opts         Options
+	root         string
+	git          worktree.GitProvider
+	gitState     publication.GitClient
+	integ        integration.GitClient
+	store        *journal.Store
+	profile      Profile
+	skills       string
+	plan         routing.Plan
+	planPath     string
+	roadmap      string
+	phase        int
+	phaseTitle   string
+	table        routing.RoutingTable
+	generation   routing.RoutingGeneration
+	graph        *routing.DeliveryGraph
+	delivery     string
+	branch       string
+	openedHead   string
+	parallel     int
+	shell        gates.ShellRunner
+	backend      executor.Backend
+	probeBackend executor.Backend
+	verifier     executor.Backend
+	adapters     map[string]executor.Adapter
+	sections     []string
+	missing      []string
+	now          func() time.Time
+	out          *lockedWriter
 
 	worktreeMu sync.Mutex // add/remove/prune share the repository worktree registry
 	mu         sync.Mutex
@@ -155,6 +157,8 @@ type Runner struct {
 	candidates map[string]integration.CandidateEvidence
 	commits    map[string]string
 	started    map[string]bool
+	probes     map[capabilityRoute]capabilityProbeDetail
+	probing    map[capabilityRoute]chan struct{}
 	preflights map[string]integration.PreflightResult // operation id → pending preflight
 	terminal   string
 	wavesRun   int
@@ -361,6 +365,9 @@ func Resume(ctx context.Context, opts Options) (resumed *Runner, resumeErr error
 		r.parallel = opts.Parallel
 	}
 	r.journaled = true
+	if err := r.loadCapabilityProbes(records); err != nil {
+		return nil, err
+	}
 	if err := r.replay(records); err != nil {
 		return nil, err
 	}
@@ -480,7 +487,8 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	subprocess := executor.NewSubprocess()
 	subprocess.Runner = opts.Runner
 	subprocess.Environment = opts.Environment
-	backend := loopTransport(opts.Transport, executor.CLIBackend{Subprocess: subprocess})
+	cliBackend := executor.CLIBackend{Subprocess: subprocess}
+	backend := loopTransport(opts.Transport, cliBackend)
 	verifier := loopTransport(opts.VerifierTransport, executor.CLIBackend{Subprocess: subprocess})
 	parallel := profile.Parallelism()
 	if opts.Parallel > 0 {
@@ -497,12 +505,13 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		integ:    integration.GitClient{Executable: git.Git, Runner: opts.Runner, PreservedPlanPath: approvedSnapshotPath(opts.ApprovedSnapshot)},
 		store:    store, profile: profile, skills: skills, table: table,
 		branch: branch, openedHead: head, parallel: parallel, shell: shell,
-		backend: backend, verifier: verifier,
+		backend: backend, probeBackend: backend, verifier: verifier,
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
 		now: opts.Now, out: out,
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
 		candidates: map[string]integration.CandidateEvidence{}, commits: map[string]string{},
 		started: map[string]bool{}, preflights: map[string]integration.PreflightResult{},
+		probes: map[capabilityRoute]capabilityProbeDetail{}, probing: map[capabilityRoute]chan struct{}{},
 	}, nil
 }
 

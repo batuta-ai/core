@@ -74,8 +74,26 @@ constructor, not ACP availability in an installed beta23 binary.
 The command writes one compact JSON report to stdout and puts its brief,
 pre-submission intent, complete evidence and bounded stdout/stderr in a new
 private artifact directory. Exit classes are `completed`, `failed`,
-`waiting_input`, `rate_limited`, `unavailable`, `uncertain` and
-`invalid_arguments`. `completed` still does not mean accepted.
+`waiting_input`, `rate_limited`, `unavailable`, `uncertain`,
+`executor_incapable` and `invalid_arguments`. `completed` still does not mean
+accepted.
+
+### Capability preflight
+
+`--preflight` asks the same executor, model, effort and CLI transport to run
+`git rev-parse HEAD` in `--cwd` before the brief is sent. The probe brief is one
+paragraph and never mentions the task. It passes only when an isolated
+`BATUTA-CAPABLE <sha>` line contains the SHA the host reads from that directory,
+and the worktree status and HEAD remain unchanged. A passing probe changes nothing in the
+report except a `preflight` object with `pass`, `duration_ms`, and no `reason`.
+
+A failing probe ends the dispatch as `executor_incapable` with exit code 6. The
+`preflight` object then carries the failure `reason` (`no_marker`,
+`marker_mismatch`, `no_repository`, `unfinished`, `timeout`, `limit` or
+`tree_changed`) and a bounded `tail` of the executor
+output. The receipt's submission state stays `not_submitted`: the brief was
+never sent. A probe that cannot start leaves the route `unavailable` (exit
+code 2). Without the flag dispatch does not probe.
 
 ## Receipt example
 
