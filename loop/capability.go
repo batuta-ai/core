@@ -86,7 +86,7 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 		if err != nil && ctx.Err() == nil {
 			detail.Pass = false
 			detail.Reason = "probe_error"
-			tail := []rune(r.redactDetail(err.Error()))
+			tail := []rune(executor.DropSecretBearingLines(r.redactDetail(err.Error())))
 			if len(tail) > 2048 {
 				tail = tail[len(tail)-2048:]
 			}

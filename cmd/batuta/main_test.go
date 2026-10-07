@@ -554,10 +554,16 @@ func TestUsage(t *testing.T) {
 }
 
 func TestUsageNamesReviewExit4(t *testing.T) {
-	for _, want := range []string{"4 review_incomplete", "review_failures.json"} {
+	for _, want := range []string{"4 review_incomplete", "a cohort failed or the spec sweep is uncovered", "review_failures.json"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage is missing %q", want)
 		}
+	}
+}
+
+func TestUsageNamesDispatchExit6(t *testing.T) {
+	if !strings.Contains(usage, "6 executor_incapable") {
+		t.Errorf("usage is missing %q", "6 executor_incapable")
 	}
 }
 

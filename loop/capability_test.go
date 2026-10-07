@@ -88,6 +88,15 @@ func TestLoopProbeErrorRedacted(t *testing.T) {
 	requireRedacted(t, root, details)
 }
 
+func TestLoopProbeErrorEmbeddedSecret(t *testing.T) {
+	t.Parallel()
+	backend := stubProbeBackend(func(e executor.Execution) (executor.Result, error) {
+		return executor.Result{}, errors.New("neighbour failed in " + e.Invocation.Dir + "/x\nprovider error: OPENAI_API_KEY=sk-test-123")
+	})
+	root, details := probeLeaks(t, backend)
+	requireRedacted(t, root, details)
+}
+
 func probeModels(t *testing.T, f fixture) []string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(f.state, "probes"))

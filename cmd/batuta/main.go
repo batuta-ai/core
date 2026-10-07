@@ -69,7 +69,8 @@ capabilities  The subcommands this binary ships, as JSON. Skills probe it
 dispatch   One bounded external attempt, compact JSON and private artifacts in
            the temporary directory. Exit 0 completed, 1 worker failed,
            2 invalid/unavailable, 3 waiting_input, 4 rate_limited,
-           5 uncertain, 124 timed out, 130 interrupted. Evidence is retained;
+           5 uncertain, 6 executor_incapable (--preflight), 124 timed out,
+           130 interrupted. Evidence is retained;
            uncertain work is never replayed. Run acceptance gates separately.
            CLI is the default. ACP requires qualified runtime evidence;
            this release has no qualified ACP launches. Auto falls back to CLI
@@ -140,8 +141,8 @@ trail      One line per journal record of a delivery (the latest by
 review     Read-only, cohort-based delivery review through the configured
            executor adapter. Writes manifest.json, findings.json, review.md
            and state.json; exits 0 SHIP, 2 FIX_BEFORE_SHIP, 3 REWORK,
-           4 review_incomplete (a cohort failed; review_failures.json
-           names it).
+           4 review_incomplete (a cohort failed or the spec sweep is uncovered;
+           review_failures.json names it).
            The cohort driver uses CLI independently of dispatch transport.
 
 judge      Manual probes of a System One decision model (Jev): typed noul,
