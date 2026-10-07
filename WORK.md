@@ -1,5 +1,14 @@
 # WORK — core
 
+## Current status — 2026-10-07: Tempo retro 4.6 and 4.1(b) on branch feat/review-contract-preflight, PR pending
+- [x] Review contract (4.6): `findings.json` always a list, `review_failures.json`, `batuta review` exit 4 `review_incomplete` through one rule (`review.ReviewExitCode`), supervision accepts 3 or 4 with failures, failure tails redacted per stream with a raw fallback.
+- [x] Capability preflight (4.1b): `executor.ProbeCapability` (marker must carry the host's `HEAD` SHA; `tree_changed`, `no_repository`, `marker_mismatch`), `batuta dispatch --preflight` (exit 6 `executor_incapable`), loop probes each route once per delivery over the route's transport and escalates an incapable route without a same-runtime retry.
+- [x] Proof gate: a proof that exits 0 but ran no test (`[no tests to run]`, `[no test files]`, Jest's notice) fails, multi-package aware. Found because task 2 of the first plan passed its gates with a proof that matched no test.
+- [x] Deliveries: `review-contract-preflight` (abandoned after tasks 1–5), `-loop`, `-fixes`, `-fixes-2`, `-fixes-3` (abandoned after five tasks), `-acp-probe`; plus conductor commits c27edf7 and cd2612a. Review judgments: reject on `-loop` and `-fixes`, accept on `-fixes-2` and `-acp-probe` with the maintainer's authorization.
+- [ ] Deferred to issues: core#151, #152 (ACP probe), #153 (commit subjects end mid-phrase), #154 (tree check), #155 (JSON size bounds), #156 (tests); skills#70 (fixtures in Scope when a task changes the executor protocol).
+- [ ] Environment on this machine: mise exports `GOROOT` = Go 1.24.2, so sandboxed executors cannot run Go 1.26.4; loops ran with the cached 1.26.4 toolchain first on PATH, `GOROOT` set, `GOTOOLCHAIN=local` and `commit.gpgsign=false`.
+- [ ] Next: PR and merge; then the rest of the Tempo backlog (`loop --recover`, `.batuta` isolation and cleanup — 14 stale worktrees under `.batuta/worktrees/` —, grants, skills items, `trail --metrics`).
+
 ## Current status — 2026-10-05: two code follow-ups shipped on a branch, host on beta.47
 - [x] Verifier environment pattern also sets aside `not a git repository` and `cannot be inspected` → agy (gemini-3.8-flash-low), one retry after a provider 503, commit 0ce3c23 (trail: .batuta/runs/2026-10-05-verifier-env-objection.md)
 - [x] A plan that does not parse no longer aborts `judge questions build` (plan_found false, new `unparsed_plans` summary field) or `judge classify bench` v1/v2/v3 (skipped with one stderr line) → claude (sonnet), one retry: the claude sandbox cannot write the Go build cache unless the conductor exports GOCACHE, and cannot bind httptest listeners, so the conductor ran those tests; commit 0434445 (trail: .batuta/runs/2026-10-05-judge-plan-parse.md)
