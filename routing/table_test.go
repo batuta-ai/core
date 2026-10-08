@@ -382,3 +382,130 @@ func TestRoutingTableGenerationRejectsUnlistedModelsAndKeepsReasoningSteps(t *te
 		t.Fatalf("default model: %#v, %v", generation.Cells, err)
 	}
 }
+
+const routingCouncilFixture = `| Role | Lane | Executor | Model |
+|---|---|---|---|
+| council | — | claude | claude-opus-5-5 |
+| council | — | codex | gpt-5.6-sol |
+| council | — | opencode | kimi/k2.5 |
+| chairman | high | codex | gpt-6-sol |
+`
+
+func TestParseCouncilRoles(t *testing.T) {
+	t.Parallel()
+	base, err := ParseRoutingTable([]byte(routingTableFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	table, err := ParseRoutingTable([]byte(routingTableWithoutRole() + "\n" + routingCouncilFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(table.Council) != 3 || table.Council[0].Executor != inventory.ExecutorClaude || table.Council[0].Model != "claude-opus-5-5" || table.Council[2].Model != "kimi/k2.5" || table.Council[0].Line == 0 {
+		t.Fatalf("council rows = %+v", table.Council)
+	}
+	if table.Chairman == nil || table.Chairman.Executor != inventory.ExecutorCodex || table.Chairman.Model != "gpt-6-sol" || table.Chairman.Line == 0 {
+		t.Fatalf("chairman = %+v", table.Chairman)
+	}
+	if len(table.Rows) != len(base.Rows) || table.Digest == base.Digest {
+		t.Fatal("council roles must be separate from lanes and included in the digest")
+	}
+	renamed, err := ParseRoutingTable([]byte(strings.Replace(routingTableWithoutRole()+"\n"+routingCouncilFixture, "gpt-6-sol", "gpt-6-luna", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed.Digest == table.Digest {
+		t.Fatal("digest must change when the chairman model changes")
+	}
+
+	roleTable := "\n| Role | Lane | Executor | Model |\n|---|---|---|---|\n"
+	cases := map[string]string{
+		"council self":              "| council | — | self | model |\n",
+		"council placeholder model": "| council | — | codex | <model> |\n",
+		"council default model":     "| council | — | codex | default |\n",
+		"council empty model":       "| council | — | codex | |\n",
+		"council bad executor":      "| council | — | ../codex | model |\n",
+		"council unknown lane":      "| council | tiny | codex | model |\n",
+		"council duplicate":         "| council | — | codex | model |\n| council | high | codex | model |\n",
+		"chairman self":             "| chairman | — | self | model |\n",
+		"chairman placeholder":      "| chairman | — | codex | <model> |\n",
+		"chairman duplicate":        "| chairman | — | codex | model |\n| chairman | — | claude | other |\n",
+	}
+	for name, rows := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ParseRoutingTable([]byte(routingTableWithoutRole() + roleTable + rows))
+			if !errors.Is(err, ErrRoutingTableInvalid) {
+				t.Fatalf("error = %v, want ErrRoutingTableInvalid", err)
+			}
+			if strings.Contains(name, "duplicate") && (!strings.Contains(err.Error(), "line ") || !strings.Contains(err.Error(), "first at line")) {
+				t.Fatalf("duplicate error must name both lines: %v", err)
+			}
+		})
+	}
+
+	sameExecutorOtherModel := "| council | — | codex | model-a |\n| council | — | codex | model-b |\n"
+	if table, err := ParseRoutingTable([]byte(routingTableWithoutRole() + roleTable + sameExecutorOtherModel)); err != nil || len(table.Council) != 2 {
+		t.Fatalf("same executor with other models: %+v, %v", table.Council, err)
+	}
+}
+
+func TestCouncilDefaults(t *testing.T) {
+	t.Parallel()
+	table, err := ParseRoutingTable([]byte(routingTableWithoutRole()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		executor inventory.ExecutorID
+		model    string
+	}{
+		{inventory.ExecutorOpenCode, "kimi/k2.5"},
+		{inventory.ExecutorCursorAgent, "composer-2.5"},
+		{inventory.ExecutorCodex, "gpt-5.6-terra"},
+		{inventory.ExecutorCodex, "gpt-5.6-sol"},
+	}
+	council := table.CouncilRows()
+	if len(council) != len(want) {
+		t.Fatalf("default council = %+v", council)
+	}
+	for i, w := range want {
+		if council[i].Executor != w.executor || council[i].Model != w.model {
+			t.Fatalf("default council[%d] = %+v, want %s %s", i, council[i], w.executor, w.model)
+		}
+	}
+	chairman, ok := table.ChairmanRole()
+	if !ok || chairman.Executor != inventory.ExecutorCodex || chairman.Model != "gpt-5.6-sol" {
+		t.Fatalf("default chairman = %+v, %v", chairman, ok)
+	}
+
+	deduped := RoutingTable{Rows: []RoutingRow{
+		{Lane: ComplexityLow, Domain: DomainAny, Executor: inventory.ExecutorCodex, Model: "m"},
+		{Lane: ComplexityMedium, Domain: DomainAny, Executor: inventory.ExecutorCodex, Model: "m"},
+		{Lane: ComplexityHigh, Domain: DomainAny, Executor: inventory.ExecutorClaude, Model: "m"},
+		{Lane: ComplexityCritical, Domain: DomainAny, Executor: inventory.ExecutorOpenCode, Model: "m"},
+	}}
+	if got := deduped.CouncilRows(); len(got) != 2 || got[0].Executor != inventory.ExecutorCodex || got[1].Executor != inventory.ExecutorClaude {
+		t.Fatalf("deduped council = %+v", got)
+	}
+
+	selfOnly := RoutingTable{Rows: []RoutingRow{{Lane: ComplexityLow, Domain: DomainAny, Executor: ExecutorSelf}}}
+	if got := selfOnly.CouncilRows(); len(got) != 0 {
+		t.Fatalf("self must be excluded: %+v", got)
+	}
+
+	explicit, err := ParseRoutingTable([]byte(routingTableWithoutRole() + "\n" + routingCouncilFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := explicit.CouncilRows(); len(got) != 3 || got[0].Executor != inventory.ExecutorClaude {
+		t.Fatalf("explicit council = %+v", got)
+	}
+	if chairman, ok := explicit.ChairmanRole(); !ok || chairman.Model != "gpt-6-sol" {
+		t.Fatalf("explicit chairman = %+v, %v", chairman, ok)
+	}
+
+	if _, ok := (RoutingTable{}).ChairmanRole(); ok {
+		t.Fatal("chairman must be absent without a high row")
+	}
+}
