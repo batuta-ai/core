@@ -46,6 +46,40 @@ func TestCrossReviewPrompt(t *testing.T) {
 	}
 }
 
+func TestCrossReviewPromptFormatExample(t *testing.T) {
+	t.Parallel()
+	critiques := []Critique{
+		{Label: "A", Findings: []Finding{{Task: 1}}, Verdict: Revise},
+		{Label: "B", Findings: []Finding{{Task: 2}}, Verdict: Revise},
+		{Label: "C", Verdict: Approve},
+	}
+	tests := []struct {
+		name      string
+		ownLabel  string
+		want      []string
+		forbidden []string
+	}{
+		{"two shown findings", "C", []string{"A1: AGREE", "B1: DISAGREE", "FINAL RANKING:\n1. Critique A\n2. Critique B"}, []string{"Critique C"}},
+		{"own label excluded", "A", []string{"B1: AGREE", "FINAL RANKING:\n1. Critique B\n2. Critique C"}, []string{"A1: AGREE", "Critique A"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := BuildCrossReviewPrompt(critiques, tc.ownLabel)
+			for _, want := range append(tc.want, "A critique with no findings needs no votes.", "Print nothing after the ranking.") {
+				if !strings.Contains(got, want) {
+					t.Errorf("prompt missing %q", want)
+				}
+			}
+			for _, forbidden := range tc.forbidden {
+				if strings.Contains(got, forbidden) {
+					t.Errorf("prompt contains %q", forbidden)
+				}
+			}
+		})
+	}
+}
+
 func TestChairmanPrompt(t *testing.T) {
 	t.Parallel()
 	critiques := []Critique{

@@ -61,14 +61,27 @@ func ParseCritique(output, label string) (Critique, error) {
 			return Critique{}, fmt.Errorf("council: nested COUNCIL block")
 		}
 	}
-	if close < 0 || close != len(lines)-2 {
+	if close < 0 {
 		return Critique{}, fmt.Errorf("council: missing or malformed COUNCIL closing marker")
 	}
-	verdictText, ok := strings.CutPrefix(lines[len(lines)-1], "VERDICT: ")
-	if !ok || Verdict(verdictText) != Approve && Verdict(verdictText) != Revise {
+	var verdict Verdict
+	for _, line := range lines[close+1:] {
+		if line == "<<<COUNCIL" || line == "COUNCIL>>>" {
+			return Critique{}, fmt.Errorf("council: duplicate COUNCIL block")
+		}
+		if !strings.HasPrefix(line, "VERDICT:") {
+			continue
+		}
+		verdictText, ok := strings.CutPrefix(line, "VERDICT: ")
+		if !ok || Verdict(verdictText) != Approve && Verdict(verdictText) != Revise || verdict != "" {
+			return Critique{}, fmt.Errorf("council: verdict must be APPROVE or REVISE exactly once")
+		}
+		verdict = Verdict(verdictText)
+	}
+	if verdict == "" {
 		return Critique{}, fmt.Errorf("council: verdict must be APPROVE or REVISE")
 	}
-	critique := Critique{Label: label, Verdict: Verdict(verdictText)}
+	critique := Critique{Label: label, Verdict: verdict}
 	for _, line := range lines[1:close] {
 		finding, err := parseCouncilFinding(line)
 		if err != nil {
@@ -159,6 +172,7 @@ func ParseCrossReview(output string, critiques []Critique, ownLabel string) (Cro
 	lines := outputLines(output)
 	result := CrossReview{Reviewer: ownLabel, Votes: make(map[string]bool)}
 	ranking := false
+	rankingEnded := false
 	for _, line := range lines {
 		if line == "FINAL RANKING:" {
 			if ranking {
@@ -168,18 +182,36 @@ func ParseCrossReview(output string, critiques []Critique, ownLabel string) (Cro
 			continue
 		}
 		if !ranking {
-			id, vote, ok := strings.Cut(line, ": ")
-			if !ok || !expectedIDs[id] || vote != "AGREE" && vote != "DISAGREE" {
+			id, vote, hasColon := strings.Cut(line, ":")
+			if !hasColon {
+				fields := strings.Fields(line)
+				if len(fields) > 1 && isFindingID(fields[0]) && (fields[1] == "AGREE" || fields[1] == "DISAGREE") {
+					return CrossReview{}, fmt.Errorf("council: unknown finding id or invalid vote %q", line)
+				}
+				continue
+			}
+			if !isFindingID(strings.TrimSpace(id)) {
+				continue
+			}
+			if !expectedIDs[id] || vote != " AGREE" && vote != " DISAGREE" {
 				return CrossReview{}, fmt.Errorf("council: unknown finding id or invalid vote %q", line)
 			}
 			if _, exists := result.Votes[id]; exists {
 				return CrossReview{}, fmt.Errorf("council: repeated vote for %s", id)
 			}
-			result.Votes[id] = vote == "AGREE"
+			result.Votes[id] = vote == " AGREE"
+			continue
+		}
+		if rankingEnded {
+			continue
+		}
+		if !looksLikeRankingEntry(line) {
+			rankingEnded = true
 			continue
 		}
 		position, label, ok := strings.Cut(line, ". ")
 		index, err := strconv.Atoi(position)
+		label = strings.TrimPrefix(label, "Critique ")
 		if !ok || err != nil || index != len(result.Ranking)+1 || !expectedLabels[label] {
 			return CrossReview{}, fmt.Errorf("council: invalid ranking entry %q", line)
 		}
@@ -194,6 +226,30 @@ func ParseCrossReview(output string, critiques []Critique, ownLabel string) (Cro
 		return CrossReview{}, fmt.Errorf("council: incomplete votes or ranking")
 	}
 	return result, nil
+}
+
+func isFindingID(id string) bool {
+	i := 0
+	for i < len(id) && id[i] >= 'A' && id[i] <= 'Z' {
+		i++
+	}
+	if i == 0 || i == len(id) {
+		return false
+	}
+	for ; i < len(id); i++ {
+		if id[i] < '0' || id[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func looksLikeRankingEntry(line string) bool {
+	i := 0
+	for i < len(line) && line[i] >= '0' && line[i] <= '9' {
+		i++
+	}
+	return i > 0 && i < len(line) && (line[i] == '.' || line[i] == ')')
 }
 
 func outputLines(output string) []string {

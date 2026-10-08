@@ -30,7 +30,37 @@ func BuildCritiquePrompt(plan string, conventions []string) string {
 // BuildCrossReviewPrompt asks for independent judgments of the other critiques.
 func BuildCrossReviewPrompt(critiques []Critique, ownLabel string) string {
 	var b strings.Builder
-	b.WriteString("Review the other counsellors' critiques anonymously. For every finding id, print `A1: AGREE` or `A1: DISAGREE` using its actual id. Then print FINAL RANKING: and a numbered list of every shown critique label from strongest to weakest. Do not rank your own critique.\n")
+	b.WriteString("Review the other counsellors' critiques anonymously. For every finding id, print `<id>: AGREE` or `<id>: DISAGREE` using its actual id. A critique with no findings needs no votes. Then print FINAL RANKING: and a numbered list of every shown critique label from strongest to weakest. Do not rank your own critique. Print nothing after the ranking.\n")
+	b.WriteString("Example format (use the shown finding ids and critique labels):\n")
+	votesShown := 0
+	for _, critique := range critiques {
+		if critique.Label == ownLabel {
+			continue
+		}
+		for i := range critique.Findings {
+			vote := "AGREE"
+			if votesShown == 1 {
+				vote = "DISAGREE"
+			}
+			fmt.Fprintf(&b, "%s%d: %s\n", critique.Label, i+1, vote)
+			votesShown++
+			if votesShown == 2 {
+				break
+			}
+		}
+		if votesShown == 2 {
+			break
+		}
+	}
+	b.WriteString("FINAL RANKING:\n")
+	position := 0
+	for _, critique := range critiques {
+		if critique.Label == ownLabel {
+			continue
+		}
+		position++
+		fmt.Fprintf(&b, "%d. Critique %s\n", position, critique.Label)
+	}
 	for _, critique := range critiques {
 		if critique.Label == ownLabel {
 			continue

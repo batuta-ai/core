@@ -1,0 +1,7 @@
+<<<COUNCIL
+{"task":1,"severity":"minor","claim":"The plan does not say how the test makes `git status --porcelain` fail while `git rev-parse HEAD` succeeds, for example a corrupted index. If the fixture cannot reach that state, TestProbeCapabilityStatusUnreadable passes without testing the bug. The Accept line also does not require the test to fail before the fix.","fix":"Name the fixture, such as a corrupted `.git/index` in a `tempDir(t)` repo. Assert that HEAD is readable before the probe. Require the test to fail on the pre-fix code, and assert the `no_repository` reason."}
+{"task":2,"severity":"minor","claim":"The mixed-package cases omit `?   pkg [no test files]` lines, cached `ok pkg (cached)` lines, and a `FAIL` line. A rule that counts any non-`[no tests to run]` ok line as 'ran' could treat these wrongly. The Jest and Go criteria share one test name, so a single PASS line covers both.","fix":"Add table rows for no-test-files plus no-tests-to-run (must fail), no-test-files plus a real ok (must pass), and the cached form. Give the Jest case its own sub-test name."}
+{"task":3,"severity":"minor","claim":"The 'stay green' proof greps only TestReviewFailureTailRawFallback. The decoded-tail test is not checked, though the Accept text says both stay green.","fix":"Add a grep for the decoded-tail test name, or drop the grep and require that the run exit 0."}
+COUNCIL>>>
+VERDICT: REVISE
+provider limit: seven_day allowed_warning resetsAt 1791590400
