@@ -19,6 +19,7 @@ batuta loop --supervise <entrega> --cursor <caminho-absoluto>
                                        observa localmente em primeiro plano, sem consultar modelo
 batuta loop --dashboard [<entrega>]    imprime um retrato TSV da entrega
 batuta review --base <ref> [--spec <plano>] revisa uma entrega pelos adaptadores
+batuta council --plan <arquivo>         julga um plano com um conselho antes da aprovação
 batuta watch [<entrega>]               abre o painel interativo ao vivo
 batuta trail [<entrega>]               mostra os registros do diário
 ```
