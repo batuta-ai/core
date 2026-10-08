@@ -121,6 +121,56 @@ func TestParseCritiqueTrailingLines(t *testing.T) {
 	}
 }
 
+func TestParseCritiqueLeadingProse(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile("testdata/codex-critique.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := ParseCritique(string(data), "C")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTasks := []int{1, 1, 2, 3}
+	wantSeverity := []Severity{Blocker, Major, Major, Blocker}
+	if got.Label != "C" || got.Verdict != Revise || len(got.Findings) != len(wantTasks) {
+		t.Fatalf("critique = %+v", got)
+	}
+	for i, finding := range got.Findings {
+		if finding.Task != wantTasks[i] || finding.Severity != wantSeverity[i] {
+			t.Fatalf("finding %d = %+v", i+1, finding)
+		}
+	}
+}
+
+func TestParseCritiqueStructure(t *testing.T) {
+	t.Parallel()
+	const finding = "{\"task\":1,\"severity\":\"minor\",\"claim\":\"x\",\"fix\":\"y\"}\n"
+	tests := []struct {
+		name   string
+		output string
+		valid  bool
+	}{
+		{"leading prose", "I will review the plan.\n<<<COUNCIL\n" + finding + "COUNCIL>>>\nVERDICT: REVISE", true},
+		{"leading blank lines and prose", "\nNote\n\n<<<COUNCIL\nCOUNCIL>>>\nVERDICT: APPROVE", true},
+		{"prose without block", "I will review the plan.\nVERDICT: APPROVE", false},
+		{"second block after prose", "Note\n<<<COUNCIL\nCOUNCIL>>>\n<<<COUNCIL\nCOUNCIL>>>\nVERDICT: APPROVE", false},
+		{"opening marker inside block", "Note\n<<<COUNCIL\n" + finding + "<<<COUNCIL\nCOUNCIL>>>\nVERDICT: APPROVE", false},
+		{"prose inside block", "<<<COUNCIL\nnot json\n" + finding + "COUNCIL>>>\nVERDICT: REVISE", false},
+		{"blank line inside block", "<<<COUNCIL\n\n" + finding + "COUNCIL>>>\nVERDICT: REVISE", false},
+		{"prose before verdict", "<<<COUNCIL\nCOUNCIL>>>\nnote\nVERDICT: APPROVE", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ParseCritique(tc.output, "A")
+			if (err == nil) != tc.valid {
+				t.Fatalf("ParseCritique() = %+v, %v; valid = %t", got, err, tc.valid)
+			}
+		})
+	}
+}
+
 func TestParseCrossReview(t *testing.T) {
 	t.Parallel()
 	critiques := []Critique{

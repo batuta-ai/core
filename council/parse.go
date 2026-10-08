@@ -42,13 +42,17 @@ type CrossReview struct {
 	Ranking  []string        `json:"ranking"`
 }
 
-// ParseCritique accepts one complete findings block followed by one verdict.
+// ParseCritique accepts one complete findings block followed by one verdict;
+// lines before the opening marker are ignored.
 func ParseCritique(output, label string) (Critique, error) {
 	if !validLabel(label) {
 		return Critique{}, fmt.Errorf("council: invalid critique label %q", label)
 	}
 	lines := outputLines(output)
-	if len(lines) < 3 || lines[0] != "<<<COUNCIL" {
+	for len(lines) > 0 && lines[0] != "<<<COUNCIL" {
+		lines = lines[1:]
+	}
+	if len(lines) < 3 {
 		return Critique{}, fmt.Errorf("council: missing COUNCIL block")
 	}
 	close := -1
