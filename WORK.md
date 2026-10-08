@@ -419,6 +419,10 @@
 - [x] council: prompts, parsers and the aggregate, as pure functions → codex (gpt-6-sol), commit 3b6bf95fb3f3 (trail: .batuta/runs/2026-10-08-council-task-2.md, delivery council-20261008-125821, plan council, 2026-10-08)
 - [x] council: the session runner over read-only adapter lines → codex (gpt-6-sol), 1 retry, commit 1b5ebcd96b84 (trail: .batuta/runs/2026-10-08-council-task-3.md, delivery council-20261008-125821, plan council, 2026-10-08)
 - [x] batuta council: the command, its artefacts and exit codes → claude (sonnet), commit 19c6d1ff111d (trail: .batuta/runs/2026-10-08-council-task-4.md, delivery council-20261008-125821, plan council, 2026-10-08)
+- [x] council answers parse from the raw stream when decoding dropped lines → codex (gpt-6-sol), commit 6acf93ed7c7b (trail: .batuta/runs/2026-10-08-council-fixes-task-1.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
+- [x] one redaction for failure tails in review and council, JSON secret fields included → claude (sonnet), commit 3014fd5db8db (trail: .batuta/runs/2026-10-08-council-fixes-task-2.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
+- [x] council artefacts are written atomically → claude (sonnet), commit 08c53c509f23 (trail: .batuta/runs/2026-10-08-council-fixes-task-3.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
+- [x] chairman default, council digest and the rank test → claude (sonnet), commit 6a8e0c4b5126 (trail: .batuta/runs/2026-10-08-council-fixes-task-4.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
