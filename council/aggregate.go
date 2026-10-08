@@ -85,7 +85,7 @@ func Aggregate(critiques []Critique, reviews []CrossReview) AggregateResult {
 		group.finding.Support = len(group.supporters)
 		slices.Sort(group.finding.IDs)
 		result.Findings = append(result.Findings, group.finding)
-		if group.finding.Severity == Blocker && group.finding.Support > len(critiques)/2 {
+		if severityPriority(group.finding.Severity) >= severityPriority(Major) && group.finding.Support > len(critiques)/2 {
 			result.Recommendation = Revise
 		}
 	}

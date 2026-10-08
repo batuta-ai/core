@@ -24,8 +24,8 @@ bounds each session (default 10 minutes).
 3. **Aggregate.** Matching findings merge by task and claim; support counts the
    distinct counsellors that raised or agreed with a finding. Each critique gets
    an average rank over the rankings it received. The recommendation is REVISE
-   when most critiques say REVISE or a blocker has majority support; otherwise
-   APPROVE. When fewer than two cross-reviews parsed, the recommendation is
+   when most critiques say REVISE or a blocker or major finding has majority
+   support; minor findings never change it. Otherwise APPROVE. When fewer than two cross-reviews parsed, the recommendation is
    INCOMPLETE and `council.md` says so above the synthesis.
 4. **Synthesis.** A chairman writes a synthesis for the maintainer from the
    aggregate and the critiques, without the counsellors' identities.

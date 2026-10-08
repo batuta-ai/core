@@ -88,6 +88,56 @@ func TestAggregate(t *testing.T) {
 	}
 }
 
+func TestAggregateMajorMajority(t *testing.T) {
+	t.Parallel()
+	pair := []CrossReview{{Reviewer: "A"}, {Reviewer: "B"}}
+	finding := func(severity Severity) []Finding {
+		return []Finding{{Task: 1, Severity: severity, Claim: "Risk", Fix: "Explain"}}
+	}
+	tests := []struct {
+		name        string
+		critiques   []Critique
+		wantVerdict Verdict
+	}{
+		{
+			name: "major raised by a majority revises",
+			critiques: []Critique{
+				{Label: "A", Verdict: Approve, Findings: finding(Major)},
+				{Label: "B", Verdict: Approve, Findings: finding(Major)},
+				{Label: "C", Verdict: Approve},
+			},
+			wantVerdict: Revise,
+		},
+		{
+			name: "major minority approves",
+			critiques: []Critique{
+				{Label: "A", Verdict: Approve, Findings: finding(Major)},
+				{Label: "B", Verdict: Approve},
+				{Label: "C", Verdict: Approve},
+			},
+			wantVerdict: Approve,
+		},
+		{
+			name: "minor with full support approves",
+			critiques: []Critique{
+				{Label: "A", Verdict: Approve, Findings: finding(Minor)},
+				{Label: "B", Verdict: Approve, Findings: finding(Minor)},
+				{Label: "C", Verdict: Approve, Findings: finding(Minor)},
+			},
+			wantVerdict: Approve,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := Aggregate(tc.critiques, pair)
+			if got.Recommendation != tc.wantVerdict {
+				t.Fatalf("recommendation = %s, want %s: %+v", got.Recommendation, tc.wantVerdict, got)
+			}
+		})
+	}
+}
+
 func TestAggregateRankEntries(t *testing.T) {
 	t.Parallel()
 	critiques := []Critique{
