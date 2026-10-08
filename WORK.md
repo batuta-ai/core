@@ -415,6 +415,10 @@
 - [x] a canceled dispatch preflight stays interrupted, and the usage text names exit 4 → claude (sonnet), commit 04627629b255 (trail: .batuta/runs/2026-10-06-review-contract-preflight-fixes-3-task-5.md, delivery review-contract-preflight-fixes-3-20261006-193702, plan review-contract-preflight-fixes-3, 2026-10-06)
 - [x] a supervision review job stays within its read limit → claude (sonnet), commit 942f8a4abc27 (trail: .batuta/runs/2026-10-06-review-contract-preflight-fixes-3-task-6.md, delivery review-contract-preflight-fixes-3-20261006-193702, plan review-contract-preflight-fixes-3, 2026-10-06)
 - [x] the loop probes a route over the route's own transport → codex (gpt-6-sol), commit 12427e1dd416 (trail: .batuta/runs/2026-10-06-review-contract-preflight-acp-probe-task-1.md, delivery review-contract-preflight-acp-probe-20261006-210516, plan review-contract-preflight-acp-probe, 2026-10-06)
+- [x] routing: council and chairman roles → claude (sonnet), commit 38dcba0d3faa (trail: .batuta/runs/2026-10-08-council-task-1.md, delivery council-20261008-125821, plan council, 2026-10-08)
+- [x] council: prompts, parsers and the aggregate, as pure functions → codex (gpt-6-sol), commit 3b6bf95fb3f3 (trail: .batuta/runs/2026-10-08-council-task-2.md, delivery council-20261008-125821, plan council, 2026-10-08)
+- [x] council: the session runner over read-only adapter lines → codex (gpt-6-sol), 1 retry, commit 1b5ebcd96b84 (trail: .batuta/runs/2026-10-08-council-task-3.md, delivery council-20261008-125821, plan council, 2026-10-08)
+- [x] batuta council: the command, its artefacts and exit codes → claude (sonnet), commit 19c6d1ff111d (trail: .batuta/runs/2026-10-08-council-task-4.md, delivery council-20261008-125821, plan council, 2026-10-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
