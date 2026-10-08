@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -128,11 +129,11 @@ func runCouncil(args []string, stdout, stderr io.Writer) error {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		return fmt.Errorf("council: create artifact directory: %w", err)
 	}
-	if err := os.WriteFile(artifacts[0], append(payload, '\n'), 0o644); err != nil {
-		return fmt.Errorf("council: write council.json: %w", err)
-	}
-	if err := os.WriteFile(artifacts[1], []byte(report), 0o644); err != nil {
-		return fmt.Errorf("council: write council.md: %w", err)
+	if err := writeCouncilArtifacts(directory, map[string][]byte{
+		"council.json": append(payload, '\n'),
+		"council.md":   []byte(report),
+	}); err != nil {
+		return fmt.Errorf("council: %w", err)
 	}
 	if _, err := io.WriteString(stdout, report); err != nil {
 		return err
@@ -145,6 +146,60 @@ func runCouncil(args []string, stdout, stderr io.Writer) error {
 		return &ExitError{Code: 2, State: "revise"}
 	}
 	return nil
+}
+
+// writeCouncilArtifacts stages every file beside its destination and renames
+// them into place only after all of them were written and closed, so a failed
+// write leaves the previous artefacts untouched.
+func writeCouncilArtifacts(directory string, files map[string][]byte) error {
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	staged := make(map[string]string, len(names))
+	defer func() {
+		for _, temporaryName := range staged {
+			os.Remove(temporaryName)
+		}
+	}()
+	for _, name := range names {
+		temporaryName, err := stageCouncilArtifact(directory, name, files[name])
+		if err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+		staged[name] = temporaryName
+	}
+	for _, name := range names {
+		if err := os.Rename(staged[name], filepath.Join(directory, name)); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
+		delete(staged, name)
+	}
+	return nil
+}
+
+func stageCouncilArtifact(directory, name string, payload []byte) (string, error) {
+	temporary, err := os.CreateTemp(directory, "."+name+"-*")
+	if err != nil {
+		return "", err
+	}
+	temporaryName := temporary.Name()
+	if err := temporary.Chmod(0o644); err != nil {
+		temporary.Close()
+		os.Remove(temporaryName)
+		return "", err
+	}
+	if _, err := temporary.Write(payload); err != nil {
+		temporary.Close()
+		os.Remove(temporaryName)
+		return "", err
+	}
+	if err := temporary.Close(); err != nil {
+		os.Remove(temporaryName)
+		return "", err
+	}
+	return temporaryName, nil
 }
 
 func nonNil[T any](items []T) []T {

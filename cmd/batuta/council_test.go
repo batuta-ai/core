@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +192,65 @@ func TestCouncilCommandOut(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Recommendation: APPROVE") {
 		t.Errorf("council.md = %s", &stdout)
+	}
+}
+
+func TestCouncilArtefactsAtomic(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("a read-only directory does not stop writes on this platform or user")
+	}
+	directory := tempDir(t)
+	old := map[string][]byte{"council.json": []byte("old json\n"), "council.md": []byte("old md\n")}
+	for name, content := range old {
+		if err := os.WriteFile(filepath.Join(directory, name), content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Chmod(directory, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(directory, 0o755) })
+	err := writeCouncilArtifacts(directory, map[string][]byte{"council.json": []byte("new json\n"), "council.md": []byte("new md\n")})
+	if err == nil {
+		t.Fatal("writeCouncilArtifacts succeeded in a read-only directory")
+	}
+	for name, want := range old {
+		got, readErr := os.ReadFile(filepath.Join(directory, name))
+		if readErr != nil || !bytes.Equal(got, want) {
+			t.Errorf("%s = %q (%v), want the previous %q", name, got, readErr, want)
+		}
+	}
+	entries, _ := os.ReadDir(directory)
+	if len(entries) != len(old) {
+		t.Errorf("directory holds %d entries, want only the %d artefacts", len(entries), len(old))
+	}
+}
+
+func TestCouncilArtefactsReplaced(t *testing.T) {
+	root := councilRepo(t)
+	t.Chdir(root)
+	directory := filepath.Join(root, ".batuta", "councils", "2026-10-08-demo")
+	var reports []string
+	for _, verdict := range []string{"REVISE", "APPROVE"} {
+		stubCouncilSessions(t, councilScript(verdict))
+		var stdout, stderr bytes.Buffer
+		run([]string{"council", "--plan", "plan-demo.md"}, &stdout, &stderr)
+		reports = append(reports, stdout.String())
+		written, err := os.ReadFile(filepath.Join(directory, "council.md"))
+		if err != nil || string(written) != stdout.String() {
+			t.Fatalf("%s run: council.md = %q (%v), want stdout %q", verdict, written, err, stdout.String())
+		}
+		payload, err := os.ReadFile(filepath.Join(directory, "council.json"))
+		if err != nil || !strings.Contains(string(payload), `"recommendation": "`+verdict+`"`) {
+			t.Fatalf("%s run: council.json = %s (%v)", verdict, payload, err)
+		}
+	}
+	if reports[0] == reports[1] {
+		t.Error("the two runs produced the same report")
+	}
+	entries, _ := os.ReadDir(directory)
+	if len(entries) != 2 {
+		t.Errorf("directory holds %d entries, want council.json and council.md only", len(entries))
 	}
 }
 
