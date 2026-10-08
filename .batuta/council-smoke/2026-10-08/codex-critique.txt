@@ -1,0 +1,10 @@
+I’ll check the plan’s acceptance commands against the scoped code and tests, then report concrete findings in the requested format.
+<<<COUNCIL
+{"task":1,"severity":"blocker","claim":"Every acceptance proof pipes go test into grep, so a named PASS line can make the proof succeed even when go test exits nonzero.","fix":"Require both a zero go test exit status and the named PASS line in every task's proof."}
+{"task":1,"severity":"major","claim":"The status-unreadable fixture records HEAD before corrupting the index but does not verify that git rev-parse HEAD still succeeds afterward. The test could pass for the wrong reason.","fix":"After corrupting the index, assert that rev-parse HEAD succeeds and returns the saved SHA before running the probe."}
+{"task":2,"severity":"major","claim":"The proof fixtures skip their shell checks on Windows, while the named parent tests can still print PASS. The acceptance proofs can therefore succeed without exercising the rule.","fix":"Use a platform-independent proof runner fixture and require the relevant cases to execute."}
+{"task":3,"severity":"blocker","claim":"The stated secret-field guarantee includes JSON keys that decode to token, api_key, password, or secret, but the criteria omit escaped keys such as tok\\u0065n. A raw-text matcher can leave that event and its secret value in the tail.","fix":"Add escaped-key cases and require JSON decoding before deciding whether to drop an event line, or explicitly narrow the guarantee."}
+COUNCIL>>>
+VERDICT: REVISE
+
+Reading additional input from stdin...
