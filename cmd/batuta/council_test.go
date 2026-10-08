@@ -276,6 +276,42 @@ func TestCouncilErrorsExitOne(t *testing.T) {
 	}
 }
 
+func TestCouncilFailureTailRedacted(t *testing.T) {
+	for _, tc := range []struct {
+		name, stdout, stderr, secret string
+	}{
+		{name: "api_key on stdout", stdout: `{"api_key":"sk-live"}`, secret: "sk-live"},
+		{name: "token on stderr", stderr: `{"token":"tok-example"}`, secret: "tok-example"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := councilRepo(t)
+			t.Chdir(root)
+			healthy := councilScript("REVISE")
+			stubCouncilSessions(t, func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+				if command.Args[2] == "alpha-model" {
+					return publication.CommandResult{Stdout: []byte(tc.stdout + "\nkept line"), Stderr: []byte(tc.stderr), ExitCode: 1}, nil
+				}
+				return healthy(ctx, command)
+			})
+			var stdout, stderr bytes.Buffer
+			_ = run([]string{"council", "--plan", "plan-demo.md"}, &stdout, &stderr)
+			directory := filepath.Join(root, ".batuta", "councils", "2026-10-08-demo")
+			for _, name := range []string{"council.json", "council.md"} {
+				payload, err := os.ReadFile(filepath.Join(directory, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(payload), tc.secret) {
+					t.Errorf("%s holds %q:\n%s", name, tc.secret, payload)
+				}
+				if name == "council.json" && !strings.Contains(string(payload), "kept line") {
+					t.Errorf("%s lost the non-secret tail line:\n%s", name, payload)
+				}
+			}
+		})
+	}
+}
+
 func TestCouncilCapability(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"capabilities"}, &stdout, &stderr); err != nil {

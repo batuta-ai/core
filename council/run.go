@@ -274,7 +274,7 @@ func checkCouncilTree(ctx context.Context, git publication.GitClient, root strin
 }
 
 func councilFailure(label, stage, reason string, code *int, output string) *CouncilFailure {
-	tail := executor.DropSecretBearingLines(executor.Tail([]byte(output), 40))
+	tail := executor.DropSecretFieldLines(executor.Tail([]byte(output), 40))
 	if len(tail) > 4096 {
 		tail = tail[len(tail)-4096:]
 	}

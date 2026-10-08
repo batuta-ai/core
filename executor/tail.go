@@ -9,6 +9,7 @@ import (
 var (
 	secretLine   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
 	secretAssign = regexp.MustCompile(`[A-Z][A-Z0-9_]*=`)
+	secretField  = regexp.MustCompile(`(?i)"[^"]*(?:token|api_?key|password|secret)[^"]*"\s*:`)
 	absolutePath = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/|\\)[^\s"'=]+`)
 )
 
@@ -44,6 +45,24 @@ func DropSecretBearingLines(value string) string {
 	kept := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if secretAssign.MatchString(line) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// DropSecretFieldLines removes every line that holds a secret-shaped
+// assignment anywhere in it or a JSON field whose key names a secret, such as
+// {"api_key":"sk-x"}. Escaped key names are not decoded.
+func DropSecretFieldLines(value string) string {
+	if value == "" {
+		return ""
+	}
+	lines := strings.Split(value, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if secretAssign.MatchString(line) || secretField.MatchString(line) {
 			continue
 		}
 		kept = append(kept, line)

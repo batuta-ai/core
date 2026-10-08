@@ -84,3 +84,26 @@ func TestDropSecretBearingLines(t *testing.T) {
 		t.Fatalf("DropSecretLines = %q, want %q", got, want)
 	}
 }
+
+func TestDropSecretFieldLines(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"embedded assignment", "provider error: OPENAI_API_KEY=sk-x\nkept", "kept"},
+		{"api_key field", `{"api_key":"sk-live"}` + "\nkept", "kept"},
+		{"token field", `{"type":"x","token": "tok-example"}` + "\nkept", "kept"},
+		{"password field", `{"Password":"p"}` + "\nkept", "kept"},
+		{"secret in longer key", `{"client_secret":"s"}` + "\nkept", "kept"},
+		{"apikey spelling", `{"ApiKey":"k"}` + "\nkept", "kept"},
+		{"plain json", `{"type":"message","text":"hello"}`, `{"type":"message","text":"hello"}`},
+		{"word without field", "the token was refused", "the token was refused"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := DropSecretFieldLines(tc.in); got != tc.want {
+				t.Fatalf("DropSecretFieldLines(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
