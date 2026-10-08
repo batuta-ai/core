@@ -72,3 +72,34 @@ func TestAggregate(t *testing.T) {
 		})
 	}
 }
+
+func TestAggregateRankEntries(t *testing.T) {
+	t.Parallel()
+	critiques := []Critique{
+		{Label: "A", Verdict: Approve},
+		{Label: "B", Verdict: Approve},
+		{Label: "C", Verdict: Approve},
+	}
+	reviews := []CrossReview{
+		{Reviewer: "A", Ranking: []string{"B", "C"}},
+		{Reviewer: "B", Ranking: []string{"A", "C"}},
+		{Reviewer: "C", Ranking: []string{"B", "A"}},
+	}
+	got := Aggregate(critiques, reviews)
+	if len(got.Rankings) != len(critiques) {
+		t.Fatalf("rankings = %+v, want %d entries", got.Rankings, len(critiques))
+	}
+	var found bool
+	for _, rank := range got.Rankings {
+		if rank.Label != "A" {
+			continue
+		}
+		found = true
+		if rank.Average != 1.5 || rank.Count != 2 {
+			t.Errorf("A = average %v count %d, want 1.5 and 2", rank.Average, rank.Count)
+		}
+	}
+	if !found {
+		t.Fatalf("critique A missing from rankings: %+v", got.Rankings)
+	}
+}

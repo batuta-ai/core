@@ -188,7 +188,7 @@ func ParseRoutingTable(payload []byte) (RoutingTable, error) {
 		}
 	}
 	for _, row := range roles.council {
-		for _, part := range []string{"council", string(row.Executor), row.Model} {
+		for _, part := range []string{"council", string(row.Lane), string(row.Executor), row.Model} {
 			writeDigestPart(hash, part)
 		}
 	}
@@ -375,13 +375,18 @@ func (t RoutingTable) CouncilRows() []RoutingRow {
 }
 
 // ChairmanRole returns the explicit `chairman` role, or else the high lane
-// row (the `*` domain first).
+// row: the `*` domain first, else the first high row of any domain.
 func (t RoutingTable) ChairmanRole() (RoutingRole, bool) {
 	if t.Chairman != nil {
 		return *t.Chairman, true
 	}
 	if row, ok := t.Row(ComplexityHigh, DomainAny); ok {
 		return RoutingRole{Executor: row.Executor, Model: row.Model, Line: row.Line}, true
+	}
+	for _, row := range t.Rows {
+		if row.Lane == ComplexityHigh {
+			return RoutingRole{Executor: row.Executor, Model: row.Model, Line: row.Line}, true
+		}
 	}
 	return RoutingRole{}, false
 }

@@ -509,3 +509,71 @@ func TestCouncilDefaults(t *testing.T) {
 		t.Fatal("chairman must be absent without a high row")
 	}
 }
+
+func TestChairmanDefaultDomainRow(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		rows      []RoutingRow
+		wantModel string
+		wantOK    bool
+	}{
+		{
+			name: "wildcard high row wins over a domain row listed first",
+			rows: []RoutingRow{
+				{Lane: ComplexityHigh, Domain: "backend", Executor: inventory.ExecutorClaude, Model: "backend-high"},
+				{Lane: ComplexityHigh, Domain: DomainAny, Executor: inventory.ExecutorCodex, Model: "any-high"},
+			},
+			wantModel: "any-high", wantOK: true,
+		},
+		{
+			name: "first high row of any domain without a wildcard",
+			rows: []RoutingRow{
+				{Lane: ComplexityLow, Domain: DomainAny, Executor: inventory.ExecutorCodex, Model: "low"},
+				{Lane: ComplexityHigh, Domain: "backend", Executor: inventory.ExecutorClaude, Model: "backend-high"},
+				{Lane: ComplexityHigh, Domain: "frontend", Executor: inventory.ExecutorCodex, Model: "frontend-high"},
+			},
+			wantModel: "backend-high", wantOK: true,
+		},
+		{
+			name: "no high row",
+			rows: []RoutingRow{
+				{Lane: ComplexityLow, Domain: DomainAny, Executor: inventory.ExecutorCodex, Model: "low"},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			chairman, ok := RoutingTable{Rows: tc.rows}.ChairmanRole()
+			if ok != tc.wantOK || chairman.Model != tc.wantModel {
+				t.Fatalf("chairman = %+v, %v; want model %q, %v", chairman, ok, tc.wantModel, tc.wantOK)
+			}
+		})
+	}
+}
+
+func TestCouncilDigestIncludesLane(t *testing.T) {
+	t.Parallel()
+	source := func(lane string) []byte {
+		return []byte(routingTableWithoutRole() + "\n| Role | Lane | Executor | Model |\n|---|---|---|---|\n| council | " + lane + " | claude | claude-opus-5-5 |\n")
+	}
+	low, err := ParseRoutingTable(source("low"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	high, err := ParseRoutingTable(source("high"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if low.Digest == high.Digest {
+		t.Fatalf("digest ignores the council lane: %s", low.Digest)
+	}
+	again, err := ParseRoutingTable(source("low"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Digest != low.Digest {
+		t.Fatalf("digest is not stable: %s vs %s", again.Digest, low.Digest)
+	}
+}
