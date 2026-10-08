@@ -25,7 +25,8 @@ bounds each session (default 10 minutes).
    distinct counsellors that raised or agreed with a finding. Each critique gets
    an average rank over the rankings it received. The recommendation is REVISE
    when most critiques say REVISE or a blocker has majority support; otherwise
-   APPROVE.
+   APPROVE. When fewer than two cross-reviews parsed, the recommendation is
+   INCOMPLETE and `council.md` says so above the synthesis.
 4. **Synthesis.** A chairman writes a synthesis for the maintainer from the
    aggregate and the critiques, without the counsellors' identities.
 
@@ -69,7 +70,7 @@ with the rest.
 |---|---|
 | 0 | The aggregate recommends APPROVE. |
 | 2 | The aggregate recommends REVISE. This is a result, not a failure. |
-| 4 | Fewer than two critiques parsed; the report is marked INCOMPLETE. |
+| 4 | Fewer than two critiques parsed, or fewer than two cross-reviews parsed; the report is marked INCOMPLETE. |
 | 1 | An error before a report: bad flags, missing plan, routing or profile, a tree change. |
 
 An APPROVE recommendation is not an approval. The `batuta-council` skill reads

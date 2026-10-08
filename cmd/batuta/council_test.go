@@ -292,6 +292,36 @@ func TestCouncilExitCodes(t *testing.T) {
 	}
 }
 
+func TestCouncilIncompleteCrossReview(t *testing.T) {
+	base := councilScript("APPROVE")
+	runner := councilTestRunner(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		model, prompt := command.Args[2], command.Args[5]
+		if strings.HasPrefix(prompt, "Review the other counsellors") && model != "gamma-model" {
+			return publication.CommandResult{Stdout: []byte("no ranking here")}, nil
+		}
+		return base(ctx, command)
+	})
+	root := councilRepo(t)
+	t.Chdir(root)
+	stubCouncilSessions(t, runner)
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"council", "--plan", "plan-demo.md"}, &stdout, &stderr)
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 4 {
+		t.Fatalf("council error = %#v, want exit 4", err)
+	}
+	report := stdout.String()
+	synthesis := strings.Index(report, "## Chairman synthesis")
+	note := strings.Index(report, "fewer than two cross-reviews parsed")
+	if !strings.Contains(report, "Recommendation: INCOMPLETE") || note < 0 || synthesis < 0 || note > synthesis {
+		t.Errorf("council.md = %s", report)
+	}
+	written, readErr := os.ReadFile(filepath.Join(root, ".batuta", "councils", "2026-10-08-demo", "council.md"))
+	if readErr != nil || string(written) != report {
+		t.Errorf("council.md on disk = %q, %v", written, readErr)
+	}
+}
+
 func TestCouncilErrorsExitOne(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

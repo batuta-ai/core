@@ -6,6 +6,7 @@ import (
 
 func TestAggregate(t *testing.T) {
 	t.Parallel()
+	pair := []CrossReview{{Reviewer: "A"}, {Reviewer: "B"}}
 	tests := []struct {
 		name         string
 		critiques    []Critique
@@ -36,12 +37,25 @@ func TestAggregate(t *testing.T) {
 				{Label: "B", Verdict: Approve},
 				{Label: "C", Verdict: Approve},
 			},
+			reviews:     pair,
 			wantVerdict: Approve, wantSupport: 1, wantFindings: 1,
 		},
 		{
 			name:        "verdict majority overrides findings",
 			critiques:   []Critique{{Label: "A", Verdict: Revise}, {Label: "B", Verdict: Revise}, {Label: "C", Verdict: Approve}},
+			reviews:     pair,
 			wantVerdict: Revise,
+		},
+		{
+			name:        "one cross-review is incomplete",
+			critiques:   []Critique{{Label: "A", Verdict: Revise}, {Label: "B", Verdict: Revise}, {Label: "C", Verdict: Approve}},
+			reviews:     pair[:1],
+			wantVerdict: Incomplete,
+		},
+		{
+			name:        "no cross-review is incomplete",
+			critiques:   []Critique{{Label: "A", Verdict: Approve}, {Label: "B", Verdict: Approve}},
+			wantVerdict: Incomplete,
 		},
 		{
 			name: "task keeps claims separate",
@@ -49,6 +63,7 @@ func TestAggregate(t *testing.T) {
 				{Label: "A", Verdict: Approve, Findings: []Finding{{Task: 1, Severity: Minor, Claim: "Risk", Fix: "Explain"}}},
 				{Label: "B", Verdict: Approve, Findings: []Finding{{Task: 2, Severity: Minor, Claim: "Risk", Fix: "Explain"}}},
 			},
+			reviews:     pair,
 			wantVerdict: Approve, wantFindings: 2, wantSupport: 1,
 		},
 	}

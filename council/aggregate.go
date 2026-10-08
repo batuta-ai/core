@@ -6,6 +6,9 @@ import (
 	"strings"
 )
 
+// Incomplete marks a council whose cross-review stage parsed for fewer than two counsellors.
+const Incomplete Verdict = "INCOMPLETE"
+
 type AggregatedFinding struct {
 	Task     int      `json:"task"`
 	Severity Severity `json:"severity"`
@@ -33,6 +36,7 @@ type findingKey struct {
 }
 
 // Aggregate combines matching concerns and counts distinct counsellors' support.
+// With fewer than two parsed cross-reviews the recommendation is Incomplete.
 func Aggregate(critiques []Critique, reviews []CrossReview) AggregateResult {
 	type merged struct {
 		finding    AggregatedFinding
@@ -108,6 +112,9 @@ func Aggregate(critiques []Critique, reviews []CrossReview) AggregateResult {
 			rank.Average /= float64(rank.Count)
 		}
 		result.Rankings = append(result.Rankings, rank)
+	}
+	if len(reviews) < 2 {
+		result.Recommendation = Incomplete
 	}
 	slices.SortFunc(result.Rankings, func(a, b Ranking) int {
 		if a.Count == 0 && b.Count != 0 {
