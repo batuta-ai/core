@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -233,6 +234,30 @@ func runCouncilSession(ctx context.Context, stage string, session councilSession
 	}
 	if outcome.Truncated || outcome.Question != "" {
 		return councilSessionResult{failure: councilFailure(session.label, stage, "session output was truncated or requested input", &outcome.ExitCode, output+"\n"+string(outcome.Stderr))}
+	}
+	return councilOutputResult(stage, session.label, outcome)
+}
+
+func councilOutputResult(stage, label string, outcome executor.Result) councilSessionResult {
+	decoded := string(outcome.Stdout)
+	raw := string(outcome.RawStdout)
+	output := decoded
+	if output == "" {
+		output = raw
+	}
+	if stage == "critique" && raw != "" {
+		decodedCritique, decodedErr := ParseCritique(decoded, label)
+		rawCritique, rawErr := ParseCritique(raw, label)
+		switch {
+		case rawErr == nil && decodedErr != nil:
+			output = raw
+		case rawErr == nil && decodedErr == nil && !reflect.DeepEqual(decodedCritique, rawCritique):
+			if outcome.DecoderDroppedLines > 0 && len(decodedCritique.Findings) == 0 && len(rawCritique.Findings) > 0 && decodedCritique.Verdict == rawCritique.Verdict {
+				output = raw
+			} else {
+				return councilSessionResult{failure: councilFailure(label, stage, "decoded/raw answer conflict", &outcome.ExitCode, decoded+"\n"+raw+"\n"+string(outcome.Stderr))}
+			}
+		}
 	}
 	return councilSessionResult{output: output, tail: output + "\n" + string(outcome.Stderr), exitCode: outcome.ExitCode}
 }

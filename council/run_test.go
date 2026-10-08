@@ -162,6 +162,75 @@ func TestRunStages(t *testing.T) {
 	}
 }
 
+func TestRunParsesRawWhenDecodedDropsLines(t *testing.T) {
+	t.Parallel()
+	runner := councilRunner(func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+		model, prompt := councilCommand(command)
+		answer := critiqueAnswer(model)
+		if model == "alpha-model" {
+			answer = "<<<COUNCIL\n" +
+				`{"task":1,"severity":"major","claim":"first finding","fix":"Add a proof"}` + "\n" +
+				`{"task":2,"severity":"minor","claim":"second finding","fix":"Clarify the plan"}` + "\n" +
+				"COUNCIL>>>\nVERDICT: REVISE\n"
+		}
+		if strings.HasPrefix(prompt, "Review the other counsellors") {
+			answer = crossReviewAnswer(strings.ToUpper(model[:1]))
+			if model != "alpha-model" {
+				answer = strings.Replace(answer, "A1: AGREE\n", "A1: AGREE\nA2: AGREE\n", 1)
+			}
+		}
+		if strings.HasPrefix(prompt, "Synthesize this council") {
+			answer = "Synthesis"
+		}
+		return publication.CommandResult{Stdout: []byte(answer)}, nil
+	})
+	table, opts := councilFixture(t, 1, runner)
+	path := filepath.Join(opts.Skills, "adapters", "alpha.md")
+	adapter, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter = []byte(strings.Replace(string(adapter), "finished: exit_code\n", "finished: exit_code\noutput_decoder: cursor-stream-json\n", 1))
+	if err := os.WriteFile(path, adapter, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	result, err := Run(t.Context(), "Plan body", nil, table, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Failures) != 0 || len(result.Critiques) != 3 || len(result.Reviews) != 3 {
+		t.Fatalf("council result = %+v", result)
+	}
+	if got := result.Critiques[0].Findings; len(got) != 2 || got[0].Claim != "first finding" || got[1].Claim != "second finding" {
+		t.Fatalf("raw findings = %+v", got)
+	}
+}
+
+func TestRunDecodedRawConflict(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		decoded string
+		raw     string
+	}{
+		{"findings", critiqueAnswer("decoded finding"), critiqueAnswer("raw finding")},
+		{"verdict", critiqueAnswer("same finding"), strings.Replace(critiqueAnswer("same finding"), "VERDICT: REVISE", "VERDICT: APPROVE", 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			result := councilOutputResult("critique", "A", executor.Result{
+				Stdout: []byte(tc.decoded), RawStdout: []byte(tc.raw), Finished: true,
+			})
+			if result.failure == nil || !strings.Contains(result.failure.Reason, "conflict") {
+				t.Fatalf("decoded/raw disagreement = %+v", result)
+			}
+			if result.output != "" {
+				t.Fatalf("conflicting answer was used: %q", result.output)
+			}
+		})
+	}
+}
+
 func TestRunFailures(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
