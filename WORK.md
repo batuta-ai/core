@@ -425,6 +425,8 @@
 - [x] chairman default, council digest and the rank test → claude (sonnet), commit 6a8e0c4b5126 (trail: .batuta/runs/2026-10-08-council-fixes-task-4.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
 - [x] council parsers accept real counsellor output → codex (gpt-6-sol), commit 4e61e31a800a (trail: .batuta/runs/2026-10-08-council-fixes-2-task-1.md, delivery council-fixes-2-20261008-184820, plan council-fixes-2, 2026-10-08)
 - [x] a council without two parsed cross-reviews is incomplete → claude (sonnet), commit 6763c74174ff (trail: .batuta/runs/2026-10-08-council-fixes-2-task-2.md, delivery council-fixes-2-20261008-184820, plan council-fixes-2, 2026-10-08)
+- [x] the critique parser accepts prose before the block → claude (sonnet), commit 7b4846029335 (trail: .batuta/runs/2026-10-08-council-fixes-3-task-1.md, delivery council-fixes-3-20261008-212628, plan council-fixes-3, 2026-10-08)
+- [x] a major finding with majority support makes the recommendation REVISE → claude (sonnet), commit a0bbd432f903 (trail: .batuta/runs/2026-10-08-council-fixes-3-task-2.md, delivery council-fixes-3-20261008-212628, plan council-fixes-3, 2026-10-08)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
