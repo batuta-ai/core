@@ -1,5 +1,12 @@
 # WORK — core
 
+## Current status — 2026-10-09: batuta council on branch feat/council, PR pending
+- [x] `batuta council --plan <file>`: a council of routed executors judges a plan before approval through their read-only lines — independent critiques, anonymized cross-review with `FINAL RANKING:`, a chairman synthesis from the routing table — and never approves; artefacts `council.json` and `council.md` under `.batuta/councils/`; exit 0 APPROVE, 2 REVISE, 4 incomplete, 1 error. Design distilled from Karpathy's llm-council (no licence; design only).
+- [x] Deliveries: `council`, `council-fixes`, `council-fixes-2`, `council-fixes-3` (answered task_1 once), `council-fixes-4` (review SHIP). Judgments with the maintainer's authorization: reject on `council` and `council-fixes`, accept on `council-fixes-2` and `council-fixes-3`.
+- [x] Real-executor smoke tests on `.batuta/plans/done/review-contract-preflight-fixes-2.md` drove two fix rounds (parsers rejected correct answers); the fourth run completed all three stages with agy, claude and codex, no failures, REVISE. Recorded answers kept in `.batuta/council-smoke/2026-10-08/`.
+- [ ] Deferred: core#159 (artefact pair, multiline JSON secrets), #160 (council tests), #162 (INCOMPLETE explanation); found on the way: #161 (loop briefs omit the profile's `## Conventions`).
+- [ ] Next: PR and merge, release, host pin; then the `batuta-council` skill in batuta-ai/skills with the hook in `batuta-plan`; then #161.
+
 ## Current status — 2026-10-07: Tempo retro 4.6 and 4.1(b) on branch feat/review-contract-preflight, PR pending
 - [x] Review contract (4.6): `findings.json` always a list, `review_failures.json`, `batuta review` exit 4 `review_incomplete` through one rule (`review.ReviewExitCode`), supervision accepts 3 or 4 with failures, failure tails redacted per stream with a raw fallback.
 - [x] Capability preflight (4.1b): `executor.ProbeCapability` (marker must carry the host's `HEAD` SHA; `tree_changed`, `no_repository`, `marker_mismatch`), `batuta dispatch --preflight` (exit 6 `executor_incapable`), loop probes each route once per delivery over the route's transport and escalates an incapable route without a same-runtime retry.
