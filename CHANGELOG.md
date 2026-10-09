@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.1.0-beta.51](https://github.com/batuta-ai/core/compare/v1.1.0-beta.50...v1.1.0-beta.51) (2026-10-09)
+
+
+### Features
+
+* a council without two parsed cross-reviews is incomplete ([6763c74](https://github.com/batuta-ai/core/commit/6763c74174ff1c4a1f68cefc52ee85be6837f404))
+* a major finding with majority support makes the recommendation ([a0bbd43](https://github.com/batuta-ai/core/commit/a0bbd432f903b60024ed423a169761197c5ed86d))
+* an empty chairman answer is a council failure ([4b763e2](https://github.com/batuta-ai/core/commit/4b763e2fd1b29a1b6fb52c5e90d3518a04c05e37))
+* an incomplete council records INCOMPLETE in its artefacts ([732b185](https://github.com/batuta-ai/core/commit/732b18537f3a046a82536bb0b18ba17c198bded1))
+* batuta council — a plan judged by a council of executors before approval ([abbc306](https://github.com/batuta-ai/core/commit/abbc3060d6275f90d539325ec6f440a54832ad9a))
+* batuta council: the command, its artefacts and exit codes ([19c6d1f](https://github.com/batuta-ai/core/commit/19c6d1ff111d5aaf365c2903ae09fa63ff96fafb))
+* chairman default, council digest and the rank test ([6a8e0c4](https://github.com/batuta-ai/core/commit/6a8e0c4b5126707d5d9c0e935ca19edc5ed780d5))
+* council answers parse from the raw stream when decoding dropped ([6acf93e](https://github.com/batuta-ai/core/commit/6acf93ed7c7bcc18fc18aafd2f2d1366a071e347))
+* council artefacts are written atomically ([08c53c5](https://github.com/batuta-ai/core/commit/08c53c509f23c7cc2e1be08119079e850221bbb2))
+* council parsers accept real counsellor output ([4e61e31](https://github.com/batuta-ai/core/commit/4e61e31a800a201fb01cb86a2b9828951e308536))
+* council: prompts, parsers and the aggregate, as pure functions ([3b6bf95](https://github.com/batuta-ai/core/commit/3b6bf95fb3f383fa175291141e4bd5e1469a2179))
+* council: the session runner over read-only adapter lines ([1b5ebcd](https://github.com/batuta-ai/core/commit/1b5ebcd96b842065dfb842ed0837295f1d3a9473))
+* one redaction for failure tails in review and council, JSON secret ([3014fd5](https://github.com/batuta-ai/core/commit/3014fd5db8db0f5cb5fa82d21d2ee8abf37dd2a8))
+* routing: council and chairman roles ([38dcba0](https://github.com/batuta-ai/core/commit/38dcba0d3faafa9b8849eca4ae3e436f56795a24))
+* the critique parser accepts prose before the block ([7b48460](https://github.com/batuta-ai/core/commit/7b484602933536e1dc3751e5a1c0ea030e0ddfcf))
+* the critique prompt carries the profile's Conventions ([d4c45a5](https://github.com/batuta-ai/core/commit/d4c45a558581ad46baf8ea193db4b1c6805f1a3b))
+* the JSON secret-field rule matches secret-bearing key names only ([a66e801](https://github.com/batuta-ai/core/commit/a66e801610852fbfc2baa93e9e18430d29c62227))
+
+
+### Bug Fixes
+
+* **loop:** read the routing generation under the runner lock in hasExternalFallback ([a0408a6](https://github.com/batuta-ai/core/commit/a0408a6dd1525bff628b2ad590855290c848a853))
+
 ## [1.1.0-beta.50](https://github.com/batuta-ai/core/compare/v1.1.0-beta.49...v1.1.0-beta.50) (2026-10-07)
 
 
