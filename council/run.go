@@ -171,6 +171,8 @@ func Run(ctx context.Context, plan string, conventions []string, table routing.R
 	}
 	if final[0].failure != nil {
 		result.Failures = append(result.Failures, *final[0].failure)
+	} else if strings.TrimSpace(final[0].output) == "" {
+		result.Failures = append(result.Failures, *councilFailure(chair.label, "chairman", "empty chairman answer", &final[0].exitCode, final[0].tail))
 	} else {
 		result.Synthesis = final[0].output
 	}

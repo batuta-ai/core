@@ -380,6 +380,48 @@ func TestRunReadOnly(t *testing.T) {
 	}
 }
 
+func TestRunEmptyChairman(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		answer string
+	}{
+		{"empty", ""},
+		{"whitespace only", " \n\t\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			runner := councilRunner(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+				model, prompt := councilCommand(command)
+				answer := critiqueAnswer("same claim")
+				if strings.HasPrefix(prompt, "Review the other counsellors") {
+					answer = crossReviewAnswer(strings.ToUpper(model[:1]))
+				}
+				if strings.HasPrefix(prompt, "Synthesize this council") {
+					answer = tc.answer
+				}
+				return publication.CommandResult{Stdout: []byte(answer)}, nil
+			})
+			table, opts := councilFixture(t, 2, runner)
+			result, err := Run(t.Context(), "Plan body", nil, table, opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Synthesis != "" {
+				t.Fatalf("empty chairman answer accepted as synthesis: %q", result.Synthesis)
+			}
+			if len(result.Failures) != 1 {
+				t.Fatalf("failures = %+v", result.Failures)
+			}
+			failure := result.Failures[0]
+			if failure.Label != "chairman" || failure.Stage != "chairman" || !strings.Contains(failure.Reason, "empty") {
+				t.Fatalf("failure = %+v", failure)
+			}
+		})
+	}
+}
+
 func TestRunAnonymous(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
