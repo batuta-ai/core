@@ -2,20 +2,20 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Close the accepted findings of `batuta review --base main --full` over branch `feat/council` (2026-10-08): the critique prompt carries the profile's own Conventions, an empty chairman answer is a failure, the JSON secret-field rule stops matching benign keys such as `input_tokens`, and an incomplete council records INCOMPLETE in its artefacts.
-**Created:** 2026-10-08 · **Status:** approved
+**Created:** 2026-10-08 · **Status:** done
 
 ## Tasks
-- [ ] 1. the critique prompt carries the profile's Conventions — backend/medium
+- [x] 1. the critique prompt carries the profile's Conventions — backend/medium
       Scope: loop/profile.go, loop/profile_test.go, cmd/batuta/council.go, cmd/batuta/council_test.go
       Accept: a helper in `loop/profile.go` returns the body of the `## Conventions` section of `.batuta/profile.md` (empty when absent) → go test ./loop -run TestProfileConventionsSection; `batuta council` passes that section first, then the template chain's Conventions sections, so a rule that exists only in the profile appears in every critique prompt → go test ./cmd/batuta -run TestCouncilPromptHasProfileConventions
-- [ ] 2. an empty chairman answer is a council failure — backend/medium
+- [x] 2. an empty chairman answer is a council failure — backend/medium
       Depends on: 1
       Scope: council/run.go, council/run_test.go
       Accept: a chairman session that exits 0 with only blank output records a council failure (label `chairman`, stage `chairman`, reason naming the empty answer) and leaves the synthesis empty instead of accepting it → go test ./council -run TestRunEmptyChairman; a chairman answer with text is still the synthesis → go test ./council -run TestRunStages
-- [ ] 3. the JSON secret-field rule matches secret-bearing key names only — backend/medium
+- [x] 3. the JSON secret-field rule matches secret-bearing key names only — backend/medium
       Scope: executor/tail.go, executor/tail_test.go
       Accept: lines whose JSON keys are `token`, `access_token`, `refresh_token`, `api_key`, `apikey`, `password`, `secret`, `client_secret`, `access_key` or `private_key` (case-insensitive, as the whole key or after `_` or `-`) are dropped → go test ./executor -run TestDropSecretFieldLinesNames; lines whose keys are `input_tokens`, `output_tokens`, `token_count`, `tokenizer`, `max_tokens`, `secretary` or `passwordless_login` are kept → go test ./executor -run TestDropSecretFieldLinesBenignKeys
-- [ ] 4. an incomplete council records INCOMPLETE in its artefacts — backend/medium
+- [x] 4. an incomplete council records INCOMPLETE in its artefacts — backend/medium
       Depends on: 2
       Scope: cmd/batuta/council.go, cmd/batuta/council_test.go
       Accept: when fewer than two critiques parse, `council.json` has recommendation `INCOMPLETE` and `council.md` says INCOMPLETE, and the command exits 4 → go test ./cmd/batuta -run TestCouncilIncompleteArtefacts

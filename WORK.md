@@ -427,6 +427,10 @@
 - [x] a council without two parsed cross-reviews is incomplete → claude (sonnet), commit 6763c74174ff (trail: .batuta/runs/2026-10-08-council-fixes-2-task-2.md, delivery council-fixes-2-20261008-184820, plan council-fixes-2, 2026-10-08)
 - [x] the critique parser accepts prose before the block → claude (sonnet), commit 7b4846029335 (trail: .batuta/runs/2026-10-08-council-fixes-3-task-1.md, delivery council-fixes-3-20261008-212628, plan council-fixes-3, 2026-10-08)
 - [x] a major finding with majority support makes the recommendation REVISE → claude (sonnet), commit a0bbd432f903 (trail: .batuta/runs/2026-10-08-council-fixes-3-task-2.md, delivery council-fixes-3-20261008-212628, plan council-fixes-3, 2026-10-08)
+- [x] the critique prompt carries the profile's Conventions → claude (sonnet), commit d4c45a558581 (trail: .batuta/runs/2026-10-09-council-fixes-4-task-1.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
+- [x] an empty chairman answer is a council failure → claude (sonnet), commit 4b763e2fd1b2 (trail: .batuta/runs/2026-10-09-council-fixes-4-task-2.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
+- [x] the JSON secret-field rule matches secret-bearing key names only → claude (sonnet), 1 retry, commit a66e80161085 (trail: .batuta/runs/2026-10-09-council-fixes-4-task-3.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
+- [x] an incomplete council records INCOMPLETE in its artefacts → claude (sonnet), commit 732b18537f3a (trail: .batuta/runs/2026-10-09-council-fixes-4-task-4.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
