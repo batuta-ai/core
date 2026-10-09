@@ -205,6 +205,20 @@ func Conventions(skillsRoot, template string) (sections []string, missing []stri
 	return sections, missing
 }
 
+// ConventionsSection returns the body of the profile's own `## Conventions`
+// section, empty when the profile has none. A `## Conventions for briefs`
+// heading does not count.
+func (p Profile) ConventionsSection() string {
+	offset := 0
+	for _, line := range strings.SplitAfter(p.Raw, "\n") {
+		if strings.TrimRight(line, " \t\r\n") == "## Conventions" {
+			return sectionOf(p.Raw[offset:], "## Conventions")
+		}
+		offset += len(line)
+	}
+	return ""
+}
+
 // sectionOf returns the body of a `## heading` up to the next `## `.
 func sectionOf(text, heading string) string {
 	start := strings.Index(text, heading)

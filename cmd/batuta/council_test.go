@@ -177,6 +177,38 @@ func TestCouncilCommand(t *testing.T) {
 	}
 }
 
+func TestCouncilPromptHasProfileConventions(t *testing.T) {
+	root := councilRepo(t)
+	t.Chdir(root)
+	profile := "Stack: Go\nMethodology: TDD\nTest: go test ./...\nTemplate: templates/generic.md\n\n## Conventions\nOnly-in-profile rule.\n"
+	if err := os.WriteFile(filepath.Join(root, ".batuta", "profile.md"), []byte(profile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var critiquePrompts []string
+	script := councilScript("APPROVE")
+	stubCouncilSessions(t, func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+		prompt := command.Args[5]
+		if !strings.HasPrefix(prompt, "Review the other counsellors") && !strings.HasPrefix(prompt, "Synthesize this council") {
+			critiquePrompts = append(critiquePrompts, prompt)
+		}
+		return script(ctx, command)
+	})
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"council", "--plan", "plan-demo.md"}, &stdout, &stderr); err != nil {
+		t.Fatalf("council: %v\n%s", err, &stderr)
+	}
+	if len(critiquePrompts) != 3 {
+		t.Fatalf("critique prompts = %d, want 3", len(critiquePrompts))
+	}
+	for _, prompt := range critiquePrompts {
+		profileAt := strings.Index(prompt, "Only-in-profile rule.")
+		templateAt := strings.Index(prompt, "Keep changes scoped.")
+		if profileAt < 0 || templateAt < 0 || profileAt > templateAt {
+			t.Errorf("prompt must carry the profile rule before the template rule (profile=%d template=%d):\n%s", profileAt, templateAt, prompt)
+		}
+	}
+}
+
 func TestCouncilCommandOut(t *testing.T) {
 	root := councilRepo(t)
 	t.Chdir(root)

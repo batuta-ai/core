@@ -101,6 +101,9 @@ func runCouncil(args []string, stdout, stderr io.Writer) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("council: missing rubric templates: %s", strings.Join(missing, ", "))
 	}
+	if own := profile.ConventionsSection(); own != "" {
+		conventions = append([]string{"### From .batuta/profile.md\n\n" + own}, conventions...)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	result, runErr := council.Run(ctx, string(plan), conventions, table, options)
