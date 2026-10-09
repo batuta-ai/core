@@ -107,3 +107,38 @@ func TestDropSecretFieldLines(t *testing.T) {
 		})
 	}
 }
+
+func TestDropSecretFieldLinesNames(t *testing.T) {
+	t.Parallel()
+	keys := []string{
+		"token", "access_token", "refresh_token", "api_key", "apikey", "password",
+		"secret", "client_secret", "access_key", "private_key",
+		"TOKEN", "Access_Token", "x-token", "db-password",
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			in := `{"type":"x","` + key + `":"v"}` + "\nkept"
+			if got := DropSecretFieldLines(in); got != "kept" {
+				t.Fatalf("DropSecretFieldLines(%q) = %q, want the line dropped", in, got)
+			}
+		})
+	}
+}
+
+func TestDropSecretFieldLinesBenignKeys(t *testing.T) {
+	t.Parallel()
+	keys := []string{
+		"input_tokens", "output_tokens", "token_count", "tokenizer",
+		"max_tokens", "secretary", "passwordless_login",
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			in := `{"usage":{"` + key + `":12}}`
+			if got := DropSecretFieldLines(in); got != in {
+				t.Fatalf("DropSecretFieldLines(%q) = %q, want the line kept", in, got)
+			}
+		})
+	}
+}

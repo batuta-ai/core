@@ -9,7 +9,7 @@ import (
 var (
 	secretLine   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
 	secretAssign = regexp.MustCompile(`[A-Z][A-Z0-9_]*=`)
-	secretField  = regexp.MustCompile(`(?i)"[^"]*(?:token|api_?key|password|secret)[^"]*"\s*:`)
+	secretField  = regexp.MustCompile(`(?i)"(?:[^"]*[_-])?(?:token|api_?key|password|secret|access_key|private_key)\\?"\s*:`)
 	absolutePath = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/|\\)[^\s"'=]+`)
 )
 
