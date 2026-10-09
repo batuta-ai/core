@@ -354,6 +354,34 @@ func TestCouncilIncompleteCrossReview(t *testing.T) {
 	}
 }
 
+func TestCouncilIncompleteArtefacts(t *testing.T) {
+	root := councilRepo(t)
+	t.Chdir(root)
+	stubCouncilSessions(t, councilScript("REVISE", "alpha-model", "beta-model"))
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"council", "--plan", "plan-demo.md"}, &stdout, &stderr)
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 4 {
+		t.Fatalf("council error = %#v, want exit 4", err)
+	}
+	directory := filepath.Join(root, ".batuta", "councils", "2026-10-08-demo")
+	payload, readErr := os.ReadFile(filepath.Join(directory, "council.json"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	var artifact councilArtifact
+	if err := json.Unmarshal(payload, &artifact); err != nil {
+		t.Fatalf("council.json: %v\n%s", err, payload)
+	}
+	if artifact.Aggregate.Recommendation != council.Incomplete {
+		t.Errorf("council.json recommendation = %q, want INCOMPLETE\n%s", artifact.Aggregate.Recommendation, payload)
+	}
+	markdown, readErr := os.ReadFile(filepath.Join(directory, "council.md"))
+	if readErr != nil || !strings.Contains(string(markdown), "Recommendation: INCOMPLETE") {
+		t.Errorf("council.md = %q, %v", markdown, readErr)
+	}
+}
+
 func TestCouncilErrorsExitOne(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

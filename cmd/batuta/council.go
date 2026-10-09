@@ -125,6 +125,9 @@ func runCouncil(args []string, stdout, stderr io.Writer) error {
 		artifact.Aggregate.Rankings = []council.Ranking{}
 	}
 	complete := runErr == nil && artifact.Aggregate.Recommendation != council.Incomplete
+	if !complete {
+		artifact.Aggregate.Recommendation = council.Incomplete
+	}
 	report := councilReport(*planFile, artifact, complete)
 	payload, err := json.MarshalIndent(artifact, "", "  ")
 	if err != nil {
