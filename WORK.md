@@ -1,5 +1,12 @@
 # WORK — core
 
+## Current status — 2026-10-09: batuta council on branch feat/council, PR pending
+- [x] `batuta council --plan <file>`: a council of routed executors judges a plan before approval through their read-only lines — independent critiques, anonymized cross-review with `FINAL RANKING:`, a chairman synthesis from the routing table — and never approves; artefacts `council.json` and `council.md` under `.batuta/councils/`; exit 0 APPROVE, 2 REVISE, 4 incomplete, 1 error. Design distilled from Karpathy's llm-council (no licence; design only).
+- [x] Deliveries: `council`, `council-fixes`, `council-fixes-2`, `council-fixes-3` (answered task_1 once), `council-fixes-4` (review SHIP). Judgments with the maintainer's authorization: reject on `council` and `council-fixes`, accept on `council-fixes-2` and `council-fixes-3`.
+- [x] Real-executor smoke tests on `.batuta/plans/done/review-contract-preflight-fixes-2.md` drove two fix rounds (parsers rejected correct answers); the fourth run completed all three stages with agy, claude and codex, no failures, REVISE. Recorded answers kept in `.batuta/council-smoke/2026-10-08/`.
+- [ ] Deferred: core#159 (artefact pair, multiline JSON secrets), #160 (council tests), #162 (INCOMPLETE explanation); found on the way: #161 (loop briefs omit the profile's `## Conventions`).
+- [ ] Next: PR and merge, release, host pin; then the `batuta-council` skill in batuta-ai/skills with the hook in `batuta-plan`; then #161.
+
 ## Current status — 2026-10-07: Tempo retro 4.6 and 4.1(b) on branch feat/review-contract-preflight, PR pending
 - [x] Review contract (4.6): `findings.json` always a list, `review_failures.json`, `batuta review` exit 4 `review_incomplete` through one rule (`review.ReviewExitCode`), supervision accepts 3 or 4 with failures, failure tails redacted per stream with a raw fallback.
 - [x] Capability preflight (4.1b): `executor.ProbeCapability` (marker must carry the host's `HEAD` SHA; `tree_changed`, `no_repository`, `marker_mismatch`), `batuta dispatch --preflight` (exit 6 `executor_incapable`), loop probes each route once per delivery over the route's transport and escalates an incapable route without a same-runtime retry.
@@ -415,6 +422,22 @@
 - [x] a canceled dispatch preflight stays interrupted, and the usage text names exit 4 → claude (sonnet), commit 04627629b255 (trail: .batuta/runs/2026-10-06-review-contract-preflight-fixes-3-task-5.md, delivery review-contract-preflight-fixes-3-20261006-193702, plan review-contract-preflight-fixes-3, 2026-10-06)
 - [x] a supervision review job stays within its read limit → claude (sonnet), commit 942f8a4abc27 (trail: .batuta/runs/2026-10-06-review-contract-preflight-fixes-3-task-6.md, delivery review-contract-preflight-fixes-3-20261006-193702, plan review-contract-preflight-fixes-3, 2026-10-06)
 - [x] the loop probes a route over the route's own transport → codex (gpt-6-sol), commit 12427e1dd416 (trail: .batuta/runs/2026-10-06-review-contract-preflight-acp-probe-task-1.md, delivery review-contract-preflight-acp-probe-20261006-210516, plan review-contract-preflight-acp-probe, 2026-10-06)
+- [x] routing: council and chairman roles → claude (sonnet), commit 38dcba0d3faa (trail: .batuta/runs/2026-10-08-council-task-1.md, delivery council-20261008-125821, plan council, 2026-10-08)
+- [x] council: prompts, parsers and the aggregate, as pure functions → codex (gpt-6-sol), commit 3b6bf95fb3f3 (trail: .batuta/runs/2026-10-08-council-task-2.md, delivery council-20261008-125821, plan council, 2026-10-08)
+- [x] council: the session runner over read-only adapter lines → codex (gpt-6-sol), 1 retry, commit 1b5ebcd96b84 (trail: .batuta/runs/2026-10-08-council-task-3.md, delivery council-20261008-125821, plan council, 2026-10-08)
+- [x] batuta council: the command, its artefacts and exit codes → claude (sonnet), commit 19c6d1ff111d (trail: .batuta/runs/2026-10-08-council-task-4.md, delivery council-20261008-125821, plan council, 2026-10-08)
+- [x] council answers parse from the raw stream when decoding dropped lines → codex (gpt-6-sol), commit 6acf93ed7c7b (trail: .batuta/runs/2026-10-08-council-fixes-task-1.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
+- [x] one redaction for failure tails in review and council, JSON secret fields included → claude (sonnet), commit 3014fd5db8db (trail: .batuta/runs/2026-10-08-council-fixes-task-2.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
+- [x] council artefacts are written atomically → claude (sonnet), commit 08c53c509f23 (trail: .batuta/runs/2026-10-08-council-fixes-task-3.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
+- [x] chairman default, council digest and the rank test → claude (sonnet), commit 6a8e0c4b5126 (trail: .batuta/runs/2026-10-08-council-fixes-task-4.md, delivery council-fixes-20261008-145156, plan council-fixes, 2026-10-08)
+- [x] council parsers accept real counsellor output → codex (gpt-6-sol), commit 4e61e31a800a (trail: .batuta/runs/2026-10-08-council-fixes-2-task-1.md, delivery council-fixes-2-20261008-184820, plan council-fixes-2, 2026-10-08)
+- [x] a council without two parsed cross-reviews is incomplete → claude (sonnet), commit 6763c74174ff (trail: .batuta/runs/2026-10-08-council-fixes-2-task-2.md, delivery council-fixes-2-20261008-184820, plan council-fixes-2, 2026-10-08)
+- [x] the critique parser accepts prose before the block → claude (sonnet), commit 7b4846029335 (trail: .batuta/runs/2026-10-08-council-fixes-3-task-1.md, delivery council-fixes-3-20261008-212628, plan council-fixes-3, 2026-10-08)
+- [x] a major finding with majority support makes the recommendation REVISE → claude (sonnet), commit a0bbd432f903 (trail: .batuta/runs/2026-10-08-council-fixes-3-task-2.md, delivery council-fixes-3-20261008-212628, plan council-fixes-3, 2026-10-08)
+- [x] the critique prompt carries the profile's Conventions → claude (sonnet), commit d4c45a558581 (trail: .batuta/runs/2026-10-09-council-fixes-4-task-1.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
+- [x] an empty chairman answer is a council failure → claude (sonnet), commit 4b763e2fd1b2 (trail: .batuta/runs/2026-10-09-council-fixes-4-task-2.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
+- [x] the JSON secret-field rule matches secret-bearing key names only → claude (sonnet), 1 retry, commit a66e80161085 (trail: .batuta/runs/2026-10-09-council-fixes-4-task-3.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
+- [x] an incomplete council records INCOMPLETE in its artefacts → claude (sonnet), commit 732b18537f3a (trail: .batuta/runs/2026-10-09-council-fixes-4-task-4.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

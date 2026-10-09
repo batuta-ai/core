@@ -34,6 +34,7 @@ The module is **pre-release**: `v1.1.0-beta.N` until the API stabilizes.
 | `gates` | the four mechanical gates: finished · tree · tests · verify (scope, proofs, independent read-only verifier) |
 | `loop` | `batuta loop`: the mechanical conductor over `routing.DeliveryGraph` on file hosts — see [docs/loop.md](docs/loop.md) |
 | `review` | `batuta review`: cohort-based, read-only delivery review with a mechanical verdict — see [docs/review.md](docs/review.md) |
+| `council` | `batuta council`: a plan judged by routed executors through their read-only lines, never an approval — see [docs/council.md](docs/council.md) |
 
 No package imports a daemon SDK. Native host children remain host-owned. Core
 runs external executors through the legacy CLI or its bounded ACP client.
@@ -56,6 +57,7 @@ batuta loop --supervise <delivery> --cursor <absolute-path>
                                         foreground local observation; no model polling
 batuta loop --dashboard [<delivery>]    one TSV snapshot of delivery state
 batuta review --base <ref> [--spec <plan>] review a delivery through adapters
+batuta council --plan <file>            judge a plan with a council before approval
 batuta watch [<delivery>]               live panel dashboard (watch by default)
 batuta trail [<delivery>]               one line per journal record
 ```

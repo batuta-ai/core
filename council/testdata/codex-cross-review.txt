@@ -1,0 +1,6 @@
+Critique A contains no finding IDs to assess.
+
+FINAL RANKING:
+1. A
+
+Reading additional input from stdin...

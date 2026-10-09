@@ -84,3 +84,61 @@ func TestDropSecretBearingLines(t *testing.T) {
 		t.Fatalf("DropSecretLines = %q, want %q", got, want)
 	}
 }
+
+func TestDropSecretFieldLines(t *testing.T) {
+	t.Parallel()
+	cases := []struct{ name, in, want string }{
+		{"empty", "", ""},
+		{"embedded assignment", "provider error: OPENAI_API_KEY=sk-x\nkept", "kept"},
+		{"api_key field", `{"api_key":"sk-live"}` + "\nkept", "kept"},
+		{"token field", `{"type":"x","token": "tok-example"}` + "\nkept", "kept"},
+		{"password field", `{"Password":"p"}` + "\nkept", "kept"},
+		{"secret in longer key", `{"client_secret":"s"}` + "\nkept", "kept"},
+		{"apikey spelling", `{"ApiKey":"k"}` + "\nkept", "kept"},
+		{"plain json", `{"type":"message","text":"hello"}`, `{"type":"message","text":"hello"}`},
+		{"word without field", "the token was refused", "the token was refused"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := DropSecretFieldLines(tc.in); got != tc.want {
+				t.Fatalf("DropSecretFieldLines(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDropSecretFieldLinesNames(t *testing.T) {
+	t.Parallel()
+	keys := []string{
+		"token", "access_token", "refresh_token", "api_key", "apikey", "password",
+		"secret", "client_secret", "access_key", "private_key",
+		"TOKEN", "Access_Token", "x-token", "db-password",
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			in := `{"type":"x","` + key + `":"v"}` + "\nkept"
+			if got := DropSecretFieldLines(in); got != "kept" {
+				t.Fatalf("DropSecretFieldLines(%q) = %q, want the line dropped", in, got)
+			}
+		})
+	}
+}
+
+func TestDropSecretFieldLinesBenignKeys(t *testing.T) {
+	t.Parallel()
+	keys := []string{
+		"input_tokens", "output_tokens", "token_count", "tokenizer",
+		"max_tokens", "secretary", "passwordless_login",
+	}
+	for _, key := range keys {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			in := `{"usage":{"` + key + `":12}}`
+			if got := DropSecretFieldLines(in); got != in {
+				t.Fatalf("DropSecretFieldLines(%q) = %q, want the line kept", in, got)
+			}
+		})
+	}
+}

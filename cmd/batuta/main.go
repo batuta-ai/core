@@ -54,6 +54,7 @@ Usage:
   batuta watch     [<delivery>] [--interval 500ms] [--once] [--lang en|pt] [--ascii]
   batuta trail     [<delivery>]
   batuta review    [--base <ref>] [--worktree] [--spec <plan>] [--cohort-files N] [--parallel N] [--reviewer <executor/model>] [--full] [--out <dir>]
+  batuta council   --plan <file> [--parallel N] [--timeout <duration>] [--out <dir>]
   batuta judge     ask --state-file <path> --questions-file <path> [--decision <name>] [--config <path>] [--workspace <dir>] [--base-url <url>]
   batuta judge     probe [--config <path>] [--workspace <dir>] [--base-url <url>]
   batuta gate tree --snapshot [--dir <d>]
@@ -145,6 +146,14 @@ review     Read-only, cohort-based delivery review through the configured
            review_failures.json names it).
            The cohort driver uses CLI independently of dispatch transport.
 
+council    Asks the routed executors, through their read-only lines, whether a
+           plan is ready to approve: independent critiques, anonymous
+           cross-review with a ranking, then a chairman synthesis. Writes
+           council.json and council.md under .batuta/councils/<date>-<plan
+           slug>/ (--out overrides) and prints council.md. Exit 0 APPROVE,
+           2 REVISE, 4 incomplete (fewer than two critiques parsed),
+           1 an error before a report. The council never approves a plan.
+
 judge      Manual probes of a System One decision model (Jev): typed noul,
            choice and score questions over a bounded state. Config lives in
            .batuta/judge.json; BATUTA_JUDGE selects another file or off.
@@ -198,6 +207,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return runTrail(args[1:], stdout)
 	case "review":
 		return runReview(args[1:], stdout, stderr)
+	case "council":
+		return runCouncil(args[1:], stdout, stderr)
 	case "judge":
 		return runJudge(args[1:], stdout, stderr)
 	case "gate":
@@ -227,7 +238,7 @@ func version() string {
 
 // commands lists every capability this binary ships; skills read this list,
 // never the usage text.
-var commands = []string{"capabilities", "dispatch", "doctor", "gate", "inventory", "judge", "loop", "review", "roadmap", "trail", "version", "watch"}
+var commands = []string{"capabilities", "council", "dispatch", "doctor", "gate", "inventory", "judge", "loop", "review", "roadmap", "trail", "version", "watch"}
 
 type capabilities struct {
 	Version  string   `json:"version"`

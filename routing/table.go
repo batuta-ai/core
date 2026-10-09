@@ -50,6 +50,10 @@ type RoutingTable struct {
 	Rows     []RoutingRow
 	Review   *RoutingRole
 	Research []RoutingRow
+	// Council and Chairman hold only the explicit role rows; CouncilRows and
+	// ChairmanRole apply the defaults.
+	Council  []RoutingRow
+	Chairman *RoutingRole
 	Digest   string
 }
 
@@ -156,11 +160,12 @@ func ParseRoutingTable(payload []byte) (RoutingTable, error) {
 	if len(rows) == 0 {
 		return RoutingTable{}, fmt.Errorf("%w: no `| Lane | Domain | Executor | Model |` table found", ErrRoutingTableInvalid)
 	}
-	review, research, err := parseRoutingRoles(payload)
+	roles, err := parseRoutingRoles(payload)
 	if err != nil {
 		return RoutingTable{}, err
 	}
-	table := RoutingTable{Rows: rows, Review: review, Research: research}
+	review, research := roles.review, roles.research
+	table := RoutingTable{Rows: rows, Review: review, Research: research, Council: roles.council, Chairman: roles.chairman}
 	hash := sha256.New()
 	for _, row := range rows {
 		for _, part := range []string{string(row.Lane), string(row.Domain), string(row.Executor), row.Model} {
@@ -182,14 +187,31 @@ func ParseRoutingTable(payload []byte) (RoutingTable, error) {
 			}
 		}
 	}
+	for _, row := range roles.council {
+		for _, part := range []string{"council", string(row.Lane), string(row.Executor), row.Model} {
+			writeDigestPart(hash, part)
+		}
+	}
+	if roles.chairman != nil {
+		for _, part := range []string{"chairman", string(roles.chairman.Executor), roles.chairman.Model} {
+			writeDigestPart(hash, part)
+		}
+	}
 	table.Digest = "table:" + hex.EncodeToString(hash.Sum(nil))
 	return table, nil
 }
 
-func parseRoutingRoles(payload []byte) (*RoutingRole, []RoutingRow, error) {
-	var role *RoutingRole
-	var research []RoutingRow
+type routingRoles struct {
+	review   *RoutingRole
+	research []RoutingRow
+	council  []RoutingRow
+	chairman *RoutingRole
+}
+
+func parseRoutingRoles(payload []byte) (routingRoles, error) {
+	var roles routingRoles
 	seenResearch := map[Complexity]int{}
+	seenCouncil := map[string]int{}
 	var columns map[string]int
 	for i, line := range strings.Split(string(payload), "\n") {
 		line = strings.TrimSpace(line)
@@ -219,22 +241,45 @@ func parseRoutingRoles(payload []byte) (*RoutingRole, []RoutingRow, error) {
 			return strings.Trim(cells[index], "` ")
 		}
 		roleName := strings.ToLower(cell("role"))
-		if roleName != "review" && roleName != "research" {
+		if !slices.Contains([]string{"review", "research", "council", "chairman"}, roleName) {
 			continue
 		}
 		executor := inventory.ExecutorID(strings.ToLower(cell("executor")))
 		model := cell("model")
 		if !tableExecutorPattern.MatchString(string(executor)) || executor == ExecutorSelf {
-			return nil, nil, fmt.Errorf("%w: line %d: %s requires a CLI executor", ErrRoutingTableInvalid, i+1, roleName)
+			return routingRoles{}, fmt.Errorf("%w: line %d: %s requires a CLI executor", ErrRoutingTableInvalid, i+1, roleName)
 		}
 		if model == "" || model == "—" || model == "-" || strings.HasPrefix(model, "<") || strings.EqualFold(model, "default") || strings.EqualFold(model, "default model") {
-			return nil, nil, fmt.Errorf("%w: line %d: %s requires an exact model", ErrRoutingTableInvalid, i+1, roleName)
+			return routingRoles{}, fmt.Errorf("%w: line %d: %s requires an exact model", ErrRoutingTableInvalid, i+1, roleName)
 		}
 		if roleName == "review" {
-			if role != nil {
-				return nil, nil, fmt.Errorf("%w: line %d: duplicate review role (first at line %d)", ErrRoutingTableInvalid, i+1, role.Line)
+			if roles.review != nil {
+				return routingRoles{}, fmt.Errorf("%w: line %d: duplicate review role (first at line %d)", ErrRoutingTableInvalid, i+1, roles.review.Line)
 			}
-			role = &RoutingRole{Executor: executor, Model: model, Line: i + 1}
+			roles.review = &RoutingRole{Executor: executor, Model: model, Line: i + 1}
+			continue
+		}
+		if roleName == "chairman" {
+			if roles.chairman != nil {
+				return routingRoles{}, fmt.Errorf("%w: line %d: duplicate chairman role (first at line %d)", ErrRoutingTableInvalid, i+1, roles.chairman.Line)
+			}
+			roles.chairman = &RoutingRole{Executor: executor, Model: model, Line: i + 1}
+			continue
+		}
+		if roleName == "council" {
+			laneName := strings.ToLower(cell("lane"))
+			if laneName == "—" || laneName == "-" {
+				laneName = ""
+			}
+			if lane := Complexity(laneName); laneName != "" && !lane.Valid() {
+				return routingRoles{}, fmt.Errorf("%w: line %d: council lane %q is not low|medium|high|critical", ErrRoutingTableInvalid, i+1, lane)
+			}
+			key := string(executor) + "\x00" + model
+			if prior, duplicate := seenCouncil[key]; duplicate {
+				return routingRoles{}, fmt.Errorf("%w: line %d: duplicate council member %s/%s (first at line %d)", ErrRoutingTableInvalid, i+1, executor, model, prior)
+			}
+			seenCouncil[key] = i + 1
+			roles.council = append(roles.council, RoutingRow{Lane: Complexity(laneName), Domain: DomainAny, Executor: executor, Model: model, Line: i + 1})
 			continue
 		}
 		laneName := strings.ToLower(cell("lane"))
@@ -243,15 +288,15 @@ func parseRoutingRoles(payload []byte) (*RoutingRole, []RoutingRow, error) {
 		}
 		lane := Complexity(laneName)
 		if !lane.Valid() {
-			return nil, nil, fmt.Errorf("%w: line %d: research lane %q is not low|medium|high|critical", ErrRoutingTableInvalid, i+1, lane)
+			return routingRoles{}, fmt.Errorf("%w: line %d: research lane %q is not low|medium|high|critical", ErrRoutingTableInvalid, i+1, lane)
 		}
 		if prior, duplicate := seenResearch[lane]; duplicate {
-			return nil, nil, fmt.Errorf("%w: line %d: duplicate research lane %s (first at line %d)", ErrRoutingTableInvalid, i+1, lane, prior)
+			return routingRoles{}, fmt.Errorf("%w: line %d: duplicate research lane %s (first at line %d)", ErrRoutingTableInvalid, i+1, lane, prior)
 		}
 		seenResearch[lane] = i + 1
-		research = append(research, RoutingRow{Lane: lane, Domain: DomainAny, Executor: executor, Model: model, Line: i + 1})
+		roles.research = append(roles.research, RoutingRow{Lane: lane, Domain: DomainAny, Executor: executor, Model: model, Line: i + 1})
 	}
-	return role, research, nil
+	return roles, nil
 }
 
 func splitTableRow(line string) []string {
@@ -305,6 +350,45 @@ func (t RoutingTable) ResearchRow(lane Complexity) (RoutingRow, bool) {
 		}
 	}
 	return RoutingRow{}, false
+}
+
+// CouncilRows returns the council members: the explicit `council` rows, or
+// else every distinct executor and model of the low, medium and high lane
+// rows in lane order, `self` excluded.
+func (t RoutingTable) CouncilRows() []RoutingRow {
+	if len(t.Council) > 0 {
+		return t.Council
+	}
+	var council []RoutingRow
+	seen := map[string]bool{}
+	for _, lane := range complexityLadder[:3] {
+		for _, row := range t.Rows {
+			key := string(row.Executor) + "\x00" + row.Model
+			if row.Lane != lane || row.Executor == ExecutorSelf || seen[key] {
+				continue
+			}
+			seen[key] = true
+			council = append(council, row)
+		}
+	}
+	return council
+}
+
+// ChairmanRole returns the explicit `chairman` role, or else the high lane
+// row: the `*` domain first, else the first high row of any domain.
+func (t RoutingTable) ChairmanRole() (RoutingRole, bool) {
+	if t.Chairman != nil {
+		return *t.Chairman, true
+	}
+	if row, ok := t.Row(ComplexityHigh, DomainAny); ok {
+		return RoutingRole{Executor: row.Executor, Model: row.Model, Line: row.Line}, true
+	}
+	for _, row := range t.Rows {
+		if row.Lane == ComplexityHigh {
+			return RoutingRole{Executor: row.Executor, Model: row.Model, Line: row.Line}, true
+		}
+	}
+	return RoutingRole{}, false
 }
 
 // TableGenerationInput is what a CLI host has when it starts a loop: the

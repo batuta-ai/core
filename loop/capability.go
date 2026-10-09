@@ -128,6 +128,8 @@ func (r *Runner) loadCapabilityProbes(records []journal.Record) error {
 }
 
 func (r *Runner) hasExternalFallback(taskID string, current routing.RuntimeValue) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, cell := range r.generation.Cells {
 		if !slices.Contains(cell.TaskIDs, taskID) {
 			continue

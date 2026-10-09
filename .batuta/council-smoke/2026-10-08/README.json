@@ -1,0 +1,25 @@
+{
+ "labels": {
+  "A": {
+   "provider": "agy",
+   "model": "gemini-3.8-flash-low",
+   "reasoning": "low"
+  },
+  "B": {
+   "provider": "claude",
+   "model": "sonnet",
+   "reasoning": "medium"
+  },
+  "C": {
+   "provider": "codex",
+   "model": "gpt-6-sol",
+   "reasoning": "high"
+  },
+  "chairman": {
+   "provider": "codex",
+   "model": "gpt-6-sol",
+   "reasoning": "high"
+  }
+ },
+ "note": "Real answers from the 2026-10-08 smoke test of batuta council (branch feat/council, plan review-contract-preflight-fixes-2.md). Tails as recorded, already redacted; the codex tail ends with a line its CLI printed about stdin."
+}
