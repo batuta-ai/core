@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.0-beta.52](https://github.com/batuta-ai/core/compare/v1.1.0-beta.51...v1.1.0-beta.52) (2026-10-10)
+
+
+### Features
+
+* **loop:** briefs carry the profile's own Conventions section ([1e1f5eb](https://github.com/batuta-ai/core/commit/1e1f5eb2351acc1515dc84b66954164176b89078))
+* **loop:** briefs carry the profile's own Conventions section ([00c25b0](https://github.com/batuta-ai/core/commit/00c25b07ee3c82d6a7d5a65e67aa0791dc99d201)), closes [#161](https://github.com/batuta-ai/core/issues/161)
+
 ## [1.1.0-beta.51](https://github.com/batuta-ai/core/compare/v1.1.0-beta.50...v1.1.0-beta.51) (2026-10-09)
 
 
