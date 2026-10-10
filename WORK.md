@@ -1,5 +1,13 @@
 # WORK — core
 
+## Current status — 2026-10-10: council and review contract shipped; paused
+- [x] #161: loop briefs carry the profile's `## Conventions` under `### From .batuta/profile.md`, before the template sections (plan `loop-brief-conventions`, branch `feat/loop-brief-conventions`, interactive cycle).
+- [x] core#157 (review contract, capability preflight, proof gate) merged, beta.50; core#163 (`batuta council`, plus the data-race fix in `hasExternalFallback`) merged, beta.51.
+- [x] skills#71 (`batuta-review` exit 4) → v0.14.1; skills#73 (`batuta-council` skill, `batuta-plan` offers the council, `batuta-init` excludes `.batuta/reviews/` and `.batuta/councils/`) → v0.15.0. The skill's plan was judged by `batuta council` before approval (REVISE; accepted findings applied).
+- [x] Host batuta#105 (beta.47), #107 (beta.50 + skills v0.14.1), #109 (beta.51 + skills v0.15.0 + `/batuta:council`) → v0.7.0; this machine runs core beta.51, skills v0.15.0, plugin 0.7.0.
+- [ ] Open issues from this work: core#151 #152 (ACP probe), #153 (commit subjects end mid-phrase), #154 (tree check), #155 (JSON size bounds), #156 #160 (tests), #159 (council artefact pair, multiline JSON secrets), #162 (INCOMPLETE explanation); skills#70 (fixtures in Scope).
+- [ ] Next, in order: the rest of the Tempo backlog (`loop --recover`, `.batuta` isolation and cleanup, grants, skills items, `trail --metrics`); the agy critique that still fails to parse now and then in the council.
+
 ## Current status — 2026-10-09: batuta council on branch feat/council, PR pending
 - [x] `batuta council --plan <file>`: a council of routed executors judges a plan before approval through their read-only lines — independent critiques, anonymized cross-review with `FINAL RANKING:`, a chairman synthesis from the routing table — and never approves; artefacts `council.json` and `council.md` under `.batuta/councils/`; exit 0 APPROVE, 2 REVISE, 4 incomplete, 1 error. Design distilled from Karpathy's llm-council (no licence; design only).
 - [x] Deliveries: `council`, `council-fixes`, `council-fixes-2`, `council-fixes-3` (answered task_1 once), `council-fixes-4` (review SHIP). Judgments with the maintainer's authorization: reject on `council` and `council-fixes`, accept on `council-fixes-2` and `council-fixes-3`.
