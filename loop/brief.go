@@ -78,7 +78,11 @@ func Brief(input BriefInput) string {
 		fmt.Fprintf(&b, "Test command: `%s` — run the suite with exactly this command; verification uses it and no other runner.\n", input.Profile.Test)
 	}
 	b.WriteString("Leave no TODO, placeholder or skipped test behind: the task is done when its criteria hold on the real code.\n\n")
-	if len(input.Conventions) == 0 {
+	own := input.Profile.ConventionsSection()
+	if own != "" {
+		b.WriteString("### From .batuta/profile.md\n\n" + own + "\n\n")
+	}
+	if len(input.Conventions) == 0 && own == "" {
 		b.WriteString("Unknown — no stack template was found; follow the existing code style of the files you touch and change only what this brief asks.\n\n")
 	}
 	for _, section := range input.Conventions {
