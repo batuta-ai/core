@@ -697,3 +697,89 @@ func firstLine(value string) string {
 	}
 	return value
 }
+
+// MergePreviewResult describes how a ref would merge into a branch. Base is
+// the merge base, Changed the paths the ref changed against it outside
+// `.batuta`, Conflicts the paths a merge would leave conflicted and Merged
+// whether the ref's content is already in the branch.
+type MergePreviewResult struct {
+	Base      string
+	Changed   []string
+	Conflicts []string
+	Merged    bool
+}
+
+// MergePreview reports how ref merges into branch without a worktree, an
+// index or a ref update: `merge-tree --write-tree` only writes loose objects.
+func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (MergePreviewResult, error) {
+	if !branchName.MatchString(branch) || !branchName.MatchString(ref) {
+		return MergePreviewResult{}, errors.New("worktree: invalid merge preview request")
+	}
+	base, err := p.run(ctx, p.Root, "merge-base", branch, ref)
+	if err != nil {
+		if base.ExitCode == 1 && len(bytes.TrimSpace(base.Stderr)) == 0 {
+			return MergePreviewResult{}, fmt.Errorf("worktree: unrelated histories: %s and %s share no merge base", branch, ref)
+		}
+		return MergePreviewResult{}, err
+	}
+	result := MergePreviewResult{Base: strings.TrimSpace(string(base.Stdout))}
+	diff, err := p.run(ctx, p.Root, "diff", "--name-only", result.Base, ref, "--")
+	if err != nil {
+		return MergePreviewResult{}, err
+	}
+	result.Changed = make([]string, 0)
+	for _, path := range nonempty(string(diff.Stdout)) {
+		if path != ".batuta" && !strings.HasPrefix(path, ".batuta/") {
+			result.Changed = append(result.Changed, path)
+		}
+	}
+	result.Conflicts = make([]string, 0)
+	merged, err := p.refIntegrated(ctx, branch, ref)
+	if err != nil {
+		return MergePreviewResult{}, err
+	}
+	if merged {
+		result.Merged = true
+		return result, nil
+	}
+	tree, err := p.run(ctx, p.Root, "merge-tree", "--write-tree", "--name-only", "--no-messages", branch, ref)
+	if err != nil && tree.ExitCode != 1 {
+		if tree.ExitCode == 0 {
+			return MergePreviewResult{}, err
+		}
+		return MergePreviewResult{}, mergePreviewError(tree.ExitCode, string(tree.Stderr))
+	}
+	if lines := nonempty(string(tree.Stdout)); tree.ExitCode == 1 && len(lines) > 1 {
+		result.Conflicts = lines[1:]
+	}
+	return result, nil
+}
+
+// refIntegrated says whether ref's tree appears in branch's history, the
+// identity PlanParkedCleanup uses for squashed work, or ref is an ancestor.
+func (p GitProvider) refIntegrated(ctx context.Context, branch, ref string) (bool, error) {
+	ancestor, err := p.IsAncestor(ctx, ref, branch)
+	if err != nil || ancestor {
+		return ancestor, err
+	}
+	tree, err := p.run(ctx, p.Root, "rev-parse", "--verify", ref+"^{tree}")
+	if err != nil {
+		return false, err
+	}
+	want := strings.TrimSpace(string(tree.Stdout))
+	history, err := p.run(ctx, p.Root, "log", "--format=%T", "refs/heads/"+branch, "--")
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(nonempty(string(history.Stdout)), want), nil
+}
+
+// mergePreviewError explains a `git merge-tree --write-tree` failure that is
+// not a conflict report (exit 1); older git lacks the flag and exits 129.
+func mergePreviewError(exitCode int, stderr string) error {
+	tail := strings.TrimSpace(stderr)
+	if len(tail) > 400 {
+		tail = tail[len(tail)-400:]
+	}
+	return fmt.Errorf("worktree: git merge-tree exited %d; merge preview needs git 2.38 or newer: %s", exitCode, tail)
+}
