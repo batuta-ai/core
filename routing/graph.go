@@ -976,6 +976,55 @@ func (g *DeliveryGraph) RecordCandidate(taskID string, execution int, evidence T
 	return false, nil
 }
 
+func (g *DeliveryGraph) RecordRecoveredCandidate(taskID string, execution int, evidence TaskCandidate, recoveredAt time.Time) (bool, error) {
+	if g == nil || !boundedArgument(taskID) || execution < 1 || execution > MaxTaskExecutions ||
+		!boundedArgument(evidence.ChildRunID) || !canonicalGitSHA.MatchString(evidence.BaseHeadSHA) ||
+		!canonicalGitSHA.MatchString(evidence.CommitSHA) || !canonicalSHA256.MatchString(evidence.VerificationDigest) ||
+		evidence.TokensUsed < 0 ||
+		(evidence.Evidence != nil && !validTaskCandidateEvidence(evidence.Evidence, taskID, evidence.VerificationDigest)) ||
+		recoveredAt.IsZero() || recoveredAt.Location() != time.UTC {
+		return false, ErrInvalidDeliveryTransition
+	}
+	candidate := cloneDeliveryGraph(g)
+	task := graphTaskByID(candidate.Tasks, taskID)
+	if task == nil || len(task.Attempts) != execution {
+		return false, ErrInvalidDeliveryTransition
+	}
+	attempt := &task.Attempts[execution-1]
+	if attempt.WorktreeID == "" || attempt.Question == nil || attempt.Question.Answer != nil ||
+		attempt.BaseHeadSHA != evidence.BaseHeadSHA || attempt.ChildRunID != evidence.ChildRunID ||
+		attempt.TokenAllowance > 0 && evidence.TokensUsed > attempt.TokenAllowance {
+		return false, ErrInvalidDeliveryTransition
+	}
+	if (task.State == GraphTaskCandidate && attempt.State == GraphTaskCandidate) ||
+		(task.State == GraphTaskIntegrated && attempt.State == GraphTaskIntegrated) {
+		if attempt.CandidateCommitSHA != evidence.CommitSHA || attempt.VerificationDigest != evidence.VerificationDigest ||
+			attempt.TokensUsed == nil || *attempt.TokensUsed != evidence.TokensUsed ||
+			!reflect.DeepEqual(attempt.CandidateEvidence, evidence.Evidence) {
+			return false, ErrInvalidDeliveryTransition
+		}
+		return true, nil
+	}
+	if task.State != GraphTaskWaitingInput || attempt.State != GraphTaskWaitingInput {
+		return false, ErrInvalidDeliveryTransition
+	}
+	attempt.State = GraphTaskCandidate
+	attempt.CandidateCommitSHA = evidence.CommitSHA
+	attempt.VerificationDigest = evidence.VerificationDigest
+	attempt.CandidateEvidence = cloneTaskCandidateEvidence(evidence.Evidence)
+	tokensUsed := evidence.TokensUsed
+	attempt.TokensUsed = &tokensUsed
+	task.State = GraphTaskCandidate
+	if _, err := candidate.ReconcileHumanPause(recoveredAt); err != nil {
+		return false, ErrInvalidDeliveryTransition
+	}
+	if err := validateGraphTask(*task, "pending"); err != nil {
+		return false, err
+	}
+	*g = *candidate
+	return false, nil
+}
+
 func (g *DeliveryGraph) SettleWave(
 	settlement WaveSettlement,
 	generation RoutingGeneration,
@@ -1999,7 +2048,7 @@ func graphTaskTransitionAllowed(before, after GraphTaskState) bool {
 	case GraphTaskRunning:
 		return after == GraphTaskWaitingInput || after == GraphTaskCandidate || after == GraphTaskBlocked
 	case GraphTaskWaitingInput:
-		return after == GraphTaskRunning || after == GraphTaskBlocked
+		return after == GraphTaskRunning || after == GraphTaskCandidate || after == GraphTaskBlocked
 	case GraphTaskCandidate:
 		return after == GraphTaskIntegrated || after == GraphTaskPreparing || after == GraphTaskBlocked
 	default:

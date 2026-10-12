@@ -799,6 +799,205 @@ func TestDeliveryGraphRecordsCandidateAndSuccessfulUsageOnce(t *testing.T) {
 	}
 }
 
+func recoveredCandidateFixture(t *testing.T) (*DeliveryGraph, TaskCandidate, time.Time) {
+	t.Helper()
+
+	snapshot := graphSnapshotFixture(t, []TaskArtifact{
+		graphTaskArtifact("task_01", "pending", DomainBackend, ComplexityLow),
+	})
+	generation := graphGenerationFixture(t, snapshot)
+	base := graphGitSHA("recovered-candidate-base")
+	graph, err := NewDeliveryGraph(snapshot, generation, base)
+	if err != nil {
+		t.Fatalf("NewDeliveryGraph() error = %v", err)
+	}
+	wave, err := graph.AdmitReadyWave(ReadyWaveInput{
+		IntegrationHeadSHA: base, RemainingSlots: 1, ReachableCommits: map[string]bool{},
+	})
+	if err != nil {
+		t.Fatalf("AdmitReadyWave() error = %v", err)
+	}
+	if err := graph.BeginWaveAttempts(wave.Number, generation); err != nil {
+		t.Fatalf("BeginWaveAttempts() error = %v", err)
+	}
+	if _, err := graph.AttachWorktree("task_01", 1, GraphWorktree{
+		ID: "wt-task-01", Root: tempDir(t), Ready: true,
+	}); err != nil {
+		t.Fatalf("AttachWorktree() error = %v", err)
+	}
+	startedAt := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
+	question := TaskQuestion{
+		RequestID: digestFixture("recovered-candidate-question"),
+		Prompt:    "Which behavior should task_01 use?", ContextDigest: digestFixture("recovered-candidate-context"),
+	}
+	if replay, err := graph.RecordQuestion("task_01", 1, "child-run-1", question, startedAt); err != nil || replay {
+		t.Fatalf("RecordQuestion() replay=%v error=%v", replay, err)
+	}
+	evidence := TaskCandidate{
+		ChildRunID: "child-run-1", BaseHeadSHA: base,
+		CommitSHA:          graphGitSHA("recovered-candidate-commit"),
+		VerificationDigest: digestFixture("recovered-candidate-verification"), TokensUsed: 12,
+	}
+	return graph, evidence, startedAt.Add(time.Minute)
+}
+
+func TestGraphRecordRecoveredCandidate(t *testing.T) {
+	t.Parallel()
+
+	graph, evidence, recoveredAt := recoveredCandidateFixture(t)
+	replayed, err := graph.RecordRecoveredCandidate("task_01", 1, evidence, recoveredAt)
+	if err != nil || replayed {
+		t.Fatalf("RecordRecoveredCandidate() replay=%v error=%v", replayed, err)
+	}
+	task, ok := graph.Task("task_01")
+	if !ok || task.State != GraphTaskCandidate || len(task.Attempts) != 1 {
+		t.Fatalf("recovered task = %#v, exists=%v", task, ok)
+	}
+	attempt := task.Attempts[0]
+	if attempt.State != GraphTaskCandidate || attempt.ChildRunID != evidence.ChildRunID ||
+		attempt.BaseHeadSHA != evidence.BaseHeadSHA || attempt.CandidateCommitSHA != evidence.CommitSHA ||
+		attempt.VerificationDigest != evidence.VerificationDigest || attempt.TokensUsed == nil ||
+		*attempt.TokensUsed != evidence.TokensUsed || attempt.Question == nil || attempt.Question.Answer != nil {
+		t.Fatalf("recovered attempt = %#v", attempt)
+	}
+	if len(graph.Pauses) != 1 || graph.Pauses[0].EndedAt == nil || !graph.Pauses[0].EndedAt.Equal(recoveredAt) {
+		t.Fatalf("recovered pauses = %#v", graph.Pauses)
+	}
+	if err := validateGraphTask(task, "pending"); err != nil {
+		t.Fatalf("validateGraphTask() error = %v", err)
+	}
+	payload, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	var roundTrip DeliveryGraph
+	if err := json.Unmarshal(payload, &roundTrip); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !reflect.DeepEqual(graph, &roundTrip) {
+		t.Fatalf("graph changed on JSON round trip: before=%#v after=%#v", graph, &roundTrip)
+	}
+	if err := validateGraphTask(roundTrip.Tasks[0], "pending"); err != nil {
+		t.Fatalf("validateGraphTask(round trip) error = %v", err)
+	}
+}
+
+func TestGraphRecoveredCandidateRefusals(t *testing.T) {
+	t.Parallel()
+
+	for _, state := range []GraphTaskState{GraphTaskCandidate, GraphTaskIntegrated} {
+		t.Run("identical "+string(state)+" replay", func(t *testing.T) {
+			t.Parallel()
+			graph, evidence, recoveredAt := recoveredCandidateFixture(t)
+			if _, err := graph.RecordRecoveredCandidate("task_01", 1, evidence, recoveredAt); err != nil {
+				t.Fatalf("first recovery error = %v", err)
+			}
+			if state == GraphTaskIntegrated {
+				graph.Tasks[0].State, graph.Tasks[0].Attempts[0].State = state, state
+				graph.Tasks[0].IntegratedCommitSHA = evidence.CommitSHA
+			}
+			before := cloneDeliveryGraph(graph)
+			replayed, err := graph.RecordRecoveredCandidate("task_01", 1, evidence, recoveredAt)
+			if err != nil || !replayed || !reflect.DeepEqual(graph, before) {
+				t.Fatalf("replay=%v error=%v changed=%v", replayed, err, !reflect.DeepEqual(graph, before))
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name           string
+		mutateGraph    func(*DeliveryGraph)
+		mutateEvidence func(*TaskCandidate)
+		mutateTime     func(time.Time) time.Time
+		recoverFirst   bool
+	}{
+		{name: "running task", mutateGraph: func(g *DeliveryGraph) {
+			g.Tasks[0].State, g.Tasks[0].Attempts[0].State = GraphTaskRunning, GraphTaskRunning
+		}},
+		{name: "candidate with different evidence", recoverFirst: true, mutateEvidence: func(e *TaskCandidate) {
+			e.CommitSHA = graphGitSHA("other-commit")
+		}},
+		{name: "integrated with different evidence", recoverFirst: true, mutateGraph: func(g *DeliveryGraph) {
+			g.Tasks[0].State, g.Tasks[0].Attempts[0].State = GraphTaskIntegrated, GraphTaskIntegrated
+			g.Tasks[0].IntegratedCommitSHA = g.Tasks[0].Attempts[0].CandidateCommitSHA
+		}, mutateEvidence: func(e *TaskCandidate) { e.CommitSHA = graphGitSHA("other-commit") }},
+		{name: "blocked task", mutateGraph: func(g *DeliveryGraph) {
+			g.Tasks[0].State, g.Tasks[0].Attempts[0].State = GraphTaskBlocked, GraphTaskBlocked
+		}},
+		{name: "answered question", mutateGraph: func(g *DeliveryGraph) {
+			g.Tasks[0].Attempts[0].Question.Answer = &TaskAnswer{Value: "answer"}
+		}},
+		{name: "missing question", mutateGraph: func(g *DeliveryGraph) {
+			g.Tasks[0].Attempts[0].Question = nil
+		}},
+		{name: "execution is not last", mutateGraph: func(g *DeliveryGraph) {
+			second := g.Tasks[0].Attempts[0]
+			second.Execution = 2
+			g.Tasks[0].Attempts = append(g.Tasks[0].Attempts, second)
+		}},
+		{name: "different base SHA", mutateEvidence: func(e *TaskCandidate) {
+			e.BaseHeadSHA = graphGitSHA("different-base")
+		}},
+		{name: "different child run", mutateEvidence: func(e *TaskCandidate) {
+			e.ChildRunID = "other-child-run"
+		}},
+		{name: "malformed commit SHA", mutateEvidence: func(e *TaskCandidate) {
+			e.CommitSHA = "bad-sha"
+		}},
+		{name: "malformed verification digest", mutateEvidence: func(e *TaskCandidate) {
+			e.VerificationDigest = "bad-digest"
+		}},
+		{name: "non-UTC time", mutateTime: func(at time.Time) time.Time {
+			return at.In(time.FixedZone("other", 3600))
+		}},
+		{name: "zero time", mutateTime: func(time.Time) time.Time { return time.Time{} }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			graph, evidence, recoveredAt := recoveredCandidateFixture(t)
+			if test.recoverFirst {
+				if _, err := graph.RecordRecoveredCandidate("task_01", 1, evidence, recoveredAt); err != nil {
+					t.Fatalf("first recovery error = %v", err)
+				}
+			}
+			if test.mutateGraph != nil {
+				test.mutateGraph(graph)
+			}
+			if test.mutateEvidence != nil {
+				test.mutateEvidence(&evidence)
+			}
+			if test.mutateTime != nil {
+				recoveredAt = test.mutateTime(recoveredAt)
+			}
+			before := cloneDeliveryGraph(graph)
+			replayed, err := graph.RecordRecoveredCandidate("task_01", 1, evidence, recoveredAt)
+			if replayed || !errors.Is(err, ErrInvalidDeliveryTransition) || !reflect.DeepEqual(graph, before) {
+				t.Fatalf("replay=%v error=%v changed=%v", replayed, err, !reflect.DeepEqual(graph, before))
+			}
+		})
+	}
+}
+
+func TestGraphTransitionWaitingInputToCandidate(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name string
+		to   GraphTaskState
+		want bool
+	}{
+		{name: "candidate", to: GraphTaskCandidate, want: true},
+		{name: "integrated", to: GraphTaskIntegrated, want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := graphTaskTransitionAllowed(GraphTaskWaitingInput, test.to); got != test.want {
+				t.Fatalf("graphTaskTransitionAllowed(waiting_input, %s) = %v, want %v", test.to, got, test.want)
+			}
+		})
+	}
+}
+
 func TestDeliveryGraphReservesOneGlobalTokenBudgetAcrossParallelAttempts(t *testing.T) {
 	t.Parallel()
 
