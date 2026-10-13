@@ -150,6 +150,7 @@ func (r *Runner) dispatchExecution(ctx context.Context, taskID string, detail *d
 type gatesReportDetail struct {
 	gates.Report
 	VerifierSkipped string `json:"verifier_skipped,omitempty"`
+	Source          string `json:"source,omitempty"`
 }
 
 // rejectedGates names the gates that already failed the attempt: the tests
@@ -403,8 +404,6 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		return r.recordQuestion(ctx, ac, result, treeChanged)
 	}
 
-	report := gates.Report{TaskID: taskID, Execution: ac.execution}
-	verifierSkipped := ""
 	finishedDetail := executor.Tail(append(result.Stdout, result.Stderr...), 30)
 	if result.Receipt != nil {
 		relativeLog, err := filepath.Rel(r.root, logPath)
@@ -413,59 +412,11 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		}
 		finishedDetail = "executor log: " + filepath.ToSlash(relativeLog)
 	}
-	report.Finished = gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, finishedDetail)
-	report.Tree = gates.Verdict{Name: "tree", Pass: true, Signal: "the worktree differs from the attempt's base"}
 	silent := !treeChanged
-	var changedPaths []string
-	if report.Finished.Pass && !silent {
-		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
-		changed, err := r.git.ChangedPaths(ctx, ac.worktree.Root, ac.base)
-		if err != nil {
-			return err
-		}
-		changedPaths = changed
-		report.Scope = gates.Scope(changed, ac.plan.Scope)
-		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
-		proofless := slices.ContainsFunc(criteria, func(criterion gates.Criterion) bool { return criterion.Proof == "" })
-		if rejected := rejectedGates(report); rejected != "" {
-			// The attempt is already failing; a verifier session would only
-			// restate what the gates proved, so none is dispatched.
-			verifierSkipped = rejected
-		} else if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution, proofless) && len(criteria) > 0 {
-			verdict, err := r.verify(ctx, &ac, criteria, report.Proofs)
-			if err != nil {
-				return err
-			}
-			report.Verifier = &verdict
-		}
-	} else if silent && report.Finished.Pass {
-		// Base equality is established before running gates on this tree;
-		// earlier executions may have left work even if this one wrote nothing.
-		report.Tree.Signal = "the worktree equals the attempt's base"
-		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
-		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "nothing changed"}
-		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
-		alreadySatisfied := false
-		if len(criteria) > 0 {
-			verdict, err := r.verify(ctx, &ac, criteria, report.Proofs)
-			if err != nil {
-				return err
-			}
-			report.Verifier = &verdict
-			proofsPass := true
-			for _, proof := range report.Proofs {
-				proofsPass = proofsPass && proof.Pass
-			}
-			alreadySatisfied = verdict.Pass && report.Tests.Pass && proofsPass
-		}
-		if !alreadySatisfied {
-			report.Tree = gates.Verdict{Name: "tree", Pass: false, Signal: "silent: the worktree equals the base and the criteria do not all hold on the base"}
-		}
-	} else {
-		report.Tests = gates.Verdict{Name: "tests", Pass: false, Signal: "skipped: the executor did not finish"}
-		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "not evaluated"}
+	report, changedPaths, verifierSkipped, err := r.attemptGates(ctx, &ac, result, treeChanged, criteria, finishedDetail)
+	if err != nil {
+		return err
 	}
-	report.Decide()
 	if r.opts.JudgeConfig.Decision(claimEvidenceDecision).Mode != judge.ModeOff && !result.RateLimited {
 		if _, err := r.judgeClaimEvidence(ctx, ac, &report, result, treeChanged, changedPaths); err != nil {
 			return err
@@ -492,6 +443,66 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		return r.recordBlocked(ctx, ac, &result, blockerAlreadySatisfied, []string{"gates 2 and 3 green against the base commit: the criteria already hold; nothing to commit"})
 	}
 	return r.recordCandidate(ctx, ac, report, result)
+}
+
+func (r *Runner) attemptGates(ctx context.Context, ac *attemptContext, result executor.Result, treeChanged bool, criteria []gates.Criterion, finishedDetail string) (report gates.Report, changedPaths []string, verifierSkipped string, err error) {
+	report = gates.Report{TaskID: ac.taskID, Execution: ac.execution}
+	report.Finished = gates.Finished(result.Finished, result.TimedOut, result.RateLimited, result.ExitCode, finishedDetail)
+	report.Tree = gates.Verdict{Name: "tree", Pass: true, Signal: "the worktree differs from the attempt's base"}
+	silent := !treeChanged
+	if report.Finished.Pass && !silent {
+		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
+		changed, changeErr := r.git.ChangedPaths(ctx, ac.worktree.Root, ac.base)
+		if changeErr != nil {
+			err = changeErr
+			return
+		}
+		changedPaths = changed
+		report.Scope = gates.Scope(changed, ac.plan.Scope)
+		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
+		proofless := slices.ContainsFunc(criteria, func(criterion gates.Criterion) bool { return criterion.Proof == "" })
+		if rejected := rejectedGates(report); rejected != "" {
+			// The attempt is already failing; a verifier session would only
+			// restate what the gates proved, so none is dispatched.
+			verifierSkipped = rejected
+		} else if gates.NeedsVerifier(string(ac.plan.Complexity), silent, ac.execution, proofless) && len(criteria) > 0 {
+			verdict, verifyErr := r.verify(ctx, ac, criteria, report.Proofs)
+			if verifyErr != nil {
+				err = verifyErr
+				return
+			}
+			report.Verifier = &verdict
+		}
+	} else if silent && report.Finished.Pass {
+		// Base equality is established before running gates on this tree;
+		// earlier executions may have left work even if this one wrote nothing.
+		report.Tree.Signal = "the worktree equals the attempt's base"
+		report.Tests = gates.Tests(ctx, r.shell, ac.worktree.Root, r.profile.Test)
+		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "nothing changed"}
+		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
+		alreadySatisfied := false
+		if len(criteria) > 0 {
+			verdict, verifyErr := r.verify(ctx, ac, criteria, report.Proofs)
+			if verifyErr != nil {
+				err = verifyErr
+				return
+			}
+			report.Verifier = &verdict
+			proofsPass := true
+			for _, proof := range report.Proofs {
+				proofsPass = proofsPass && proof.Pass
+			}
+			alreadySatisfied = verdict.Pass && report.Tests.Pass && proofsPass
+		}
+		if !alreadySatisfied {
+			report.Tree = gates.Verdict{Name: "tree", Pass: false, Signal: "silent: the worktree equals the base and the criteria do not all hold on the base"}
+		}
+	} else {
+		report.Tests = gates.Verdict{Name: "tests", Pass: false, Signal: "skipped: the executor did not finish"}
+		report.Scope = gates.Verdict{Name: "scope", Pass: true, Signal: "not evaluated"}
+	}
+	report.Decide()
+	return
 }
 
 // A protocol failure or usage limit is not evidence that the prompt made no
@@ -853,24 +864,17 @@ func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result e
 // recordCandidate squashes the worktree into one commit, proves it with
 // the integration layer and records it on the graph.
 func (r *Runner) recordCandidate(ctx context.Context, ac attemptContext, report gates.Report, result executor.Result) error {
-	canonical, digest, err := report.Canonical()
-	if err != nil {
-		return err
+	sha, digest, message, evidence, canonicalErr, squashErr, validateErr := r.candidateCommit(ctx, ac, report)
+	if canonicalErr != nil {
+		return canonicalErr
 	}
-	message := commitMessage(ac.plan, r.plan.Slug)
-	sha, err := r.git.Squash(ctx, ac.worktree.Root, ac.base, message)
-	if err != nil {
-		return r.recordFailure(ctx, ac, &result, blockerCandidate, []string{"could not squash the worktree into one commit: " + err.Error()})
+	if squashErr != nil {
+		return r.recordFailure(ctx, ac, &result, blockerCandidate, []string{"could not squash the worktree into one commit: " + squashErr.Error()})
 	}
-	evidence, err := r.integ.Candidate(ctx, integration.CandidateRequest{
-		TaskID: ac.taskID, Slug: r.plan.Slug, WorktreeRoot: ac.worktree.Root, RepositoryRoot: r.root,
-		ExpectedBranch: ac.worktree.Branch, BaseSHA: ac.base, Verification: canonical, VerificationDigest: digest,
-		AllowedTrackingPaths: []string{},
-	})
-	if err != nil {
-		return r.recordFailure(ctx, ac, &result, blockerCandidate, []string{"the candidate commit did not validate: " + err.Error()})
+	if validateErr != nil {
+		return r.recordFailure(ctx, ac, &result, blockerCandidate, []string{"the candidate commit did not validate: " + validateErr.Error()})
 	}
-	err = r.locked(KindCandidate, ac.taskID, map[string]any{"execution": ac.execution, "commit": sha, "verification_digest": digest, "evidence": evidence, "message": message}, func() error {
+	err := r.locked(KindCandidate, ac.taskID, map[string]any{"execution": ac.execution, "commit": sha, "verification_digest": digest, "evidence": evidence, "message": message}, func() error {
 		if _, err := r.graph.RecordCandidate(ac.taskID, ac.execution, routing.TaskCandidate{
 			ChildRunID: ac.runID, BaseHeadSHA: ac.base, CommitSHA: sha, VerificationDigest: digest,
 		}); err != nil {
@@ -885,6 +889,29 @@ func (r *Runner) recordCandidate(ctx context.Context, ac attemptContext, report 
 	}
 	fmt.Fprintf(r.out, "%s e%d ✓ candidate %s\n", ac.taskID, ac.execution, short(sha))
 	return nil
+}
+
+func (r *Runner) candidateCommit(ctx context.Context, ac attemptContext, report gates.Report) (sha, digest, message string, evidence integration.CandidateEvidence, canonicalErr, squashErr, validateErr error) {
+	canonical, digest, err := report.Canonical()
+	if err != nil {
+		canonicalErr = err
+		return
+	}
+	message = commitMessage(ac.plan, r.plan.Slug)
+	sha, err = r.git.Squash(ctx, ac.worktree.Root, ac.base, message)
+	if err != nil {
+		squashErr = err
+		return
+	}
+	evidence, err = r.integ.Candidate(ctx, integration.CandidateRequest{
+		TaskID: ac.taskID, Slug: r.plan.Slug, WorktreeRoot: ac.worktree.Root, RepositoryRoot: r.root,
+		ExpectedBranch: ac.worktree.Branch, BaseSHA: ac.base, Verification: canonical, VerificationDigest: digest,
+		AllowedTrackingPaths: []string{},
+	})
+	if err != nil {
+		validateErr = err
+	}
+	return
 }
 
 // recordFailure applies the conducting policy — retry once on the same
