@@ -1129,6 +1129,29 @@ func TestJudgeReplayRecoveredCandidate(t *testing.T) {
 	}
 }
 
+func TestJudgeReplayConductorTreeVerdict(t *testing.T) {
+	for _, changed := range []bool{true, false} {
+		var records []journal.Record
+		add := func(kind journal.Kind, detail any) {
+			raw, err := json.Marshal(detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			records = append(records, journal.Record{Kind: kind, TaskID: "task_1", Detail: raw})
+		}
+		add(loop.KindFinished, map[string]any{"execution": 1, "finished": true, "tree_changed": !changed})
+		add(loop.KindQuestion, map[string]any{"execution": 1})
+		add(loop.KindGates, map[string]any{
+			"task_id": "task_1", "execution": 1, "passed": changed, "source": "conductor",
+			"tree": map[string]any{"name": "tree", "pass": changed},
+		})
+		attempts, _, _ := replayAttempts(records)
+		if len(attempts) != 1 || attempts[0].treeChanged != changed {
+			t.Fatalf("attempts = %#v, want treeChanged=%v from the conductor's tree gate", attempts, changed)
+		}
+	}
+}
+
 func TestJudgeReplayLastConductorReportWins(t *testing.T) {
 	tests := []struct {
 		name    string

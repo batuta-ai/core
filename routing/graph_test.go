@@ -882,6 +882,66 @@ func TestGraphRecordRecoveredCandidate(t *testing.T) {
 	}
 }
 
+func TestGraphRecoveredCandidateMovesPauseToWaitingTask(t *testing.T) {
+	t.Parallel()
+
+	snapshot := graphSnapshotFixture(t, []TaskArtifact{
+		graphTaskArtifact("task_01", "pending", DomainBackend, ComplexityLow),
+		graphTaskArtifact("task_02", "pending", DomainBackend, ComplexityLow),
+	})
+	generation := graphGenerationFixture(t, snapshot)
+	base := graphGitSHA("recovered-pause-base")
+	graph, err := NewDeliveryGraph(snapshot, generation, base)
+	if err != nil {
+		t.Fatalf("NewDeliveryGraph() error = %v", err)
+	}
+	wave, err := graph.AdmitReadyWave(ReadyWaveInput{
+		IntegrationHeadSHA: base, RemainingSlots: 2, ReachableCommits: map[string]bool{},
+	})
+	if err != nil || len(wave.TaskIDs) != 2 {
+		t.Fatalf("AdmitReadyWave() = %+v, %v", wave, err)
+	}
+	if err := graph.BeginWaveAttempts(wave.Number, generation); err != nil {
+		t.Fatalf("BeginWaveAttempts() error = %v", err)
+	}
+	startedAt := time.Date(2026, time.October, 12, 12, 0, 0, 0, time.UTC)
+	for _, taskID := range []string{"task_01", "task_02"} {
+		if _, err := graph.AttachWorktree(taskID, 1, GraphWorktree{ID: "wt-" + taskID, Root: tempDir(t), Ready: true}); err != nil {
+			t.Fatalf("AttachWorktree(%s) error = %v", taskID, err)
+		}
+		question := TaskQuestion{
+			RequestID: digestFixture("recovered-pause-question-" + taskID),
+			Prompt:    "Which behavior should " + taskID + " use?", ContextDigest: digestFixture("recovered-pause-context-" + taskID),
+		}
+		if _, err := graph.RecordQuestion(taskID, 1, "child-"+taskID, question, startedAt); err != nil {
+			t.Fatalf("RecordQuestion(%s) error = %v", taskID, err)
+		}
+	}
+	if len(graph.Pauses) != 1 || graph.Pauses[0].EndedAt != nil {
+		t.Fatalf("pauses before recovery = %#v", graph.Pauses)
+	}
+	owner := graph.Pauses[0].TaskID
+	other := "task_01"
+	if owner == other {
+		other = "task_02"
+	}
+	recoveredAt := startedAt.Add(time.Minute)
+	if _, err := graph.RecordRecoveredCandidate(owner, 1, TaskCandidate{
+		ChildRunID: "child-" + owner, BaseHeadSHA: base,
+		CommitSHA:          graphGitSHA("recovered-pause-commit"),
+		VerificationDigest: digestFixture("recovered-pause-verification"),
+	}, recoveredAt); err != nil {
+		t.Fatalf("RecordRecoveredCandidate() error = %v", err)
+	}
+	if len(graph.Pauses) != 2 || graph.Pauses[0].TaskID != owner || graph.Pauses[0].EndedAt == nil ||
+		!graph.Pauses[0].EndedAt.Equal(recoveredAt) || graph.Pauses[1].TaskID != other || graph.Pauses[1].EndedAt != nil {
+		t.Fatalf("pauses after recovery = %#v", graph.Pauses)
+	}
+	if err := validatePauseArchive(graph, startedAt); err != nil {
+		t.Fatalf("validatePauseArchive() error = %v", err)
+	}
+}
+
 func TestGraphRecoveredCandidateRefusals(t *testing.T) {
 	t.Parallel()
 

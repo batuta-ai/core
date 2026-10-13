@@ -161,8 +161,9 @@ func Recover(ctx context.Context, opts Options, delivery, taskID string) (recove
 		return err
 	}
 	askPath := filepath.Join(r.root, ".batuta", "asks", r.plan.Slug+"-"+strings.ReplaceAll(taskID, "_", "-")+".md")
-	if err := os.Remove(askPath); err != nil {
-		return fmt.Errorf("loop: remove recovered ask: %w", err)
+	// The candidate is durable: a leftover ask file must not stop the resume.
+	if err := os.Remove(askPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		fmt.Fprintf(r.out, "loop: remove recovered ask %s: %v\n", askPath, err)
 	}
 	return nil
 }

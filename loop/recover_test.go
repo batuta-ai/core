@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -486,6 +487,11 @@ func TestConductorRecoverAfterGateFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, "out", "1.txt"), []byte("ok\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	for _, args := range [][]string{{"add", "out/1.txt"}, {"commit", "-q", "-m", "fix: greeting one"}} {
+		if out, err := exec.Command("git", append([]string{"-C", wt}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
 	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
 		t.Fatalf("second Recover() = %v", err)
 	}
@@ -516,5 +522,18 @@ func TestConductorRecoverAfterGateFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(ask); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("ask remains: %v", err)
+	}
+}
+
+func TestConductorRecoverWithoutAskFile(t *testing.T) {
+	f, opts, delivery, _, ask := parkedRecovery(t, "continuation-ask-untracked")
+	if err := os.Remove(ask); err != nil {
+		t.Fatal(err)
+	}
+	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
+		t.Fatalf("Recover() = %v, want success without the ask file", err)
+	}
+	if task := graphTask(recoveryGraph(t, f, delivery), "task_1"); task == nil || task.State != routing.GraphTaskCandidate {
+		t.Fatalf("recovered task = %+v", task)
 	}
 }

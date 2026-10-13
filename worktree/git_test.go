@@ -811,6 +811,55 @@ func TestMergePreviewAlreadyMerged(t *testing.T) {
 	}
 }
 
+func TestMergePreviewUnusualPaths(t *testing.T) {
+	t.Parallel()
+	provider, _ := initRepo(t)
+	name := "caf\u00e9 \ttab.txt"
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(provider.Root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		previewGit(t, provider, "add", "-A")
+	}
+	write("base\n")
+	previewGit(t, provider, "commit", "-q", "-m", "chore: base file")
+	previewGit(t, provider, "checkout", "-q", "-b", "feature")
+	write("feature\n")
+	previewGit(t, provider, "commit", "-q", "-m", "feat: feature")
+	previewGit(t, provider, "checkout", "-q", "main")
+	write("main\n")
+	previewGit(t, provider, "commit", "-q", "-m", "feat: main moves on")
+	got, err := provider.MergePreview(context.Background(), "main", "feature")
+	if err != nil {
+		t.Fatalf("MergePreview() error = %v", err)
+	}
+	if want := []string{name}; !slices.Equal(got.Changed, want) || !slices.Equal(got.Conflicts, want) {
+		t.Fatalf("Changed = %q, Conflicts = %q, want %q verbatim in both", got.Changed, got.Conflicts, want)
+	}
+}
+
+// truncatingRunner marks merge-tree output as cut at the runner's bound.
+type truncatingRunner struct{ publication.CommandRunner }
+
+func (r truncatingRunner) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	result, err := r.CommandRunner.Run(ctx, command)
+	if len(command.Args) > 0 && command.Args[0] == "merge-tree" {
+		result.StdoutTruncated = true
+	}
+	return result, err
+}
+
+func TestMergePreviewRejectsTruncatedConflictReport(t *testing.T) {
+	t.Parallel()
+	provider := previewRepo(t, true)
+	provider.Runner = truncatingRunner{provider.Runner}
+	got, err := provider.MergePreview(context.Background(), "main", "feature")
+	if err == nil || !strings.Contains(err.Error(), "exceeded bound") {
+		t.Fatalf("MergePreview() = %+v, %v, want the output bound error", got, err)
+	}
+}
+
 func TestMergePreviewErrors(t *testing.T) {
 	t.Parallel()
 	t.Run("unrelated histories", func(t *testing.T) {

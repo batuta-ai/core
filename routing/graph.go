@@ -1015,6 +1015,16 @@ func (g *DeliveryGraph) RecordRecoveredCandidate(taskID string, execution int, e
 	tokensUsed := evidence.TokensUsed
 	attempt.TokensUsed = &tokensUsed
 	task.State = GraphTaskCandidate
+	// The open pause may belong to this task while another still waits:
+	// close it here so ReconcileHumanPause reopens one for the task that waits.
+	for _, pause := range candidate.Pauses {
+		if pause.EndedAt != nil || pause.RequestID != attempt.Question.RequestID {
+			continue
+		}
+		if _, _, err := candidate.ClosePause(pause.RequestID, recoveredAt); err != nil {
+			return false, ErrInvalidDeliveryTransition
+		}
+	}
 	if _, err := candidate.ReconcileHumanPause(recoveredAt); err != nil {
 		return false, ErrInvalidDeliveryTransition
 	}

@@ -343,6 +343,11 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 			treeChanged = finishedDetail.TreeChanged
 			baseSHA = finishedDetail.BaseHeadSHA
 		}
+		if choice.conductor {
+			// Work can reach a parked worktree after the executor finished:
+			// the recovery's own tree gate says whether there is a change.
+			treeChanged = report.Tree.Pass
+		}
 		candidate := candidates[key]
 		snapshot := snapshots[key]
 		attempts = append(attempts, replayAttempt{

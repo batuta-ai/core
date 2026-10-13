@@ -133,11 +133,11 @@ terminal    done | blocked | waiting_input | canceled | abandoned
 | State | Owner | Written by | Leaves through |
 |---|---|---|---|
 | `pending` | runner | opening the delivery | `AdmitReadyWave` |
-| `preparing` | runner | `AdmitReadyWave`, `BeginWaveAttempts`; `RecordFailureWithPolicy` on a retry; `SettleWave` on a conflict | `PlanWorktree`, `AttachWorktree` |
+| `preparing` | runner | `AdmitReadyWave`, `BeginWaveAttempts`; `RecordFailureWithPolicy` on a retry; `SettleWave` on a conflict | `AttachWorktree` |
 | `running` | runner | `AttachWorktree`; `RecordAnswer` after `--answer` | `RecordQuestion`, `RecordCandidate`, `RecordFailureWithPolicy` |
 | `waiting_input` | runner | `RecordQuestion` | `RecordAnswer` (human), `RecordRecoveredCandidate` (conductor) |
 | `candidate` | runner or conductor | `RecordCandidate` (runner), `RecordRecoveredCandidate` (conductor, `--recover`) | `SettleWave` |
-| `integrated` | runner | `SettleWave` | final |
+| `integrated` | runner | `SettleWave`; `RecordFailureWithPolicy` when the task is already satisfied | final |
 | `blocked` | runner | `RecordFailureWithPolicy`, `RecordQuestion` at the fourth execution, `SettleWave` after repeated conflicts | final |
 
 Exit codes: `0` implementation done and required review cleared · `2` blocked

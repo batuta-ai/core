@@ -723,12 +723,12 @@ func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (Merg
 		return MergePreviewResult{}, err
 	}
 	result := MergePreviewResult{Base: strings.TrimSpace(string(base.Stdout))}
-	diff, err := p.run(ctx, p.Root, "diff", "--name-only", result.Base, ref, "--")
+	diff, err := p.run(ctx, p.Root, "diff", "--name-only", "-z", result.Base, ref, "--")
 	if err != nil {
 		return MergePreviewResult{}, err
 	}
 	result.Changed = make([]string, 0)
-	for _, path := range nonempty(string(diff.Stdout)) {
+	for _, path := range nulFields(diff.Stdout) {
 		if path != ".batuta" && !strings.HasPrefix(path, ".batuta/") {
 			result.Changed = append(result.Changed, path)
 		}
@@ -742,17 +742,33 @@ func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (Merg
 		result.Merged = true
 		return result, nil
 	}
-	tree, err := p.run(ctx, p.Root, "merge-tree", "--write-tree", "--name-only", "--no-messages", branch, ref)
+	tree, err := p.run(ctx, p.Root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", branch, ref)
+	// Exit 1 is a conflict report only when git's output arrived whole.
+	if tree.StdoutTruncated || tree.StderrTruncated {
+		return MergePreviewResult{}, err
+	}
 	if err != nil && tree.ExitCode != 1 {
 		if tree.ExitCode == 0 {
 			return MergePreviewResult{}, err
 		}
 		return MergePreviewResult{}, mergePreviewError(tree.ExitCode, string(tree.Stderr))
 	}
-	if lines := nonempty(string(tree.Stdout)); tree.ExitCode == 1 && len(lines) > 1 {
-		result.Conflicts = lines[1:]
+	if fields := nulFields(tree.Stdout); tree.ExitCode == 1 && len(fields) > 1 {
+		result.Conflicts = fields[1:]
 	}
 	return result, nil
+}
+
+// nulFields splits `-z` output, where git writes each path verbatim and ends
+// it with NUL instead of quoting unusual names.
+func nulFields(payload []byte) []string {
+	fields := make([]string, 0)
+	for _, field := range strings.Split(string(payload), "\x00") {
+		if field != "" {
+			fields = append(fields, field)
+		}
+	}
+	return fields
 }
 
 // refIntegrated says whether ref's tree appears in branch's history, the
