@@ -52,6 +52,7 @@ fi
 if [ "$mode" = "verify" ]; then
   if [ "${FAKE_SCENARIO:-default}" = satisfied-unverified ]; then exit 0; fi
   if [ "${FAKE_SCENARIO:-default}" = satisfied-proof-fails ]; then printf '%s\n' "$text" > "$state/verifier-prompt"; fi
+  if [ "${FAKE_SCENARIO:-default}" = continuation-ask-verifier-reject ]; then echo 'TASK 1: INCOMPLETE — greeting is wrong'; exit 0; fi
   if [ "${FAKE_SCENARIO:-default}" = unsigned-config ]; then
     git config --show-origin commit.gpgsign > "$state/verifier-git-config"
   fi
@@ -79,7 +80,7 @@ case "${FAKE_SCENARIO:-default}" in
   continuation-*)
     if [ "$n" = 1 ]; then
       if [ "$retry" = 1 ] || [ -n "$answered" ]; then exit 0; fi
-      echo "ok" > out/1.txt
+      if [ "$FAKE_SCENARIO" = continuation-ask-broken ]; then echo "BROKEN" > out/1.txt; else echo "ok" > out/1.txt; fi
       case "$FAKE_SCENARIO" in
         *-staged) git add out/1.txt;;
         *-committed) git add out/1.txt; git commit -q -m "wip: greeting one";;

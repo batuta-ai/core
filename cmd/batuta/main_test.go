@@ -2561,6 +2561,270 @@ func loopSupervisionCommand(t *testing.T, root, skills string, args ...string) *
 	return cmd
 }
 
+// loopParkedFixture parks a one-task delivery in waiting_input: a fake
+// executor writes out/1.txt with the given content, then asks a question.
+func loopParkedFixture(t *testing.T, content string) (root, skills, delivery string) {
+	t.Helper()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	skills, err = filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := t.TempDir()
+	fake := filepath.Join(state, "codex")
+	worker := `#!/bin/sh
+set -eu
+case "$1" in
+  --version) echo 'codex 1.0.0';;
+  debug) echo '{"models":[{"slug":"chosen-model"}]}';;
+  doctor|plugin) echo '{}';;
+  readonly) printf '%s\n' '<<<FINDINGS' 'FINDINGS>>>';;
+  run)
+    case "$4" in *BATUTA-CAPABLE*) printf 'BATUTA-CAPABLE %s\n' "$(git rev-parse HEAD)"; exit 0;; esac
+    mkdir -p out
+    cp "` + filepath.Join(state, "content") + `" out/1.txt
+    echo 'BATUTA-QUESTION: keep this greeting?'
+    ;;
+  *) exit 91;;
+esac
+`
+	plan := "# Plan — Parked\n\n**Goal:** Park a task.\n**Status:** approved\n\n## Tasks\n- [ ] 1. Add greeting one — backend/low\n      Scope: out/1.txt\n      Accept: greeting exists → test -f out/1.txt\n"
+	for name, payload := range map[string]string{
+		filepath.Join(root, ".gitignore"):             ".batuta/journal/\n.batuta/worktrees/\n.batuta/logs/\n.batuta/asks/\n.batuta/reviews/\n.batuta/runs/\n",
+		filepath.Join(root, ".batuta/profile.md"):     "Stack: shell\nMethodology: TDD\nTest: sh ./tests.sh\nBuild: true\nExecution: sequential\nWorktree: always\nTemplate: templates/generic.md\n",
+		filepath.Join(root, ".batuta/routing.md"):     "| Lane | Domain | Executor | Model |\n|---|---|---|---|\n| low | * | codex | chosen-model |\n| high | * | codex | chosen-model |\n",
+		filepath.Join(root, ".batuta/plans/demo.md"):  plan,
+		filepath.Join(root, "tests.sh"):               "#!/bin/sh\nif grep -rl BROKEN out 2>/dev/null | grep -q .; then echo 'broken files'; exit 1; fi\necho all green\n",
+		filepath.Join(skills, "adapters/codex.md"):    fmt.Sprintf("---\nname: codex\nexecutable: %s\nrun: %s run {model_flags} \"{brief}\"\nrun_file: %s run {model_flags} \"{brief_file}\"\nmodel_flags: {model} {effort}\nreadonly: %s readonly \"{prompt}\"\navailable: codex --version\nmodels: codex debug models\nfinished: exit_code\nbrief_limit_lines: 1\n---\n", fake, fake, fake, fake),
+		filepath.Join(skills, "templates/generic.md"): "## Conventions for briefs\nKeep changes scoped.\n",
+		filepath.Join(state, "content"):               content + "\n",
+		fake:                                          worker,
+	} {
+		if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, []byte(payload), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	git, err = filepath.Abs(git)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(git, filepath.Join(state, "git")); err != nil {
+		t.Fatal(err)
+	}
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Integration preflight keeps its scratch under the user cache directory.
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("PATH", state+string(os.PathListSeparator)+"/usr/bin:/bin")
+	reviewGit(t, root, "init", "-q")
+	reviewGit(t, root, "config", "user.name", "Batuta Test")
+	reviewGit(t, root, "config", "user.email", "batuta@example.test")
+	reviewGit(t, root, "config", "commit.gpgsign", "false")
+	reviewGit(t, root, "add", ".")
+	reviewGit(t, root, "commit", "-qm", "plan")
+	var stdout, stderr bytes.Buffer
+	var exit *ExitError
+	if err := run([]string{"loop", "--workspace", root, "--skills", skills, "demo"}, &stdout, &stderr); !errors.As(err, &exit) || exit.Code != 3 {
+		t.Fatalf("parking run: %v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deliveries, err := store.List()
+	if err != nil || len(deliveries) != 1 {
+		t.Fatalf("deliveries=%v err=%v", deliveries, err)
+	}
+	return root, skills, deliveries[0]
+}
+
+func TestLoopRecoverCommand(t *testing.T) {
+	root, skills, delivery := loopParkedFixture(t, "ok")
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"loop", "--workspace", root, "--skills", skills, "--recover", delivery, "task_1"}, &stdout, &stderr); err != nil {
+		t.Fatalf("recover: %v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	if got := reviewGit(t, root, "show", "HEAD:out/1.txt"); got != "ok" {
+		t.Fatalf("integrated greeting = %q", got)
+	}
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.Read(delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var terminal struct {
+		State string `json:"state"`
+	}
+	last := records[len(records)-1]
+	if err := json.Unmarshal(last.Detail, &terminal); err != nil || last.Kind != loop.KindTerminal || terminal.State != loop.StateDone {
+		t.Fatalf("last record = %s %s, %v", last.Kind, last.Detail, err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"unknown delivery", []string{"--recover", "absent", "task_1"}},
+		{"ended delivery", []string{"--recover", delivery, "task_1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			err := run(append([]string{"loop", "--workspace", root, "--skills", skills}, tc.args...), &stdout, &stderr)
+			var exit *ExitError
+			if err == nil || errors.As(err, &exit) {
+				t.Fatalf("refusal must be a plain error (exit 1), got %v", err)
+			}
+		})
+	}
+}
+
+func TestLoopRecoverCommandGateFailure(t *testing.T) {
+	root, skills, delivery := loopParkedFixture(t, "BROKEN")
+	var stdout, stderr bytes.Buffer
+	err := run([]string{"loop", "--workspace", root, "--skills", skills, "--recover", delivery, "task_1"}, &stdout, &stderr)
+	var exit *ExitError
+	if !errors.As(err, &exit) || exit.Code != 2 {
+		t.Fatalf("recover = %v, want exit 2\nstdout=%s stderr=%s", err, &stdout, &stderr)
+	}
+	if !strings.Contains(stderr.String(), "broken files") {
+		t.Fatalf("stderr = %q, want the failures", &stderr)
+	}
+	store, err := journal.Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := store.Read(delivery)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := records[len(records)-1]
+	if last.Kind != loop.KindGates || !bytes.Contains(last.Detail, []byte(`"source":"conductor"`)) {
+		t.Fatalf("last record = %s %s", last.Kind, last.Detail)
+	}
+	var graph routing.DeliveryGraph
+	if err := json.Unmarshal(last.Graph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Tasks) != 1 || graph.Tasks[0].State != routing.GraphTaskWaitingInput {
+		t.Fatalf("graph tasks = %+v", graph.Tasks)
+	}
+}
+
+func TestLoopReconcileCommand(t *testing.T) {
+	cases := []struct {
+		name   string
+		change func(t *testing.T, root string)
+		status string
+		exit   int
+	}{
+		{"clean", nil, "clean", 0},
+		{"conflict", func(t *testing.T, root string) {
+			if err := os.MkdirAll(filepath.Join(root, "out"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "out/1.txt"), []byte("other\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			reviewGit(t, root, "add", "out/1.txt")
+			reviewGit(t, root, "commit", "-qm", "diverge")
+		}, "conflict", 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, skills, delivery := loopParkedFixture(t, "ok")
+			if tc.change != nil {
+				tc.change(t, root)
+			}
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"loop", "--workspace", root, "--skills", skills, "--reconcile", delivery, "task_1"}, &stdout, &stderr)
+			var exit *ExitError
+			if tc.exit == 0 && err != nil || tc.exit != 0 && (!errors.As(err, &exit) || exit.Code != tc.exit) {
+				t.Fatalf("reconcile = %v, want exit %d", err, tc.exit)
+			}
+			if stderr.Len() != 0 {
+				t.Fatalf("stderr = %q", &stderr)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".batuta/reviews")); !os.IsNotExist(err) {
+				t.Fatalf("reconcile launched review: %v", err)
+			}
+			seen := map[string]bool{}
+			for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+				fields := strings.Split(line, "\t")
+				switch {
+				case fields[0] == "ref" && len(fields) == 3 && strings.HasPrefix(fields[1], "refs/") && fields[2] != "":
+				case fields[0] == "status" && len(fields) == 2 && fields[1] == tc.status:
+				case fields[0] == "file" && len(fields) == 2 && fields[1] == "out/1.txt":
+				case fields[0] == "conflict" && len(fields) == 2 && fields[1] == "out/1.txt" && tc.status == "conflict":
+				default:
+					t.Fatalf("unexpected line %q in %q", line, &stdout)
+				}
+				seen[fields[0]] = true
+			}
+			if !seen["ref"] || !seen["status"] || !seen["file"] || seen["conflict"] != (tc.status == "conflict") {
+				t.Fatalf("stdout = %q", &stdout)
+			}
+		})
+	}
+	t.Run("unknown delivery", func(t *testing.T) {
+		root, skills, _ := loopParkedFixture(t, "ok")
+		var stdout, stderr bytes.Buffer
+		err := run([]string{"loop", "--workspace", root, "--skills", skills, "--reconcile", "absent", "task_1"}, &stdout, &stderr)
+		var exit *ExitError
+		if err == nil || errors.As(err, &exit) || stdout.Len() != 0 {
+			t.Fatalf("reconcile = %v, stdout=%q", err, &stdout)
+		}
+	})
+}
+
+func TestLoopRecoverReconcileFlagConflicts(t *testing.T) {
+	others := [][]string{{"--dry-run"}, {"--resume", "d1"}, {"--answer", "1"}, {"--abandon", "d1"}, {"--roadmap"}, {"--dashboard"}, {"--watch"}, {"--supervise", "d1"}}
+	var cases [][]string
+	for _, mode := range []string{"--recover", "--reconcile"} {
+		for _, other := range others {
+			cases = append(cases, append(append([]string{mode}, other...), "d1", "task_1"))
+		}
+		cases = append(cases, []string{mode}, []string{mode, "d1"}, []string{mode, "d1", "task_1", "extra"})
+	}
+	cases = append(cases, []string{"--recover", "--reconcile", "d1", "task_1"})
+	for _, args := range cases {
+		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			err := run(append([]string{"loop", "--workspace", t.TempDir()}, args...), &stdout, &stderr)
+			var exit *ExitError
+			if err == nil || errors.As(err, &exit) {
+				t.Fatalf("run = %v, want a usage error (exit 1)", err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q", &stdout)
+			}
+		})
+	}
+}
+
+func TestUsageNamesRecoverAndReconcile(t *testing.T) {
+	for _, want := range []string{"--recover <delivery> <task>", "--reconcile <delivery> <task>", "Dry-run, dashboard, reconcile and abandon do not launch reviewers"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage is missing %q", want)
+		}
+	}
+}
+
 func TestLoopSupervisionRelativeSkills(t *testing.T) {
 	for _, mode := range []string{"resume", "standalone", "missing-explicit"} {
 		t.Run(mode, func(t *testing.T) {
@@ -2866,5 +3130,20 @@ func TestReviewExitMixed(t *testing.T) {
 				t.Fatalf("review error = %#v, want exit %d", err, tc.want)
 			}
 		})
+	}
+}
+
+func TestReconcileFieldEscapesControlCharacters(t *testing.T) {
+	for path, want := range map[string]string{
+		"out/1.txt":           "out/1.txt",
+		"caf\u00e9 \"x\".txt": "caf\u00e9 \"x\".txt",
+		"a\tb\nc.txt":         `a\tb\nc.txt`,
+		"next\u0085line":      `next\u0085line`,
+		`back\slash`:          `back\\slash`,
+	} {
+		got := reconcileField(path)
+		if got != want || strings.ContainsAny(got, "\t\n\u0085") {
+			t.Errorf("reconcileField(%q) = %q, want %q", path, got, want)
+		}
 	}
 }

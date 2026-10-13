@@ -130,9 +130,41 @@ settle      integration.GitClient.Preflight in a disposable worktree →
 terminal    done | blocked | waiting_input | canceled | abandoned
 ```
 
+| State | Owner | Written by | Leaves through |
+|---|---|---|---|
+| `pending` | runner | opening the delivery | `AdmitReadyWave` |
+| `preparing` | runner | `AdmitReadyWave`, `BeginWaveAttempts`; `RecordFailureWithPolicy` on a retry; `SettleWave` on a conflict | `AttachWorktree` |
+| `running` | runner | `AttachWorktree`; `RecordAnswer` after `--answer` | `RecordQuestion`, `RecordCandidate`, `RecordFailureWithPolicy` |
+| `waiting_input` | runner | `RecordQuestion` | `RecordAnswer` (human), `RecordRecoveredCandidate` (conductor) |
+| `candidate` | runner or conductor | `RecordCandidate` (runner), `RecordRecoveredCandidate` (conductor, `--recover`) | `SettleWave` |
+| `integrated` | runner | `SettleWave`; `RecordFailureWithPolicy` when the task is already satisfied | final |
+| `blocked` | runner | `RecordFailureWithPolicy`, `RecordQuestion` at the fourth execution, `SettleWave` after repeated conflicts | final |
+
 Exit codes: `0` implementation done and required review cleared · `2` blocked
 or `review_blocked` · `3` waiting for an answer · `4` waiting for an approved
 roadmap plan · `130` canceled · `1` an error before or during the run.
+
+## Recover and reconcile
+
+`batuta loop --recover <delivery> <task>` and `batuta loop --reconcile <delivery> <task>`
+give the conductor two operations for parked attempts.
+
+`--recover` covers `waiting_input` only: the worktree, the branch, the parked
+ref and the ask file survive there and the delivery is still open; a blocked delivery gets `--reconcile` only.
+
+`batuta loop --recover <delivery> <task>` runs the gates of a normal attempt
+in the task's existing worktree. A recovery runs the verifier when a normal
+attempt would and never the claim-evidence judgment. When gates pass, it
+records a candidate with `source: conductor` in the journal, removes the ask
+file, and resumes the delivery to integrate the candidate. When a gate fails,
+the task stays waiting with the failures recorded and printed to stderr; exit
+code is `2` on gate failure, `0` on completed resumption, or `1` on error.
+
+`batuta loop --reconcile <delivery> <task>` prints, read-only, how the task's
+parked ref merges into the delivery branch as TSV lines (`ref`, `status`,
+`file`, `conflict`). A path that holds a backslash or a control character
+is written with Go escapes (`\t`, `\n`, `\\`), so every line keeps its fields.
+It exits `0` on clean merge or `2` on conflict.
 
 ## After the run
 
@@ -565,7 +597,7 @@ and from the scope check, committed by the loop with the plan bookkeeping.
 | `.batuta/runs/<date>-<slug>-task-N.md` (+ `-e<k>.brief.md`, `-e<k>.out.log`) | no | per attempt |
 | `.batuta/runs/supervision/<delivery>.json` | no (`.git/info/exclude`) | durable foreground observer cursor |
 | `.batuta/reviews/supervision/<job-id>/` | no (`.git/info/exclude`) | final review snapshot, reports, job state and progression judgment |
-| `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` |
+| `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` or `--recover` |
 | `WORK.md`, `.batuta/plans/<slug>.md` | yes | generated from the terminal delivery summary and journal, once at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
 | `.batuta/plans/done/<slug>.md` | yes | when all tasks are done; the bookkeeping commit carries the plan move |
 

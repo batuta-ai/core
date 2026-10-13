@@ -15,6 +15,9 @@ batuta dispatch --brief-file <arquivo> --executor <id> --model <id> --cwd <workt
 batuta loop [<plano>]                  executa um plano aprovado
 batuta loop --resume <entrega>         continua uma entrega interrompida
 batuta loop --answer <tarefa> "<texto>" responde uma tarefa aguardando entrada
+batuta loop --recover <entrega> <tarefa> executa verificações em tarefa pausada, gera candidato e continua
+batuta loop --reconcile <entrega> <tarefa> mostra merge e conflitos da ref pausada com o branch
+batuta loop --abandon <entrega>        encerra uma entrega; marca o que foi integrado
 batuta loop --supervise <entrega> --cursor <caminho-absoluto>
                                        observa localmente em primeiro plano, sem consultar modelo
 batuta loop --dashboard [<entrega>]    imprime um retrato TSV da entrega

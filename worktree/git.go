@@ -697,3 +697,136 @@ func firstLine(value string) string {
 	}
 	return value
 }
+
+// MergePreviewResult describes how a ref would merge into a branch. Base is
+// the merge base, Changed the paths the ref changed against it outside
+// `.batuta`, Conflicts the paths a merge would leave conflicted and Merged
+// whether the ref's content is already in the branch.
+type MergePreviewResult struct {
+	Base      string
+	Changed   []string
+	Conflicts []string
+	Merged    bool
+}
+
+// MergePreview reports how ref merges into branch without a worktree, an
+// index or a ref update: `merge-tree --write-tree` only writes loose objects.
+func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (MergePreviewResult, error) {
+	if !branchName.MatchString(branch) || !branchName.MatchString(ref) {
+		return MergePreviewResult{}, errors.New("worktree: invalid merge preview request")
+	}
+	// Both names resolve once, so every command below reads the same two
+	// commits. The qualified name keeps a tag that shares the branch's name
+	// out of it.
+	head, err := p.previewCommit(ctx, "refs/heads/"+branch)
+	if err != nil {
+		return MergePreviewResult{}, err
+	}
+	tip, err := p.previewCommit(ctx, ref)
+	if err != nil {
+		return MergePreviewResult{}, err
+	}
+	base, err := p.run(ctx, p.Root, "merge-base", head, tip)
+	if err != nil {
+		if base.ExitCode == 1 && len(bytes.TrimSpace(base.Stderr)) == 0 {
+			return MergePreviewResult{}, fmt.Errorf("worktree: unrelated histories: %s and %s share no merge base", branch, ref)
+		}
+		return MergePreviewResult{}, err
+	}
+	result := MergePreviewResult{Base: strings.TrimSpace(string(base.Stdout))}
+	diff, err := p.run(ctx, p.Root, "diff", "--name-only", "-z", result.Base, tip, "--")
+	if err != nil {
+		return MergePreviewResult{}, err
+	}
+	result.Changed = make([]string, 0)
+	for _, path := range nulFields(diff.Stdout) {
+		if path != ".batuta" && !strings.HasPrefix(path, ".batuta/") {
+			result.Changed = append(result.Changed, path)
+		}
+	}
+	result.Conflicts = make([]string, 0)
+	merged, err := p.refIntegrated(ctx, head, tip)
+	if err != nil {
+		return MergePreviewResult{}, err
+	}
+	if merged {
+		result.Merged = true
+		return result, nil
+	}
+	tree, err := p.run(ctx, p.Root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", head, tip)
+	// Exit 1 is a conflict report only when git's output arrived whole.
+	if tree.StdoutTruncated || tree.StderrTruncated {
+		return MergePreviewResult{}, err
+	}
+	if err != nil && tree.ExitCode != 1 {
+		if tree.ExitCode == 0 {
+			return MergePreviewResult{}, err
+		}
+		return MergePreviewResult{}, mergePreviewError(tree.ExitCode, string(tree.Stderr))
+	}
+	if fields := nulFields(tree.Stdout); tree.ExitCode == 1 && len(fields) > 1 {
+		result.Conflicts = fields[1:]
+	}
+	return result, nil
+}
+
+// nulFields splits `-z` output, where git writes each path verbatim and ends
+// it with NUL instead of quoting unusual names.
+func nulFields(payload []byte) []string {
+	fields := make([]string, 0)
+	for _, field := range strings.Split(string(payload), "\x00") {
+		if field != "" {
+			fields = append(fields, field)
+		}
+	}
+	return fields
+}
+
+// previewCommit resolves a name to the commit it points at now.
+func (p GitProvider) previewCommit(ctx context.Context, name string) (string, error) {
+	resolved, err := p.run(ctx, p.Root, "rev-parse", "--verify", "--quiet", name+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("worktree: merge preview cannot resolve %s: %w", name, err)
+	}
+	return strings.TrimSpace(string(resolved.Stdout)), nil
+}
+
+// refIntegrated says whether the tip commit's tree appears in the head
+// commit's history, the identity PlanParkedCleanup uses for squashed work,
+// or tip is an ancestor of head.
+func (p GitProvider) refIntegrated(ctx context.Context, head, tip string) (bool, error) {
+	ancestor, err := p.IsAncestor(ctx, tip, head)
+	if err != nil || ancestor {
+		return ancestor, err
+	}
+	tree, err := p.run(ctx, p.Root, "rev-parse", "--verify", tip+"^{tree}")
+	if err != nil {
+		return false, err
+	}
+	want := strings.TrimSpace(string(tree.Stdout))
+	// Pages keep a long history inside the runner's output bound.
+	const historyPageSize = 50_000
+	for skip := 0; ; skip += historyPageSize {
+		history, err := p.run(ctx, p.Root, "log", "--format=%T", "--max-count="+strconv.Itoa(historyPageSize), "--skip="+strconv.Itoa(skip), head, "--")
+		if err != nil {
+			return false, err
+		}
+		trees := nonempty(string(history.Stdout))
+		if slices.Contains(trees, want) {
+			return true, nil
+		}
+		if len(trees) < historyPageSize {
+			return false, nil
+		}
+	}
+}
+
+// mergePreviewError explains a `git merge-tree --write-tree` failure that is
+// not a conflict report (exit 1); older git lacks the flag and exits 129.
+func mergePreviewError(exitCode int, stderr string) error {
+	tail := strings.TrimSpace(stderr)
+	if len(tail) > 400 {
+		tail = tail[len(tail)-400:]
+	}
+	return fmt.Errorf("worktree: git merge-tree exited %d; merge preview needs git 2.38 or newer: %s", exitCode, tail)
+}

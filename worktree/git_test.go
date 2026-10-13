@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -666,4 +668,244 @@ func TestParkWithUnmergedIndexStreamsBeyondOutputLimit(t *testing.T) {
 	if additions != count || removals != count {
 		t.Fatalf("entries added = %d, removed = %d, want %d", additions, removals, count)
 	}
+}
+
+// previewRepo builds main with a.txt/b.txt and a "feature" branch that edits
+// b.txt, c.txt and .batuta/plan.md. Main then moves on with its own edit of
+// b.txt when conflict is true, of a.txt otherwise.
+func previewRepo(t *testing.T, conflict bool) GitProvider {
+	t.Helper()
+	provider, _ := initRepo(t)
+	write := func(name, content string) {
+		t.Helper()
+		path := filepath.Join(provider.Root, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("a.txt", "a\n")
+	write("b.txt", "b\n")
+	previewGit(t, provider, "add", "a.txt", "b.txt")
+	previewGit(t, provider, "commit", "-q", "-m", "chore: base files")
+	previewGit(t, provider, "checkout", "-q", "-b", "feature")
+	write("b.txt", "feature\n")
+	write("c.txt", "c\n")
+	write(".batuta/plan.md", "plan\n")
+	previewGit(t, provider, "add", "-A")
+	previewGit(t, provider, "commit", "-q", "-m", "feat: feature")
+	previewGit(t, provider, "checkout", "-q", "main")
+	if conflict {
+		write("b.txt", "main\n")
+		previewGit(t, provider, "add", "b.txt")
+	} else {
+		write("a.txt", "main\n")
+		previewGit(t, provider, "add", "a.txt")
+	}
+	previewGit(t, provider, "commit", "-q", "-m", "feat: main moves on")
+	return provider
+}
+
+func previewGit(t *testing.T, provider GitProvider, args ...string) string {
+	t.Helper()
+	out, err := exec.Command(provider.Git, append([]string{"-C", provider.Root}, args...)...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+func previewState(t *testing.T, provider GitProvider) string {
+	t.Helper()
+	var state strings.Builder
+	for _, args := range [][]string{
+		[]string{"status", "--porcelain"},
+		[]string{"worktree", "list", "--porcelain"},
+		[]string{"rev-parse", "refs/heads/main", "refs/heads/feature"},
+		[]string{"ls-files", "--stage"},
+	} {
+		state.WriteString(previewGit(t, provider, args...))
+	}
+	return state.String()
+}
+
+func TestMergePreviewReport(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		conflict      bool
+		wantConflicts []string
+	}{
+		{name: "clean merge", wantConflicts: []string{}},
+		{name: "conflicting merge", conflict: true, wantConflicts: []string{"b.txt"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			provider := previewRepo(t, tt.conflict)
+			got, err := provider.MergePreview(context.Background(), "main", "feature")
+			if err != nil {
+				t.Fatalf("MergePreview() error = %v", err)
+			}
+			if want := []string{"b.txt", "c.txt"}; !slices.Equal(got.Changed, want) {
+				t.Errorf("Changed = %v, want %v (.batuta excluded)", got.Changed, want)
+			}
+			if !slices.Equal(got.Conflicts, tt.wantConflicts) {
+				t.Errorf("Conflicts = %v, want %v", got.Conflicts, tt.wantConflicts)
+			}
+			if got.Merged {
+				t.Error("Merged = true for an unmerged ref")
+			}
+			if !gitSHA.MatchString(got.Base) {
+				t.Errorf("Base = %q, want a commit SHA", got.Base)
+			}
+		})
+	}
+}
+
+func TestMergePreviewLeavesWorkspaceUntouched(t *testing.T) {
+	t.Parallel()
+	for _, conflict := range []bool{false, true} {
+		t.Run(fmt.Sprintf("conflict=%v", conflict), func(t *testing.T) {
+			t.Parallel()
+			provider := previewRepo(t, conflict)
+			before := previewState(t, provider)
+			if _, err := provider.MergePreview(context.Background(), "main", "feature"); err != nil {
+				t.Fatalf("MergePreview() error = %v", err)
+			}
+			if after := previewState(t, provider); after != before {
+				t.Errorf("workspace changed:\nbefore:\n%s\nafter:\n%s", before, after)
+			}
+		})
+	}
+}
+
+func TestMergePreviewAlreadyMerged(t *testing.T) {
+	t.Parallel()
+	provider := previewRepo(t, false)
+	// Squashing feature onto its own base reproduces its tree without its ancestry.
+	previewGit(t, provider, "checkout", "-q", "-b", "squashed", "feature~1")
+	previewGit(t, provider, "merge", "-q", "--squash", "feature")
+	previewGit(t, provider, "commit", "-q", "-m", "feat: squash feature")
+	// A later commit moves the matching tree off the branch tip.
+	if err := os.WriteFile(filepath.Join(provider.Root, "d.txt"), []byte("d\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previewGit(t, provider, "add", "d.txt")
+	previewGit(t, provider, "commit", "-q", "-m", "feat: squashed moves on")
+	previewGit(t, provider, "checkout", "-q", "main")
+	previewGit(t, provider, "branch", "-q", "ancestor", "main~1")
+
+	tests := []struct{ name, branch, ref string }{
+		{name: "tree in branch history", branch: "squashed", ref: "feature"},
+		{name: "ancestor of branch", branch: "main", ref: "ancestor"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := provider.MergePreview(context.Background(), tt.branch, tt.ref)
+			if err != nil {
+				t.Fatalf("MergePreview() error = %v", err)
+			}
+			if !got.Merged {
+				t.Errorf("Merged = false for %s into %s, want true", tt.ref, tt.branch)
+			}
+			if len(got.Conflicts) != 0 {
+				t.Errorf("Conflicts = %v, want none", got.Conflicts)
+			}
+		})
+	}
+}
+
+func TestMergePreviewUnusualPaths(t *testing.T) {
+	t.Parallel()
+	provider, _ := initRepo(t)
+	// Windows refuses a tab in a file name; the non-ASCII name still needs -z.
+	name := "caf\u00e9 tab.txt"
+	if runtime.GOOS != "windows" {
+		name = "caf\u00e9 \ttab.txt"
+	}
+	write := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(provider.Root, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		previewGit(t, provider, "add", "-A")
+	}
+	write("base\n")
+	previewGit(t, provider, "commit", "-q", "-m", "chore: base file")
+	previewGit(t, provider, "checkout", "-q", "-b", "feature")
+	write("feature\n")
+	previewGit(t, provider, "commit", "-q", "-m", "feat: feature")
+	previewGit(t, provider, "checkout", "-q", "main")
+	write("main\n")
+	previewGit(t, provider, "commit", "-q", "-m", "feat: main moves on")
+	got, err := provider.MergePreview(context.Background(), "main", "feature")
+	if err != nil {
+		t.Fatalf("MergePreview() error = %v", err)
+	}
+	if want := []string{name}; !slices.Equal(got.Changed, want) || !slices.Equal(got.Conflicts, want) {
+		t.Fatalf("Changed = %q, Conflicts = %q, want %q verbatim in both", got.Changed, got.Conflicts, want)
+	}
+}
+
+func TestMergePreviewIgnoresTagNamedLikeBranch(t *testing.T) {
+	t.Parallel()
+	provider := previewRepo(t, true)
+	// A tag named main on the feature commit makes the bare name ambiguous.
+	previewGit(t, provider, "tag", "main", "feature")
+	got, err := provider.MergePreview(context.Background(), "main", "feature")
+	if err != nil {
+		t.Fatalf("MergePreview() error = %v", err)
+	}
+	if got.Merged || !slices.Equal(got.Conflicts, []string{"b.txt"}) {
+		t.Fatalf("MergePreview() = %+v, want the branch's conflict on b.txt, not the tag's", got)
+	}
+}
+
+// truncatingRunner marks merge-tree output as cut at the runner's bound.
+type truncatingRunner struct{ publication.CommandRunner }
+
+func (r truncatingRunner) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	result, err := r.CommandRunner.Run(ctx, command)
+	if len(command.Args) > 0 && command.Args[0] == "merge-tree" {
+		result.StdoutTruncated = true
+	}
+	return result, err
+}
+
+func TestMergePreviewRejectsTruncatedConflictReport(t *testing.T) {
+	t.Parallel()
+	provider := previewRepo(t, true)
+	provider.Runner = truncatingRunner{provider.Runner}
+	got, err := provider.MergePreview(context.Background(), "main", "feature")
+	if err == nil || !strings.Contains(err.Error(), "exceeded bound") {
+		t.Fatalf("MergePreview() = %+v, %v, want the output bound error", got, err)
+	}
+}
+
+func TestMergePreviewErrors(t *testing.T) {
+	t.Parallel()
+	t.Run("unrelated histories", func(t *testing.T) {
+		t.Parallel()
+		provider := previewRepo(t, false)
+		previewGit(t, provider, "checkout", "-q", "--orphan", "orphan")
+		previewGit(t, provider, "commit", "-q", "--allow-empty", "-m", "chore: orphan root")
+		previewGit(t, provider, "checkout", "-q", "main")
+		_, err := provider.MergePreview(context.Background(), "main", "orphan")
+		if err == nil || !strings.Contains(err.Error(), "unrelated histories") {
+			t.Fatalf("MergePreview() error = %v, want unrelated histories", err)
+		}
+		if !strings.Contains(err.Error(), "main") || !strings.Contains(err.Error(), "orphan") {
+			t.Errorf("error %q must name both refs", err)
+		}
+	})
+	t.Run("merge-tree failure", func(t *testing.T) {
+		t.Parallel()
+		err := mergePreviewError(129, "error: unknown option write-tree\nusage: git merge-tree")
+		if err == nil || !strings.Contains(err.Error(), "git 2.38") || !strings.Contains(err.Error(), "usage: git merge-tree") {
+			t.Fatalf("mergePreviewError() = %v, want git 2.38 and the stderr tail", err)
+		}
+	})
 }

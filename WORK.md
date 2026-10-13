@@ -1,5 +1,14 @@
 # WORK — core
 
+## Current status — 2026-10-13: loop --recover and --reconcile on branch feat/loop-recover, core#168
+- [x] core#165 (#161: loop briefs carry the profile's `## Conventions`) merged, beta.52. Host batuta#111 pins beta.52 → v0.7.1.
+- [x] skills#75 (`check.sh`) fixed by skills#76 → v0.15.1. Host batuta#113 vendors skills v0.15.1 → v0.7.2. This machine still runs core beta.51 and plugin 0.7.0.
+- [x] `batuta loop --recover <delivery> <task>` and `--reconcile <delivery> [task]` (Tempo retro 4.2 and 4.3): plan `loop-recover`, judged by `batuta council` before approval, delivered by the loop (delivery `loop-recover-20261012-232538`, 10 tasks), then three review rounds with 17 findings, all fixed (`fbfeeb9`, `6f00f81`, `52e8c30`). The last fix commit had no review of its own.
+- [ ] The supervision review of the delivery (`4b2f0ec8…`, bound to `85a0a0e`) still reads REWORK with no judgment recorded. The maintainer decides whether to record one.
+- [ ] Open issues from this work: core#167 (warn when the profile's `## Conventions` exceeds the brief ceiling). Two tests fail now and then and pass on a rerun: `TestACPBackendHardTimeoutReapsUncooperativeWorker/cancelled` (executor) and `TestWatchProgramPager` (loop).
+- [ ] Not covered by `--recover`: a delivery already `blocked`. It needs its own plan.
+- [ ] Next, in order: release and host pin of this work; the rest of the Tempo backlog (`.batuta` isolation and cleanup, grants, skills items, `trail --metrics`).
+
 ## Current status — 2026-10-10: council and review contract shipped; paused
 - [x] #161: loop briefs carry the profile's `## Conventions` under `### From .batuta/profile.md`, before the template sections (plan `loop-brief-conventions`, branch `feat/loop-brief-conventions`, interactive cycle).
 - [x] core#157 (review contract, capability preflight, proof gate) merged, beta.50; core#163 (`batuta council`, plus the data-race fix in `hasExternalFallback`) merged, beta.51.
@@ -446,6 +455,16 @@
 - [x] an empty chairman answer is a council failure → claude (sonnet), commit 4b763e2fd1b2 (trail: .batuta/runs/2026-10-09-council-fixes-4-task-2.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
 - [x] the JSON secret-field rule matches secret-bearing key names only → claude (sonnet), 1 retry, commit a66e80161085 (trail: .batuta/runs/2026-10-09-council-fixes-4-task-3.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
 - [x] an incomplete council records INCOMPLETE in its artefacts → claude (sonnet), commit 732b18537f3a (trail: .batuta/runs/2026-10-09-council-fixes-4-task-4.md, delivery council-fixes-4-20261009-024307, plan council-fixes-4, 2026-10-09)
+- [x] Graph records a candidate recovered from a waiting attempt → codex (gpt-6-sol), commit b0b77b9e9f8e (trail: .batuta/runs/2026-10-12-loop-recover-task-1.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] Worktree provider previews a merge without touching the workspace → claude (sonnet), commit 87dde5e868f3 (trail: .batuta/runs/2026-10-12-loop-recover-task-2.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] Attempt gates and the candidate commit move into helpers that name their source → codex (gpt-6-sol), 1 retry, commit d2b1b22c6446 (trail: .batuta/runs/2026-10-12-loop-recover-task-3.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] Loop recovers a waiting task through the attempt's gates → codex (gpt-6-sol), commit a5a16fb89632 (trail: .batuta/runs/2026-10-12-loop-recover-task-4.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] Recovery runs the verifier of the parked attempt → codex (gpt-6-sol), commit 8991d199f7ee (trail: .batuta/runs/2026-10-12-loop-recover-task-5.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] Recovery is idempotent and refuses a graph with live attempts → claude (sonnet), 1 retry, commit d769fd6b8fde (trail: .batuta/runs/2026-10-12-loop-recover-task-6.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] Judge replay reads a recovered attempt as its final outcome → claude (sonnet), commit d68eaec747e6 (trail: .batuta/runs/2026-10-12-loop-recover-task-7.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] Loop reconciles a parked ref as a read-only report → claude (sonnet), 1 retry, commit 4d96bcb44414 (trail: .batuta/runs/2026-10-12-loop-recover-task-8.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] CLI exposes --recover and --reconcile → claude (sonnet), commit a9f7c65f9753 (trail: .batuta/runs/2026-10-12-loop-recover-task-9.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
+- [x] Documentation of the two operations and the state owners → agy (gemini-3.8-flash-low), commit 9e693e4f4e92 (trail: .batuta/runs/2026-10-12-loop-recover-task-10.md, delivery loop-recover-20261012-232538, plan loop-recover, 2026-10-13)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

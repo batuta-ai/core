@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -21,9 +22,194 @@ import (
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/executor/acp"
 	"github.com/batuta-ai/core/gates"
+	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
 )
+
+func TestAttemptJournalDetailsUnchanged(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, content string
+		want          map[journal.Kind]string
+	}{
+		{
+			name: "passing", content: "ok\n",
+			want: map[journal.Kind]string{
+				KindFinished:  `{"after":{"head_sha":"<hash>","porcelain_sha256":"sha256:<hash>","content_sha256":"sha256:<hash>"},"base_head_sha":"<hash>","before":{"head_sha":"<hash>","porcelain_sha256":"sha256:<hash>","content_sha256":"sha256:<hash>"},"duration_ms":"<duration>","execution":1,"exit_code":0,"finished":true,"question":"","rate_limited":false,"stderr_bytes":0,"stdout_bytes":5,"timed_out":false,"tree_changed":true,"usage_unknown":true}`,
+				KindGates:     `{"task_id":"task_1","execution":1,"finished":{"name":"finished","pass":true,"signal":"exit 0","detail":"done"},"tree":{"name":"tree","pass":true,"signal":"the worktree differs from the attempt's base"},"tests":{"name":"tests","pass":true,"signal":"` + "`sh ./tests.sh`" + ` passed","detail":"all green"},"scope":{"name":"scope","pass":true,"signal":"within Scope","paths":["out/1.txt"]},"proofs":[{"name":"proof 1","pass":true,"signal":"greeting exists — ` + "`test -f out/1.txt`" + ` passed"}],"passed":true}`,
+				KindCandidate: `{"commit":"<hash>","evidence":{"task_id":"task_1","slug":"greetings","worktree_root":"<root>/.batuta/worktrees/greetings-task-1-e1","repository_identity":"sha256:<hash>","branch":"batuta/greetings/task-1-e1","base_sha":"<hash>","commit_sha":"<hash>","tree_sha":"<hash>","verification_digest":"sha256:<hash>","owned_tracking_paths":[],"tracking":[]},"execution":1,"message":"feat: add greeting one\n\nPlan greetings, task_1. Delivered by batuta loop.\n","verification_digest":"sha256:<hash>"}`,
+			},
+		},
+		{
+			name: "failing", content: "BROKEN\n",
+			want: map[journal.Kind]string{
+				KindFinished: `{"after":{"head_sha":"<hash>","porcelain_sha256":"sha256:<hash>","content_sha256":"sha256:<hash>"},"base_head_sha":"<hash>","before":{"head_sha":"<hash>","porcelain_sha256":"sha256:<hash>","content_sha256":"sha256:<hash>"},"duration_ms":"<duration>","execution":1,"exit_code":0,"finished":true,"question":"","rate_limited":false,"stderr_bytes":0,"stdout_bytes":5,"timed_out":false,"tree_changed":true,"usage_unknown":true}`,
+				KindGates:    `{"task_id":"task_1","execution":1,"finished":{"name":"finished","pass":true,"signal":"exit 0","detail":"done"},"tree":{"name":"tree","pass":true,"signal":"the worktree differs from the attempt's base"},"tests":{"name":"tests","pass":false,"signal":"` + "`sh ./tests.sh`" + ` exited 1","detail":"broken files"},"scope":{"name":"scope","pass":true,"signal":"within Scope","paths":["out/1.txt"]},"proofs":[{"name":"proof 1","pass":true,"signal":"greeting exists — ` + "`test -f out/1.txt`" + ` passed"}],"passed":false,"verifier_skipped":"tests"}`,
+				KindFailure:  `{"blocked":false,"blocker":"tests_failed","execution":1,"feedback":["gate tests: ` + "`sh ./tests.sh`" + ` exited 1\n    broken files"],"next_execution":2,"next_runtime":{"provider":"codex","model":"fake-low","reasoning":"low"},"reuse_worktree":true,"same_runtime":true,"satisfied":false,"status":"failed"}`,
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t)
+			telemetryPlan(t, f)
+			backend := scriptFunc(func(e executor.Execution) (executor.Result, error) {
+				if err := os.MkdirAll(filepath.Join(e.Request.Cwd, "out"), 0o755); err != nil {
+					return executor.Result{}, err
+				}
+				if err := os.WriteFile(filepath.Join(e.Request.Cwd, "out", "1.txt"), []byte(tc.content), 0o644); err != nil {
+					return executor.Result{}, err
+				}
+				return executor.Result{ExitCode: 0, Finished: true, Stdout: []byte("done\n")}, nil
+			})
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("default", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			r.backend = backend
+			if err := r.open(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.graph.AdmitReadyWave(routing.ReadyWaveInput{
+				IntegrationHeadSHA: f.base, RemainingSlots: 1, ReachableCommits: map[string]bool{f.base: true},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := r.runPreparingWaves(context.Background()); err != nil {
+				t.Fatalf("runPreparingWaves() error = %v\n%s", err, &out)
+			}
+			seen := map[journal.Kind]int{}
+			for _, record := range readJournal(t, f, r.delivery) {
+				if strings.Contains(string(record.Detail), `"source":`) {
+					t.Fatalf("%s gained source: %s", record.Kind, record.Detail)
+				}
+				if record.TaskID != "task_1" {
+					continue
+				}
+				want, expected := tc.want[record.Kind]
+				if !expected {
+					continue
+				}
+				var detail map[string]any
+				if err := json.Unmarshal(record.Detail, &detail); err != nil {
+					t.Fatal(err)
+				}
+				if detail["execution"] != float64(1) {
+					continue
+				}
+				seen[record.Kind]++
+				got := strings.ReplaceAll(string(record.Detail), f.root, "<root>")
+				got = regexp.MustCompile(`[a-f0-9]{40,64}`).ReplaceAllString(got, "<hash>")
+				got = regexp.MustCompile(`"duration_ms":[0-9]+`).ReplaceAllString(got, `"duration_ms":"<duration>"`)
+				if got != want {
+					t.Errorf("%s detail:\n got %s\nwant %s", record.Kind, got, want)
+				}
+			}
+			for kind := range tc.want {
+				if seen[kind] != 1 {
+					t.Errorf("%s records for execution 1 = %d, want 1", kind, seen[kind])
+				}
+			}
+		})
+	}
+}
+
+func TestAttemptGatesHelper(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, content string
+		wantPass      bool
+	}{
+		{"passing", "ok\n", true},
+		{"tests reject", "BROKEN\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t)
+			telemetryPlan(t, f)
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("default", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			name, branch := r.worktreeName("task_1", 1), r.branchName("task_1", 1)
+			root, err := r.addWorktree(context.Background(), name, branch, f.base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ac := attemptContext{
+				taskID: "task_1", execution: 1, base: f.base, plan: r.plan.Tasks[0],
+				worktree: attemptWorktree{Name: name, Branch: branch, Root: root},
+			}
+			if err := os.MkdirAll(filepath.Join(root, "out"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(root, "out", "1.txt"), []byte(tc.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			report, paths, skipped, err := r.attemptGates(context.Background(), &ac,
+				executor.Result{ExitCode: 0, Finished: true}, true, gates.ParseCriteria(ac.plan.Accept), "done")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if report.Passed != tc.wantPass || report.Tests.Pass != tc.wantPass || !report.Scope.Pass ||
+				len(paths) != 1 || paths[0] != "out/1.txt" {
+				t.Fatalf("attemptGates() = %+v, paths %v", report, paths)
+			}
+			if tc.wantPass {
+				if skipped != "" {
+					t.Fatalf("passing attempt skipped verifier: %q", skipped)
+				}
+				sha, digest, message, evidence, canonicalErr, squashErr, validateErr := r.candidateCommit(context.Background(), ac, report)
+				if canonicalErr != nil || squashErr != nil || validateErr != nil || sha == "" || digest == "" || message == "" || evidence.CommitSHA != sha {
+					t.Fatalf("candidateCommit() = %q, %q, %q, %+v, %v, %v, %v", sha, digest, message, evidence, canonicalErr, squashErr, validateErr)
+				}
+			} else if skipped != "tests" {
+				t.Fatalf("failing attempt verifier skip = %q, want tests", skipped)
+			}
+		})
+	}
+}
+
+func TestGatesReportDetailSourceOutsideDigest(t *testing.T) {
+	t.Parallel()
+	report := gates.Report{
+		TaskID: "task_1", Execution: 1,
+		Finished: gates.Verdict{Name: "finished", Pass: true, Signal: "exit 0"},
+		Tree:     gates.Verdict{Name: "tree", Pass: true},
+		Tests:    gates.Verdict{Name: "tests", Pass: true},
+		Scope:    gates.Verdict{Name: "scope", Pass: true},
+		Passed:   true,
+	}
+	without, err := json.Marshal(gatesReportDetail{Report: report})
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, err := json.Marshal(gatesReportDetail{Report: report, Source: "conductor"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(without), `"source":`) || !strings.Contains(string(with), `"source":"conductor"`) {
+		t.Fatalf("source field: without %s, with %s", without, with)
+	}
+	var decoded gatesReportDetail
+	if err := json.Unmarshal(with, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	plainPayload, plainDigest, err := report.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPayload, withDigest, err := decoded.Report.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(plainPayload, withPayload) || plainDigest != withDigest || bytes.Contains(withPayload, []byte(`"source"`)) {
+		t.Fatalf("canonical payload/digest changed: %s %s vs %s %s", plainPayload, plainDigest, withPayload, withDigest)
+	}
+}
 
 type unavailableBackend struct{}
 
