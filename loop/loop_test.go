@@ -493,6 +493,114 @@ func TestLoopWorktreesInCacheHome(t *testing.T) {
 	}
 }
 
+func setWorktreeHome(t *testing.T, f fixture, home string) {
+	t.Helper()
+	path := filepath.Join(f.root, ".batuta", "profile.md")
+	profile, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(profile, []byte("Worktree-home: "+home+"\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "update-index", "--assume-unchanged", ".batuta/profile.md")
+}
+
+func TestResumeKeepsJournaledWorktree(t *testing.T) {
+	isolateLoopCache(t)
+	f, opts, _, root, _ := parkedRecoverySingle(t, "continuation-ask-untracked", "low")
+	setWorktreeHome(t, f, "cache")
+	if _, err := Answer(f.root, "1", "keep it"); err != nil {
+		t.Fatal(err)
+	}
+	opts.KeepWorktrees = true
+	r, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	if got := r.worktrees[attemptKey("task_1", 2)].Root; got != root {
+		t.Fatalf("resumed worktree = %q, want journaled %q", got, root)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("journaled worktree: %v", err)
+	}
+}
+
+func TestResumeRecreatesAtJournaledPath(t *testing.T) {
+	isolateLoopCache(t)
+	f, opts, _, root, _ := parkedRecoverySingle(t, "ask", "low")
+	f.run(t, "worktree", "remove", "--force", root)
+	setWorktreeHome(t, f, "cache")
+	if _, err := Answer(f.root, "1", "keep it"); err != nil {
+		t.Fatal(err)
+	}
+	opts.KeepWorktrees = true
+	r, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	if got := r.worktrees[attemptKey("task_1", 2)].Root; got != root {
+		t.Fatalf("recreated worktree = %q, want journaled %q", got, root)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tests.sh")); err != nil {
+		t.Fatalf("recreated worktree checkout: %v", err)
+	}
+}
+
+func isolateLoopCache(t *testing.T) {
+	t.Helper()
+	cache := tempDir(t)
+	t.Setenv("HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+}
+
+func configureCacheHome(t *testing.T, f fixture) {
+	t.Helper()
+	setWorktreeHome(t, f, "cache")
+	f.run(t, "update-index", "--no-assume-unchanged", ".batuta/profile.md")
+	f.run(t, "add", ".batuta/profile.md")
+	f.run(t, "commit", "-q", "-m", "test: configure cache worktree home")
+}
+
+func TestAbandonCacheHome(t *testing.T) {
+	isolateLoopCache(t)
+	f := setup(t)
+	configureCacheHome(t, f)
+	f, opts, _, root, _ := parkedRecoveryFixture(t, f, "continuation-ask-untracked")
+	home, err := worktree.CacheHome(f.root)
+	if err != nil || filepath.Dir(root) != home {
+		t.Fatalf("worktree root = %q, cache home = %q, %v", root, home, err)
+	}
+	if state, err := Abandon(context.Background(), opts); err != nil || state != StateAbandoned {
+		t.Fatalf("Abandon() = %s, %v", state, err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("cache worktree remains: %v", err)
+	}
+}
+
+func TestAbandonAfterProfileChange(t *testing.T) {
+	isolateLoopCache(t)
+	f, opts, _, root, _ := parkedRecoverySingle(t, "continuation-ask-untracked", "low")
+	if filepath.Dir(root) != worktree.RepositoryHome(f.root) {
+		t.Fatalf("original root = %q, want repository home", root)
+	}
+	setWorktreeHome(t, f, "cache")
+	if state, err := Abandon(context.Background(), opts); err != nil || state != StateAbandoned {
+		t.Fatalf("Abandon() = %s, %v", state, err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("repository worktree remains: %v", err)
+	}
+}
+
 func TestPreviewWorktreeHome(t *testing.T) {
 	for _, tc := range []struct {
 		name string

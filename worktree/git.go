@@ -206,10 +206,32 @@ func (p GitProvider) EnsureExcluded(ctx context.Context) error {
 // at base. A leftover worktree or branch of the same name from an aborted run
 // is removed first.
 func (p GitProvider) Add(ctx context.Context, name, branch, baseSHA string) (string, error) {
+	return p.addAt(ctx, p.Path(name), branch, baseSHA)
+}
+
+// AddAt creates a worktree at path when it is a direct child of an allowed home.
+func (p GitProvider) AddAt(ctx context.Context, path, branch, baseSHA string, homes []string) (string, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", errors.New("worktree: invalid worktree path")
+	}
+	allowed := false
+	for _, home := range homes {
+		if filepath.IsAbs(home) && filepath.Clean(home) == home && filepath.Dir(path) == home {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "", errors.New("worktree: worktree path is outside allowed homes")
+	}
+	return p.addAt(ctx, path, branch, baseSHA)
+}
+
+func (p GitProvider) addAt(ctx context.Context, path, branch, baseSHA string) (string, error) {
+	name := filepath.Base(path)
 	if !safeName(name) || !branchName.MatchString(branch) || !gitSHA.MatchString(baseSHA) {
 		return "", errors.New("worktree: invalid worktree name, branch or base")
 	}
-	path := p.Path(name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", fmt.Errorf("worktree: create %s: %w", filepath.Dir(path), err)
 	}

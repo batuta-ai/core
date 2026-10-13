@@ -965,6 +965,50 @@ func TestWorktreePath(t *testing.T) {
 	}
 }
 
+func TestWorktreeAddAt(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	cache := filepath.Join(tempDir(t), "cache", "worktrees")
+	homes := []string{RepositoryHome(p.Root), cache}
+	for _, tc := range []struct {
+		name string
+		home string
+	}{
+		{name: "repository", home: homes[0]},
+		{name: "cache", home: homes[1]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(tc.home, "demo-task-1-"+tc.name)
+			branch := "batuta/demo/task-1-" + tc.name
+			got, err := p.AddAt(ctx, path, branch, base, homes)
+			if err != nil || got != path {
+				t.Fatalf("AddAt() = %q, %v; want %q", got, err, path)
+			}
+			if info, err := os.Stat(filepath.Join(got, "README.md")); err != nil || info.IsDir() {
+				t.Fatalf("worktree checkout at %q: %v", got, err)
+			}
+			if err := p.Remove(ctx, got, branch); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "relative", path: filepath.Join("relative", "demo-task-2")},
+		{name: "unclean", path: homes[0] + string(filepath.Separator) + "nested" + string(filepath.Separator) + ".." + string(filepath.Separator) + "demo-task-2"},
+		{name: "outside", path: filepath.Join(tempDir(t), "demo-task-2")},
+		{name: "nested", path: filepath.Join(homes[0], "nested", "demo-task-2")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := p.AddAt(ctx, tc.path, "batuta/demo/task-2", base, homes); err == nil {
+				t.Fatalf("AddAt(%q) = %q, want error", tc.path, got)
+			}
+		})
+	}
+}
+
 func TestWorktreeRepositoryHome(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(string(filepath.Separator), "work", "project")

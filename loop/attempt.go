@@ -19,6 +19,7 @@ import (
 	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
+	"github.com/batuta-ai/core/worktree"
 )
 
 // Blocker codes the loop records on a failed attempt.
@@ -680,6 +681,9 @@ func (r *Runner) ensureWorktree(ctx context.Context, ac *attemptContext, attempt
 		r.worktrees[attemptKey(ac.taskID, ac.execution)] = existing
 	}
 	r.mu.Unlock()
+	if attempt.WorktreeRoot != "" {
+		existing.Root = attempt.WorktreeRoot
+	}
 	if known {
 		if _, err := os.Stat(existing.Root); err == nil {
 			existing.Fresh = false
@@ -689,6 +693,24 @@ func (r *Runner) ensureWorktree(ctx context.Context, ac *attemptContext, attempt
 			}
 			return nil
 		}
+	}
+	if attempt.WorktreeRoot != "" {
+		if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, existing); err != nil {
+			return err
+		}
+		cacheHome, err := worktree.CacheHome(r.root)
+		if err != nil {
+			return err
+		}
+		r.worktreeMu.Lock()
+		root, err := r.git.AddAt(ctx, existing.Root, existing.Branch, ac.base, []string{worktree.RepositoryHome(r.root), cacheHome})
+		r.worktreeMu.Unlock()
+		if err != nil {
+			return fmt.Errorf("loop: %w", err)
+		}
+		existing.Root, existing.Fresh = root, true
+		ac.worktree = existing
+		return r.attach(ac, existing)
 	}
 	name, branch := r.worktreeName(ac.taskID, ac.execution), r.branchName(ac.taskID, ac.execution)
 	if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, attemptWorktree{
