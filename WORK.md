@@ -1,5 +1,14 @@
 # WORK — core
 
+## Current status — 2026-10-13: loop --recover and --reconcile on branch feat/loop-recover, core#168
+- [x] core#165 (#161: loop briefs carry the profile's `## Conventions`) merged, beta.52. Host batuta#111 pins beta.52 → v0.7.1.
+- [x] skills#75 (`check.sh`) fixed by skills#76 → v0.15.1. Host batuta#113 vendors skills v0.15.1 → v0.7.2. This machine still runs core beta.51 and plugin 0.7.0.
+- [x] `batuta loop --recover <delivery> <task>` and `--reconcile <delivery> [task]` (Tempo retro 4.2 and 4.3): plan `loop-recover`, judged by `batuta council` before approval, delivered by the loop (delivery `loop-recover-20261012-232538`, 10 tasks), then three review rounds with 17 findings, all fixed (`fbfeeb9`, `6f00f81`, `52e8c30`). The last fix commit had no review of its own.
+- [ ] The supervision review of the delivery (`4b2f0ec8…`, bound to `85a0a0e`) still reads REWORK with no judgment recorded. The maintainer decides whether to record one.
+- [ ] Open issues from this work: core#167 (warn when the profile's `## Conventions` exceeds the brief ceiling). Two tests fail now and then and pass on a rerun: `TestACPBackendHardTimeoutReapsUncooperativeWorker/cancelled` (executor) and `TestWatchProgramPager` (loop).
+- [ ] Not covered by `--recover`: a delivery already `blocked`. It needs its own plan.
+- [ ] Next, in order: release and host pin of this work; the rest of the Tempo backlog (`.batuta` isolation and cleanup, grants, skills items, `trail --metrics`).
+
 ## Current status — 2026-10-10: council and review contract shipped; paused
 - [x] #161: loop briefs carry the profile's `## Conventions` under `### From .batuta/profile.md`, before the template sections (plan `loop-brief-conventions`, branch `feat/loop-brief-conventions`, interactive cycle).
 - [x] core#157 (review contract, capability preflight, proof gate) merged, beta.50; core#163 (`batuta council`, plus the data-race fix in `hasExternalFallback`) merged, beta.51.
