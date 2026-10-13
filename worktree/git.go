@@ -9,6 +9,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -41,11 +43,49 @@ var (
 	branchName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 )
 
-// GitProvider runs git against one repository root.
+// GitProvider runs git against one repository root. Home is the directory
+// that holds the task worktrees; empty means RepositoryHome(Root).
 type GitProvider struct {
 	Git    string
 	Runner publication.CommandRunner
 	Root   string
+	Home   string
+}
+
+// RepositoryHome is the worktree home inside the repository at root.
+func RepositoryHome(root string) string {
+	return filepath.Join(root, filepath.FromSlash(Dir))
+}
+
+// CacheHome is the worktree home under the user cache directory for the
+// repository at root: <cache>/batuta/worktrees/<digest>, the digest being the
+// first 16 hex characters of the SHA-256 of the canonical root path. The path
+// is not case-folded, so spellings that differ only in case may map to two
+// homes on a case-insensitive file system.
+func CacheHome(root string) (string, error) {
+	canonical, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("worktree: resolve root: %w", err)
+	}
+	if canonical, err = filepath.EvalSymlinks(canonical); err != nil {
+		return "", fmt.Errorf("worktree: resolve root: %w", err)
+	}
+	canonical = filepath.Clean(canonical)
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("worktree: locate cache directory: %w", err)
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return filepath.Join(cache, "batuta", "worktrees", hex.EncodeToString(sum[:])[:16]), nil
+}
+
+// Path is where the worktree called name lives. It does not touch the disk.
+func (p GitProvider) Path(name string) string {
+	home := p.Home
+	if home == "" {
+		home = RepositoryHome(p.Root)
+	}
+	return filepath.Join(home, name)
 }
 
 // New resolves git on PATH and the canonical repository toplevel of root.
@@ -162,15 +202,16 @@ func (p GitProvider) EnsureExcluded(ctx context.Context) error {
 	return err
 }
 
-// Add creates `.batuta/worktrees/<name>` on a new branch at base. A leftover
-// worktree or branch of the same name from an aborted run is removed first.
+// Add creates the worktree for name under the provider's home on a new branch
+// at base. A leftover worktree or branch of the same name from an aborted run
+// is removed first.
 func (p GitProvider) Add(ctx context.Context, name, branch, baseSHA string) (string, error) {
 	if !safeName(name) || !branchName.MatchString(branch) || !gitSHA.MatchString(baseSHA) {
 		return "", errors.New("worktree: invalid worktree name, branch or base")
 	}
-	path := filepath.Join(p.Root, filepath.FromSlash(Dir), name)
+	path := p.Path(name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("worktree: create %s: %w", Dir, err)
+		return "", fmt.Errorf("worktree: create %s: %w", filepath.Dir(path), err)
 	}
 	_ = p.Remove(ctx, path, branch)
 	if _, err := p.run(ctx, p.Root, "worktree", "add", "-q", "-b", branch, path, baseSHA); err != nil {

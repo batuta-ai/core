@@ -3,6 +3,8 @@ package worktree
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -908,4 +910,143 @@ func TestMergePreviewErrors(t *testing.T) {
 			t.Fatalf("mergePreviewError() = %v, want git 2.38 and the stderr tail", err)
 		}
 	})
+}
+
+// tempDir returns a canonical temporary directory: t.TempDir() lives under a
+// symlinked /var on macOS.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
+	return dir
+}
+
+// isolateCacheDir points os.UserCacheDir at a temp dir on every platform and
+// returns what it now resolves to.
+func isolateCacheDir(t *testing.T) string {
+	t.Helper()
+	cache := tempDir(t)
+	t.Setenv("HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+	want, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir() error = %v", err)
+	}
+	return want
+}
+
+func TestWorktreePath(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	if got, want := p.Path("demo-task-1-e1"), filepath.Join(p.Root, ".batuta", "worktrees", "demo-task-1-e1"); got != want {
+		t.Fatalf("Path() with empty Home = %q, want %q", got, want)
+	}
+
+	p.Home = filepath.Join(tempDir(t), "outside", "worktrees")
+	want := filepath.Join(p.Home, "demo-task-1-e1")
+	if got := p.Path("demo-task-1-e1"); got != want {
+		t.Fatalf("Path() = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(p.Home); !os.IsNotExist(err) {
+		t.Fatalf("Path() touched the disk: %v", err)
+	}
+	path, err := p.Add(ctx, "demo-task-1-e1", "batuta/demo/task-1-e1", base)
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if path != want {
+		t.Fatalf("Add() = %q, want %q", path, want)
+	}
+	if info, err := os.Stat(filepath.Join(path, "README.md")); err != nil || info.IsDir() {
+		t.Fatalf("worktree not checked out at %s: %v", path, err)
+	}
+}
+
+func TestWorktreeRepositoryHome(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(string(filepath.Separator), "work", "project")
+	want := filepath.Join(root, ".batuta", "worktrees")
+	if got := RepositoryHome(root); got != want {
+		t.Fatalf("RepositoryHome() = %q, want %q", got, want)
+	}
+}
+
+func TestWorktreeCacheHome(t *testing.T) {
+	cache := isolateCacheDir(t)
+	first, second := tempDir(t), tempDir(t)
+
+	home, err := CacheHome(first)
+	if err != nil {
+		t.Fatalf("CacheHome() error = %v", err)
+	}
+	sum := sha256.Sum256([]byte(first))
+	want := filepath.Join(cache, "batuta", "worktrees", hex.EncodeToString(sum[:])[:16])
+	if home != want {
+		t.Fatalf("CacheHome() = %q, want %q", home, want)
+	}
+	other, err := CacheHome(second)
+	if err != nil {
+		t.Fatalf("CacheHome() second error = %v", err)
+	}
+	if other == home {
+		t.Fatalf("two roots share the home %q", home)
+	}
+}
+
+func TestWorktreeCacheHomeCanonical(t *testing.T) {
+	isolateCacheDir(t)
+	real := tempDir(t)
+	want, err := CacheHome(real)
+	if err != nil {
+		t.Fatalf("CacheHome() error = %v", err)
+	}
+	link := filepath.Join(tempDir(t), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	roots := []struct{ name, root string }{
+		{"symlink", link},
+		{"trailing separator", real + string(filepath.Separator)},
+	}
+	for _, tc := range roots {
+		got, err := CacheHome(tc.root)
+		if err != nil || got != want {
+			t.Fatalf("CacheHome(%s) = %q, %v; want %q", tc.name, got, err, want)
+		}
+	}
+	if _, err := CacheHome(filepath.Join(real, "missing")); err == nil {
+		t.Fatal("CacheHome() of a missing root returned no error")
+	}
+}
+
+func TestWorktreeOutsideRepository(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	p.Home = filepath.Join(tempDir(t), "worktrees")
+	branch := "batuta/demo/task-1-e1"
+	path, err := p.Add(ctx, "demo-task-1-e1", branch, base)
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if err := exec.Command(p.Git, "-C", p.Root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run(); err != nil {
+		t.Fatalf("branch missing after Add: %v", err)
+	}
+	if err := p.Remove(ctx, path, branch); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists after Remove: %v", err)
+	}
+	if err := exec.Command(p.Git, "-C", p.Root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run(); err == nil {
+		t.Fatal("branch still exists after Remove")
+	}
+	if info, err := os.Stat(p.Home); err != nil || !info.IsDir() {
+		t.Fatalf("home removed with the worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.Root, ".batuta", "worktrees")); !os.IsNotExist(err) {
+		t.Fatalf("repository home was created for an outside Home: %v", err)
+	}
 }
