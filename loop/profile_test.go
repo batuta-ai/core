@@ -1,6 +1,11 @@
 package loop
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestProfileConventionsSection(t *testing.T) {
 	t.Parallel()
@@ -24,3 +29,73 @@ func TestProfileConventionsSection(t *testing.T) {
 		})
 	}
 }
+
+func TestParseProfileWorktreeHome(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"missing", "Stack: Go\n", "repository"},
+		{"explicit repository", "Worktree-home: repository\n", "repository"},
+		{"cache lowercase", "Worktree-home: cache\n", "cache"},
+		{"cache uppercase", "Worktree-home: CACHE\n", "cache"},
+		{"cache mixed case", "Worktree-home: Cache\n", "cache"},
+		{"case insensitive key", "worktree-home: cache\n", "cache"},
+		{"first occurrence wins", "Worktree-home: cache\nWorktree-home: repository\n", "cache"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ParseProfile(tt.raw).WorktreeHome; got != tt.want {
+				t.Errorf("WorktreeHome = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadProfileRejectsWorktreeHome(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		content    string
+		wantErrMsg string
+	}{
+		{
+			name:       "invalid value foo",
+			content:    "Worktree-home: foo\n",
+			wantErrMsg: "Worktree-home",
+		},
+		{
+			name:       "invalid value invalid",
+			content:    "Worktree-home: invalid\n",
+			wantErrMsg: "Worktree-home",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(dir, ".batuta"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, ".batuta", "profile.md"), []byte(tt.content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadProfile(dir)
+			if err == nil {
+				t.Fatalf("LoadProfile() expected error, got nil")
+			}
+			errStr := err.Error()
+			if !strings.Contains(errStr, "Worktree-home") {
+				t.Errorf("LoadProfile() error %q does not name 'Worktree-home'", errStr)
+			}
+			if !strings.Contains(errStr, "repository") || !strings.Contains(errStr, "cache") {
+				t.Errorf("LoadProfile() error %q does not name both accepted values ('repository' and 'cache')", errStr)
+			}
+		})
+	}
+}
+
+

@@ -21,18 +21,19 @@ import (
 // literal lines batuta-init writes. Everything else in the file is prose
 // the brief carries as conventions.
 type Profile struct {
-	Stack       string
-	Methodology string
-	Test        string
-	Build       string
-	Install     string
-	Execution   string // sequential | parallel
-	Worktree    string // off | medium+ | always (the loop always uses worktrees)
-	Template    string // templates/<stack>.md
-	Raw         string
+	Stack        string
+	Methodology  string
+	Test         string
+	Build        string
+	Install      string
+	Execution    string // sequential | parallel
+	Worktree     string // off | medium+ | always (the loop always uses worktrees)
+	WorktreeHome string // repository | cache
+	Template     string // templates/<stack>.md
+	Raw          string
 }
 
-var profileLine = regexp.MustCompile(`^(Stack|Methodology|Test|Build|Install|Execution|Worktree|Template):\s*(.*)$`)
+var profileLine = regexp.MustCompile(`(?i)^(Stack|Methodology|Test|Build|Install|Execution|Worktree-home|Worktree|Template):\s*(.*)$`)
 
 // LoadProfile reads `.batuta/profile.md` under the workspace root.
 func LoadProfile(root string) (Profile, error) {
@@ -40,38 +41,56 @@ func LoadProfile(root string) (Profile, error) {
 	if err != nil {
 		return Profile{}, errors.New("loop: .batuta/profile.md is missing — run /batuta-init first")
 	}
-	return ParseProfile(string(payload)), nil
+	profile := ParseProfile(string(payload))
+	switch profile.WorktreeHome {
+	case "repository", "cache":
+	default:
+		return Profile{}, fmt.Errorf("loop: invalid Worktree-home %q in .batuta/profile.md — accepted values are %q and %q", profile.WorktreeHome, "repository", "cache")
+	}
+	return profile, nil
 }
 
 // ParseProfile extracts the literal lines; the first occurrence wins.
 func ParseProfile(payload string) Profile {
-	profile := Profile{Raw: payload}
+	profile := Profile{
+		Raw:          payload,
+		WorktreeHome: "repository",
+	}
 	seen := map[string]bool{}
 	scanner := bufio.NewScanner(strings.NewReader(payload))
 	scanner.Buffer(make([]byte, 64<<10), 1<<20)
 	for scanner.Scan() {
 		match := profileLine.FindStringSubmatch(strings.TrimRight(scanner.Text(), " \t"))
-		if match == nil || seen[match[1]] {
+		if match == nil {
 			continue
 		}
-		seen[match[1]] = true
+		key := strings.ToLower(match[1])
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		value := strings.TrimSpace(match[2])
-		switch match[1] {
-		case "Stack":
+		switch key {
+		case "stack":
 			profile.Stack = value
-		case "Methodology":
+		case "methodology":
 			profile.Methodology = value
-		case "Test":
+		case "test":
 			profile.Test = value
-		case "Build":
+		case "build":
 			profile.Build = value
-		case "Install":
+		case "install":
 			profile.Install = value
-		case "Execution":
+		case "execution":
 			profile.Execution = strings.ToLower(value)
-		case "Worktree":
+		case "worktree":
 			profile.Worktree = strings.ToLower(value)
-		case "Template":
+		case "worktree-home":
+			v := strings.ToLower(value)
+			if v != "" {
+				profile.WorktreeHome = v
+			}
+		case "template":
 			profile.Template = strings.Trim(value, "`")
 		}
 	}
