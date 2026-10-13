@@ -53,7 +53,7 @@ batuta loop [<plan>]                    run the approved plan to a terminal stat
 batuta loop --resume <delivery>         continue after an interruption
 batuta loop --answer <task> "<text>"    answer a parked task and continue
 batuta loop --recover <delivery> <task>  run gates on a parked task, candidate and continue
-batuta loop --reconcile <delivery> <task> print parked task merge diff and conflicts
+batuta loop --reconcile <delivery> <task> print parked task changed paths and conflicts
 batuta loop --abandon <delivery>        close a delivery; ticks what integrated
 batuta loop --supervise <delivery> --cursor <absolute-path>
                                         foreground local observation; no model polling

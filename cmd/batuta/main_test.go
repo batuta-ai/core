@@ -3138,10 +3138,11 @@ func TestReconcileFieldEscapesControlCharacters(t *testing.T) {
 		"out/1.txt":           "out/1.txt",
 		"caf\u00e9 \"x\".txt": "caf\u00e9 \"x\".txt",
 		"a\tb\nc.txt":         `a\tb\nc.txt`,
+		"next\u0085line":      `next\u0085line`,
 		`back\slash`:          `back\\slash`,
 	} {
 		got := reconcileField(path)
-		if got != want || strings.ContainsAny(got, "\t\n") {
+		if got != want || strings.ContainsAny(got, "\t\n\u0085") {
 			t.Errorf("reconcileField(%q) = %q, want %q", path, got, want)
 		}
 	}

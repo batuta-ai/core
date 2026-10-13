@@ -715,9 +715,18 @@ func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (Merg
 	if !branchName.MatchString(branch) || !branchName.MatchString(ref) {
 		return MergePreviewResult{}, errors.New("worktree: invalid merge preview request")
 	}
-	// The qualified name keeps a tag that shares the branch's name out of it.
-	head := "refs/heads/" + branch
-	base, err := p.run(ctx, p.Root, "merge-base", head, ref)
+	// Both names resolve once, so every command below reads the same two
+	// commits. The qualified name keeps a tag that shares the branch's name
+	// out of it.
+	head, err := p.previewCommit(ctx, "refs/heads/"+branch)
+	if err != nil {
+		return MergePreviewResult{}, err
+	}
+	tip, err := p.previewCommit(ctx, ref)
+	if err != nil {
+		return MergePreviewResult{}, err
+	}
+	base, err := p.run(ctx, p.Root, "merge-base", head, tip)
 	if err != nil {
 		if base.ExitCode == 1 && len(bytes.TrimSpace(base.Stderr)) == 0 {
 			return MergePreviewResult{}, fmt.Errorf("worktree: unrelated histories: %s and %s share no merge base", branch, ref)
@@ -725,7 +734,7 @@ func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (Merg
 		return MergePreviewResult{}, err
 	}
 	result := MergePreviewResult{Base: strings.TrimSpace(string(base.Stdout))}
-	diff, err := p.run(ctx, p.Root, "diff", "--name-only", "-z", result.Base, ref, "--")
+	diff, err := p.run(ctx, p.Root, "diff", "--name-only", "-z", result.Base, tip, "--")
 	if err != nil {
 		return MergePreviewResult{}, err
 	}
@@ -736,7 +745,7 @@ func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (Merg
 		}
 	}
 	result.Conflicts = make([]string, 0)
-	merged, err := p.refIntegrated(ctx, branch, ref)
+	merged, err := p.refIntegrated(ctx, head, tip)
 	if err != nil {
 		return MergePreviewResult{}, err
 	}
@@ -744,7 +753,7 @@ func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (Merg
 		result.Merged = true
 		return result, nil
 	}
-	tree, err := p.run(ctx, p.Root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", head, ref)
+	tree, err := p.run(ctx, p.Root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", head, tip)
 	// Exit 1 is a conflict report only when git's output arrived whole.
 	if tree.StdoutTruncated || tree.StderrTruncated {
 		return MergePreviewResult{}, err
@@ -773,14 +782,24 @@ func nulFields(payload []byte) []string {
 	return fields
 }
 
-// refIntegrated says whether ref's tree appears in branch's history, the
-// identity PlanParkedCleanup uses for squashed work, or ref is an ancestor.
-func (p GitProvider) refIntegrated(ctx context.Context, branch, ref string) (bool, error) {
-	ancestor, err := p.IsAncestor(ctx, ref, "refs/heads/"+branch)
+// previewCommit resolves a name to the commit it points at now.
+func (p GitProvider) previewCommit(ctx context.Context, name string) (string, error) {
+	resolved, err := p.run(ctx, p.Root, "rev-parse", "--verify", "--quiet", name+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("worktree: merge preview cannot resolve %s: %w", name, err)
+	}
+	return strings.TrimSpace(string(resolved.Stdout)), nil
+}
+
+// refIntegrated says whether the tip commit's tree appears in the head
+// commit's history, the identity PlanParkedCleanup uses for squashed work,
+// or tip is an ancestor of head.
+func (p GitProvider) refIntegrated(ctx context.Context, head, tip string) (bool, error) {
+	ancestor, err := p.IsAncestor(ctx, tip, head)
 	if err != nil || ancestor {
 		return ancestor, err
 	}
-	tree, err := p.run(ctx, p.Root, "rev-parse", "--verify", ref+"^{tree}")
+	tree, err := p.run(ctx, p.Root, "rev-parse", "--verify", tip+"^{tree}")
 	if err != nil {
 		return false, err
 	}
@@ -788,7 +807,7 @@ func (p GitProvider) refIntegrated(ctx context.Context, branch, ref string) (boo
 	// Pages keep a long history inside the runner's output bound.
 	const historyPageSize = 50_000
 	for skip := 0; ; skip += historyPageSize {
-		history, err := p.run(ctx, p.Root, "log", "--format=%T", "--max-count="+strconv.Itoa(historyPageSize), "--skip="+strconv.Itoa(skip), "refs/heads/"+branch, "--")
+		history, err := p.run(ctx, p.Root, "log", "--format=%T", "--max-count="+strconv.Itoa(historyPageSize), "--skip="+strconv.Itoa(skip), head, "--")
 		if err != nil {
 			return false, err
 		}

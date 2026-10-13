@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -788,6 +789,12 @@ func TestMergePreviewAlreadyMerged(t *testing.T) {
 	previewGit(t, provider, "checkout", "-q", "-b", "squashed", "feature~1")
 	previewGit(t, provider, "merge", "-q", "--squash", "feature")
 	previewGit(t, provider, "commit", "-q", "-m", "feat: squash feature")
+	// A later commit moves the matching tree off the branch tip.
+	if err := os.WriteFile(filepath.Join(provider.Root, "d.txt"), []byte("d\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previewGit(t, provider, "add", "d.txt")
+	previewGit(t, provider, "commit", "-q", "-m", "feat: squashed moves on")
 	previewGit(t, provider, "checkout", "-q", "main")
 	previewGit(t, provider, "branch", "-q", "ancestor", "main~1")
 
@@ -814,7 +821,11 @@ func TestMergePreviewAlreadyMerged(t *testing.T) {
 func TestMergePreviewUnusualPaths(t *testing.T) {
 	t.Parallel()
 	provider, _ := initRepo(t)
-	name := "caf\u00e9 \ttab.txt"
+	// Windows refuses a tab in a file name; the non-ASCII name still needs -z.
+	name := "caf\u00e9 tab.txt"
+	if runtime.GOOS != "windows" {
+		name = "caf\u00e9 \ttab.txt"
+	}
 	write := func(content string) {
 		t.Helper()
 		if err := os.WriteFile(filepath.Join(provider.Root, name), []byte(content), 0o644); err != nil {

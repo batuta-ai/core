@@ -24,6 +24,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode"
 
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
@@ -1575,7 +1576,7 @@ func truncate(value string, width int) string {
 func reconcileField(path string) string {
 	plain := true
 	for _, r := range path {
-		if r == '\\' || r < 0x20 || r == 0x7f {
+		if r == '\\' || unicode.IsControl(r) {
 			plain = false
 			break
 		}
