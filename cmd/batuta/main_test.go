@@ -3132,3 +3132,17 @@ func TestReviewExitMixed(t *testing.T) {
 		})
 	}
 }
+
+func TestReconcileFieldEscapesControlCharacters(t *testing.T) {
+	for path, want := range map[string]string{
+		"out/1.txt":           "out/1.txt",
+		"caf\u00e9 \"x\".txt": "caf\u00e9 \"x\".txt",
+		"a\tb\nc.txt":         `a\tb\nc.txt`,
+		`back\slash`:          `back\\slash`,
+	} {
+		got := reconcileField(path)
+		if got != want || strings.ContainsAny(got, "\t\n") {
+			t.Errorf("reconcileField(%q) = %q, want %q", path, got, want)
+		}
+	}
+}

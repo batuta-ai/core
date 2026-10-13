@@ -162,7 +162,9 @@ code is `2` on gate failure, `0` on completed resumption, or `1` on error.
 
 `batuta loop --reconcile <delivery> <task>` prints, read-only, how the task's
 parked ref merges into the delivery branch as TSV lines (`ref`, `status`,
-`file`, `conflict`). It exits `0` on clean merge or `2` on conflict.
+`file`, `conflict`). A path that holds a backslash or a control character
+is written with Go escapes (`\t`, `\n`, `\\`), so every line keeps its fields.
+It exits `0` on clean merge or `2` on conflict.
 
 ## After the run
 

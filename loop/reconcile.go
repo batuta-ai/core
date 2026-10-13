@@ -81,7 +81,8 @@ func Reconcile(ctx context.Context, workspace, delivery, taskID string) (Reconci
 	if err := requireParkedRef(ctx, git, ref, sha); err != nil {
 		return ReconcileReport{}, err
 	}
-	preview, err := git.MergePreview(ctx, opened.Branch, ref)
+	// The ref can move after the check above: preview the commit it named.
+	preview, err := git.MergePreview(ctx, opened.Branch, sha)
 	if err != nil {
 		return ReconcileReport{}, err
 	}

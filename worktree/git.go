@@ -715,7 +715,9 @@ func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (Merg
 	if !branchName.MatchString(branch) || !branchName.MatchString(ref) {
 		return MergePreviewResult{}, errors.New("worktree: invalid merge preview request")
 	}
-	base, err := p.run(ctx, p.Root, "merge-base", branch, ref)
+	// The qualified name keeps a tag that shares the branch's name out of it.
+	head := "refs/heads/" + branch
+	base, err := p.run(ctx, p.Root, "merge-base", head, ref)
 	if err != nil {
 		if base.ExitCode == 1 && len(bytes.TrimSpace(base.Stderr)) == 0 {
 			return MergePreviewResult{}, fmt.Errorf("worktree: unrelated histories: %s and %s share no merge base", branch, ref)
@@ -742,7 +744,7 @@ func (p GitProvider) MergePreview(ctx context.Context, branch, ref string) (Merg
 		result.Merged = true
 		return result, nil
 	}
-	tree, err := p.run(ctx, p.Root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", branch, ref)
+	tree, err := p.run(ctx, p.Root, "merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", head, ref)
 	// Exit 1 is a conflict report only when git's output arrived whole.
 	if tree.StdoutTruncated || tree.StderrTruncated {
 		return MergePreviewResult{}, err
@@ -774,7 +776,7 @@ func nulFields(payload []byte) []string {
 // refIntegrated says whether ref's tree appears in branch's history, the
 // identity PlanParkedCleanup uses for squashed work, or ref is an ancestor.
 func (p GitProvider) refIntegrated(ctx context.Context, branch, ref string) (bool, error) {
-	ancestor, err := p.IsAncestor(ctx, ref, branch)
+	ancestor, err := p.IsAncestor(ctx, ref, "refs/heads/"+branch)
 	if err != nil || ancestor {
 		return ancestor, err
 	}
@@ -783,11 +785,21 @@ func (p GitProvider) refIntegrated(ctx context.Context, branch, ref string) (boo
 		return false, err
 	}
 	want := strings.TrimSpace(string(tree.Stdout))
-	history, err := p.run(ctx, p.Root, "log", "--format=%T", "refs/heads/"+branch, "--")
-	if err != nil {
-		return false, err
+	// Pages keep a long history inside the runner's output bound.
+	const historyPageSize = 50_000
+	for skip := 0; ; skip += historyPageSize {
+		history, err := p.run(ctx, p.Root, "log", "--format=%T", "--max-count="+strconv.Itoa(historyPageSize), "--skip="+strconv.Itoa(skip), "refs/heads/"+branch, "--")
+		if err != nil {
+			return false, err
+		}
+		trees := nonempty(string(history.Stdout))
+		if slices.Contains(trees, want) {
+			return true, nil
+		}
+		if len(trees) < historyPageSize {
+			return false, nil
+		}
 	}
-	return slices.Contains(nonempty(string(history.Stdout)), want), nil
 }
 
 // mergePreviewError explains a `git merge-tree --write-tree` failure that is

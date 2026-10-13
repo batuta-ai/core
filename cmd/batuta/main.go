@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -875,10 +876,10 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		}
 		fmt.Fprintf(stdout, "ref\t%s\t%s\nstatus\t%s\n", report.Ref, report.SHA, report.Status)
 		for _, path := range report.Changed {
-			fmt.Fprintf(stdout, "file\t%s\n", path)
+			fmt.Fprintf(stdout, "file\t%s\n", reconcileField(path))
 		}
 		for _, path := range report.Conflicts {
-			fmt.Fprintf(stdout, "conflict\t%s\n", path)
+			fmt.Fprintf(stdout, "conflict\t%s\n", reconcileField(path))
 		}
 		if report.Status == loop.ReconcileConflict {
 			return &ExitError{Code: 2, State: report.Status}
@@ -1566,4 +1567,22 @@ func truncate(value string, width int) string {
 		return value
 	}
 	return value[:width-1] + "…"
+}
+
+// reconcileField keeps a path on one tab-separated line: git hands paths
+// over verbatim, and a name may hold a tab, a newline or another control
+// character. Backslash and those characters leave as Go escapes.
+func reconcileField(path string) string {
+	plain := true
+	for _, r := range path {
+		if r == '\\' || r < 0x20 || r == 0x7f {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return path
+	}
+	quoted := strconv.Quote(path)
+	return strings.ReplaceAll(quoted[1:len(quoted)-1], `\"`, `"`)
 }

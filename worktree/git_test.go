@@ -839,6 +839,20 @@ func TestMergePreviewUnusualPaths(t *testing.T) {
 	}
 }
 
+func TestMergePreviewIgnoresTagNamedLikeBranch(t *testing.T) {
+	t.Parallel()
+	provider := previewRepo(t, true)
+	// A tag named main on the feature commit makes the bare name ambiguous.
+	previewGit(t, provider, "tag", "main", "feature")
+	got, err := provider.MergePreview(context.Background(), "main", "feature")
+	if err != nil {
+		t.Fatalf("MergePreview() error = %v", err)
+	}
+	if got.Merged || !slices.Equal(got.Conflicts, []string{"b.txt"}) {
+		t.Fatalf("MergePreview() = %+v, want the branch's conflict on b.txt, not the tag's", got)
+	}
+}
+
 // truncatingRunner marks merge-tree output as cut at the runner's bound.
 type truncatingRunner struct{ publication.CommandRunner }
 
