@@ -348,3 +348,173 @@ func TestConductorRecoverRefusals(t *testing.T) {
 		})
 	}
 }
+
+func journalBytes(t *testing.T, f fixture, delivery string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(f.root, journal.Dir, delivery+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestConductorRecoverIsIdempotent(t *testing.T) {
+	f, opts, delivery, wt, _ := parkedRecovery(t, "continuation-ask-untracked")
+	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
+		t.Fatalf("Recover() = %v", err)
+	}
+	var commit string
+	candidates := 0
+	for _, record := range readJournal(t, f, delivery) {
+		if record.Kind == KindCandidate && record.TaskID == "task_1" {
+			candidates++
+			var detail struct {
+				Commit string `json:"commit"`
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil || detail.Commit == "" {
+				t.Fatalf("candidate detail = %s, %v", record.Detail, err)
+			}
+			commit = detail.Commit
+		}
+	}
+	if candidates != 1 {
+		t.Fatalf("candidate records = %d, want 1", candidates)
+	}
+	before := journalBytes(t, f, delivery)
+	head := f.run(t, "-C", wt, "rev-parse", "HEAD")
+	err := Recover(context.Background(), opts, delivery, "task_1")
+	var failure *GateFailureError
+	if err == nil || errors.As(err, &failure) || !strings.Contains(err.Error(), "not waiting_input") {
+		t.Fatalf("second Recover() = %v, want refusal", err)
+	}
+	if !bytes.Equal(before, journalBytes(t, f, delivery)) {
+		t.Fatal("second Recover modified journal")
+	}
+	if got := f.run(t, "-C", wt, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("worktree HEAD = %s, want %s", got, head)
+	}
+	if got := f.run(t, "-C", wt, "cat-file", "-t", commit); got != "commit" {
+		t.Fatalf("candidate commit %s is %q", commit, got)
+	}
+}
+
+func TestConductorRecoverRefusesLiveAttempts(t *testing.T) {
+	cases := []struct {
+		name    string
+		advance func(*testing.T, *routing.DeliveryGraph)
+	}{
+		{"preparing", func(*testing.T, *routing.DeliveryGraph) {}},
+		{"running", func(t *testing.T, graph *routing.DeliveryGraph) {
+			digest := "sha256:" + strings.Repeat("a", 64)
+			intent := routing.TaskWorktreeIntent{OperationID: digest, RequestDigest: digest, Name: "wt-task-3", Branch: "batuta/task-3"}
+			if _, err := graph.PlanWorktree("task_3", 1, intent); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := graph.AttachWorktree("task_3", 1, routing.GraphWorktree{ID: "wt-task-3", Root: tempDir(t), Ready: true}); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, opts, delivery, _, _ := parkedRecovery(t, "continuation-ask-untracked")
+			records := readJournal(t, f, delivery)
+			var opened openedDetail
+			if err := json.Unmarshal(records[0].Detail, &opened); err != nil {
+				t.Fatal(err)
+			}
+			var graph routing.DeliveryGraph
+			if err := json.Unmarshal(records[len(records)-1].Graph, &graph); err != nil {
+				t.Fatal(err)
+			}
+			// task_3 waits on the parked task_1: free it so the graph's own
+			// admission can start it without a runner.
+			pending := graphTask(&graph, "task_3")
+			if pending == nil || pending.State != routing.GraphTaskPending {
+				t.Fatalf("task_3 = %+v, want pending", pending)
+			}
+			pending.Dependencies = []string{}
+			head := f.run(t, "rev-parse", "HEAD")
+			wave, err := graph.AdmitReadyWave(routing.ReadyWaveInput{IntegrationHeadSHA: head, RemainingSlots: 1, ReachableCommits: map[string]bool{head: true}})
+			if err != nil || len(wave.TaskIDs) != 1 || wave.TaskIDs[0] != "task_3" {
+				t.Fatalf("AdmitReadyWave() = %+v, %v", wave, err)
+			}
+			if err := graph.BeginWaveAttempts(wave.Number, opened.Generation); err != nil {
+				t.Fatal(err)
+			}
+			tc.advance(t, &graph)
+			raw, err := json.Marshal(graph)
+			if err != nil {
+				t.Fatal(err)
+			}
+			detail, err := json.Marshal(map[string]any{"wave": wave.Number})
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, err := journal.Open(f.root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.Append(delivery, journal.Record{Kind: KindAttempts, Detail: detail, Graph: raw, At: opts.Now()}); err != nil {
+				t.Fatal(err)
+			}
+			before := journalBytes(t, f, delivery)
+			err = Recover(context.Background(), opts, delivery, "task_1")
+			var failure *GateFailureError
+			if err == nil || errors.As(err, &failure) || !strings.Contains(err.Error(), "task_3") {
+				t.Fatalf("Recover() = %v, want refusal naming task_3", err)
+			}
+			if !bytes.Equal(before, journalBytes(t, f, delivery)) {
+				t.Fatal("refusal modified journal")
+			}
+			for _, record := range readJournal(t, f, delivery) {
+				if record.Kind == KindFailure && record.TaskID == "task_3" {
+					t.Fatalf("failure recorded for the live task: %s", record.Detail)
+				}
+			}
+		})
+	}
+}
+
+func TestConductorRecoverAfterGateFailure(t *testing.T) {
+	f, opts, delivery, wt, ask := parkedRecovery(t, "continuation-ask-broken")
+	err := Recover(context.Background(), opts, delivery, "task_1")
+	var failure *GateFailureError
+	if !errors.As(err, &failure) {
+		t.Fatalf("first Recover() = %v, want gate failure", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "out", "1.txt"), []byte("ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
+		t.Fatalf("second Recover() = %v", err)
+	}
+	var reports []gatesReportDetail
+	candidates := 0
+	for _, record := range readJournal(t, f, delivery) {
+		if record.TaskID != "task_1" {
+			continue
+		}
+		switch record.Kind {
+		case KindGates:
+			var detail gatesReportDetail
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if detail.Source == "conductor" {
+				reports = append(reports, detail)
+			}
+		case KindCandidate:
+			candidates++
+		}
+	}
+	if len(reports) != 2 || reports[0].Passed || !reports[1].Passed || candidates != 1 {
+		t.Fatalf("conductor gates %+v, candidates %d", reports, candidates)
+	}
+	if task := graphTask(recoveryGraph(t, f, delivery), "task_1"); task == nil || task.State != routing.GraphTaskCandidate {
+		t.Fatalf("recovered task = %+v", task)
+	}
+	if _, err := os.Stat(ask); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ask remains: %v", err)
+	}
+}

@@ -59,6 +59,9 @@ func Recover(ctx context.Context, opts Options, delivery, taskID string) (recove
 	if state := lastTerminal(records); state != "" && state != StateWaitingInput && state != StateCanceled {
 		return fmt.Errorf("loop: delivery %s already ended: %s", delivery, state)
 	}
+	if live := liveAttemptTask(&graph, taskID); live != "" {
+		return fmt.Errorf("loop: task %s has a live attempt; recovery would fail it as interrupted", live)
+	}
 	if err := r.loadPlan(opened.Slug); err != nil {
 		return err
 	}
@@ -162,4 +165,18 @@ func Recover(ctx context.Context, opts Options, delivery, taskID string) (recove
 		return fmt.Errorf("loop: remove recovered ask: %w", err)
 	}
 	return nil
+}
+
+func liveAttemptTask(graph *routing.DeliveryGraph, except string) string {
+	for _, task := range graph.Tasks {
+		if task.TaskID == except {
+			continue
+		}
+		for _, attempt := range task.Attempts {
+			if attempt.State == routing.GraphTaskPreparing || attempt.State == routing.GraphTaskRunning {
+				return task.TaskID
+			}
+		}
+	}
+	return ""
 }
