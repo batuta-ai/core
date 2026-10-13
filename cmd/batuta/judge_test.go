@@ -1089,3 +1089,102 @@ func TestCapabilitiesListsJudge(t *testing.T) {
 		t.Fatal("usage is missing batuta judge")
 	}
 }
+
+// judgeReplayRecords builds the journal of one execution of task_1: finished,
+// a question, the given gate reports in order and, when withCandidate, a
+// candidate record. A report map carries "passed" and an optional "source".
+func judgeReplayRecords(t *testing.T, reports []map[string]any, withCandidate bool) []journal.Record {
+	t.Helper()
+	var records []journal.Record
+	add := func(kind journal.Kind, detail any) {
+		raw, err := json.Marshal(detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records = append(records, journal.Record{Kind: kind, TaskID: "task_1", Detail: raw})
+	}
+	add(loop.KindFinished, map[string]any{"execution": 1, "finished": true, "tree_changed": true})
+	add(loop.KindQuestion, map[string]any{"execution": 1})
+	for _, report := range reports {
+		detail := map[string]any{"task_id": "task_1", "execution": 1, "passed": report["passed"]}
+		if source, ok := report["source"]; ok {
+			detail["source"] = source
+		}
+		add(loop.KindGates, detail)
+	}
+	if withCandidate {
+		add(loop.KindCandidate, map[string]any{"execution": 1, "commit": "abc"})
+	}
+	return records
+}
+
+func TestJudgeReplayRecoveredCandidate(t *testing.T) {
+	records := judgeReplayRecords(t, []map[string]any{{"source": "conductor", "passed": true}}, true)
+	attempts, _, _ := replayAttempts(records)
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %d, want 1", len(attempts))
+	}
+	if attempts[0].outcome != "candidate" || !attempts[0].report.Passed || attempts[0].candidateCommit != "abc" {
+		t.Fatalf("attempt = %#v, want the candidate outcome with the passing conductor report", attempts[0])
+	}
+}
+
+func TestJudgeReplayLastConductorReportWins(t *testing.T) {
+	tests := []struct {
+		name    string
+		reports []map[string]any
+		want    bool
+	}{
+		{"failed then passed", []map[string]any{
+			{"source": "conductor", "passed": false}, {"source": "conductor", "passed": true},
+		}, true},
+		{"passed then failed", []map[string]any{
+			{"source": "conductor", "passed": true}, {"source": "conductor", "passed": false},
+		}, false},
+		{"executor report then conductor", []map[string]any{
+			{"passed": false}, {"source": "conductor", "passed": true},
+		}, true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			attempts, _, _ := replayAttempts(judgeReplayRecords(t, test.reports, true))
+			if len(attempts) != 1 {
+				t.Fatalf("attempts = %d, want 1", len(attempts))
+			}
+			if attempts[0].outcome != "candidate" || attempts[0].report.Passed != test.want {
+				t.Fatalf("attempt = outcome %q passed %v, want candidate paired with passed=%v",
+					attempts[0].outcome, attempts[0].report.Passed, test.want)
+			}
+		})
+	}
+}
+
+func TestJudgeReplayConductorWithoutCandidateStaysQuestion(t *testing.T) {
+	records := judgeReplayRecords(t, []map[string]any{{"source": "conductor", "passed": false}}, false)
+	attempts, _, _ := replayAttempts(records)
+	if len(attempts) != 1 || attempts[0].outcome != "question" || attempts[0].report.Passed {
+		t.Fatalf("attempts = %#v, want one question outcome with the failed conductor report", attempts)
+	}
+}
+
+func TestJudgeReplayUnchangedWithoutConductor(t *testing.T) {
+	root := judgeTestWorkspace(t, `{"provider":"typesafe","model":"jev-test","key_env":"JUDGE_TEST_KEY"}`)
+	journalPath, runs := judgeReplayFixture(t, root, []map[string]any{
+		{"execution": 1, "tree_changed": true, "kind": loop.KindQuestion,
+			"outcome": map[string]any{"execution": 1},
+			"log":     "no claims here"},
+		{"execution": 2, "tree_changed": false, "kind": loop.KindFailure,
+			"outcome": map[string]any{"execution": 2, "blocker": "already_satisfied", "blocked": true},
+			"log":     "wrote `out/1.txt`"},
+	})
+	stdout, stderr, err := judgeReplayRun(t, "--journal", journalPath, "--runs", runs, "--workspace", root)
+	if err != nil {
+		t.Fatalf("judge replay = %v\nstderr: %s", err, stderr)
+	}
+	want := "task_1 e1 outcome=question asked=false claims=0 changed_paths=unknown code_contradicted=0 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=false provider=typesafe\n" +
+		"task_1 e2 outcome=already_satisfied asked=false claims=1 changed_paths=0 code_contradicted=1 judge_contradicted=0 uncertain=0 max_contradicted=0.00 material_max=0.00 flagged=true provider=typesafe\n" +
+		"attempts=2 asked=0 skipped=0 input_tokens=0 output_tokens=0\n"
+	if stdout != want {
+		t.Fatalf("stdout = %q, want %q", stdout, want)
+	}
+}

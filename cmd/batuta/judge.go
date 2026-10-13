@@ -296,7 +296,13 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 			}
 		}
 	}
-	seen := map[replayAttemptKey]bool{}
+	type gatesChoice struct {
+		record    journal.Record
+		report    gates.Report
+		conductor bool
+	}
+	var order []replayAttemptKey
+	chosen := map[replayAttemptKey]gatesChoice{}
 	for _, record := range records {
 		if record.Kind != loop.KindGates {
 			continue
@@ -305,12 +311,31 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 		if err := json.Unmarshal(record.Detail, &report); err != nil {
 			continue
 		}
+		var origin struct {
+			Source string `json:"source"`
+		}
+		_ = json.Unmarshal(record.Detail, &origin)
 		key := replayAttemptKey{record.TaskID, report.Execution}
-		finishedRecord, ok := finished[finishedKey{record.TaskID, report.Execution}]
-		if !ok || seen[key] {
+		if _, ok := finished[finishedKey{record.TaskID, report.Execution}]; !ok {
 			continue
 		}
-		seen[key] = true
+		_, seen := chosen[key]
+		conductor := origin.Source == "conductor"
+		if seen && !conductor {
+			continue
+		}
+		if !seen {
+			order = append(order, key)
+		}
+		chosen[key] = gatesChoice{record: record, report: report, conductor: conductor}
+	}
+	for _, key := range order {
+		choice := chosen[key]
+		record, report := choice.record, choice.report
+		finishedRecord := finished[finishedKey{record.TaskID, report.Execution}]
+		if _, recovered := candidates[key]; choice.conductor && recovered {
+			outcomes[key] = "candidate"
+		}
 		treeChanged := false
 		baseSHA := ""
 		var finishedDetail replayFinishedDetail
