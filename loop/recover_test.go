@@ -1,0 +1,225 @@
+package loop
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/batuta-ai/core/journal"
+	"github.com/batuta-ai/core/routing"
+)
+
+func parkedRecovery(t *testing.T, scenario string) (fixture, Options, string, string, string) {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	opts := f.options(scenario, &out)
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	delivery := r.Delivery()
+	opts.Resume = delivery
+	wt := r.worktrees[attemptKey("task_1", 1)]
+	ask := filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md")
+	if _, err := os.Stat(ask); err != nil {
+		t.Fatal(err)
+	}
+	return f, opts, delivery, wt.Root, ask
+}
+
+func recoveryGraph(t *testing.T, f fixture, delivery string) *routing.DeliveryGraph {
+	t.Helper()
+	records := readJournal(t, f, delivery)
+	var graph routing.DeliveryGraph
+	if err := json.Unmarshal(records[len(records)-1].Graph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	return &graph
+}
+
+func conductorGate(t *testing.T, f fixture, delivery string) gatesReportDetail {
+	t.Helper()
+	var found []gatesReportDetail
+	for _, record := range readJournal(t, f, delivery) {
+		if record.Kind != KindGates || record.TaskID != "task_1" {
+			continue
+		}
+		var detail gatesReportDetail
+		if err := json.Unmarshal(record.Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if detail.Source == "conductor" {
+			found = append(found, detail)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("conductor gates = %d, want 1", len(found))
+	}
+	return found[0]
+}
+
+func TestConductorRecoverIntegrates(t *testing.T) {
+	f, opts, delivery, _, ask := parkedRecovery(t, "continuation-ask-untracked")
+	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
+		t.Fatalf("Recover() = %v", err)
+	}
+	if report := conductorGate(t, f, delivery); !report.Passed {
+		t.Fatalf("conductor gates = %+v", report)
+	}
+	if _, err := os.Stat(ask); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("ask remains: %v", err)
+	}
+	graph := recoveryGraph(t, f, delivery)
+	if task := graphTask(graph, "task_1"); task == nil || task.State != routing.GraphTaskCandidate || len(task.Attempts) != 1 || task.Attempts[0].Question == nil {
+		t.Fatalf("recovered task = %+v", task)
+	}
+	var candidateCount int
+	for _, record := range readJournal(t, f, delivery) {
+		if record.Kind == KindCandidate && record.TaskID == "task_1" {
+			candidateCount++
+			var detail struct {
+				Source string `json:"source"`
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil || detail.Source != "conductor" {
+				t.Fatalf("candidate source = %q, %v", detail.Source, err)
+			}
+		}
+	}
+	if candidateCount != 1 {
+		t.Fatalf("candidate records = %d", candidateCount)
+	}
+	r, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Resume.Run() = %s, %v", state, err)
+	}
+	if got := f.run(t, "show", "HEAD:out/1.txt"); got != "ok" {
+		t.Fatalf("integrated greeting = %q", got)
+	}
+}
+
+func TestConductorRecoverGateFailureKeepsWaiting(t *testing.T) {
+	f, opts, delivery, wt, ask := parkedRecovery(t, "continuation-ask-broken")
+	before := recoveryGraph(t, f, delivery)
+	head := f.run(t, "-C", wt, "rev-parse", "HEAD")
+	err := Recover(context.Background(), opts, delivery, "task_1")
+	var failure *GateFailureError
+	if !errors.As(err, &failure) || !strings.Contains(err.Error(), "broken files") {
+		t.Fatalf("Recover() = %v, want gate failure with tests.sh output", err)
+	}
+	report := conductorGate(t, f, delivery)
+	if report.Passed || !strings.Contains(strings.Join(report.Failures(), "\n"), "broken files") {
+		t.Fatalf("conductor gates = %+v", report)
+	}
+	if got := f.run(t, "-C", wt, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("worktree HEAD = %s, want %s", got, head)
+	}
+	if _, err := os.Stat(ask); err != nil {
+		t.Fatal(err)
+	}
+	a, b := graphTask(before, "task_1"), graphTask(recoveryGraph(t, f, delivery), "task_1")
+	if b.State != routing.GraphTaskWaitingInput || len(b.Attempts) != len(a.Attempts) || b.Attempts[0].Question == nil || b.Attempts[0].Question.Prompt != a.Attempts[0].Question.Prompt {
+		t.Fatalf("task changed after gate failure: before %+v, after %+v", a, b)
+	}
+}
+
+func TestConductorRecoverSilentTree(t *testing.T) {
+	f, opts, delivery, wt, ask := parkedRecovery(t, "ask")
+	head := f.run(t, "-C", wt, "rev-parse", "HEAD")
+	err := Recover(context.Background(), opts, delivery, "task_1")
+	var failure *GateFailureError
+	if !errors.As(err, &failure) || !strings.Contains(err.Error(), "nothing to recover") {
+		t.Fatalf("Recover() = %v", err)
+	}
+	if report := conductorGate(t, f, delivery); report.Passed || !strings.Contains(report.Tree.Signal, "nothing to recover") {
+		t.Fatalf("conductor gates = %+v", report)
+	}
+	if got := f.run(t, "-C", wt, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("worktree HEAD = %s, want %s", got, head)
+	}
+	if _, err := os.Stat(ask); err != nil {
+		t.Fatal(err)
+	}
+	if task := graphTask(recoveryGraph(t, f, delivery), "task_1"); task.State != routing.GraphTaskWaitingInput || len(task.Attempts) != 1 {
+		t.Fatalf("task changed: %+v", task)
+	}
+}
+
+func TestConductorRecoverRefusals(t *testing.T) {
+	cases := []struct {
+		name, task, want string
+		change           func(*testing.T, fixture, *Options, string, string)
+	}{
+		{"live owner", "task_1", "owned", func(t *testing.T, f fixture, opts *Options, delivery, wt string) {
+			writePresenceFixture(t, f.root, delivery, opts.Now())
+		}},
+		{"unknown delivery", "task_1", "unknown", func(t *testing.T, f fixture, opts *Options, delivery, wt string) { opts.Resume = "absent" }},
+		{"unknown task", "task_99", "task_99", nil},
+		{"integrated task", "task_2", "already integrated", nil},
+		{"missing worktree", "task_1", "worktree", func(t *testing.T, f fixture, opts *Options, delivery, wt string) {
+			if err := os.RemoveAll(wt); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"changed task set", "task_1", "digest", func(t *testing.T, f fixture, opts *Options, delivery, wt string) {
+			path := filepath.Join(f.root, ".batuta", "plans", "greetings.md")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			data = bytes.Replace(data, []byte("- [ ] 3. Add greeting three"), []byte("- [ ] 3. Add other greeting three"), 1)
+			if err := os.WriteFile(path, data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"wrong branch", "task_1", "branch", func(t *testing.T, f fixture, opts *Options, delivery, wt string) {
+			f.run(t, "checkout", "-q", "-b", "other")
+		}},
+		{"terminal delivery", "task_1", "already ended", func(t *testing.T, f fixture, opts *Options, delivery, wt string) {
+			opts.KeepWorktrees = true
+			if _, err := Abandon(context.Background(), *opts); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, opts, delivery, wt, _ := parkedRecovery(t, "continuation-ask-untracked")
+			if tc.change != nil {
+				tc.change(t, f, &opts, delivery, wt)
+			}
+			selected := delivery
+			if tc.name == "unknown delivery" {
+				selected = opts.Resume
+			}
+			journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+			before, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = Recover(context.Background(), opts, selected, tc.task)
+			var failure *GateFailureError
+			if err == nil || errors.As(err, &failure) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Recover() = %v, want refusal containing %q", err, tc.want)
+			}
+			after, err := os.ReadFile(journalPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Fatal("refusal modified journal")
+			}
+		})
+	}
+}
