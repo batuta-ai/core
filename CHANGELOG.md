@@ -1,5 +1,28 @@
 # Changelog
 
+## [1.1.0-beta.53](https://github.com/batuta-ai/core/compare/v1.1.0-beta.52...v1.1.0-beta.53) (2026-10-13)
+
+
+### Features
+
+* attempt gates and the candidate commit move into helpers that name ([d2b1b22](https://github.com/batuta-ai/core/commit/d2b1b22c64465ce177a93d2f9ba0a551e00bef6c))
+* CLI exposes --recover and --reconcile ([a9f7c65](https://github.com/batuta-ai/core/commit/a9f7c65f97536efaa4dd2235a2a93ff359ff07fd))
+* graph records a candidate recovered from a waiting attempt ([b0b77b9](https://github.com/batuta-ai/core/commit/b0b77b9e9f8e20ed7acc5167fdeeb5850e1ad18a))
+* judge replay reads a recovered attempt as its final outcome ([d68eaec](https://github.com/batuta-ai/core/commit/d68eaec747e637f43ecd6a146c6097aabd4361b6))
+* loop reconciles a parked ref as a read-only report ([4d96bcb](https://github.com/batuta-ai/core/commit/4d96bcb44414f1ba9307659f631c79c6461f58ee))
+* loop recovers a waiting task through the attempt's gates ([a5a16fb](https://github.com/batuta-ai/core/commit/a5a16fb896322ff1262c13aea7d99187367b1839))
+* **loop:** recover a parked task and reconcile a parked ref ([32d0591](https://github.com/batuta-ai/core/commit/32d05910a8c4a71a5a7c7e0515ebe47ae15ecde3))
+* recovery is idempotent and refuses a graph with live attempts ([d769fd6](https://github.com/batuta-ai/core/commit/d769fd6b8fde6bed68eebbdce5f3d13b6065d3b4))
+* recovery runs the verifier of the parked attempt ([8991d19](https://github.com/batuta-ai/core/commit/8991d199f7eedb368b394ecbf4302e4fddc94b68))
+* worktree provider previews a merge without touching the workspace ([87dde5e](https://github.com/batuta-ai/core/commit/87dde5e868f332f13e68b6dd93674c1582700259))
+
+
+### Bug Fixes
+
+* **loop:** close the supervision review findings on recover and reconcile ([fbfeeb9](https://github.com/batuta-ai/core/commit/fbfeeb998950d0e5b8b5e56e92054b3a84138a0c))
+* **loop:** merge preview resolves its two commits once ([52e8c30](https://github.com/batuta-ai/core/commit/52e8c30f793beaca06d9a59a2b8b094521636976))
+* **loop:** reconcile previews the journaled commit on the qualified branch ([6f00f81](https://github.com/batuta-ai/core/commit/6f00f81b5be59f249c899602e9d19d61e4f1b255))
+
 ## [1.1.0-beta.52](https://github.com/batuta-ai/core/compare/v1.1.0-beta.51...v1.1.0-beta.52) (2026-10-10)
 
 
