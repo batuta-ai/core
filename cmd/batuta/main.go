@@ -47,6 +47,7 @@ Usage:
   batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [--transport cli|acp|auto] [<plan>]
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
+  batuta loop      --recover <delivery> <task> | --reconcile <delivery> <task>
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
   batuta loop      --supervise <delivery> --cursor <absolute-path> [--once] [--interval 500ms] [--notify desktop|<absolute-directory>] [--policy <path>]
   batuta loop      --supervise <delivery> --review-status
@@ -125,7 +126,13 @@ loop       The mechanical conductor over an approved plan
            3 waiting for an answer; 4 waiting for an approved roadmap plan;
            1 runtime error; 130 canceled. Missing, failed, uncertain or incomplete
            review cannot return unreviewed success. Resume retains review budgets.
-           Dry-run, dashboard and abandon do not launch reviewers.
+           --recover runs the gates of a normal attempt in the worktree of a task
+           parked in waiting_input, records a candidate and continues the delivery;
+           when a gate fails it prints the failures on stderr, exits 2 and leaves
+           the task waiting. --reconcile prints, read-only, how the task's parked
+           ref merges into the delivery branch as TSV lines (ref, status, file,
+           conflict); it exits 2 on conflict.
+           Dry-run, dashboard, reconcile and abandon do not launch reviewers.
            --transport selects the task transport (default cli); verification
            stays independently CLI.
 watch      Live dashboard of a delivery (the most recent open one by
@@ -640,6 +647,8 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	resume := flags.String("resume", "", "continue a delivery from its journal")
 	abandon := flags.String("abandon", "", "close a delivery that will not continue; ticks what integrated")
 	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
+	recoverTask := flags.Bool("recover", false, "run the gates on a task parked in waiting_input: <delivery> <task>")
+	reconcile := flags.Bool("reconcile", false, "print how a task's parked ref merges into the delivery branch: <delivery> <task>")
 	dashboard := flags.Bool("dashboard", false, "print the state of the open deliveries as TSV")
 	watch := flags.Bool("watch", false, "redraw a live dashboard until the delivery ends")
 	supervise := flags.String("supervise", "", "observe one explicit delivery in the foreground")
@@ -686,6 +695,18 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		}
 	}
 	rest := flags.Args()
+	if *recoverTask || *reconcile {
+		var conflict string
+		flags.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "dry-run", "resume", "answer", "abandon", "roadmap", "dashboard", "watch", "supervise":
+				conflict = f.Name
+			}
+		})
+		if conflict != "" || (*recoverTask && *reconcile) || len(rest) != 2 {
+			return errors.New("usage: batuta loop --recover <delivery> <task> | --reconcile <delivery> <task>; neither combines with other modes")
+		}
+	}
 	var judgmentMode bool
 	flags.Visit(func(f *flag.Flag) {
 		switch f.Name {
@@ -843,6 +864,27 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	if *watch {
 		return errors.New("--watch requires --dashboard")
 	}
+	if *reconcile {
+		root, err := workspaceRoot(*workspace)
+		if err != nil {
+			return err
+		}
+		report, err := loop.Reconcile(ctx, root, rest[0], rest[1])
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "ref\t%s\t%s\nstatus\t%s\n", report.Ref, report.SHA, report.Status)
+		for _, path := range report.Changed {
+			fmt.Fprintf(stdout, "file\t%s\n", path)
+		}
+		for _, path := range report.Conflicts {
+			fmt.Fprintf(stdout, "conflict\t%s\n", path)
+		}
+		if report.Status == loop.ReconcileConflict {
+			return &ExitError{Code: 2, State: report.Status}
+		}
+		return nil
+	}
 	opts := executionOptions()
 	if err := attachLoopJudge(&opts, *workspace); err != nil {
 		return err
@@ -897,6 +939,18 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		}
 		fmt.Fprintf(stdout, "answer recorded for %s in delivery %s; resuming\n", *answer, delivery)
 		opts.Resume = delivery
+	} else if *recoverTask {
+		opts.Resume = rest[0]
+		err := loop.Recover(ctx, opts, rest[0], rest[1])
+		var gateFailure *loop.GateFailureError
+		if errors.As(err, &gateFailure) {
+			fmt.Fprintf(stderr, "recover: gates failed for %s in delivery %s; the task stays waiting\n%s\n", rest[1], rest[0], gateFailure)
+			return &ExitError{Code: 2, State: "gates_failed"}
+		}
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "recovered %s in delivery %s; resuming\n", rest[1], rest[0])
 	} else if *resume != "" {
 		opts.Resume = *resume
 	}
