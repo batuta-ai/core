@@ -893,3 +893,101 @@ func mergePreviewError(exitCode int, stderr string) error {
 	}
 	return fmt.Errorf("worktree: git merge-tree exited %d; merge preview needs git 2.38 or newer: %s", exitCode, tail)
 }
+
+// ManagedWorktree is a registered worktree the loop made: it sits directly in
+// one of the homes, on a `batuta/<slug>/task-<N>-e<K>` branch, in a directory
+// named `<slug>-task-<N>-e<K>`. Missing is set when git marks it prunable or
+// its directory is gone.
+type ManagedWorktree struct {
+	Path      string
+	Branch    string
+	Slug      string
+	Task      int
+	Execution int
+	Missing   bool
+}
+
+var managedBranch = regexp.MustCompile(`^batuta/(.+)/task-([0-9]+)-e([0-9]+)$`)
+
+// Managed lists the registered worktrees that live directly in one of homes
+// and whose branch and directory name have the shape the runner generates.
+func (p GitProvider) Managed(ctx context.Context, homes []string) ([]ManagedWorktree, error) {
+	out, err := p.run(ctx, p.Root, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return nil, err
+	}
+	canonical := make([]string, 0, len(homes))
+	for _, home := range homes {
+		canonical = append(canonical, canonicalDir(home))
+	}
+	managed := make([]ManagedWorktree, 0)
+	for _, record := range worktreeRecords(out.Stdout) {
+		if record.branch == "" || !slices.Contains(canonical, canonicalDir(filepath.Dir(record.path))) {
+			continue
+		}
+		match := managedBranch.FindStringSubmatch(record.branch)
+		if match == nil {
+			continue
+		}
+		task, taskErr := strconv.Atoi(match[2])
+		execution, executionErr := strconv.Atoi(match[3])
+		if taskErr != nil || executionErr != nil || filepath.Base(record.path) != fmt.Sprintf("%s-task-%d-e%d", match[1], task, execution) {
+			continue
+		}
+		_, statErr := os.Lstat(record.path)
+		managed = append(managed, ManagedWorktree{
+			Path: record.path, Branch: record.branch, Slug: match[1], Task: task, Execution: execution,
+			Missing: record.prunable || statErr != nil,
+		})
+	}
+	return managed, nil
+}
+
+// canonicalDir resolves symlinks of dir, or cleans its absolute path when the
+// directory does not exist, so a deleted home still matches its worktrees.
+func canonicalDir(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return filepath.Clean(dir)
+}
+
+type worktreeRecord struct {
+	path     string
+	branch   string
+	prunable bool
+}
+
+// worktreeRecords reads `git worktree list --porcelain -z`: NUL ends each
+// field and an empty field ends the entry. Unlike nulFields it keeps that
+// boundary.
+func worktreeRecords(payload []byte) []worktreeRecord {
+	var records []worktreeRecord
+	var current worktreeRecord
+	open := false
+	flush := func() {
+		if open {
+			records = append(records, current)
+		}
+		current, open = worktreeRecord{}, false
+	}
+	for _, field := range strings.Split(string(payload), "\x00") {
+		key, value, _ := strings.Cut(field, " ")
+		switch {
+		case field == "":
+			flush()
+		case key == "worktree":
+			flush()
+			current, open = worktreeRecord{path: value}, true
+		case key == "branch":
+			current.branch = strings.TrimPrefix(value, "refs/heads/")
+		case key == "prunable":
+			current.prunable = true
+		}
+	}
+	flush()
+	return records
+}
