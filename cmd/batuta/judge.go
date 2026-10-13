@@ -537,7 +537,7 @@ func replayClaimEvidenceRequest(input loop.ClaimEvidenceInput, state any, pathsK
 	if input.Report.Verifier != nil {
 		evidence.VerifierLines = loop.ParseVerifierLines(input.Report.Verifier.Detail)
 	}
-	claims := loop.SettleClaims(loop.ExtractClaims(bounded.ExecutorReport, input.Criteria), evidence)
+	claims := loop.SettleClaims(loop.ExtractClaimsInHome(input.WorktreeHome, bounded.ExecutorReport, input.Criteria), evidence)
 	if !pathsKnown {
 		for i := range claims {
 			if claims[i].Kind != loop.ClaimKindPath {
@@ -569,6 +569,7 @@ func replayEvidenceInput(ctx context.Context, workspace string, attempt replayAt
 	tail, progress := loop.ParseRunLog(runLog)
 	return loop.ClaimEvidenceInput{
 		Workspace:    workspace,
+		WorktreeHome: loop.ProfileWorktreeHome(workspace),
 		Task:         routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: attempt.taskID, Title: title}},
 		Criteria:     loop.CriteriaFromProofs(attempt.report.Proofs),
 		Report:       attempt.report,

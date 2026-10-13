@@ -259,6 +259,47 @@ func TestExtractClaimsMarkdownLinkItems(t *testing.T) {
 	})
 }
 
+func TestExtractClaimsCacheHomeLink(t *testing.T) {
+	t.Parallel()
+	home := "/Users/x/Library/Caches/batuta/worktrees/0123456789abcdef"
+	report := "Paths touched:\n- [routing](file://" + home + "/wt-task-1-e1/.batuta/routing.md)\n"
+	got := pathClaimPaths(ExtractClaimsInHome(home, report, nil, anyKnownPath))
+	if strings.Join(got, ",") != ".batuta/routing.md" {
+		t.Fatalf("path claims = %v, want [.batuta/routing.md]", got)
+	}
+}
+
+func TestExtractClaimsForeignHomeLink(t *testing.T) {
+	t.Parallel()
+	home := "/Users/x/Library/Caches/batuta/worktrees/0123456789abcdef"
+	targets := map[string]string{
+		"another digest":      "/Users/x/Library/Caches/batuta/worktrees/fedcba9876543210/wt-task-1-e1/loop/claims.go",
+		"lookalike directory": home + "-old/wt-task-1-e1/loop/claims.go",
+		"lookalike prefix":    home + "0/wt-task-1-e1/loop/claims.go",
+	}
+	for name, target := range targets {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			report := "Paths touched:\n- [claims](file://" + target + ")\n"
+			for _, path := range pathClaimPaths(ExtractClaimsInHome(home, report, nil, anyKnownPath)) {
+				if path == "loop/claims.go" {
+					t.Fatalf("target outside the home was rewritten to %q", path)
+				}
+			}
+		})
+	}
+}
+
+func TestExtractClaimsWindowsHomeLink(t *testing.T) {
+	t.Parallel()
+	home := `C:\Users\x\AppData\Local\batuta\worktrees\0123456789abcdef`
+	report := "Paths touched:\n- [claims](file:///C:/Users/x/AppData/Local/batuta/worktrees/0123456789abcdef/wt-task-1-e1/loop/claims.go)\n"
+	got := pathClaimPaths(ExtractClaimsInHome(home, report, nil, anyKnownPath))
+	if strings.Join(got, ",") != "loop/claims.go" {
+		t.Fatalf("path claims = %v, want [loop/claims.go]", got)
+	}
+}
+
 func TestExtractClaimsRejectsMentions(t *testing.T) {
 	t.Parallel()
 
