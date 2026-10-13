@@ -15,8 +15,18 @@ import (
 )
 
 func parkedRecovery(t *testing.T, scenario string) (fixture, Options, string, string, string) {
+	return parkedRecoveryFixture(t, setup(t), scenario)
+}
+
+func parkedRecoverySingle(t *testing.T, scenario, complexity string) (fixture, Options, string, string, string) {
 	t.Helper()
 	f := setup(t)
+	oneMediumTaskPlan(t, f, "Add greeting one — backend/"+complexity, "out/1.txt", "out/1.txt exists → test -f out/1.txt")
+	return parkedRecoveryFixture(t, f, scenario)
+}
+
+func parkedRecoveryFixture(t *testing.T, f fixture, scenario string) (fixture, Options, string, string, string) {
+	t.Helper()
 	var out bytes.Buffer
 	opts := f.options(scenario, &out)
 	r, err := New(context.Background(), opts)
@@ -34,6 +44,121 @@ func parkedRecovery(t *testing.T, scenario string) (fixture, Options, string, st
 		t.Fatal(err)
 	}
 	return f, opts, delivery, wt.Root, ask
+}
+
+func TestConductorRecoverVerifierPass(t *testing.T) {
+	f, opts, delivery, _, _ := parkedRecoverySingle(t, "continuation-ask-untracked", "high")
+	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
+		t.Fatalf("Recover() = %v", err)
+	}
+	var intents, results int
+	for _, record := range readJournal(t, f, delivery) {
+		if record.TaskID != "task_1" {
+			continue
+		}
+		switch record.Kind {
+		case KindVerifierIntent:
+			intents++
+			var detail dispatchDetail
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			if detail.Executor != "codex" || detail.Model != "fake-high" || detail.Execution != 1 {
+				t.Fatalf("verifier dispatch = %+v", detail)
+			}
+		case KindVerifierResult:
+			results++
+		}
+	}
+	if intents != 1 || results != 1 {
+		t.Fatalf("verifier dispatch records: intents %d, results %d", intents, results)
+	}
+	if report := conductorGate(t, f, delivery); !report.Passed || report.Verifier == nil || !report.Verifier.Pass {
+		t.Fatalf("conductor gates = %+v", report)
+	}
+	if task := graphTask(recoveryGraph(t, f, delivery), "task_1"); task == nil || task.State != routing.GraphTaskCandidate {
+		t.Fatalf("recovered task = %+v", task)
+	}
+}
+
+func TestConductorRecoverVerifierRejection(t *testing.T) {
+	f, opts, delivery, wt, ask := parkedRecoverySingle(t, "continuation-ask-verifier-reject", "high")
+	head := f.run(t, "-C", wt, "rev-parse", "HEAD")
+	before := recoveryGraph(t, f, delivery)
+	err := Recover(context.Background(), opts, delivery, "task_1")
+	var failure *GateFailureError
+	if !errors.As(err, &failure) || !strings.Contains(err.Error(), "TASK 1: INCOMPLETE — greeting is wrong") {
+		t.Fatalf("Recover() = %v, want verifier rejection for criterion 1", err)
+	}
+	report := conductorGate(t, f, delivery)
+	if report.Passed || report.Verifier == nil || report.Verifier.Pass {
+		t.Fatalf("conductor gates = %+v", report)
+	}
+	if got := f.run(t, "-C", wt, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("worktree HEAD = %s, want %s", got, head)
+	}
+	if _, err := os.Stat(ask); err != nil {
+		t.Fatal(err)
+	}
+	a, b := graphTask(before, "task_1"), graphTask(recoveryGraph(t, f, delivery), "task_1")
+	if b.State != routing.GraphTaskWaitingInput || len(b.Attempts) != len(a.Attempts) || b.Attempts[0].Question == nil || b.Attempts[0].Question.Prompt != a.Attempts[0].Question.Prompt {
+		t.Fatalf("task changed after verifier rejection: before %+v, after %+v", a, b)
+	}
+	for _, record := range readJournal(t, f, delivery) {
+		if record.Kind == KindCandidate && record.TaskID == "task_1" {
+			t.Fatal("rejected recovery recorded a candidate")
+		}
+	}
+}
+
+func TestConductorRecoverSkipsVerifierWhenNotNeeded(t *testing.T) {
+	f, opts, delivery, _, _ := parkedRecoverySingle(t, "continuation-ask-untracked", "low")
+	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
+		t.Fatalf("Recover() = %v", err)
+	}
+	for _, record := range readJournal(t, f, delivery) {
+		if record.TaskID == "task_1" && (record.Kind == KindVerifierIntent || record.Kind == KindVerifierResult) {
+			t.Fatalf("unneeded verifier record: %s", record.Kind)
+		}
+	}
+	if report := conductorGate(t, f, delivery); !report.Passed || report.Verifier != nil || len(report.Proofs) != 1 || !report.Proofs[0].Pass {
+		t.Fatalf("conductor gates = %+v", report)
+	}
+	if task := graphTask(recoveryGraph(t, f, delivery), "task_1"); task == nil || task.State != routing.GraphTaskCandidate {
+		t.Fatalf("recovered task = %+v", task)
+	}
+}
+
+func TestConductorRecoverMissingAdapterRefusesBeforeWrite(t *testing.T) {
+	f, opts, delivery, wt, ask := parkedRecoverySingle(t, "continuation-ask-untracked", "high")
+	journalPath := filepath.Join(f.root, journal.Dir, delivery+".jsonl")
+	before, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	head := f.run(t, "-C", wt, "rev-parse", "HEAD")
+	opts.Skills = tempDir(t)
+	if err := os.MkdirAll(filepath.Join(opts.Skills, "adapters"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err = Recover(context.Background(), opts, delivery, "task_1")
+	var failure *GateFailureError
+	if err == nil || errors.As(err, &failure) || !strings.Contains(err.Error(), "codex") {
+		t.Fatalf("Recover() = %v, want missing adapter refusal", err)
+	}
+	after, err := os.ReadFile(journalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("refusal modified journal")
+	}
+	if got := f.run(t, "-C", wt, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("worktree HEAD = %s, want %s", got, head)
+	}
+	if _, err := os.Stat(ask); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func recoveryGraph(t *testing.T, f fixture, delivery string) *routing.DeliveryGraph {

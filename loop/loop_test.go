@@ -52,6 +52,7 @@ fi
 if [ "$mode" = "verify" ]; then
   if [ "${FAKE_SCENARIO:-default}" = satisfied-unverified ]; then exit 0; fi
   if [ "${FAKE_SCENARIO:-default}" = satisfied-proof-fails ]; then printf '%s\n' "$text" > "$state/verifier-prompt"; fi
+  if [ "${FAKE_SCENARIO:-default}" = continuation-ask-verifier-reject ]; then echo 'TASK 1: INCOMPLETE — greeting is wrong'; exit 0; fi
   if [ "${FAKE_SCENARIO:-default}" = unsigned-config ]; then
     git config --show-origin commit.gpgsign > "$state/verifier-git-config"
   fi

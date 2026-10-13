@@ -78,9 +78,6 @@ func Recover(ctx context.Context, opts Options, delivery, taskID string) (recove
 	if err := r.replay(records); err != nil {
 		return err
 	}
-	if err := r.preflight(ctx); err != nil {
-		return err
-	}
 	if expected := r.expectedHead(); expected != "" && expected != r.openedHead {
 		return fmt.Errorf("loop: branch %s moved since delivery %s last integrated (%s now, %s expected)", r.branch, delivery, short(r.openedHead), short(expected))
 	}
@@ -104,6 +101,13 @@ func Recover(ctx context.Context, opts Options, delivery, taskID string) (recove
 		taskID: taskID, execution: attempt.Execution, runtime: attempt.Runtime,
 		base: attempt.BaseHeadSHA, runID: attempt.ChildRunID,
 		plan: r.planTask(taskID), worktree: wt,
+	}
+	ac.adapter, err = r.adapterLocked(ac.runtime.Provider)
+	if err != nil {
+		return err
+	}
+	if err := r.preflight(ctx); err != nil {
+		return err
 	}
 	criteria := gates.ParseCriteria(ac.plan.Accept)
 	treeChanged, err := r.treeChangedFromBase(ctx, wt.Root, ac.base)
