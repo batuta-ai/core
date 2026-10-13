@@ -692,7 +692,7 @@ func (r *Runner) ensureWorktree(ctx context.Context, ac *attemptContext, attempt
 	}
 	name, branch := r.worktreeName(ac.taskID, ac.execution), r.branchName(ac.taskID, ac.execution)
 	if err := r.snapshotWorktree(ctx, ac.taskID, ac.execution, attemptWorktree{
-		Name: name, Branch: branch, Root: filepath.Join(r.root, ".batuta", "worktrees", name),
+		Name: name, Branch: branch, Root: r.git.Path(name),
 	}); err != nil {
 		return err
 	}
