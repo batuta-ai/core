@@ -1,10 +1,11 @@
 # Foreground loop supervision
 
-Normal `batuta loop`, `--resume`, `--answer`, and `--roadmap` executions include
-foreground supervision and full delivery review by default. The runner owns
-execution; a passive observer follows its journal, then review runs after
-finalization and release of runner ownership. Observation makes no model calls.
-`--dry-run`, `--dashboard` and `--abandon` do not launch reviewers.
+Normal `batuta loop`, `--resume`, `--answer`, `--roadmap`, and resumed `--recover`
+executions include foreground supervision and full delivery review by default.
+The runner owns execution; a passive observer follows its journal, then review
+runs after finalization and release of runner ownership. Resumed deliveries after
+`--recover` launch review when the delivery ends. Observation makes no model calls.
+`--dry-run`, `--dashboard`, `--reconcile` and `--abandon` never launch reviewers.
 
 Normal loop stdout keeps its worker/progress contract; structured observer JSON
 goes to stderr. Its private durable cursor is
