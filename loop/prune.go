@@ -92,6 +92,13 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 	}
 	slices.Sort(report.Warnings)
 	if opts.Apply {
+		if slices.ContainsFunc(report.Entries, func(e PruneEntry) bool { return e.State == PruneMissing }) {
+			// A missing entry has no directory to park or remove; only its
+			// stale registration goes, and its branch stays.
+			if err := git.PruneRegistry(ctx); err != nil {
+				return report, fmt.Errorf("loop: prune worktree registry: %w", err)
+			}
+		}
 		for i := range report.Entries {
 			entry := &report.Entries[i]
 			if entry.State == PruneMissing {
@@ -165,7 +172,13 @@ func pruneOwned(root string) (map[pruneKey]bool, error) {
 		if err := json.Unmarshal(records[0].Detail, &opening); err != nil || opening.Slug == "" {
 			return nil, fmt.Errorf("loop: journal %s has an invalid delivery_opened: %v", id, err)
 		}
-		last := records[len(records)-1]
+		// Ownership takeover is an audit of recovery: it can follow the
+		// terminal record and does not reopen the delivery.
+		end := len(records) - 1
+		for end > 0 && records[end].Kind == KindPresenceTakenOver {
+			end--
+		}
+		last := records[end]
 		if last.Kind == KindTerminal {
 			var terminal terminalDetail
 			if err := json.Unmarshal(last.Detail, &terminal); err != nil {

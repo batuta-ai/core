@@ -97,5 +97,3 @@ func TestLoadProfileRejectsWorktreeHome(t *testing.T) {
 		})
 	}
 }
-
-

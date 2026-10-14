@@ -242,13 +242,17 @@ Running `batuta loop --prune --apply [--workspace <dir>]` performs the cleanup:
 3. **Park before removal:** For each confirmed `orphan`, all tracked, staged,
    unstaged, and untracked files are snapshotted and parked under
    `refs/batuta/parked/<slug>/task-<N>-e<K>` before the worktree is deleted,
-   preserving uncommitted executor work.
+   preserving uncommitted executor work. Files that git ignores are not part
+   of the snapshot and are deleted with the worktree, the same as when the
+   loop removes a worktree at the end of a delivery. Copy an ignored file
+   you need, such as a local `.env`, out of the worktree before `--apply`.
 4. **Removal:** The worktree directory and its branch are removed. Its state is
    reported as `removed`.
 5. **Handling `missing` entries:** An entry in `missing` state is never parked
    (there is no worktree directory to snapshot) and its git branch is never deleted
-   (preserving any branch commits). `--apply` leaves its state as `missing`, while
-   running `git worktree prune` behind the scenes to clear stale git metadata.
+   (preserving any branch commits). `--apply` leaves its state as `missing` in
+   the output and runs `git worktree prune`, which drops the stale registration,
+   so the next report no longer lists the entry.
 
 `--prune --apply` prints the final state for each entry (`removed`, `missing`, or `skipped`).
 It exits 0 when all entries are `removed` or `missing`. It exits 2 when any entry

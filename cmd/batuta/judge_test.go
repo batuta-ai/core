@@ -1211,3 +1211,41 @@ func TestJudgeReplayUnchangedWithoutConductor(t *testing.T) {
 		t.Fatalf("stdout = %q, want %q", stdout, want)
 	}
 }
+
+// A delivery keeps the worktrees its journal names: replay resolves claim
+// links against the recorded worktree root, whatever the profile says now.
+func TestReplayHomeFromJournaledRoot(t *testing.T) {
+	workspace := t.TempDir()
+	home := "/cache/batuta/worktrees/0123456789abcdef"
+	record := func(kind journal.Kind, taskID, detail string) journal.Record {
+		return journal.Record{Kind: kind, TaskID: taskID, Detail: json.RawMessage(detail)}
+	}
+	records := []journal.Record{
+		record(loop.KindOpened, "", `{"slug":"plan"}`),
+		record(loop.KindWorktree, "task_1", `{"execution":1,"worktree":{"root":"`+home+`/plan-task-1-e1"}}`),
+		record(loop.KindFinished, "task_1", `{"execution":1}`),
+		record(loop.KindGates, "task_1", `{"execution":1}`),
+	}
+	attempts, _, _ := replayAttempts(records)
+	if len(attempts) != 1 {
+		t.Fatalf("got %d attempts, want 1", len(attempts))
+	}
+	if got := attempts[0].worktreeRoot; got != home+"/plan-task-1-e1" {
+		t.Fatalf("worktreeRoot = %q", got)
+	}
+	// The workspace has no profile, so the profile selects the repository home.
+	input := replayEvidenceInput(context.Background(), workspace, attempts[0], "", "", nil)
+	if input.WorktreeHome != home {
+		t.Fatalf("WorktreeHome = %q, want the journaled home %q", input.WorktreeHome, home)
+	}
+	report := "Paths touched:\n- [x](file://" + home + "/plan-task-1-e1/pkg/x.go)\n"
+	var paths []string
+	for _, claim := range loop.ExtractClaimsInHome(input.WorktreeHome, report, nil, func(string) bool { return true }) {
+		if claim.Kind == loop.ClaimKindPath {
+			paths = append(paths, claim.Path)
+		}
+	}
+	if len(paths) != 1 || paths[0] != "pkg/x.go" {
+		t.Fatalf("path claims = %v, want [pkg/x.go]", paths)
+	}
+}

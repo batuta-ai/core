@@ -2098,3 +2098,17 @@ func containsAll(values []any, want ...string) bool {
 	}
 	return true
 }
+
+func TestWorktreeHomeOf(t *testing.T) {
+	for _, tc := range []struct{ root, want string }{
+		{"/repo/.batuta/worktrees/plan-task-1-e1", "/repo/.batuta/worktrees"},
+		{"/cache/batuta/worktrees/0123456789abcdef/plan-task-1-e1/", "/cache/batuta/worktrees/0123456789abcdef"},
+		{`C:\Users\x\AppData\Local\batuta\worktrees\0123\plan-task-1-e1`, `C:\Users\x\AppData\Local\batuta\worktrees\0123`},
+		{"", ""},
+		{"plan-task-1-e1", ""},
+	} {
+		if got := WorktreeHomeOf(tc.root); got != tc.want {
+			t.Errorf("WorktreeHomeOf(%q) = %q, want %q", tc.root, got, tc.want)
+		}
+	}
+}

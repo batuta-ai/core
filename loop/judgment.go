@@ -678,8 +678,31 @@ func relativePath(path, workspace string) string {
 	return filepath.ToSlash(path)
 }
 
+// WorktreeHomeOf is the home of a recorded worktree root: the root without
+// its last segment. A delivery keeps the worktrees its journal names, so the
+// recorded root, not the current profile, says where its links point. It
+// accepts both separators, since a journal can be replayed on another OS.
+func WorktreeHomeOf(root string) string {
+	root = strings.TrimRight(root, `/\`)
+	i := strings.LastIndexAny(root, `/\`)
+	if i <= 0 {
+		return ""
+	}
+	return root[:i]
+}
+
+// attemptWorktreeHome is the home of the worktree the attempt ran in, and the
+// provider's current home when the attempt has no worktree.
+func (r *Runner) attemptWorktreeHome(ac attemptContext) string {
+	if home := WorktreeHomeOf(ac.worktree.Root); home != "" {
+		return home
+	}
+	return r.git.Path("")
+}
+
 // ProfileWorktreeHome is the worktree home the profile of the repository at
-// workspace selects, for replaying a delivery outside its runner. It is empty
+// workspace selects, for replaying an attempt whose journal names no worktree
+// root. It is empty
 // when the profile is missing or invalid, or keeps worktrees in the repository.
 func ProfileWorktreeHome(workspace string) string {
 	profile, err := LoadProfile(workspace)
@@ -955,7 +978,7 @@ func (r *Runner) judgeClaimEvidence(ctx context.Context, ac attemptContext, repo
 
 	input := ClaimEvidenceInput{
 		Workspace:    r.root,
-		WorktreeHome: r.git.Path(""),
+		WorktreeHome: r.attemptWorktreeHome(ac),
 		Task:         ac.plan,
 		Criteria:     gates.ParseCriteria(ac.plan.Accept),
 		Report:       *report,

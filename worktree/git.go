@@ -267,6 +267,13 @@ func (p GitProvider) Remove(ctx context.Context, path, branch string) error {
 	return first
 }
 
+// PruneRegistry drops the registration of every worktree whose directory is
+// gone. It deletes no branch and no directory.
+func (p GitProvider) PruneRegistry(ctx context.Context) error {
+	_, err := p.run(ctx, p.Root, "worktree", "prune")
+	return err
+}
+
 // Park saves the working tree under ref and distinct staged contents under
 // ref+"-index" without changing HEAD, the real index, or any files. A tree
 // already protected by a recovery ref or integration history needs no new snapshot.

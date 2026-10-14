@@ -304,6 +304,31 @@ func TestPruneApplyKeepsMissingBranch(t *testing.T) {
 	if got := f.run(t, "for-each-ref", "--format=%(refname)", "refs/batuta/parked"); got != "" {
 		t.Fatalf("missing worktree was parked: %q", got)
 	}
+	if got := f.run(t, "worktree", "list", "--porcelain"); strings.Contains(got, wt.Branch) {
+		t.Fatalf("stale registration of the missing worktree remains:\n%s", got)
+	}
+}
+
+func TestPruneDoneAfterPresenceTakeover(t *testing.T) {
+	f := setup(t)
+	wt := pruneWorktree(t, f, worktree.RepositoryHome(f.root), "plan", 1, 1)
+	pruneJournal(t, f.root, "finished", "plan", wt.Path, 1, 1, StateDone)
+	store, err := journal.Open(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Append("finished", journal.Record{Kind: KindPresenceTakenOver, Detail: json.RawMessage(`{}`)}); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Prune(context.Background(), f.root, PruneOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []PruneEntry{{Path: wt.Path, Branch: wt.Branch, Slug: wt.Slug, State: PruneOrphan}}
+	if !reflect.DeepEqual(report.Entries, want) {
+		t.Fatalf("entries = %+v, want %+v", report.Entries, want)
+	}
 }
 
 func TestPruneApplyRefusesLiveRunner(t *testing.T) {

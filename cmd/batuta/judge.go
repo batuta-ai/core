@@ -214,6 +214,15 @@ type replaySnapshotDetail struct {
 	SHA       string `json:"sha"`
 }
 
+// replayWorktreeDetail is the worktree binding a worktree_attached or
+// worktree_snapshotted record carries.
+type replayWorktreeDetail struct {
+	Execution int `json:"execution"`
+	Worktree  struct {
+		Root string `json:"root"`
+	} `json:"worktree"`
+}
+
 type replayAttemptKey struct {
 	taskID    string
 	execution int
@@ -227,6 +236,7 @@ type replayAttempt struct {
 	candidateCommit string
 	candidateBase   string
 	snapshotSHA     string
+	worktreeRoot    string
 	report          gates.Report
 	outcome         string
 	at              time.Time
@@ -245,8 +255,15 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 	outcomes := map[replayAttemptKey]string{}
 	candidates := map[replayAttemptKey]replayCandidateDetail{}
 	snapshots := map[replayAttemptKey]replaySnapshotDetail{}
+	roots := map[replayAttemptKey]string{}
 	titles = map[string]string{}
 	for _, record := range records {
+		if record.Kind == loop.KindWorktree || record.Kind == loop.KindSnapshot {
+			var detail replayWorktreeDetail
+			if json.Unmarshal(record.Detail, &detail) == nil && detail.Worktree.Root != "" {
+				roots[replayAttemptKey{record.TaskID, detail.Execution}] = detail.Worktree.Root
+			}
+		}
 		switch record.Kind {
 		case loop.KindOpened:
 			var detail replayOpenedDetail
@@ -353,7 +370,7 @@ func replayAttempts(records []journal.Record) (attempts []replayAttempt, titles 
 		attempts = append(attempts, replayAttempt{
 			taskID: record.TaskID, execution: report.Execution, treeChanged: treeChanged,
 			baseSHA: baseSHA, candidateCommit: candidate.Commit, candidateBase: candidate.Evidence.BaseSHA,
-			snapshotSHA: snapshot.SHA, report: report, outcome: outcomes[key], at: record.At,
+			snapshotSHA: snapshot.SHA, worktreeRoot: roots[key], report: report, outcome: outcomes[key], at: record.At,
 		})
 	}
 	return attempts, titles, slug
@@ -567,9 +584,15 @@ type replayBoundedState struct {
 // the progress events carry no timestamps.
 func replayEvidenceInput(ctx context.Context, workspace string, attempt replayAttempt, title, runLog string, changedPaths []string) loop.ClaimEvidenceInput {
 	tail, progress := loop.ParseRunLog(runLog)
+	// The delivery keeps the worktrees its journal names, so the recorded
+	// root wins over the current profile.
+	home := loop.WorktreeHomeOf(attempt.worktreeRoot)
+	if home == "" {
+		home = loop.ProfileWorktreeHome(workspace)
+	}
 	return loop.ClaimEvidenceInput{
 		Workspace:    workspace,
-		WorktreeHome: loop.ProfileWorktreeHome(workspace),
+		WorktreeHome: home,
 		Task:         routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: attempt.taskID, Title: title}},
 		Criteria:     loop.CriteriaFromProofs(attempt.report.Proofs),
 		Report:       attempt.report,
