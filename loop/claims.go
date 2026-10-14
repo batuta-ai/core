@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -113,6 +114,13 @@ var knownPathExt = map[string]bool{
 // the atomic claims the executor made. A path token is kept only when known
 // returns true. It never calls the judge.
 func ExtractClaims(report string, criteria []gates.Criterion, known ...func(path string) bool) []Claim {
+	return ExtractClaimsInHome("", report, criteria, known...)
+}
+
+// ExtractClaimsInHome is ExtractClaims for a delivery whose worktrees live in
+// home: a file:// link under home/<name>/ resolves to the path inside that
+// worktree. An empty home leaves only the .batuta/worktrees/ marker.
+func ExtractClaimsInHome(home, report string, criteria []gates.Criterion, known ...func(path string) bool) []Claim {
 	var check func(string) bool
 	if len(known) > 0 {
 		check = known[0]
@@ -133,7 +141,7 @@ func ExtractClaims(report string, criteria []gates.Criterion, known ...func(path
 				collectingPaths = false
 			} else if sentenceDisqualified(trimmed) {
 				continue
-			} else if item := listItemPath(trimmed); item != "" {
+			} else if item := listItemPath(trimmed, home); item != "" {
 				claims = appendPathClaim(claims, seenPath, item, line, check)
 				continue
 			} else {
@@ -369,12 +377,12 @@ func pathsInText(s string) []string {
 	return out
 }
 
-func listItemPath(trimmed string) string {
+func listItemPath(trimmed, home string) string {
 	match := claimListItem.FindStringSubmatch(trimmed)
 	if match == nil {
 		return ""
 	}
-	item := rewriteMarkdownLinks(match[1])
+	item := rewriteMarkdownLinks(match[1], home)
 	path, ok := pathToken(item)
 	if !ok {
 		return ""
@@ -389,7 +397,7 @@ const claimWorktreeMarker = "/.batuta/worktrees/"
 // rewriteMarkdownLinks resolves every Markdown link in a list item to the
 // path it names: the link text when it is a path, else the file:// target
 // made repository-relative; a link that names no path is dropped.
-func rewriteMarkdownLinks(item string) string {
+func rewriteMarkdownLinks(item, home string) string {
 	matches := claimMarkdownLink.FindAllStringSubmatchIndex(item, -1)
 	if matches == nil {
 		return item
@@ -398,19 +406,22 @@ func rewriteMarkdownLinks(item string) string {
 	last := 0
 	for _, m := range matches {
 		b.WriteString(item[last:m[0]])
-		b.WriteString(markdownLinkPath(item[m[2]:m[3]], item[m[4]:m[5]]))
+		b.WriteString(markdownLinkPath(item[m[2]:m[3]], item[m[4]:m[5]], home))
 		last = m[1]
 	}
 	b.WriteString(item[last:])
 	return b.String()
 }
 
-func markdownLinkPath(text, target string) string {
+func markdownLinkPath(text, target, home string) string {
 	if path, ok := pathToken(strings.ReplaceAll(text, "`", "")); ok {
 		return path
 	}
 	if !strings.HasPrefix(target, "file://") {
 		return ""
+	}
+	if rest, ok := homeRelativePath(target, home); ok {
+		return rest
 	}
 	if idx := strings.Index(target, claimWorktreeMarker); idx >= 0 {
 		rest := target[idx+len(claimWorktreeMarker):]
@@ -420,6 +431,29 @@ func markdownLinkPath(text, target string) string {
 		return ""
 	}
 	return strings.TrimLeft(strings.TrimPrefix(target, "file://"), "/")
+}
+
+// homeRelativePath cuts a file:// target under home/<name>/ down to the path
+// inside that worktree. It compares in slash form and matches the whole home
+// prefix plus one name segment, so a sibling directory never matches.
+func homeRelativePath(target, home string) (string, bool) {
+	home = strings.Trim(strings.ReplaceAll(home, `\`, "/"), "/")
+	if home == "" {
+		return "", false
+	}
+	path := strings.TrimPrefix(target, "file://")
+	if decoded, err := url.PathUnescape(path); err == nil {
+		path = decoded
+	}
+	path = strings.TrimLeft(path, "/")
+	rest, ok := strings.CutPrefix(path, home+"/")
+	if !ok {
+		return "", false
+	}
+	if slash := strings.Index(rest, "/"); slash > 0 {
+		return rest[slash+1:], true
+	}
+	return "", true
 }
 
 func appendPathTokens(claims []Claim, seen map[string]bool, rest, line string, known func(string) bool) []Claim {

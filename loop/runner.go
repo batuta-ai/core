@@ -451,6 +451,12 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
+	if profile.WorktreeHome == "cache" {
+		git.Home, err = worktree.CacheHome(root)
+		if err != nil {
+			return nil, fmt.Errorf("loop: cache worktree home: %w", err)
+		}
+	}
 	if strings.TrimSpace(profile.Test) == "" {
 		return nil, errors.New("loop: the profile has no `Test:` line — the loop cannot run gate 2 without the test command")
 	}
@@ -785,10 +791,14 @@ func (r *Runner) DryRun() (Preview, error) {
 func (r *Runner) previewTask(taskID string, execution int) PreviewTask {
 	plan := r.planTask(taskID)
 	cell, _ := r.cellFor(taskID)
+	worktreePath := r.git.Path(r.worktreeName(taskID, execution))
+	if r.profile.WorktreeHome == "repository" {
+		worktreePath = strings.TrimPrefix(worktreePath, r.root+string(filepath.Separator))
+	}
 	task := PreviewTask{
 		ID: taskID, Number: plan.Number, Title: plan.Title, Lane: string(plan.Domain) + "/" + string(plan.Complexity),
 		Executor: string(cell.Selected.ExecutorID), Model: cell.Selected.ModelID, Reasoning: cell.Selected.Reasoning,
-		Worktree: filepath.Join(worktree.Dir, r.worktreeName(taskID, execution)), Completed: plan.Status == "completed",
+		Worktree: worktreePath, Completed: plan.Status == "completed",
 		Dependency: slices.Clone(plan.Dependencies),
 	}
 	for _, fallback := range cell.Fallbacks {
@@ -1133,6 +1143,11 @@ func (r *Runner) runPreparingWaves(ctx context.Context) (int, error) {
 func (r *Runner) addWorktree(ctx context.Context, name, branch, base string) (string, error) {
 	r.worktreeMu.Lock()
 	defer r.worktreeMu.Unlock()
+	if r.profile.WorktreeHome == "cache" {
+		if err := os.MkdirAll(r.git.Home, 0o700); err != nil {
+			return "", fmt.Errorf("loop: create cache worktree home: %w", err)
+		}
+	}
 	return r.git.Add(ctx, name, branch, base)
 }
 

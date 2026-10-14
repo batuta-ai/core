@@ -20,6 +20,28 @@ import (
 	"github.com/batuta-ai/core/worktree"
 )
 
+func TestClaimEvidenceCacheHomeLink(t *testing.T) {
+	t.Parallel()
+	root := tempDir(t)
+	home := filepath.Join(tempDir(t), "batuta", "worktrees", "0123456789abcdef")
+	link := "file://" + filepath.ToSlash(filepath.Join(home, "demo-task-1-e1", "loop", "claims.go"))
+	claims := claimsFromInput(ClaimEvidenceInput{
+		Workspace:    root,
+		WorktreeHome: home,
+		Task:         routing.PlanTask{TaskArtifact: routing.TaskArtifact{ID: "task_1"}},
+		OutputTail:   "Paths touched:\n- [claims](" + link + ")\n",
+		ChangedPaths: []string{"loop/claims.go"},
+		TreeChanged:  true,
+	})
+	claim, ok := pathClaim(claims, "loop/claims.go")
+	if !ok {
+		t.Fatalf("claims = %#v, want a path claim for loop/claims.go", claims)
+	}
+	if claim.Status != ClaimStatusSupported {
+		t.Fatalf("status = %q, want %q", claim.Status, ClaimStatusSupported)
+	}
+}
+
 func TestBuildClaimEvidenceState(t *testing.T) {
 	t.Parallel()
 
@@ -2075,4 +2097,18 @@ func containsAll(values []any, want ...string) bool {
 		}
 	}
 	return true
+}
+
+func TestWorktreeHomeOf(t *testing.T) {
+	for _, tc := range []struct{ root, want string }{
+		{"/repo/.batuta/worktrees/plan-task-1-e1", "/repo/.batuta/worktrees"},
+		{"/cache/batuta/worktrees/0123456789abcdef/plan-task-1-e1/", "/cache/batuta/worktrees/0123456789abcdef"},
+		{`C:\Users\x\AppData\Local\batuta\worktrees\0123\plan-task-1-e1`, `C:\Users\x\AppData\Local\batuta\worktrees\0123`},
+		{"", ""},
+		{"plan-task-1-e1", ""},
+	} {
+		if got := WorktreeHomeOf(tc.root); got != tc.want {
+			t.Errorf("WorktreeHomeOf(%q) = %q, want %q", tc.root, got, tc.want)
+		}
+	}
 }

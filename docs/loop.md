@@ -101,7 +101,7 @@ must stand alone: no prefix, suffix, or extra text on the same line.
 | Package | Role |
 |---|---|
 | `journal` | Append-only JSONL per delivery under `.batuta/journal/`, hash-chained; every record carries the graph after the transition |
-| `worktree` | `GitProvider`: worktrees under `.batuta/worktrees/`, squash, bookkeeping commits, `.git/info/exclude` |
+| `worktree` | `GitProvider`: worktrees under repository home `.batuta/worktrees/` or cache home `<os.UserCacheDir()>/batuta/worktrees/<digest>`, squash, bookkeeping commits, `.git/info/exclude` |
 | `executor` | Adapter frontmatter → argv (no shell), subprocess with stdin closed, timeouts, process-group kill, `finished`, `limit_regex`, `usage_regex` and `output_decoder` rules, question line |
 | `gates` | Gate 0 finished · 1 tree · 2 tests · 3 scope, proofs, independent read-only verifier |
 | `loop` | The runner over `routing.DeliveryGraph`: routing from the table, waves, attempts, retry then escalation, integration, bookkeeping, resume, answer, abandon, dashboard, trail |
@@ -165,6 +165,98 @@ parked ref merges into the delivery branch as TSV lines (`ref`, `status`,
 `file`, `conflict`). A path that holds a backslash or a control character
 is written with Go escapes (`\t`, `\n`, `\\`), so every line keeps its fields.
 It exits `0` on clean merge or `2` on conflict.
+
+## Worktree home and isolation
+
+A project can configure where the loop places task worktrees by declaring the
+`Worktree-home:` line in `.batuta/profile.md`:
+
+```markdown
+Worktree-home: repository
+# or
+Worktree-home: cache
+```
+
+The default stays `repository`, keeping task worktrees inside the repository
+under `<root>/.batuta/worktrees/<name>`.
+
+When set to `Worktree-home: cache`, worktrees are placed outside the repository
+under `<os.UserCacheDir()>/batuta/worktrees/<digest>/<name>`. The cache layout
+uses `<os.UserCacheDir()>/batuta/worktrees/<digest>` where `<digest>` is the
+first 16 hex characters of the SHA-256 of the canonical repository root path.
+`os.UserCacheDir()` resolves to `~/Library/Caches` on macOS, `$XDG_CACHE_HOME` or
+`~/.cache` on Linux, and `%LocalAppData%` on Windows. This keeps task worktrees
+invisible to linters, test runners, and file watchers that traverse dot-directories
+inside the workspace root.
+
+A fundamental rule is that a delivery keeps the worktrees its journal names:
+when resuming or recovering an interrupted delivery, or when abandoning it,
+the loop reads the worktree root recorded in the delivery journal and operates
+on that worktree path, even if `Worktree-home:` in `.batuta/profile.md` was changed
+in the meantime. If a journaled worktree directory is missing upon resume, it is
+recreated at that journaled path rather than in the newly configured home.
+
+## Worktree prune
+
+`batuta loop --prune` and `batuta loop --prune --apply` inspect and clean up
+task worktrees that are no longer owned by any open delivery.
+
+### Ownership rule and definition of an orphan
+
+An open delivery is any delivery whose journal does not end in a terminal
+state (`done` or `abandoned`). Deliveries with no terminal record, or ending in
+`waiting_input`, `waiting_plan`, `blocked`, or `canceled`, are open deliveries.
+An open delivery owns the worktrees named in its journal records: matching requires
+both the recorded attempt `worktree_root` and the generated branch name
+(`batuta/<slug>/task-<N>-e<K>`).
+
+The ownership rule verifies registered git worktrees against known homes
+(the repository home and the user cache home). A registered worktree is managed
+if its parent directory is one of the homes, its branch matches
+`batuta/<slug>/task-<N>-e<K>`, and its directory name matches `<slug>-task-<N>-e<K>`.
+The main worktree, detached HEAD worktrees, and worktrees on other branches are never
+managed.
+
+A managed worktree that no open delivery owns is defined as an **orphan**.
+If git reports the worktree as missing or prunable, or if its directory is missing
+on disk, its state is reported as `missing`.
+
+### Prune report and removal
+
+Running `batuta loop --prune [--workspace <dir>]` is a read-only report. It lists
+unowned worktrees as TSV lines (`path`, `branch`, `slug`, `state`), where `state`
+is either `orphan` or `missing`. Paths and branches are Go-escaped if they contain
+control characters or backslashes. If any delivery in the workspace has a live
+presence lock, the report prints a warning on stderr (e.g. `warning: delivery <id> has a live runner (pid <pid>)`),
+but still lists the unowned worktrees and exits 0.
+
+Running `batuta loop --prune --apply [--workspace <dir>]` performs the cleanup:
+
+1. **Refusal while a runner is live:** If any delivery in the workspace has a live
+   presence lock, `--apply` refuses to run, prints an error, and removes nothing.
+2. **Re-check before removal:** Before removing each orphan, the loop re-reads the
+   journals and the git worktree registry to confirm that the worktree is still an
+   unowned orphan. If an open delivery claimed it in the meantime, it is not removed
+   and its state becomes `skipped`. A short window remains between this re-read
+   and the subsequent git worktree removal.
+3. **Park before removal:** For each confirmed `orphan`, all tracked, staged,
+   unstaged, and untracked files are snapshotted and parked under
+   `refs/batuta/parked/<slug>/task-<N>-e<K>` before the worktree is deleted,
+   preserving uncommitted executor work. Files that git ignores are not part
+   of the snapshot and are deleted with the worktree, the same as when the
+   loop removes a worktree at the end of a delivery. Copy an ignored file
+   you need, such as a local `.env`, out of the worktree before `--apply`.
+4. **Removal:** The worktree directory and its branch are removed. Its state is
+   reported as `removed`.
+5. **Handling `missing` entries:** An entry in `missing` state is never parked
+   (there is no worktree directory to snapshot) and its git branch is never deleted
+   (preserving any branch commits). `--apply` leaves its state as `missing` in
+   the output and runs `git worktree prune`, which drops the stale registration,
+   so the next report no longer lists the entry.
+
+`--prune --apply` prints the final state for each entry (`removed`, `missing`, or `skipped`).
+It exits 0 when all entries are `removed` or `missing`. It exits 2 when any entry
+is `skipped`.
 
 ## After the run
 
@@ -593,7 +685,7 @@ and from the scope check, committed by the loop with the plan bookkeeping.
 | Path | Tracked | When |
 |---|---|---|
 | `.batuta/journal/<delivery>.jsonl` | no (`.git/info/exclude`) | every transition |
-| `.batuta/worktrees/<slug>-task-N-e<k>/` | no | per attempt; removed after integration or abort (`--keep-worktrees` keeps them) |
+| `.batuta/worktrees/<slug>-task-N-e<k>/` (or `<os.UserCacheDir()>/batuta/worktrees/<digest>/...` with cache home) | no | per attempt; removed after integration or abort (`--keep-worktrees` keeps them) |
 | `.batuta/runs/<date>-<slug>-task-N.md` (+ `-e<k>.brief.md`, `-e<k>.out.log`) | no | per attempt |
 | `.batuta/runs/supervision/<delivery>.json` | no (`.git/info/exclude`) | durable foreground observer cursor |
 | `.batuta/reviews/supervision/<job-id>/` | no (`.git/info/exclude`) | final review snapshot, reports, job state and progression judgment |

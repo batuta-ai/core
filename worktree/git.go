@@ -9,6 +9,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -41,11 +43,49 @@ var (
 	branchName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/-]*$`)
 )
 
-// GitProvider runs git against one repository root.
+// GitProvider runs git against one repository root. Home is the directory
+// that holds the task worktrees; empty means RepositoryHome(Root).
 type GitProvider struct {
 	Git    string
 	Runner publication.CommandRunner
 	Root   string
+	Home   string
+}
+
+// RepositoryHome is the worktree home inside the repository at root.
+func RepositoryHome(root string) string {
+	return filepath.Join(root, filepath.FromSlash(Dir))
+}
+
+// CacheHome is the worktree home under the user cache directory for the
+// repository at root: <cache>/batuta/worktrees/<digest>, the digest being the
+// first 16 hex characters of the SHA-256 of the canonical root path. The path
+// is not case-folded, so spellings that differ only in case may map to two
+// homes on a case-insensitive file system.
+func CacheHome(root string) (string, error) {
+	canonical, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("worktree: resolve root: %w", err)
+	}
+	if canonical, err = filepath.EvalSymlinks(canonical); err != nil {
+		return "", fmt.Errorf("worktree: resolve root: %w", err)
+	}
+	canonical = filepath.Clean(canonical)
+	cache, err := os.UserCacheDir()
+	if err != nil {
+		return "", fmt.Errorf("worktree: locate cache directory: %w", err)
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return filepath.Join(cache, "batuta", "worktrees", hex.EncodeToString(sum[:])[:16]), nil
+}
+
+// Path is where the worktree called name lives. It does not touch the disk.
+func (p GitProvider) Path(name string) string {
+	home := p.Home
+	if home == "" {
+		home = RepositoryHome(p.Root)
+	}
+	return filepath.Join(home, name)
 }
 
 // New resolves git on PATH and the canonical repository toplevel of root.
@@ -162,15 +202,38 @@ func (p GitProvider) EnsureExcluded(ctx context.Context) error {
 	return err
 }
 
-// Add creates `.batuta/worktrees/<name>` on a new branch at base. A leftover
-// worktree or branch of the same name from an aborted run is removed first.
+// Add creates the worktree for name under the provider's home on a new branch
+// at base. A leftover worktree or branch of the same name from an aborted run
+// is removed first.
 func (p GitProvider) Add(ctx context.Context, name, branch, baseSHA string) (string, error) {
+	return p.addAt(ctx, p.Path(name), branch, baseSHA)
+}
+
+// AddAt creates a worktree at path when it is a direct child of an allowed home.
+func (p GitProvider) AddAt(ctx context.Context, path, branch, baseSHA string, homes []string) (string, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", errors.New("worktree: invalid worktree path")
+	}
+	allowed := false
+	for _, home := range homes {
+		if filepath.IsAbs(home) && filepath.Clean(home) == home && filepath.Dir(path) == home {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return "", errors.New("worktree: worktree path is outside allowed homes")
+	}
+	return p.addAt(ctx, path, branch, baseSHA)
+}
+
+func (p GitProvider) addAt(ctx context.Context, path, branch, baseSHA string) (string, error) {
+	name := filepath.Base(path)
 	if !safeName(name) || !branchName.MatchString(branch) || !gitSHA.MatchString(baseSHA) {
 		return "", errors.New("worktree: invalid worktree name, branch or base")
 	}
-	path := filepath.Join(p.Root, filepath.FromSlash(Dir), name)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return "", fmt.Errorf("worktree: create %s: %w", Dir, err)
+		return "", fmt.Errorf("worktree: create %s: %w", filepath.Dir(path), err)
 	}
 	_ = p.Remove(ctx, path, branch)
 	if _, err := p.run(ctx, p.Root, "worktree", "add", "-q", "-b", branch, path, baseSHA); err != nil {
@@ -202,6 +265,13 @@ func (p GitProvider) Remove(ctx context.Context, path, branch string) error {
 		}
 	}
 	return first
+}
+
+// PruneRegistry drops the registration of every worktree whose directory is
+// gone. It deletes no branch and no directory.
+func (p GitProvider) PruneRegistry(ctx context.Context) error {
+	_, err := p.run(ctx, p.Root, "worktree", "prune")
+	return err
 }
 
 // Park saves the working tree under ref and distinct staged contents under
@@ -829,4 +899,102 @@ func mergePreviewError(exitCode int, stderr string) error {
 		tail = tail[len(tail)-400:]
 	}
 	return fmt.Errorf("worktree: git merge-tree exited %d; merge preview needs git 2.38 or newer: %s", exitCode, tail)
+}
+
+// ManagedWorktree is a registered worktree the loop made: it sits directly in
+// one of the homes, on a `batuta/<slug>/task-<N>-e<K>` branch, in a directory
+// named `<slug>-task-<N>-e<K>`. Missing is set when git marks it prunable or
+// its directory is gone.
+type ManagedWorktree struct {
+	Path      string
+	Branch    string
+	Slug      string
+	Task      int
+	Execution int
+	Missing   bool
+}
+
+var managedBranch = regexp.MustCompile(`^batuta/(.+)/task-([0-9]+)-e([0-9]+)$`)
+
+// Managed lists the registered worktrees that live directly in one of homes
+// and whose branch and directory name have the shape the runner generates.
+func (p GitProvider) Managed(ctx context.Context, homes []string) ([]ManagedWorktree, error) {
+	out, err := p.run(ctx, p.Root, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return nil, err
+	}
+	canonical := make([]string, 0, len(homes))
+	for _, home := range homes {
+		canonical = append(canonical, canonicalDir(home))
+	}
+	managed := make([]ManagedWorktree, 0)
+	for _, record := range worktreeRecords(out.Stdout) {
+		if record.branch == "" || !slices.Contains(canonical, canonicalDir(filepath.Dir(record.path))) {
+			continue
+		}
+		match := managedBranch.FindStringSubmatch(record.branch)
+		if match == nil {
+			continue
+		}
+		task, taskErr := strconv.Atoi(match[2])
+		execution, executionErr := strconv.Atoi(match[3])
+		if taskErr != nil || executionErr != nil || filepath.Base(record.path) != fmt.Sprintf("%s-task-%d-e%d", match[1], task, execution) {
+			continue
+		}
+		_, statErr := os.Lstat(record.path)
+		managed = append(managed, ManagedWorktree{
+			Path: record.path, Branch: record.branch, Slug: match[1], Task: task, Execution: execution,
+			Missing: record.prunable || statErr != nil,
+		})
+	}
+	return managed, nil
+}
+
+// canonicalDir resolves symlinks of dir, or cleans its absolute path when the
+// directory does not exist, so a deleted home still matches its worktrees.
+func canonicalDir(dir string) string {
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return filepath.Clean(dir)
+}
+
+type worktreeRecord struct {
+	path     string
+	branch   string
+	prunable bool
+}
+
+// worktreeRecords reads `git worktree list --porcelain -z`: NUL ends each
+// field and an empty field ends the entry. Unlike nulFields it keeps that
+// boundary.
+func worktreeRecords(payload []byte) []worktreeRecord {
+	var records []worktreeRecord
+	var current worktreeRecord
+	open := false
+	flush := func() {
+		if open {
+			records = append(records, current)
+		}
+		current, open = worktreeRecord{}, false
+	}
+	for _, field := range strings.Split(string(payload), "\x00") {
+		key, value, _ := strings.Cut(field, " ")
+		switch {
+		case field == "":
+			flush()
+		case key == "worktree":
+			flush()
+			current, open = worktreeRecord{path: value}, true
+		case key == "branch":
+			current.branch = strings.TrimPrefix(value, "refs/heads/")
+		case key == "prunable":
+			current.prunable = true
+		}
+	}
+	flush()
+	return records
 }

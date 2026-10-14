@@ -13,6 +13,7 @@ import (
 
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
+	"github.com/batuta-ai/core/worktree"
 )
 
 func parkedRecovery(t *testing.T, scenario string) (fixture, Options, string, string, string) {
@@ -126,6 +127,44 @@ func TestConductorRecoverSkipsVerifierWhenNotNeeded(t *testing.T) {
 		t.Fatalf("conductor gates = %+v", report)
 	}
 	if task := graphTask(recoveryGraph(t, f, delivery), "task_1"); task == nil || task.State != routing.GraphTaskCandidate {
+		t.Fatalf("recovered task = %+v", task)
+	}
+}
+
+func TestConductorRecoverCacheHome(t *testing.T) {
+	isolateLoopCache(t)
+	f := setup(t)
+	configureCacheHome(t, f)
+	f, opts, delivery, root, _ := parkedRecoveryFixture(t, f, "continuation-ask-untracked")
+	home, err := worktree.CacheHome(f.root)
+	if err != nil || filepath.Dir(root) != home {
+		t.Fatalf("worktree root = %q, cache home = %q, %v", root, home, err)
+	}
+	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
+		t.Fatalf("Recover() = %v", err)
+	}
+	if report := conductorGate(t, f, delivery); !report.Passed {
+		t.Fatalf("conductor gates = %+v", report)
+	}
+	if task := graphTask(recoveryGraph(t, f, delivery), "task_1"); task == nil || task.State != routing.GraphTaskCandidate || task.Attempts[0].WorktreeRoot != root {
+		t.Fatalf("recovered task = %+v", task)
+	}
+}
+
+func TestConductorRecoverAfterProfileChange(t *testing.T) {
+	isolateLoopCache(t)
+	f, opts, delivery, root, _ := parkedRecoverySingle(t, "continuation-ask-untracked", "low")
+	if filepath.Dir(root) != worktree.RepositoryHome(f.root) {
+		t.Fatalf("original root = %q, want repository home", root)
+	}
+	setWorktreeHome(t, f, "cache")
+	if err := Recover(context.Background(), opts, delivery, "task_1"); err != nil {
+		t.Fatalf("Recover() = %v", err)
+	}
+	if report := conductorGate(t, f, delivery); !report.Passed {
+		t.Fatalf("conductor gates = %+v", report)
+	}
+	if task := graphTask(recoveryGraph(t, f, delivery), "task_1"); task == nil || task.State != routing.GraphTaskCandidate || task.Attempts[0].WorktreeRoot != root {
 		t.Fatalf("recovered task = %+v", task)
 	}
 }

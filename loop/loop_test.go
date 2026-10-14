@@ -21,6 +21,7 @@ import (
 	"github.com/batuta-ai/core/judge"
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/routing"
+	"github.com/batuta-ai/core/worktree"
 )
 
 // The mock engine: a shell script standing in for an executor CLI. It
@@ -420,6 +421,267 @@ func TestDryRunShowsDependencySafeWaves(t *testing.T) {
 	}
 	if status := f.run(t, "status", "--porcelain"); status != "" {
 		t.Fatalf("dry run dirtied the tree:\n%s", status)
+	}
+}
+
+func TestLoopWorktreesInCacheHome(t *testing.T) {
+	cache := tempDir(t)
+	t.Setenv("HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+	f := setup(t)
+	profilePath := filepath.Join(f.root, ".batuta", "profile.md")
+	profile, err := os.ReadFile(profilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(profilePath, append(profile, []byte("Worktree-home: cache\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/profile.md")
+	f.run(t, "commit", "-q", "-m", "test: configure cache worktree home")
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	opts.KeepWorktrees = true
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	home, err := worktree.CacheHome(f.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	executed := 0
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.Kind == KindStarted {
+			executed++
+		}
+		var graph routing.DeliveryGraph
+		if err := json.Unmarshal(record.Graph, &graph); err != nil {
+			t.Fatal(err)
+		}
+		for _, task := range graph.Tasks {
+			for _, attempt := range task.Attempts {
+				if attempt.WorktreeRoot != "" {
+					seen[attempt.WorktreeRoot] = true
+				}
+			}
+		}
+	}
+	if len(seen) == 0 {
+		t.Fatal("journal has no worktree roots")
+	}
+	if executed == 0 {
+		t.Fatal("delivery executed no tasks")
+	}
+	for root := range seen {
+		rel, err := filepath.Rel(home, root)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			t.Errorf("journaled worktree %q is outside cache home %q", root, home)
+		}
+		rel, err = filepath.Rel(f.root, root)
+		if err != nil || rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
+			t.Errorf("journaled worktree %q is inside repository %q", root, f.root)
+		}
+		if _, err := os.Stat(root); err != nil {
+			t.Errorf("retained worktree %q: %v", root, err)
+		}
+	}
+}
+
+func setWorktreeHome(t *testing.T, f fixture, home string) {
+	t.Helper()
+	path := filepath.Join(f.root, ".batuta", "profile.md")
+	profile, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(profile, []byte("Worktree-home: "+home+"\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "update-index", "--assume-unchanged", ".batuta/profile.md")
+}
+
+func TestResumeKeepsJournaledWorktree(t *testing.T) {
+	isolateLoopCache(t)
+	f, opts, _, root, _ := parkedRecoverySingle(t, "continuation-ask-untracked", "low")
+	setWorktreeHome(t, f, "cache")
+	if _, err := Answer(f.root, "1", "keep it"); err != nil {
+		t.Fatal(err)
+	}
+	opts.KeepWorktrees = true
+	r, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	if got := r.worktrees[attemptKey("task_1", 2)].Root; got != root {
+		t.Fatalf("resumed worktree = %q, want journaled %q", got, root)
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Fatalf("journaled worktree: %v", err)
+	}
+}
+
+func TestResumeRecreatesAtJournaledPath(t *testing.T) {
+	isolateLoopCache(t)
+	f, opts, _, root, _ := parkedRecoverySingle(t, "ask", "low")
+	f.run(t, "worktree", "remove", "--force", root)
+	setWorktreeHome(t, f, "cache")
+	if _, err := Answer(f.root, "1", "keep it"); err != nil {
+		t.Fatal(err)
+	}
+	opts.KeepWorktrees = true
+	r, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	if got := r.worktrees[attemptKey("task_1", 2)].Root; got != root {
+		t.Fatalf("recreated worktree = %q, want journaled %q", got, root)
+	}
+	if _, err := os.Stat(filepath.Join(root, "tests.sh")); err != nil {
+		t.Fatalf("recreated worktree checkout: %v", err)
+	}
+}
+
+func isolateLoopCache(t *testing.T) {
+	t.Helper()
+	cache := tempDir(t)
+	t.Setenv("HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+}
+
+func configureCacheHome(t *testing.T, f fixture) {
+	t.Helper()
+	setWorktreeHome(t, f, "cache")
+	f.run(t, "update-index", "--no-assume-unchanged", ".batuta/profile.md")
+	f.run(t, "add", ".batuta/profile.md")
+	f.run(t, "commit", "-q", "-m", "test: configure cache worktree home")
+}
+
+func TestAbandonCacheHome(t *testing.T) {
+	isolateLoopCache(t)
+	f := setup(t)
+	configureCacheHome(t, f)
+	f, opts, _, root, _ := parkedRecoveryFixture(t, f, "continuation-ask-untracked")
+	home, err := worktree.CacheHome(f.root)
+	if err != nil || filepath.Dir(root) != home {
+		t.Fatalf("worktree root = %q, cache home = %q, %v", root, home, err)
+	}
+	if state, err := Abandon(context.Background(), opts); err != nil || state != StateAbandoned {
+		t.Fatalf("Abandon() = %s, %v", state, err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("cache worktree remains: %v", err)
+	}
+}
+
+func TestAbandonAfterProfileChange(t *testing.T) {
+	isolateLoopCache(t)
+	f, opts, _, root, _ := parkedRecoverySingle(t, "continuation-ask-untracked", "low")
+	if filepath.Dir(root) != worktree.RepositoryHome(f.root) {
+		t.Fatalf("original root = %q, want repository home", root)
+	}
+	setWorktreeHome(t, f, "cache")
+	if state, err := Abandon(context.Background(), opts); err != nil || state != StateAbandoned {
+		t.Fatalf("Abandon() = %s, %v", state, err)
+	}
+	if _, err := os.Stat(root); !os.IsNotExist(err) {
+		t.Fatalf("repository worktree remains: %v", err)
+	}
+}
+
+func TestPreviewWorktreeHome(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		home string
+	}{
+		{name: "repository", home: "repository"},
+		{name: "cache", home: "cache"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cache := tempDir(t)
+			t.Setenv("HOME", cache)
+			t.Setenv("XDG_CACHE_HOME", cache)
+			t.Setenv("LocalAppData", cache)
+			f := setup(t)
+			profilePath := filepath.Join(f.root, ".batuta", "profile.md")
+			profile, err := os.ReadFile(profilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(profilePath, append(profile, []byte("Worktree-home: "+tc.home+"\n")...), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			f.run(t, "add", ".batuta/profile.md")
+			f.run(t, "commit", "-q", "-m", "test: configure worktree home")
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("default", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			preview, err := r.DryRun()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rendered bytes.Buffer
+			PrintPreview(&rendered, preview)
+			if len(preview.Waves) == 0 {
+				t.Fatal("preview has no tasks")
+			}
+			for _, wave := range preview.Waves {
+				for _, task := range wave.Tasks {
+					name := r.worktreeName(task.ID, 1)
+					want := filepath.Join(".batuta", "worktrees", name)
+					if tc.home == "cache" {
+						home, err := worktree.CacheHome(f.root)
+						if err != nil {
+							t.Fatal(err)
+						}
+						want = filepath.Join(home, name)
+					}
+					if task.Worktree != want || !strings.Contains(rendered.String(), "\n           "+want+"\n") {
+						t.Errorf("%s worktree = %q, want %q in preview:\n%s", task.ID, task.Worktree, want, rendered.String())
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestNoHandBuiltWorktreePath(t *testing.T) {
+	t.Parallel()
+	for _, dir := range []string{".", filepath.Join("..", "cmd", "batuta")} {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+				continue
+			}
+			path := filepath.Join(dir, name)
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{`"worktrees"`, "worktree.Dir"} {
+				if strings.Contains(string(content), forbidden) {
+					t.Errorf("%s contains %s; use GitProvider.Path", path, forbidden)
+				}
+			}
+		}
 	}
 }
 

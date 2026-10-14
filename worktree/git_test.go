@@ -3,6 +3,8 @@ package worktree
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -908,4 +910,374 @@ func TestMergePreviewErrors(t *testing.T) {
 			t.Fatalf("mergePreviewError() = %v, want git 2.38 and the stderr tail", err)
 		}
 	})
+}
+
+// tempDir returns a canonical temporary directory: t.TempDir() lives under a
+// symlinked /var on macOS.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve temp dir: %v", err)
+	}
+	return dir
+}
+
+// isolateCacheDir points os.UserCacheDir at a temp dir on every platform and
+// returns what it now resolves to.
+func isolateCacheDir(t *testing.T) string {
+	t.Helper()
+	cache := tempDir(t)
+	t.Setenv("HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+	want, err := os.UserCacheDir()
+	if err != nil {
+		t.Fatalf("UserCacheDir() error = %v", err)
+	}
+	return want
+}
+
+func TestWorktreePath(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	if got, want := p.Path("demo-task-1-e1"), filepath.Join(p.Root, ".batuta", "worktrees", "demo-task-1-e1"); got != want {
+		t.Fatalf("Path() with empty Home = %q, want %q", got, want)
+	}
+
+	p.Home = filepath.Join(tempDir(t), "outside", "worktrees")
+	want := filepath.Join(p.Home, "demo-task-1-e1")
+	if got := p.Path("demo-task-1-e1"); got != want {
+		t.Fatalf("Path() = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(p.Home); !os.IsNotExist(err) {
+		t.Fatalf("Path() touched the disk: %v", err)
+	}
+	path, err := p.Add(ctx, "demo-task-1-e1", "batuta/demo/task-1-e1", base)
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if path != want {
+		t.Fatalf("Add() = %q, want %q", path, want)
+	}
+	if info, err := os.Stat(filepath.Join(path, "README.md")); err != nil || info.IsDir() {
+		t.Fatalf("worktree not checked out at %s: %v", path, err)
+	}
+}
+
+func TestWorktreeAddAt(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	cache := filepath.Join(tempDir(t), "cache", "worktrees")
+	homes := []string{RepositoryHome(p.Root), cache}
+	for _, tc := range []struct {
+		name string
+		home string
+	}{
+		{name: "repository", home: homes[0]},
+		{name: "cache", home: homes[1]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(tc.home, "demo-task-1-"+tc.name)
+			branch := "batuta/demo/task-1-" + tc.name
+			got, err := p.AddAt(ctx, path, branch, base, homes)
+			if err != nil || got != path {
+				t.Fatalf("AddAt() = %q, %v; want %q", got, err, path)
+			}
+			if info, err := os.Stat(filepath.Join(got, "README.md")); err != nil || info.IsDir() {
+				t.Fatalf("worktree checkout at %q: %v", got, err)
+			}
+			if err := p.Remove(ctx, got, branch); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: "relative", path: filepath.Join("relative", "demo-task-2")},
+		{name: "unclean", path: homes[0] + string(filepath.Separator) + "nested" + string(filepath.Separator) + ".." + string(filepath.Separator) + "demo-task-2"},
+		{name: "outside", path: filepath.Join(tempDir(t), "demo-task-2")},
+		{name: "nested", path: filepath.Join(homes[0], "nested", "demo-task-2")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, err := p.AddAt(ctx, tc.path, "batuta/demo/task-2", base, homes); err == nil {
+				t.Fatalf("AddAt(%q) = %q, want error", tc.path, got)
+			}
+		})
+	}
+}
+
+func TestWorktreeRepositoryHome(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(string(filepath.Separator), "work", "project")
+	want := filepath.Join(root, ".batuta", "worktrees")
+	if got := RepositoryHome(root); got != want {
+		t.Fatalf("RepositoryHome() = %q, want %q", got, want)
+	}
+}
+
+func TestWorktreeCacheHome(t *testing.T) {
+	cache := isolateCacheDir(t)
+	first, second := tempDir(t), tempDir(t)
+
+	home, err := CacheHome(first)
+	if err != nil {
+		t.Fatalf("CacheHome() error = %v", err)
+	}
+	sum := sha256.Sum256([]byte(first))
+	want := filepath.Join(cache, "batuta", "worktrees", hex.EncodeToString(sum[:])[:16])
+	if home != want {
+		t.Fatalf("CacheHome() = %q, want %q", home, want)
+	}
+	other, err := CacheHome(second)
+	if err != nil {
+		t.Fatalf("CacheHome() second error = %v", err)
+	}
+	if other == home {
+		t.Fatalf("two roots share the home %q", home)
+	}
+}
+
+func TestWorktreeCacheHomeCanonical(t *testing.T) {
+	isolateCacheDir(t)
+	real := tempDir(t)
+	want, err := CacheHome(real)
+	if err != nil {
+		t.Fatalf("CacheHome() error = %v", err)
+	}
+	link := filepath.Join(tempDir(t), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	roots := []struct{ name, root string }{
+		{"symlink", link},
+		{"trailing separator", real + string(filepath.Separator)},
+	}
+	for _, tc := range roots {
+		got, err := CacheHome(tc.root)
+		if err != nil || got != want {
+			t.Fatalf("CacheHome(%s) = %q, %v; want %q", tc.name, got, err, want)
+		}
+	}
+	if _, err := CacheHome(filepath.Join(real, "missing")); err == nil {
+		t.Fatal("CacheHome() of a missing root returned no error")
+	}
+}
+
+func TestWorktreeOutsideRepository(t *testing.T) {
+	ctx := context.Background()
+	p, base := initRepo(t)
+	p.Home = filepath.Join(tempDir(t), "worktrees")
+	branch := "batuta/demo/task-1-e1"
+	path, err := p.Add(ctx, "demo-task-1-e1", branch, base)
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if err := exec.Command(p.Git, "-C", p.Root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run(); err != nil {
+		t.Fatalf("branch missing after Add: %v", err)
+	}
+	if err := p.Remove(ctx, path, branch); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists after Remove: %v", err)
+	}
+	if err := exec.Command(p.Git, "-C", p.Root, "rev-parse", "--verify", "--quiet", "refs/heads/"+branch).Run(); err == nil {
+		t.Fatal("branch still exists after Remove")
+	}
+	if info, err := os.Stat(p.Home); err != nil || !info.IsDir() {
+		t.Fatalf("home removed with the worktree: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(p.Root, ".batuta", "worktrees")); !os.IsNotExist(err) {
+		t.Fatalf("repository home was created for an outside Home: %v", err)
+	}
+}
+
+// managedRepo makes a repository with two homes: the repository home and one
+// outside it.
+func managedRepo(t *testing.T) (GitProvider, string, []string) {
+	t.Helper()
+	p, base := initRepo(t)
+	return p, base, []string{RepositoryHome(p.Root), filepath.Join(tempDir(t), "cache", "worktrees")}
+}
+
+func addManaged(t *testing.T, p GitProvider, base, home, name, branch string) string {
+	t.Helper()
+	path, err := p.AddAt(context.Background(), filepath.Join(home, name), branch, base, []string{home})
+	if err != nil {
+		t.Fatalf("AddAt(%s) error = %v", name, err)
+	}
+	return path
+}
+
+func managedByPath(got []ManagedWorktree) map[string]ManagedWorktree {
+	byPath := map[string]ManagedWorktree{}
+	for _, w := range got {
+		byPath[w.Path] = w
+	}
+	return byPath
+}
+
+func TestWorktreeManaged(t *testing.T) {
+	p, base, homes := managedRepo(t)
+	repo := addManaged(t, p, base, homes[0], "demo-task-1-e1", "batuta/demo/task-1-e1")
+	cache := addManaged(t, p, base, homes[1], "other-task-12-e3", "batuta/other/task-12-e3")
+
+	got, err := p.Managed(context.Background(), homes)
+	if err != nil {
+		t.Fatalf("Managed() error = %v", err)
+	}
+	want := map[string]ManagedWorktree{
+		repo:  {Path: repo, Branch: "batuta/demo/task-1-e1", Slug: "demo", Task: 1, Execution: 1},
+		cache: {Path: cache, Branch: "batuta/other/task-12-e3", Slug: "other", Task: 12, Execution: 3},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("Managed() = %+v, want %d entries", got, len(want))
+	}
+	for path, w := range managedByPath(got) {
+		if w != want[path] {
+			t.Errorf("Managed() entry = %+v, want %+v", w, want[path])
+		}
+	}
+}
+
+func TestWorktreeManagedOwnership(t *testing.T) {
+	p, base, homes := managedRepo(t)
+	managed := addManaged(t, p, base, homes[0], "demo-task-1-e1", "batuta/demo/task-1-e1")
+	outside := addManaged(t, p, base, tempDir(t), "demo-task-2-e1", "batuta/demo/task-2-e1")
+	wrongBranch := addManaged(t, p, base, homes[0], "demo-task-3-e1", "feature/demo-task-3-e1")
+	wrongName := addManaged(t, p, base, homes[0], "renamed", "batuta/demo/task-4-e1")
+	detached := addManaged(t, p, base, homes[0], "demo-task-5-e1", "batuta/demo/task-5-e1")
+	if out, err := exec.Command(p.Git, "-C", detached, "checkout", "-q", "--detach").CombinedOutput(); err != nil {
+		t.Fatalf("detach: %v\n%s", err, out)
+	}
+
+	got, err := p.Managed(context.Background(), homes)
+	if err != nil {
+		t.Fatalf("Managed() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Path != managed {
+		t.Fatalf("Managed() = %+v, want only %s", got, managed)
+	}
+	for _, left := range []string{p.Root, outside, wrongBranch, wrongName, detached} {
+		if _, ok := managedByPath(got)[left]; ok {
+			t.Errorf("Managed() returned %s", left)
+		}
+	}
+}
+
+func TestWorktreeManagedSlugParse(t *testing.T) {
+	p, base, homes := managedRepo(t)
+	slugs := []string{"fix-task-1", "v2-10", "a", "a-task-1-e1"}
+	for i, slug := range slugs {
+		task, execution := i+7, i+1
+		addManaged(t, p, base, homes[0],
+			fmt.Sprintf("%s-task-%d-e%d", slug, task, execution),
+			fmt.Sprintf("batuta/%s/task-%d-e%d", slug, task, execution))
+	}
+	got, err := p.Managed(context.Background(), homes)
+	if err != nil {
+		t.Fatalf("Managed() error = %v", err)
+	}
+	if len(got) != len(slugs) {
+		t.Fatalf("Managed() = %+v, want %d entries", got, len(slugs))
+	}
+	bySlug := map[string]ManagedWorktree{}
+	for _, w := range got {
+		bySlug[w.Slug] = w
+	}
+	for i, slug := range slugs {
+		w, ok := bySlug[slug]
+		if !ok || w.Task != i+7 || w.Execution != i+1 {
+			t.Errorf("slug %q = %+v, %v; want task %d execution %d", slug, w, ok, i+7, i+1)
+		}
+	}
+}
+
+func TestWorktreeManagedUnusualPath(t *testing.T) {
+	p, base, homes := managedRepo(t)
+	home := filepath.Join(homes[1], "projeção café")
+	path := addManaged(t, p, base, home, "demo-task-1-e1", "batuta/demo/task-1-e1")
+	got, err := p.Managed(context.Background(), []string{home})
+	if err != nil {
+		t.Fatalf("Managed() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Path != path {
+		t.Fatalf("Managed() = %+v, want path %q intact", got, path)
+	}
+}
+
+func TestWorktreeManagedMissing(t *testing.T) {
+	p, base, homes := managedRepo(t)
+	gone := addManaged(t, p, base, homes[0], "demo-task-1-e1", "batuta/demo/task-1-e1")
+	kept := addManaged(t, p, base, homes[0], "demo-task-2-e1", "batuta/demo/task-2-e1")
+	if err := os.RemoveAll(gone); err != nil {
+		t.Fatal(err)
+	}
+	got, err := p.Managed(context.Background(), homes)
+	if err != nil {
+		t.Fatalf("Managed() error = %v", err)
+	}
+	byPath := managedByPath(got)
+	if w, ok := byPath[gone]; !ok || !w.Missing {
+		t.Errorf("deleted worktree = %+v, %v; want Missing", w, ok)
+	}
+	if w, ok := byPath[kept]; !ok || w.Missing {
+		t.Errorf("present worktree = %+v, %v; want not Missing", w, ok)
+	}
+
+	if err := os.RemoveAll(homes[0]); err != nil {
+		t.Fatal(err)
+	}
+	got, err = p.Managed(context.Background(), homes)
+	if err != nil {
+		t.Fatalf("Managed() with the home gone error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("Managed() = %+v, want both worktrees of the deleted home", got)
+	}
+	for _, w := range got {
+		if !w.Missing {
+			t.Errorf("entry %+v not Missing after the home was deleted", w)
+		}
+	}
+}
+
+func TestWorktreeManagedSymlinkedHome(t *testing.T) {
+	p, base, homes := managedRepo(t)
+	path := addManaged(t, p, base, homes[1], "demo-task-1-e1", "batuta/demo/task-1-e1")
+	link := filepath.Join(tempDir(t), "link")
+	if err := os.Symlink(homes[1], link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	got, err := p.Managed(context.Background(), []string{link})
+	if err != nil {
+		t.Fatalf("Managed() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Path != path {
+		t.Fatalf("Managed() = %+v, want %s through the symlinked home", got, path)
+	}
+}
+
+// registryTruncatingRunner marks the worktree registry as cut at the bound.
+type registryTruncatingRunner struct{ publication.CommandRunner }
+
+func (r registryTruncatingRunner) Run(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+	result, err := r.CommandRunner.Run(ctx, command)
+	if len(command.Args) > 1 && command.Args[0] == "worktree" && command.Args[1] == "list" {
+		result.StdoutTruncated = true
+	}
+	return result, err
+}
+
+func TestWorktreeManagedTruncated(t *testing.T) {
+	p, base, homes := managedRepo(t)
+	addManaged(t, p, base, homes[0], "demo-task-1-e1", "batuta/demo/task-1-e1")
+	p.Runner = registryTruncatingRunner{p.Runner}
+	got, err := p.Managed(context.Background(), homes)
+	if err == nil || !strings.Contains(err.Error(), "exceeded bound") {
+		t.Fatalf("Managed() = %+v, %v, want the output bound error", got, err)
+	}
 }
