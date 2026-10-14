@@ -3170,6 +3170,10 @@ func newPruneFixture(t *testing.T) pruneFixture {
 	t.Setenv("XDG_CACHE_HOME", cache)
 	t.Setenv("LocalAppData", cache)
 	reviewGit(t, root, "init", "-q", "-b", "main")
+	// HOME points at the cache dir, so no global identity exists: Park
+	// commits and needs one in the repository.
+	reviewGit(t, root, "config", "user.name", "Batuta Test")
+	reviewGit(t, root, "config", "user.email", "batuta@example.test")
 	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
