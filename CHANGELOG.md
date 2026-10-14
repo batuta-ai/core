@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.1.0-beta.54](https://github.com/batuta-ai/core/compare/v1.1.0-beta.53...v1.1.0-beta.54) (2026-10-14)
+
+
+### Features
+
+* A delivery keeps the worktrees its journal names ([0148146](https://github.com/batuta-ai/core/commit/0148146ae96543fb0b68af1a7c597b57bbdc763b))
+* claim paths resolve for a worktree in the cache home ([85bc84e](https://github.com/batuta-ai/core/commit/85bc84ebcdf364d45fc9d92c91b171090d158451))
+* CLI exposes --prune ([26ee74c](https://github.com/batuta-ai/core/commit/26ee74c337b77006782d27b60ee03460827a5765))
+* loop creates worktrees through the provider's home ([8d3b8c0](https://github.com/batuta-ai/core/commit/8d3b8c08ce3fe2a3ef433a956a23eb427b113f5f))
+* loop removes orphaned worktrees after parking them ([b255fe9](https://github.com/batuta-ai/core/commit/b255fe99019cdb49ceb70917025fe97c917c3f00))
+* loop reports the worktrees that no open delivery owns ([8497632](https://github.com/batuta-ai/core/commit/84976323ff85351f1c821f72b337bc3223548151))
+* **loop:** worktrees outside the repository and orphan worktree cleanup ([5bf824e](https://github.com/batuta-ai/core/commit/5bf824e648fe5ed0ebcf1c66f0fb8833b25ebd54))
+* profile carries the worktree home choice ([febe48e](https://github.com/batuta-ai/core/commit/febe48e53f3f936de6d74275448f12aca59812bb))
+* worktree provider lists the worktrees the loop made ([4ba5eae](https://github.com/batuta-ai/core/commit/4ba5eae82c27a6538cdf0702257cf0545ec8add5))
+* worktree provider places worktrees under a configurable home ([9cbfecb](https://github.com/batuta-ai/core/commit/9cbfecba0c40a34892e4b0f5f22a710b4bc288da))
+
+
+### Bug Fixes
+
+* **loop:** close the supervision review findings on worktree isolation ([f99e33b](https://github.com/batuta-ai/core/commit/f99e33b1148d6032d7aa261205c9bf1086e96dc2))
+
 ## [1.1.0-beta.53](https://github.com/batuta-ai/core/compare/v1.1.0-beta.52...v1.1.0-beta.53) (2026-10-13)
 
 
