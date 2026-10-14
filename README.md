@@ -29,7 +29,7 @@ The module is **pre-release**: `v1.1.0-beta.N` until the API stabilizes.
 | `publication` | command runner with output limits, git snapshots and ancestry, publication plan and independent verification of the reviewed HEAD |
 | `repository` | guarded repository bootstrap: `.gitignore`-aware, blocks unignored sensitive paths, one `chore: initialize workspace` commit |
 | `journal` | append-only, hash-chained JSONL per delivery under `.batuta/journal/`; every record carries the graph after the transition, so `--resume` continues from the last one |
-| `worktree` | `git worktree` per task attempt under `.batuta/worktrees/`, squash to one commit, bookkeeping commits, `.git/info/exclude` |
+| `worktree` | `git worktree` per task attempt under `.batuta/worktrees/` or cache home `<cache>/batuta/worktrees/<digest>`, squash to one commit, bookkeeping commits, `.git/info/exclude` |
 | `executor` | adapter frontmatter to argv, legacy CLI execution, and opt-in qualified ACP sessions with compact receipts and verified shutdown — see [docs/dispatch.md](docs/dispatch.md) |
 | `gates` | the four mechanical gates: finished · tree · tests · verify (scope, proofs, independent read-only verifier) |
 | `loop` | `batuta loop`: the mechanical conductor over `routing.DeliveryGraph` on file hosts — see [docs/loop.md](docs/loop.md) |
@@ -54,6 +54,7 @@ batuta loop --resume <delivery>         continue after an interruption
 batuta loop --answer <task> "<text>"    answer a parked task and continue
 batuta loop --recover <delivery> <task>  run gates on a parked task, candidate and continue
 batuta loop --reconcile <delivery> <task> print parked task changed paths and conflicts
+batuta loop --prune [--apply]           list or remove orphaned task worktrees
 batuta loop --abandon <delivery>        close a delivery; ticks what integrated
 batuta loop --supervise <delivery> --cursor <absolute-path>
                                         foreground local observation; no model polling
