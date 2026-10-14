@@ -3,7 +3,6 @@ package loop
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +19,8 @@ import (
 const (
 	PruneOrphan  = "orphan"
 	PruneMissing = "missing"
+	PruneRemoved = "removed"
+	PruneSkipped = "skipped"
 )
 
 type PruneOptions struct {
@@ -43,9 +44,6 @@ var pruneReadDir = os.ReadDir
 
 // Prune reports registered task worktrees that no open delivery owns.
 func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneReport, error) {
-	if opts.Apply {
-		return PruneReport{}, errors.New("loop: prune apply is not available")
-	}
 	git, err := worktree.New(ctx, workspace)
 	if err != nil {
 		return PruneReport{}, err
@@ -58,7 +56,8 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 	if err != nil {
 		return PruneReport{}, err
 	}
-	managed, err := git.Managed(ctx, []string{worktree.RepositoryHome(git.Root), cacheHome})
+	homes := []string{worktree.RepositoryHome(git.Root), cacheHome}
+	managed, err := git.Managed(ctx, homes)
 	if err != nil {
 		return PruneReport{}, err
 	}
@@ -85,11 +84,58 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 			return PruneReport{}, fmt.Errorf("loop: presence of %s: %w", delivery, err)
 		}
 		if owner != nil {
+			if opts.Apply {
+				return PruneReport{}, fmt.Errorf("loop: cannot prune while delivery %s has a live runner (pid %d)", delivery, owner.PID)
+			}
 			report.Warnings = append(report.Warnings, fmt.Sprintf("delivery %s has a live runner (pid %d)", delivery, owner.PID))
 		}
 	}
 	slices.Sort(report.Warnings)
+	if opts.Apply {
+		for i := range report.Entries {
+			entry := &report.Entries[i]
+			if entry.State == PruneMissing {
+				continue
+			}
+			orphan, err := pruneStillOrphan(ctx, git, homes, *entry)
+			if err != nil {
+				return report, err
+			}
+			if !orphan {
+				entry.State = PruneSkipped
+				continue
+			}
+			ref := "refs/batuta/parked/" + strings.TrimPrefix(entry.Branch, "batuta/")
+			if _, err := git.Park(ctx, entry.Path, ref, "wip(batuta): prune "+entry.Branch); err != nil {
+				return report, fmt.Errorf("loop: park %s: %w", entry.Path, err)
+			}
+			if err := git.Remove(ctx, entry.Path, entry.Branch); err != nil {
+				return report, fmt.Errorf("loop: remove %s: %w", entry.Path, err)
+			}
+			entry.State = PruneRemoved
+		}
+	}
 	return report, nil
+}
+
+func pruneStillOrphan(ctx context.Context, git worktree.GitProvider, homes []string, entry PruneEntry) (bool, error) {
+	owned, err := pruneOwned(git.Root)
+	if err != nil {
+		return false, err
+	}
+	managed, err := git.Managed(ctx, homes)
+	if err != nil {
+		return false, err
+	}
+	if owned[pruneKey{path: entry.Path, branch: entry.Branch}] {
+		return false, nil
+	}
+	for _, wt := range managed {
+		if wt.Path == entry.Path && wt.Branch == entry.Branch {
+			return !wt.Missing, nil
+		}
+	}
+	return false, nil
 }
 
 type pruneKey struct {

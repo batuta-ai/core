@@ -252,3 +252,214 @@ func TestPruneReportWarnsLiveRunner(t *testing.T) {
 		t.Fatalf("warnings = %q, want live runner delivery", report.Warnings)
 	}
 }
+
+func TestPruneParksBeforeRemoval(t *testing.T) {
+	f := setup(t)
+	wt := pruneWorktree(t, f, worktree.RepositoryHome(f.root), "stray", 1, 1)
+	if _, err := journal.Open(f.root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt.Path, "uncommitted.txt"), []byte("recover me"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Entries) != 1 || report.Entries[0].State != "removed" {
+		t.Fatalf("entries = %+v, want one removed entry", report.Entries)
+	}
+	if _, err := os.Stat(wt.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree still exists: %v", err)
+	}
+	if got := f.run(t, "show", "refs/batuta/parked/stray/task-1-e1:uncommitted.txt"); got != "recover me" {
+		t.Fatalf("parked content = %q", got)
+	}
+	if got := f.run(t, "branch", "--list", wt.Branch); got != "" {
+		t.Fatalf("branch still exists: %q", got)
+	}
+}
+
+func TestPruneApplyKeepsMissingBranch(t *testing.T) {
+	f := setup(t)
+	wt := pruneWorktree(t, f, worktree.RepositoryHome(f.root), "gone", 1, 1)
+	if _, err := journal.Open(f.root); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(wt.Path); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Entries) != 1 || report.Entries[0].State != PruneMissing {
+		t.Fatalf("entries = %+v, want one missing entry", report.Entries)
+	}
+	if got := f.run(t, "rev-parse", "refs/heads/"+wt.Branch); got != f.base {
+		t.Fatalf("missing branch = %q, want %q", got, f.base)
+	}
+	if got := f.run(t, "for-each-ref", "--format=%(refname)", "refs/batuta/parked"); got != "" {
+		t.Fatalf("missing worktree was parked: %q", got)
+	}
+}
+
+func TestPruneApplyRefusesLiveRunner(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		age  time.Duration
+		live bool
+	}{
+		{name: "live", live: true},
+		{name: "stale", age: presenceFresh + time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			wt := pruneWorktree(t, f, worktree.RepositoryHome(f.root), "stray", 1, 1)
+			if _, err := journal.Open(f.root); err != nil {
+				t.Fatal(err)
+			}
+			now := time.Date(2026, time.October, 13, 12, 0, 0, 0, time.UTC)
+			lockPath := filepath.Join(f.root, journal.Dir, "active-delivery.lock")
+			if _, err := (presenceLock{PID: 123, RefreshedAt: now.Add(-tc.age)}).writeAtomic(lockPath); err != nil {
+				t.Fatal(err)
+			}
+			report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true, Now: func() time.Time { return now }})
+			if tc.live {
+				if err == nil || !strings.Contains(err.Error(), "active-delivery") {
+					t.Fatalf("error = %v, want delivery name", err)
+				}
+				if len(report.Entries) != 0 {
+					t.Fatalf("entries = %+v, want none", report.Entries)
+				}
+				if _, err := os.Stat(wt.Path); err != nil {
+					t.Fatalf("worktree removed under live lock: %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Entries) != 1 || report.Entries[0].State != "removed" {
+				t.Fatalf("entries = %+v, want removed", report.Entries)
+			}
+		})
+	}
+}
+
+func TestPruneRechecksBeforeRemoval(t *testing.T) {
+	f := setup(t)
+	wt := pruneWorktree(t, f, worktree.RepositoryHome(f.root), "stray", 1, 1)
+	if _, err := journal.Open(f.root); err != nil {
+		t.Fatal(err)
+	}
+	previous := pruneReadDir
+	reads := 0
+	pruneReadDir = func(path string) ([]os.DirEntry, error) {
+		reads++
+		if reads == 2 {
+			pruneJournal(t, f.root, "new-owner", wt.Slug, wt.Path, wt.Task, wt.Execution, "")
+		}
+		return previous(path)
+	}
+	t.Cleanup(func() { pruneReadDir = previous })
+
+	report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reads != 2 || len(report.Entries) != 1 || report.Entries[0].State != "skipped" {
+		t.Fatalf("reads = %d, entries = %+v, want skipped", reads, report.Entries)
+	}
+	if _, err := os.Stat(wt.Path); err != nil {
+		t.Fatalf("owned worktree removed: %v", err)
+	}
+}
+
+func TestPruneApplyFailsClosed(t *testing.T) {
+	for _, scenario := range []string{"list failure", "read failure", "invalid opening"} {
+		t.Run(scenario, func(t *testing.T) {
+			f := setup(t)
+			wt := pruneWorktree(t, f, worktree.RepositoryHome(f.root), "stray", 1, 1)
+			if _, err := journal.Open(f.root); err != nil {
+				t.Fatal(err)
+			}
+			switch scenario {
+			case "list failure":
+				previous := pruneReadDir
+				pruneReadDir = func(string) ([]os.DirEntry, error) { return nil, errors.New("list denied") }
+				t.Cleanup(func() { pruneReadDir = previous })
+			case "read failure":
+				pruneJournal(t, f.root, "broken", "plan", "", 0, 0, "")
+				store, err := journal.Open(f.root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				file, err := os.OpenFile(store.Path("broken"), os.O_APPEND|os.O_WRONLY, 0)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := file.WriteString("not json\n"); err != nil {
+					t.Fatal(err)
+				}
+				if err := file.Close(); err != nil {
+					t.Fatal(err)
+				}
+			case "invalid opening":
+				store, err := journal.Open(f.root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := store.Append("broken", journal.Record{Kind: KindTerminal, Detail: []byte(`{"state":"done"}`)}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true})
+			if err == nil || !reflect.DeepEqual(report, PruneReport{}) {
+				t.Fatalf("report = %+v, error = %v; want empty report and error", report, err)
+			}
+			if _, err := os.Stat(wt.Path); err != nil {
+				t.Fatalf("worktree removed after journal error: %v", err)
+			}
+		})
+	}
+}
+
+func TestPruneApplyStopsOnLaterError(t *testing.T) {
+	f := setup(t)
+	home := worktree.RepositoryHome(f.root)
+	first := pruneWorktree(t, f, home, "alpha", 1, 1)
+	second := pruneWorktree(t, f, home, "bravo", 1, 1)
+	third := pruneWorktree(t, f, home, "charlie", 1, 1)
+	if _, err := journal.Open(f.root); err != nil {
+		t.Fatal(err)
+	}
+	previous := pruneReadDir
+	reads := 0
+	pruneReadDir = func(path string) ([]os.DirEntry, error) {
+		reads++
+		if reads == 3 {
+			return nil, errors.New("later list denied")
+		}
+		return previous(path)
+	}
+	t.Cleanup(func() { pruneReadDir = previous })
+
+	report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true})
+	if err == nil || !strings.Contains(err.Error(), "later list denied") {
+		t.Fatalf("error = %v, want later journal error", err)
+	}
+	if len(report.Entries) != 3 || report.Entries[0].State != "removed" || report.Entries[1].State != PruneOrphan || report.Entries[2].State != PruneOrphan {
+		t.Fatalf("entries = %+v, want removed then two orphans", report.Entries)
+	}
+	if _, err := os.Stat(first.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("first worktree still exists: %v", err)
+	}
+	for _, wt := range []worktree.ManagedWorktree{second, third} {
+		if _, err := os.Stat(wt.Path); err != nil {
+			t.Fatalf("worktree %s removed: %v", wt.Path, err)
+		}
+	}
+}
