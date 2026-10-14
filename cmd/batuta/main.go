@@ -50,6 +50,7 @@ Usage:
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
   batuta loop      --recover <delivery> <task> | --reconcile <delivery> <task>
+  batuta loop      --prune [--apply] [--workspace <dir>]
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
   batuta loop      --supervise <delivery> --cursor <absolute-path> [--once] [--interval 500ms] [--notify desktop|<absolute-directory>] [--policy <path>]
   batuta loop      --supervise <delivery> --review-status
@@ -134,6 +135,11 @@ loop       The mechanical conductor over an approved plan
            the task waiting. --reconcile prints, read-only, how the task's parked
            ref merges into the delivery branch as TSV lines (ref, status, file,
            conflict); it exits 2 on conflict.
+           --prune prints, read-only, the task worktrees no open delivery owns as
+           TSV lines (path, branch, slug, state: orphan or missing); --prune
+           --apply parks each orphan under refs/batuta/parked and removes it,
+           printing the final state (removed, missing or skipped); it exits 2
+           when any line is skipped. --apply needs --prune.
            Dry-run, dashboard, reconcile and abandon do not launch reviewers.
            --transport selects the task transport (default cli); verification
            stays independently CLI.
@@ -651,6 +657,8 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
 	recoverTask := flags.Bool("recover", false, "run the gates on a task parked in waiting_input: <delivery> <task>")
 	reconcile := flags.Bool("reconcile", false, "print how a task's parked ref merges into the delivery branch: <delivery> <task>")
+	prune := flags.Bool("prune", false, "print the task worktrees no open delivery owns as TSV: path, branch, slug, state")
+	apply := flags.Bool("apply", false, "with --prune, park and remove the orphaned worktrees")
 	dashboard := flags.Bool("dashboard", false, "print the state of the open deliveries as TSV")
 	watch := flags.Bool("watch", false, "redraw a live dashboard until the delivery ends")
 	supervise := flags.String("supervise", "", "observe one explicit delivery in the foreground")
@@ -697,6 +705,22 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		}
 	}
 	rest := flags.Args()
+	if *apply && !*prune {
+		return errors.New("--apply requires --prune")
+	}
+	if *prune {
+		var conflict string
+		flags.Visit(func(f *flag.Flag) {
+			switch f.Name {
+			case "prune", "apply", "workspace":
+			default:
+				conflict = f.Name
+			}
+		})
+		if conflict != "" || len(rest) != 0 {
+			return errors.New("usage: batuta loop --prune [--apply] [--workspace <dir>]; it takes no plan and no other loop flag")
+		}
+	}
 	if *recoverTask || *reconcile {
 		var conflict string
 		flags.Visit(func(f *flag.Flag) {
@@ -886,6 +910,21 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 			return &ExitError{Code: 2, State: report.Status}
 		}
 		return nil
+	}
+	if *prune {
+		root, err := workspaceRoot(*workspace)
+		if err != nil {
+			return err
+		}
+		report, err := loop.Prune(ctx, root, loop.PruneOptions{Apply: *apply})
+		for _, warning := range report.Warnings {
+			fmt.Fprintf(stderr, "warning: %s\n", warning)
+		}
+		printed := printPrune(stdout, report)
+		if err != nil {
+			return err
+		}
+		return printed
 	}
 	opts := executionOptions()
 	if err := attachLoopJudge(&opts, *workspace); err != nil {
@@ -1568,6 +1607,19 @@ func truncate(value string, width int) string {
 		return value
 	}
 	return value[:width-1] + "…"
+}
+
+// printPrune writes one TSV line per entry and maps a skipped entry to exit 2.
+func printPrune(stdout io.Writer, report loop.PruneReport) error {
+	var skipped bool
+	for _, entry := range report.Entries {
+		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", reconcileField(entry.Path), reconcileField(entry.Branch), reconcileField(entry.Slug), entry.State)
+		skipped = skipped || entry.State == loop.PruneSkipped
+	}
+	if skipped {
+		return &ExitError{Code: 2, State: loop.PruneSkipped}
+	}
+	return nil
 }
 
 // reconcileField keeps a path on one tab-separated line: git hands paths

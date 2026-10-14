@@ -22,6 +22,7 @@ import (
 	"github.com/batuta-ai/core/publication"
 	"github.com/batuta-ai/core/review"
 	"github.com/batuta-ai/core/routing"
+	"github.com/batuta-ai/core/worktree"
 )
 
 func TestMain(m *testing.M) {
@@ -3144,6 +3145,234 @@ func TestReconcileFieldEscapesControlCharacters(t *testing.T) {
 		got := reconcileField(path)
 		if got != want || strings.ContainsAny(got, "\t\n\u0085") {
 			t.Errorf("reconcileField(%q) = %q, want %q", path, got, want)
+		}
+	}
+}
+
+type pruneFixture struct {
+	root    string
+	orphan  string
+	cached  string
+	missing string
+}
+
+// newPruneFixture registers three task worktrees that no journal owns: one in
+// the repository home, one in a cache home whose path holds a tab, and one
+// whose directory is gone.
+func newPruneFixture(t *testing.T) pruneFixture {
+	t.Helper()
+	root := tempDir(t)
+	cache := filepath.Join(tempDir(t), "cache")
+	if runtime.GOOS != "windows" {
+		cache = filepath.Join(tempDir(t), "cache\tdir")
+	}
+	t.Setenv("HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+	reviewGit(t, root, "init", "-q", "-b", "main")
+	if err := os.WriteFile(filepath.Join(root, "a.txt"), []byte("a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reviewGit(t, root, "add", "a.txt")
+	reviewGit(t, root, "commit", "-qm", "base")
+	if _, err := journal.Open(root); err != nil {
+		t.Fatal(err)
+	}
+	cacheHome, err := worktree.CacheHome(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	add := func(home, slug string) string {
+		path := filepath.Join(home, slug+"-task-1-e1")
+		reviewGit(t, root, "worktree", "add", "-q", "-b", "batuta/"+slug+"/task-1-e1", path, "HEAD")
+		if err := os.WriteFile(filepath.Join(path, "wip.txt"), []byte("recover "+slug), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	f := pruneFixture{root: root}
+	f.orphan = add(worktree.RepositoryHome(root), "old")
+	f.cached = add(cacheHome, "stray")
+	f.missing = add(worktree.RepositoryHome(root), "gone")
+	if err := os.RemoveAll(f.missing); err != nil {
+		t.Fatal(err)
+	}
+	return f
+}
+
+func pruneLines(t *testing.T, stdout string) map[string][]string {
+	t.Helper()
+	lines := map[string][]string{}
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		fields := strings.Split(line, "\t")
+		if len(fields) != 4 {
+			t.Fatalf("line %q has %d fields, want 4", line, len(fields))
+		}
+		lines[fields[0]] = fields[1:]
+	}
+	return lines
+}
+
+func TestLoopPruneReport(t *testing.T) {
+	f := newPruneFixture(t)
+	before := reviewGit(t, f.root, "worktree", "list", "--porcelain")
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"loop", "--workspace", f.root, "--prune"}, &stdout, &stderr); err != nil {
+		t.Fatalf("prune = %v\nstderr=%s", err, &stderr)
+	}
+	lines := pruneLines(t, stdout.String())
+	want := map[string][]string{
+		reconcileField(f.orphan):  {"batuta/old/task-1-e1", "old", "orphan"},
+		reconcileField(f.cached):  {"batuta/stray/task-1-e1", "stray", "orphan"},
+		reconcileField(f.missing): {"batuta/gone/task-1-e1", "gone", "missing"},
+	}
+	if len(lines) != len(want) {
+		t.Fatalf("stdout = %q, want %d lines", &stdout, len(want))
+	}
+	for path, fields := range want {
+		if !slices.Equal(lines[path], fields) {
+			t.Fatalf("line for %q = %v, want %v", path, lines[path], fields)
+		}
+	}
+	if runtime.GOOS != "windows" && !strings.Contains(stdout.String(), `cache\tdir`) {
+		t.Fatalf("tab in the cache path was not escaped: %q", &stdout)
+	}
+	if after := reviewGit(t, f.root, "worktree", "list", "--porcelain"); after != before {
+		t.Fatalf("report changed the registry:\n%s\n%s", before, after)
+	}
+	for _, path := range []string{f.orphan, f.cached} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("report removed %s: %v", path, err)
+		}
+	}
+}
+
+func TestLoopPruneApply(t *testing.T) {
+	f := newPruneFixture(t)
+	var stdout, stderr bytes.Buffer
+	if err := run([]string{"loop", "--workspace", f.root, "--prune", "--apply"}, &stdout, &stderr); err != nil {
+		t.Fatalf("prune --apply = %v\nstderr=%s", err, &stderr)
+	}
+	lines := pruneLines(t, stdout.String())
+	states := map[string]string{
+		reconcileField(f.orphan):  "removed",
+		reconcileField(f.cached):  "removed",
+		reconcileField(f.missing): "missing",
+	}
+	if len(lines) != len(states) {
+		t.Fatalf("stdout = %q", &stdout)
+	}
+	for path, state := range states {
+		if got := lines[path]; len(got) != 3 || got[2] != state {
+			t.Fatalf("line for %q = %v, want state %s", path, got, state)
+		}
+	}
+	for _, path := range []string{f.orphan, f.cached} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s still exists: %v", path, err)
+		}
+	}
+	for _, slug := range []string{"old", "stray"} {
+		if got := reviewGit(t, f.root, "show", "refs/batuta/parked/"+slug+"/task-1-e1:wip.txt"); got != "recover "+slug {
+			t.Fatalf("parked %s content = %q", slug, got)
+		}
+	}
+}
+
+func TestLoopPruneApplyExitsTwoOnSkipped(t *testing.T) {
+	cases := []struct {
+		name   string
+		states []string
+		exit   int
+	}{
+		{"removed and missing", []string{loop.PruneRemoved, loop.PruneMissing}, 0},
+		{"skipped", []string{loop.PruneRemoved, loop.PruneSkipped}, 2},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var report loop.PruneReport
+			for i, state := range tc.states {
+				report.Entries = append(report.Entries, loop.PruneEntry{Path: "/p/" + strings.Repeat("x", i+1), Branch: "batuta/s/task-1-e1", Slug: "s", State: state})
+			}
+			var stdout bytes.Buffer
+			err := printPrune(&stdout, report)
+			var exit *ExitError
+			if tc.exit == 0 && err != nil || tc.exit != 0 && (!errors.As(err, &exit) || exit.Code != tc.exit) {
+				t.Fatalf("printPrune = %v, want exit %d", err, tc.exit)
+			}
+			if got := strings.Count(stdout.String(), "\n"); got != len(tc.states) {
+				t.Fatalf("stdout = %q, want %d lines", &stdout, len(tc.states))
+			}
+		})
+	}
+}
+
+// loopFlagTokens reads the flags runLoop defines from its own help output:
+// the name and, for a non-boolean flag, the type word.
+func loopFlagTokens(t *testing.T) map[string]string {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	_ = run([]string{"loop", "-h"}, &stdout, &stderr)
+	flags := map[string]string{}
+	for _, line := range strings.Split(stderr.String(), "\n") {
+		if !strings.HasPrefix(line, "  -") {
+			continue
+		}
+		fields := strings.Fields(line)
+		name := strings.TrimPrefix(fields[0], "-")
+		flags[name] = ""
+		if len(fields) > 1 {
+			flags[name] = fields[1]
+		}
+	}
+	if len(flags) < 10 {
+		t.Fatalf("read %d flags from help: %q", len(flags), &stderr)
+	}
+	return flags
+}
+
+func TestLoopPruneUsage(t *testing.T) {
+	values := map[string]string{"int": "1", "duration": "1s", "string": "cli"}
+	cases := [][]string{{"--apply"}, {"--prune", "plan.md"}, {"--prune", "--apply", "plan.md"}}
+	for name, typ := range loopFlagTokens(t) {
+		switch name {
+		case "workspace", "prune", "apply":
+			continue
+		}
+		arg := "--" + name
+		if typ != "" {
+			arg += "=" + values[typ]
+		}
+		cases = append(cases, []string{"--prune", arg}, []string{"--prune", "--apply", arg})
+	}
+	for _, args := range cases {
+		t.Run(strings.Join(args, "/"), func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			err := run(append([]string{"loop", "--workspace", t.TempDir()}, args...), &stdout, &stderr)
+			var exit *ExitError
+			if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "--prune") {
+				t.Fatalf("run = %v, want a prune usage error (exit 1)", err)
+			}
+			if stdout.Len() != 0 {
+				t.Fatalf("stdout = %q", &stdout)
+			}
+		})
+	}
+}
+
+func TestLoopPruneHelp(t *testing.T) {
+	for _, want := range []string{"--prune", "--apply"} {
+		if !strings.Contains(usage, want) {
+			t.Errorf("usage is missing %q", want)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	_ = run([]string{"loop", "-h"}, &stdout, &stderr)
+	for _, want := range []string{"-prune", "-apply"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Errorf("loop flag help is missing %q", want)
 		}
 	}
 }
