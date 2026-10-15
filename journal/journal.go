@@ -61,7 +61,10 @@ type Record struct {
 	Digest string          `json:"digest"`
 }
 
-// Store reads and appends delivery journals under one workspace.
+// Store reads and appends delivery journals under one workspace. Read and
+// Append coordinate participating users of the opened append-only journal
+// inode; raw or older users do not coordinate, and file replacement is not
+// protected. Both methods block while a peer holds ownership.
 type Store struct {
 	root string
 	now  func() time.Time
@@ -94,7 +97,9 @@ func ValidDeliveryID(id string) bool {
 // it with Seq, At, Prev and Digest filled. The file is opened in append mode
 // and synced before returning, so a crash right after Append leaves a
 // complete line behind.
-func (s *Store) Append(deliveryID string, record Record) (Record, error) {
+// An error can follow durable publication. Reconcile the journal before
+// retrying an append that returned an error.
+func (s *Store) Append(deliveryID string, record Record) (appended Record, resultErr error) {
 	if !ValidDeliveryID(deliveryID) {
 		return Record{}, ErrUnknownDelivery
 	}
@@ -102,34 +107,47 @@ func (s *Store) Append(deliveryID string, record Record) (Record, error) {
 		(record.Detail != nil && !json.Valid(record.Detail)) || (record.Graph != nil && !json.Valid(record.Graph)) {
 		return Record{}, ErrInvalidRecord
 	}
-	previous, err := s.Read(deliveryID)
-	if err != nil && !errors.Is(err, ErrUnknownDelivery) {
-		return Record{}, err
-	}
-	record.Seq = len(previous) + 1
-	record.Prev = ""
-	if len(previous) > 0 {
-		record.Prev = previous[len(previous)-1].Digest
-	}
 	if record.At.IsZero() {
 		record.At = s.now()
 	}
 	record.At = record.At.UTC()
-	record.Digest = ""
+	record.Seq, record.Prev, record.Digest = 1, "", ""
 	record.Digest = digestOf(record)
-	line, err := json.Marshal(record)
+	line, err := encodeRecord(record)
 	if err != nil {
-		return Record{}, fmt.Errorf("journal: encode record: %w", err)
+		return Record{}, err
 	}
-	if len(line) > maxRecordBytes {
-		return Record{}, ErrInvalidRecord
-	}
-	handle, err := os.OpenFile(s.Path(deliveryID), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	handle, err := os.OpenFile(s.Path(deliveryID), os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return Record{}, fmt.Errorf("journal: open: %w", err)
 	}
-	defer handle.Close()
-	if _, err := handle.Write(append(line, '\n')); err != nil {
+	defer func() {
+		resultErr = errors.Join(resultErr, handle.Close())
+		if resultErr != nil {
+			appended = Record{}
+		}
+	}()
+	unlock, err := lockJournal(handle)
+	if err != nil {
+		return Record{}, fmt.Errorf("journal: lock: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
+	previous, err := readJournal(handle)
+	if err != nil {
+		return Record{}, err
+	}
+	if len(previous) > 0 {
+		record.Seq = len(previous) + 1
+		record.Prev = previous[len(previous)-1].Digest
+		record.Digest = ""
+		record.Digest = digestOf(record)
+		line, err = encodeRecord(record)
+		if err != nil {
+			return Record{}, err
+		}
+	}
+	line = append(line, '\n')
+	if _, err := handle.Write(line); err != nil {
 		return Record{}, fmt.Errorf("journal: write: %w", err)
 	}
 	if err := handle.Sync(); err != nil {
@@ -138,10 +156,21 @@ func (s *Store) Append(deliveryID string, record Record) (Record, error) {
 	return record, nil
 }
 
+func encodeRecord(record Record) ([]byte, error) {
+	line, err := json.Marshal(record)
+	if err != nil {
+		return nil, fmt.Errorf("journal: encode record: %w", err)
+	}
+	if len(line) >= maxRecordBytes {
+		return nil, ErrInvalidRecord
+	}
+	return line, nil
+}
+
 // Read returns every record of a delivery after checking the chain. A
 // missing file is ErrUnknownDelivery; a broken chain or an unparsable line
 // is an error, never a partial result.
-func (s *Store) Read(deliveryID string) ([]Record, error) {
+func (s *Store) Read(deliveryID string) (records []Record, resultErr error) {
 	if !ValidDeliveryID(deliveryID) {
 		return nil, ErrUnknownDelivery
 	}
@@ -152,7 +181,21 @@ func (s *Store) Read(deliveryID string) ([]Record, error) {
 		}
 		return nil, fmt.Errorf("journal: open: %w", err)
 	}
-	defer handle.Close()
+	defer func() {
+		resultErr = errors.Join(resultErr, handle.Close())
+		if resultErr != nil {
+			records = nil
+		}
+	}()
+	unlock, err := lockJournal(handle)
+	if err != nil {
+		return nil, fmt.Errorf("journal: lock: %w", err)
+	}
+	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
+	return readJournal(handle)
+}
+
+func readJournal(handle *os.File) ([]Record, error) {
 	info, err := handle.Stat()
 	if err != nil || info.Size() > maxJournalBytes {
 		return nil, errors.New("journal: file is unreadable or over budget")

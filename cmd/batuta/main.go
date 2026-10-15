@@ -844,7 +844,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		if err := errors.Join(loop.Supervise(ctx, opts), ctx.Err()); err != nil {
-			return loopRunExit(loop.StateCanceled, err)
+			return loopRunExit(loop.StateCanceled, err, ctx)
 		}
 		observation, err := loop.ObserveSupervision(opts.Observer)
 		if err != nil {
@@ -1000,7 +1000,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if errors.Is(err, loop.ErrStopped) {
 			return nil
 		}
-		return loopRunExit(state, err)
+		return loopRunExit(state, err, ctx)
 	}
 	var runner *loop.Runner
 	var err error
@@ -1029,7 +1029,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		fmt.Fprintf(stdout, "stopped after %d wave(s); resume with: batuta loop --resume %s\n", *maxWaves, runner.Delivery())
 		return nil
 	}
-	return loopRunExit(state, err)
+	return loopRunExit(state, err, ctx)
 }
 
 func attachLoopJudge(opts *loop.Options, workspace string) error {
@@ -1068,9 +1068,14 @@ func judgeProviderLine(config judge.Config) string {
 	}
 }
 
-func loopRunExit(state string, err error) error {
+// The optional signalCtx must be the signal.NotifyContext owned by runLoop.
+func loopRunExit(state string, err error, signalCtx ...context.Context) error {
 	if err != nil {
-		if (state == loop.StateCanceled || state == loop.StateDone || state == loop.StateReviewBlocked) && cancellationOnly(err) {
+		var signalCause error
+		if len(signalCtx) != 0 && signalCtx[0] != nil && signalCtx[0].Err() == context.Canceled {
+			signalCause = context.Cause(signalCtx[0])
+		}
+		if (state == loop.StateCanceled || state == loop.StateDone || state == loop.StateReviewBlocked) && cancellationOnly(err, signalCause) {
 			// Foreground cancellation does not rewrite completed implementation.
 			return loopExit(loop.StateCanceled)
 		}
@@ -1080,7 +1085,7 @@ func loopRunExit(state string, err error) error {
 }
 
 // errors.Is alone would hide independent failures joined with cancellation.
-func cancellationOnly(err error) bool {
+func cancellationOnly(err, signalCause error) bool {
 	switch e := err.(type) {
 	case interface{ Unwrap() []error }:
 		errors := e.Unwrap()
@@ -1088,15 +1093,15 @@ func cancellationOnly(err error) bool {
 			return false
 		}
 		for _, child := range errors {
-			if !cancellationOnly(child) {
+			if !cancellationOnly(child, signalCause) {
 				return false
 			}
 		}
 		return true
 	case interface{ Unwrap() error }:
-		return cancellationOnly(e.Unwrap())
+		return cancellationOnly(e.Unwrap(), signalCause)
 	default:
-		return err == context.Canceled
+		return errors.Is(err, context.Canceled) || (signalCause != nil && err == signalCause)
 	}
 }
 

@@ -1,7 +1,6 @@
 package loop
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -59,8 +58,16 @@ func supervisionGate(ctx context.Context, opts SupervisionOptions, judgment *Sup
 	if err != nil {
 		return gate, err
 	}
-	records, err := readSupervisionGateRecords(opts)
+	records, err := readSupervisionGateRecordsContext(ctx, opts)
 	if err != nil {
+		return gate, err
+	}
+	return supervisionGateWithRecords(ctx, opts, records, judgment)
+}
+
+func supervisionGateWithRecords(ctx context.Context, opts SupervisionOptions, records []journal.Record, judgment *SupervisionJudgment) (SupervisionGate, error) {
+	gate := SupervisionGate{Delivery: opts.Delivery}
+	if err := context.Cause(ctx); err != nil {
 		return gate, err
 	}
 	if len(records) == 0 || records[0].Kind != KindOpened {
@@ -134,7 +141,7 @@ func supervisionGateNoOwner(opts SupervisionOptions) error {
 
 func supervisionGateEvidence(ctx context.Context, opts SupervisionOptions, records []journal.Record, candidate *SupervisionReviewJob, judgment *SupervisionJudgment) (SupervisionGate, error) {
 	gate := SupervisionGate{Required: true, Delivery: opts.Delivery, ReviewID: candidate.ID, Reason: "review evidence is unavailable or incomplete; explicit evidence-bound judgment is required"}
-	if err := ctx.Err(); err != nil {
+	if err := context.Cause(ctx); err != nil {
 		return gate, err
 	}
 	if err := supervisionGateNoOwner(opts); err != nil {
@@ -226,12 +233,36 @@ func supervisionGateEvidence(ctx context.Context, opts SupervisionOptions, recor
 }
 
 func readSupervisionGateRecords(opts SupervisionOptions) ([]journal.Record, error) {
-	data, err := readSupervisionFile(filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".jsonl"), 256<<20)
+	return readSupervisionGateRecordsContext(context.Background(), opts)
+}
+
+func readSupervisionGateRecordsContext(ctx context.Context, opts SupervisionOptions) (records []journal.Record, resultErr error) {
+	if ctx == nil {
+		return nil, errors.New("loop: nil context")
+	}
+	if err := context.Cause(ctx); err != nil {
+		return nil, err
+	}
+	file, err := openSupervisionFile(filepath.Join(opts.Workspace, journal.Dir, opts.Delivery+".jsonl"))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) == 0 || data[len(data)-1] != '\n' {
+	defer func() {
+		resultErr = errors.Join(resultErr, file.Close())
+		if resultErr != nil {
+			records = nil
+		}
+	}()
+	snapshot, err := journal.ReadSnapshot(ctx, file)
+	if err != nil {
+		return nil, err
+	}
+	return supervisionGateSnapshotRecords(snapshot)
+}
+
+func supervisionGateSnapshotRecords(snapshot journal.Snapshot) ([]journal.Record, error) {
+	if !snapshot.Complete() {
 		return nil, errors.New("loop: incomplete delivery journal prevents progression")
 	}
-	return journal.Decode(bytes.NewReader(data))
+	return snapshot.Records(), nil
 }
