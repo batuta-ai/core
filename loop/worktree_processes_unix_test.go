@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,15 +59,7 @@ func processIsRunning(t *testing.T, pid int) bool {
 	if unix.Kill(pid, 0) != nil {
 		return false
 	}
-	if runtime.GOOS == "linux" {
-		stat, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
-		if err != nil {
-			return false
-		}
-		state := strings.TrimSpace(string(stat[strings.LastIndexByte(string(stat), ')')+1:]))
-		return state != "" && state[0] != 'Z'
-	}
-	return true
+	return !processIsZombie(pid)
 }
 
 func TestLoopStopsWorktreeProcesses(t *testing.T) {

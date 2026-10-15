@@ -81,6 +81,8 @@ func stopWith(ctx context.Context, env stopEnv, dir string, procs []Process, gra
 	return stopped, errors.Join(failures...)
 }
 
+const processStillRunning = "process still running"
+
 func stopOne(ctx context.Context, env stopEnv, dir string, proc Process, grace time.Duration) (string, string, error) {
 	handle, err := env.signaller.Open(proc.PID)
 	if err != nil {
@@ -94,54 +96,66 @@ func stopOne(ctx context.Context, env stopEnv, dir string, proc Process, grace t
 	if err := handle.Signal("TERM"); err != nil {
 		return "", "could not send TERM", err
 	}
-	ended, err := waitProcess(ctx, env.inspect, dir, proc, grace)
+	reason, err = waitProcess(ctx, env.inspect, dir, proc, grace)
 	if err != nil {
 		return "TERM", "could not confirm exit", err
 	}
-	if ended {
-		return "TERM", "", nil
+	if reason != processStillRunning {
+		return "TERM", reason, nil
 	}
 	alive, reason, err = processAlive(env.inspect, dir, proc)
 	if err != nil {
 		return "TERM", "could not recheck before KILL", err
 	}
 	if !alive {
-		return "TERM", reason, nil
+		return "TERM", exitReason(reason), nil
 	}
 	if err := handle.Signal("KILL"); err != nil {
 		return "TERM", "could not send KILL", err
 	}
-	ended, err = waitProcess(ctx, env.inspect, dir, proc, 3*time.Second)
+	reason, err = waitProcess(ctx, env.inspect, dir, proc, 3*time.Second)
 	if err != nil {
 		return "KILL", "could not confirm exit", err
 	}
-	if !ended {
-		return "KILL", "process still running", fmt.Errorf("process did not end after KILL")
+	if reason == processStillRunning {
+		return "KILL", reason, fmt.Errorf("process did not end after KILL")
 	}
-	return "KILL", "", nil
+	return "KILL", reason, nil
 }
 
-func waitProcess(ctx context.Context, inspect processInspector, dir string, proc Process, duration time.Duration) (bool, error) {
+// waitProcess polls until the process ends or the duration passes. It returns
+// "" for a confirmed end, processStillRunning at the deadline, and any other
+// reason when the PID stopped matching the process without a confirmed end.
+func waitProcess(ctx context.Context, inspect processInspector, dir string, proc Process, duration time.Duration) (string, error) {
 	deadline := time.NewTimer(duration)
 	defer deadline.Stop()
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		alive, _, err := processAlive(inspect, dir, proc)
+		alive, reason, err := processAlive(inspect, dir, proc)
 		if err != nil {
-			return false, err
+			return "", err
 		}
 		if !alive {
-			return true, nil
+			return exitReason(reason), nil
 		}
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return "", ctx.Err()
 		case <-deadline.C:
-			return false, nil
+			return processStillRunning, nil
 		case <-ticker.C:
 		}
 	}
+}
+
+// exitReason maps a confirmed end (gone or zombie) to "" and keeps every
+// other reason, so an identity or directory change is not reported as a stop.
+func exitReason(reason string) string {
+	if reason == "process ended" || reason == "process is a zombie" {
+		return ""
+	}
+	return reason
 }
 
 func processAlive(inspect processInspector, dir string, proc Process) (bool, string, error) {

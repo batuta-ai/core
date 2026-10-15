@@ -53,6 +53,9 @@ func (darwinProcessScanner) Inside(ctx context.Context, _ string) ([]Process, er
 		if err != nil || info == nil || info.Proc.P_stat == darwinZombieState {
 			continue
 		}
+		// lsof reports up to 31 command bytes, P_comm at most 16; the stopper
+		// rechecks P_comm, so the scan records the same field.
+		proc.Command = unix.ByteSliceToString(info.Proc.P_comm[:])
 		proc.PPID = int(info.Eproc.Ppid)
 		proc.Start = time.Unix(info.Proc.P_starttime.Sec, int64(info.Proc.P_starttime.Usec)*1000)
 		found = append(found, proc)

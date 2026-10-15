@@ -3312,6 +3312,34 @@ func TestLoopPruneApplyExitsTwoOnSkipped(t *testing.T) {
 	}
 }
 
+func TestPrintPruneProcessRows(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		proc worktree.StoppedProcess
+		want string
+	}{
+		{"dry run", worktree.StoppedProcess{Process: worktree.Process{PID: 11, Command: "node"}}, "process\t/p/x\t11\tnode\t-"},
+		{"confirmed", worktree.StoppedProcess{Process: worktree.Process{PID: 12, Command: "node"}, Signal: "KILL"}, "process\t/p/x\t12\tnode\tKILL"},
+		{"tab and newline", worktree.StoppedProcess{Process: worktree.Process{PID: 13, Command: "next\tdev\nserver\r"}, Signal: "TERM"}, "process\t/p/x\t13\tnext dev server \tTERM"},
+		{"unconfirmed", worktree.StoppedProcess{Process: worktree.Process{PID: 14, Command: "node"}, Signal: "TERM", Reason: "process identity changed"}, "process\t/p/x\t14\tnode\t-"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			report := loop.PruneReport{Entries: []loop.PruneEntry{{Path: "/p/x", Branch: "batuta/s/task-1-e1", Slug: "s", State: loop.PruneRemoved, Processes: []worktree.StoppedProcess{tc.proc}}}}
+			var stdout bytes.Buffer
+			if err := printPrune(&stdout, report); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+			if len(lines) != 2 || lines[1] != tc.want {
+				t.Fatalf("rows = %q, want process row %q", lines, tc.want)
+			}
+		})
+	}
+}
+
 // loopFlagTokens reads the flags runLoop defines from its own help output:
 // the name and, for a non-boolean flag, the type word.
 func loopFlagTokens(t *testing.T) map[string]string {

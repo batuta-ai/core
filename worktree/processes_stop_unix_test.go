@@ -118,16 +118,75 @@ func TestStopProcessesGuards(t *testing.T) {
 	}
 }
 
+func TestStopProcessesUnconfirmed(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(tempDir(t), "worktree")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Unix(123, 0)
+	proc := Process{PID: 50, Command: "sleep", Cwd: dir, Start: start}
+	for _, tc := range []struct {
+		name, command, cwd, reason string
+	}{
+		{"command", "other", dir, "process identity changed"},
+		{"working directory", "sleep", filepath.Dir(dir), "process left worktree"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			signaller := &recordingSignaller{}
+			env := testStopEnv(dir, signaller, func(int) (string, string, string, time.Time, error) {
+				if len(signaller.calls) == 0 {
+					return "sleep", dir, "S", start, nil
+				}
+				return tc.command, tc.cwd, "S", start, nil
+			})
+			got, err := stopWith(context.Background(), env, dir, []Process{proc}, time.Second)
+			if err != nil || len(got) != 1 || got[0].Signal != "TERM" || got[0].Reason != tc.reason || got[0].Confirmed() {
+				t.Fatalf("stopWith() = %v, %v; want unconfirmed TERM with %q", got, err, tc.reason)
+			}
+			if strings.Join(signaller.calls, ",") != "TERM" {
+				t.Fatalf("signals = %v; want TERM only", signaller.calls)
+			}
+		})
+	}
+}
+
+func TestStopProcessesStillRunningAfterKill(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(tempDir(t), "worktree")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Unix(123, 0)
+	proc := Process{PID: 50, Command: "sleep", Cwd: dir, Start: start}
+	signaller := &recordingSignaller{}
+	env := testStopEnv(dir, signaller, func(int) (string, string, string, time.Time, error) {
+		return "sleep", dir, "S", start, nil
+	})
+	got, err := stopWith(context.Background(), env, dir, []Process{proc}, time.Millisecond)
+	if err == nil || len(got) != 1 || got[0].Signal != "KILL" || got[0].Confirmed() {
+		t.Fatalf("stopWith() = %v, %v; want unconfirmed KILL with an error", got, err)
+	}
+}
+
 func startStopChild(t *testing.T, dir string, ignored bool) (*exec.Cmd, Process) {
 	t.Helper()
-	var cmd *exec.Cmd
+	cmd := exec.Command("sleep", "30")
+	marker := filepath.Join(dir, "ready")
 	if ignored {
-		marker := filepath.Join(dir, "ready")
 		cmd = exec.Command("sh", "-c", `trap '' TERM; touch "$1"; exec sleep 30`, "sh", marker)
-		cmd.Dir = dir
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
+	}
+	cmd.Dir = dir
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// Register the reap before any wait that can fail, so the child never outlives the test.
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	if ignored {
 		deadline := time.Now().Add(5 * time.Second)
 		for {
 			if _, err := os.Stat(marker); err == nil {
@@ -138,17 +197,7 @@ func startStopChild(t *testing.T, dir string, ignored bool) (*exec.Cmd, Process)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
-	} else {
-		cmd = exec.Command("sleep", "30")
-		cmd.Dir = dir
-		if err := cmd.Start(); err != nil {
-			t.Fatal(err)
-		}
 	}
-	t.Cleanup(func() {
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-	})
 	procs, err := ProcessesInside(context.Background(), dir)
 	if err != nil {
 		t.Fatal(err)
@@ -170,7 +219,7 @@ func TestStopProcessesTerm(t *testing.T) {
 	}
 	_, proc := startStopChild(t, dir, false)
 	got, err := StopProcesses(context.Background(), dir, []Process{proc}, time.Minute)
-	if err != nil || len(got) != 1 || got[0].Signal != "TERM" {
+	if err != nil || len(got) != 1 || got[0].Signal != "TERM" || !got[0].Confirmed() {
 		t.Fatalf("StopProcesses() = %v, %v", got, err)
 	}
 }
@@ -183,7 +232,7 @@ func TestStopProcessesEscalates(t *testing.T) {
 	}
 	_, proc := startStopChild(t, dir, true)
 	got, err := StopProcesses(context.Background(), dir, []Process{proc}, 50*time.Millisecond)
-	if err != nil || len(got) != 1 || got[0].Signal != "KILL" {
+	if err != nil || len(got) != 1 || got[0].Signal != "KILL" || !got[0].Confirmed() {
 		t.Fatalf("StopProcesses() = %v, %v", got, err)
 	}
 }

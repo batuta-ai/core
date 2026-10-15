@@ -1620,9 +1620,11 @@ func printPrune(stdout io.Writer, report loop.PruneReport) error {
 		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", reconcileField(entry.Path), reconcileField(entry.Branch), reconcileField(entry.Slug), entry.State)
 		skipped = skipped || entry.State == loop.PruneSkipped
 		for _, proc := range entry.Processes {
-			signal := proc.Signal
-			if signal == "" {
-				signal = "-"
+			// Only a confirmed stop names its signal; an unconfirmed one
+			// reaches stderr as a warning.
+			signal := "-"
+			if proc.Confirmed() {
+				signal = proc.Signal
 			}
 			fmt.Fprintf(stdout, "process\t%s\t%d\t%s\t%s\n", reconcileField(entry.Path), proc.PID, processField(proc.Command), signal)
 		}

@@ -11,9 +11,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("BATUTA_PROCESS_SLEEP_HELPER") != "" {
+		time.Sleep(30 * time.Second)
+		return
+	}
 	if dir := os.Getenv("BATUTA_PROCESS_ANCESTOR_HELPER"); dir != "" {
 		raw, rawErr := platformProcessScanner().Inside(context.Background(), dir)
 		filtered, filteredErr := ProcessesInside(context.Background(), dir)

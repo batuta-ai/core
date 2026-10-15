@@ -84,6 +84,11 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 		if current != nil && current.Path == path {
 			current.Processes = append(current.Processes, stopped...)
 		}
+		for _, proc := range stopped {
+			if proc.Signal != "" && !proc.Confirmed() {
+				warn(path, fmt.Errorf("sent SIG%s to pid %d (%s) but could not confirm it ended: %s", proc.Signal, proc.PID, proc.Command, proc.Reason))
+			}
+		}
 		if err != nil {
 			warn(path, err)
 		}

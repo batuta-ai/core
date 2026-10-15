@@ -41,12 +41,14 @@ func TestLoopSkippedProcessNotReportedStopped(t *testing.T) {
 		return []worktree.Process{
 			{PID: 900001, Command: "sleep", Cwd: dir, Start: time.Unix(1, 0)},
 			{PID: 900002, Command: "editor", Cwd: dir, Start: time.Unix(1, 0)},
+			{PID: 900003, Command: "server", Cwd: dir, Start: time.Unix(1, 0)},
 		}, nil
 	})
 	opts.Stopper = loopProcessStopper(func(_ context.Context, _ string, procs []worktree.Process, _ time.Duration) ([]worktree.StoppedProcess, error) {
 		return []worktree.StoppedProcess{
 			{Process: procs[0], Signal: "TERM"},
 			{Process: procs[1], Reason: "identity changed"},
+			{Process: procs[2], Signal: "KILL", Reason: "process still running"},
 		}, nil
 	})
 	r, err := New(context.Background(), opts)
@@ -71,6 +73,46 @@ func TestLoopSkippedProcessNotReportedStopped(t *testing.T) {
 		if strings.Contains(content, "stopped pid 900002") {
 			t.Errorf("%s claims skipped PID stopped:\n%s", name, content)
 		}
+		if !strings.Contains(content, "sent SIGKILL to pid 900003 (server)") || !strings.Contains(content, "could not confirm it ended: process still running") {
+			t.Errorf("%s missing unconfirmed warning:\n%s", name, content)
+		}
+		if strings.Contains(content, "stopped pid 900003") {
+			t.Errorf("%s claims unconfirmed PID stopped:\n%s", name, content)
+		}
+	}
+	for _, proc := range r.allStoppedProcesses() {
+		if proc.PID != 900001 {
+			t.Errorf("journaled stops include PID %d; want only 900001", proc.PID)
+		}
+	}
+}
+
+func TestTrailHeadingAfterEarlyStopLines(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := r.trailPath("task_1")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	early := "task_1 stopped pid 900001 (sleep) in /leftover with SIGTERM\n"
+	if err := os.WriteFile(path, []byte(early), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	trail, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(trail), "# Run — ") || !strings.Contains(string(trail), early) || strings.Count(string(trail), "# Run — ") != 1 {
+		t.Fatalf("trail lacks one run heading above the early stop line:\n%s", trail)
 	}
 }
 

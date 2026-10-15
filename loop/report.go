@@ -735,10 +735,13 @@ func (r *Runner) reportStoppedProcesses(path string, stopped []worktree.StoppedP
 	taskID := r.processWorktreeTask(path)
 	var lines []string
 	for _, proc := range stopped {
-		if proc.Signal == "TERM" || proc.Signal == "KILL" {
+		switch {
+		case proc.Confirmed():
 			r.stoppedProcesses[path] = append(r.stoppedProcesses[path], proc)
 			lines = append(lines, fmt.Sprintf("%s stopped pid %d (%s) in %s with SIG%s", taskID, proc.PID, proc.Command, path, proc.Signal))
-		} else {
+		case proc.Signal != "":
+			lines = append(lines, fmt.Sprintf("warning: %s sent SIG%s to pid %d (%s) in %s but could not confirm it ended: %s", taskID, proc.Signal, proc.PID, proc.Command, path, proc.Reason))
+		default:
 			lines = append(lines, fmt.Sprintf("warning: %s skipped pid %d (%s) in %s: %s", taskID, proc.PID, proc.Command, path, proc.Reason))
 		}
 	}
@@ -840,8 +843,16 @@ func (r *Runner) writeTrail(ac attemptContext, brief string, result executor.Res
 	path := r.trailPath(ac.taskID)
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	var b strings.Builder
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	// Process-stop lines can reach the trail before the first attempt does;
+	// the run heading still goes on top.
+	existing, _ := os.ReadFile(path)
+	headed := strings.HasPrefix(string(existing), "# Run — ")
+	if !headed {
 		fmt.Fprintf(&b, "# Run — %s\n\n**Date:** %s · **Lane:** %s/%s · **Plan:** %s (%s) · **Delivery:** %s\n\n", ac.plan.Title, r.now().Format("2006-01-02"), ac.plan.Domain, ac.plan.Complexity, r.plan.Slug, ac.taskID, r.delivery)
+		b.Write(existing)
+		if len(existing) > 0 {
+			b.WriteString("\n")
+		}
 	}
 	fmt.Fprintf(&b, "## Attempt %d — %s/%s\n\n", ac.execution, ac.adapter.Name, ac.runtime.Model)
 	fmt.Fprintf(&b, "**Worktree:** %s · **Base:** %s · **Exit:** %d · **Duration:** %s\n\n", ac.worktree.Root, short(ac.base), result.ExitCode, result.Duration.Round(time.Second))
@@ -868,7 +879,11 @@ func (r *Runner) writeTrail(ac attemptContext, brief string, result executor.Res
 		fmt.Fprintf(&b, "\n**Verdict:** %s\n", verdict)
 	}
 	b.WriteString("\n")
-	appendFile(path, b.String())
+	if headed {
+		appendFile(path, b.String())
+		return
+	}
+	_ = os.WriteFile(path, []byte(b.String()), 0o644)
 }
 
 func (r *Runner) writeTrailVerdict(taskID, verdict string, feedback []string) {

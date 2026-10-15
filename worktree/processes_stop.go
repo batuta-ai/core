@@ -10,6 +10,13 @@ type StoppedProcess struct {
 	Signal, Reason string
 }
 
+// Confirmed reports whether a signal ended the process and its end was
+// observed. An entry with a signal and a reason was signalled, but its end
+// could not be confirmed.
+func (s StoppedProcess) Confirmed() bool {
+	return (s.Signal == "TERM" || s.Signal == "KILL") && s.Reason == ""
+}
+
 type ProcessStopper interface {
 	Stop(ctx context.Context, dir string, procs []Process, grace time.Duration) ([]StoppedProcess, error)
 }
