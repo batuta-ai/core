@@ -274,6 +274,11 @@ func (r *Runner) restoreFinalization(records []journal.Record, opened openedDeta
 	r.delivery, r.plan.Slug = r.opts.Resume, opened.Slug
 	r.plan.Path = detail.PlanPath
 	r.planPath = filepath.Join(r.root, detail.PlanPath)
+	// A checkpoint can predate stops already journaled at cleanup.
+	for _, record := range records {
+		r.restoreCleanupStops(record)
+	}
+	detail.StoppedProcesses = mergeStoppedProcesses(detail.StoppedProcesses, r.allStoppedProcesses())
 	r.journaled, r.pendingFinish = true, detail
 	return nil
 }

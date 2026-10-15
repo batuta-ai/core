@@ -476,6 +476,42 @@ func TestAbandonKeepsCleanupStops(t *testing.T) {
 	}
 }
 
+func TestPendingFinalizationKeepsCleanupStops(t *testing.T) {
+	f := setup(t)
+	t.Setenv("XDG_CACHE_HOME", tempDir(t))
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	wt := attemptWorktree{Name: "gone", Root: filepath.Join(f.root, "gone"), Branch: "batuta/gone"}
+	earlier := worktree.StoppedProcess{Process: worktree.Process{PID: 797, Command: "server", Cwd: wt.Root, Start: time.Unix(1, 0)}, Signal: "TERM"}
+	detail := map[string]any{"worktree": wt, "state": "removed", "error": "", "stopped_processes": []worktree.StoppedProcess{earlier}}
+	if err := r.locked(KindCleanup, "task_1", detail, nil); err != nil {
+		t.Fatal(err)
+	}
+	// A checkpoint written without the cleanup stops, as older code did.
+	if err := r.checkpointFinalization(terminalDetail{State: StateAbandoned, PlanPath: r.plan.Path, BookkeepingPending: true}); err != nil {
+		t.Fatal(err)
+	}
+	opts := f.options("default", &out)
+	opts.Resume = r.Delivery()
+	if _, err := Abandon(context.Background(), opts); err != nil {
+		t.Fatalf("Abandon() = %v\n%s", err, out.String())
+	}
+	records := readJournal(t, f, r.Delivery())
+	last := records[len(records)-1]
+	if last.Kind != KindTerminal {
+		t.Fatalf("last record = %s", last.Kind)
+	}
+	if stops := journaledStops(t, last.Detail); !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return reflect.DeepEqual(p, earlier) }) {
+		t.Fatalf("terminal stops = %v; want %v", stops, earlier)
+	}
+}
+
 func TestJournalStoppedProcessesReaders(t *testing.T) {
 	t.Parallel()
 	f := setup(t)

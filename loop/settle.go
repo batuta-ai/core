@@ -236,9 +236,6 @@ func errorString(err error) string {
 	return err.Error()
 }
 
-// replay rebuilds the runner's memory from a journal: the graph from the
-// last record, worktrees, feedback, candidates, integrated commits, started
-// attempts and a pending preflight.
 // restoreCleanupStops keeps the confirmed stops of an earlier cleanup record,
 // so a resumed or abandoned delivery's terminal record still lists them.
 func (r *Runner) restoreCleanupStops(record journal.Record) {
@@ -263,6 +260,9 @@ func (r *Runner) restoreCleanupStops(record journal.Record) {
 	}
 }
 
+// replay rebuilds the runner's memory from a journal: the graph from the
+// last record, worktrees, feedback, candidates, integrated commits, started
+// attempts and a pending preflight.
 func (r *Runner) replay(records []journal.Record) error {
 	last := records[len(records)-1]
 	if len(last.Graph) == 0 {
