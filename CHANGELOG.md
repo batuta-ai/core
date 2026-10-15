@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.55](https://github.com/batuta-ai/core/compare/v1.1.0-beta.54...v1.1.0-beta.55) (2026-10-15)
+
+
+### Bug Fixes
+
+* **journal:** coordinate publication and captured supervision reads ([#172](https://github.com/batuta-ai/core/issues/172)) ([7985226](https://github.com/batuta-ai/core/commit/7985226f7f6463e8c4cc9222925cc0cbe8a8c047))
+
 ## [1.1.0-beta.54](https://github.com/batuta-ai/core/compare/v1.1.0-beta.53...v1.1.0-beta.54) (2026-10-14)
 
 
