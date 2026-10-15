@@ -801,6 +801,8 @@ func mergeStoppedProcesses(saved, current []worktree.StoppedProcess) []worktree.
 	return merged
 }
 
+var worktreeTaskName = regexp.MustCompile(`^task-(\d+)-e\d+$`)
+
 func (r *Runner) processWorktreeTask(path string) string {
 	for key, wt := range r.worktrees {
 		if wt.Root == path {
@@ -809,6 +811,13 @@ func (r *Runner) processWorktreeTask(path string) string {
 		}
 	}
 	name := filepath.Base(path)
+	if match := worktreeTaskName.FindStringSubmatch(strings.TrimPrefix(name, r.plan.Slug+"-")); match != nil {
+		// Pending-finalization recovery restores neither the worktree map
+		// nor the task list; the attempt name still carries the task.
+		if name != match[0] {
+			return "task_" + match[1]
+		}
+	}
 	for _, task := range r.plan.Set.Tasks {
 		prefix := r.plan.Slug + "-" + strings.ReplaceAll(task.ID, "_", "-") + "-e"
 		if strings.HasPrefix(name, prefix) {
@@ -845,7 +854,11 @@ func (r *Runner) writeTrail(ac attemptContext, brief string, result executor.Res
 	var b strings.Builder
 	// Process-stop lines can reach the trail before the first attempt does;
 	// the run heading still goes on top.
-	existing, _ := os.ReadFile(path)
+	existing, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// An unreadable trail is never rewritten; the attempt goes below it.
+		existing = []byte("# Run — ")
+	}
 	headed := strings.HasPrefix(string(existing), "# Run — ")
 	if !headed {
 		fmt.Fprintf(&b, "# Run — %s\n\n**Date:** %s · **Lane:** %s/%s · **Plan:** %s (%s) · **Delivery:** %s\n\n", ac.plan.Title, r.now().Format("2006-01-02"), ac.plan.Domain, ac.plan.Complexity, r.plan.Slug, ac.taskID, r.delivery)
@@ -883,7 +896,11 @@ func (r *Runner) writeTrail(ac attemptContext, brief string, result executor.Res
 		appendFile(path, b.String())
 		return
 	}
-	_ = os.WriteFile(path, []byte(b.String()), 0o644)
+	// Only a trail that holds just early stop lines, or none, is rewritten.
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, []byte(b.String()), 0o644) == nil {
+		_ = os.Rename(tmp, path)
+	}
 }
 
 func (r *Runner) writeTrailVerdict(taskID, verdict string, feedback []string) {

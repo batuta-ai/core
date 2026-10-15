@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,7 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func platformProcessInspector(pid int) (string, string, string, time.Time, error) {
+func platformProcessInspector(_ context.Context, pid int) (string, string, string, time.Time, error) {
 	proc, state, err := linuxProcessStat(pid)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", "", "", time.Time{}, os.ErrNotExist

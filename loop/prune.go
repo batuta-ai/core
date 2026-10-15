@@ -82,11 +82,15 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 	git.Stopper = opts.Stopper
 	git.OnProcessesStopped = func(path string, stopped []worktree.StoppedProcess, err error) {
 		if current != nil && current.Path == path {
-			current.Processes = append(current.Processes, stopped...)
+			current.Processes = mergePruneStops(current.Processes, stopped)
 		}
 		for _, proc := range stopped {
-			if proc.Signal != "" && !proc.Confirmed() {
+			switch {
+			case proc.Confirmed():
+			case proc.Signal != "":
 				warn(path, fmt.Errorf("sent SIG%s to pid %d (%s) but could not confirm it ended: %s", proc.Signal, proc.PID, proc.Command, proc.Reason))
+			default:
+				warn(path, fmt.Errorf("skipped pid %d (%s): %s", proc.PID, proc.Command, proc.Reason))
 			}
 		}
 		if err != nil {
@@ -175,6 +179,24 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 		slices.Sort(report.Warnings)
 	}
 	return report, nil
+}
+
+// mergePruneStops keeps one row per process across the stop before Park and
+// the second scan inside Remove: a later result replaces an earlier one
+// unless the earlier one is a confirmed stop.
+func mergePruneStops(rows, stopped []worktree.StoppedProcess) []worktree.StoppedProcess {
+	for _, proc := range stopped {
+		index := slices.IndexFunc(rows, func(row worktree.StoppedProcess) bool {
+			return row.PID == proc.PID && row.Start.Equal(proc.Start)
+		})
+		switch {
+		case index < 0:
+			rows = append(rows, proc)
+		case !rows[index].Confirmed():
+			rows[index] = proc
+		}
+	}
+	return rows
 }
 
 func pruneStillOrphan(ctx context.Context, git worktree.GitProvider, homes []string, entry PruneEntry) (bool, error) {

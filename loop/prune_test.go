@@ -690,3 +690,47 @@ func TestPruneProcessScanError(t *testing.T) {
 		})
 	}
 }
+
+func TestPruneMergesRepeatedStops(t *testing.T) {
+	f := setup(t)
+	wt := pruneOrphans(t, f, "stray")[0]
+	survivor := worktree.Process{PID: 900310, Command: "next-server", Cwd: wt.Path, Start: time.Unix(100, 0)}
+	editor := worktree.Process{PID: 900311, Command: "editor", Cwd: wt.Path, Start: time.Unix(100, 0)}
+	scanner := loopProcessScanner(func(context.Context, string) ([]worktree.Process, error) {
+		return []worktree.Process{survivor, editor}, nil
+	})
+	stopCalls := 0
+	stopper := loopProcessStopper(func(_ context.Context, _ string, procs []worktree.Process, _ time.Duration) ([]worktree.StoppedProcess, error) {
+		stopCalls++
+		if stopCalls == 1 {
+			return []worktree.StoppedProcess{
+				{Process: procs[0], Signal: "KILL", Reason: "process still running"},
+				{Process: procs[1], Reason: "process identity changed"},
+			}, nil
+		}
+		return []worktree.StoppedProcess{
+			{Process: procs[0], Signal: "KILL"},
+			{Process: procs[1], Reason: "process identity changed"},
+		}, nil
+	})
+	report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true, Processes: scanner, Stopper: stopper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopCalls != 2 {
+		t.Fatalf("stopper called %d times, want 2", stopCalls)
+	}
+	want := []worktree.StoppedProcess{
+		{Process: survivor, Signal: "KILL"},
+		{Process: editor, Reason: "process identity changed"},
+	}
+	if len(report.Entries) != 1 || !reflect.DeepEqual(report.Entries[0].Processes, want) {
+		t.Fatalf("entries = %+v, want one row per process %+v", report.Entries, want)
+	}
+	warnings := strings.Join(report.Warnings, "\n")
+	for _, part := range []string{"sent SIGKILL to pid 900310 (next-server) but could not confirm it ended", "skipped pid 900311 (editor): process identity changed"} {
+		if !strings.Contains(warnings, part) {
+			t.Errorf("warnings missing %q:\n%s", part, warnings)
+		}
+	}
+}

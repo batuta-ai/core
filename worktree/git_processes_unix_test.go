@@ -30,7 +30,7 @@ func worktreeSleep(t *testing.T, path string) *exec.Cmd {
 
 func sleepRunning(t *testing.T, cmd *exec.Cmd) bool {
 	t.Helper()
-	_, _, state, _, err := platformProcessInspector(cmd.Process.Pid)
+	_, _, state, _, err := platformProcessInspector(context.Background(), cmd.Process.Pid)
 	return err == nil && state != "Z"
 }
 
@@ -55,6 +55,29 @@ func TestProcessMethodsRequireRegisteredWorktree(t *testing.T) {
 		t.Fatalf("StopInside() = %v, %v", got, err)
 	}
 	_ = p.Remove(ctx, path, "")
+	if calls != 0 || !sleepRunning(t, cmd) {
+		t.Fatalf("scanner calls = %d, sleep running = %v", calls, sleepRunning(t, cmd))
+	}
+}
+
+func TestProcessMethodsRejectPrimaryCheckout(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	p, _ := initRepo(t)
+	// A home that holds the primary checkout must not make it a target.
+	p.Home = filepath.Dir(p.Root)
+	cmd := worktreeSleep(t, p.Root)
+	calls := 0
+	p.Processes = providerScanner(func(context.Context, string) ([]Process, error) {
+		calls++
+		return nil, nil
+	})
+	if got, err := p.ProcessesIn(ctx, p.Root); err != nil || len(got) != 0 {
+		t.Fatalf("ProcessesIn() = %v, %v", got, err)
+	}
+	if got, err := p.StopInside(ctx, p.Root); err != nil || len(got) != 0 {
+		t.Fatalf("StopInside() = %v, %v", got, err)
+	}
 	if calls != 0 || !sleepRunning(t, cmd) {
 		t.Fatalf("scanner calls = %d, sleep running = %v", calls, sleepRunning(t, cmd))
 	}

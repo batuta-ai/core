@@ -10,6 +10,7 @@ import (
 	"github.com/batuta-ai/core/integration"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
+	"github.com/batuta-ai/core/worktree"
 )
 
 // settleCandidates integrates every wave that holds unsettled candidates,
@@ -332,13 +333,26 @@ func (r *Runner) replay(records []journal.Record) error {
 			}
 		case KindCleanup:
 			var detail struct {
-				Worktree attemptWorktree `json:"worktree"`
+				Worktree         attemptWorktree           `json:"worktree"`
+				StoppedProcesses []worktree.StoppedProcess `json:"stopped_processes"`
 			}
 			if json.Unmarshal(record.Detail, &detail) == nil {
 				for key, known := range r.worktrees {
 					if known.Root == detail.Worktree.Root {
 						delete(r.worktrees, key)
 					}
+				}
+				// A resumed run's terminal record still lists the stops an
+				// earlier run journaled at cleanup.
+				var confirmed []worktree.StoppedProcess
+				for _, proc := range detail.StoppedProcesses {
+					if proc.Confirmed() {
+						confirmed = append(confirmed, proc)
+					}
+				}
+				if len(confirmed) > 0 {
+					root := detail.Worktree.Root
+					r.stoppedProcesses[root] = mergeStoppedProcesses(r.stoppedProcesses[root], confirmed)
 				}
 			}
 		case KindTerminal:

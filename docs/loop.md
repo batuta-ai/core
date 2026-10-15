@@ -301,8 +301,10 @@ the signal column at `-` in `--prune` output and does not journal the entry.
   residual risk is accepted.
 - **Accepted risk:** an editor, a terminal or another agent session whose
   working directory is inside a batuta worktree is stopped too, SIGKILL
-  included. Batuta worktrees are batuta's own. Pass `--keep-worktrees` to
-  keep a worktree and its processes.
+  included. Batuta worktrees are batuta's own. On a loop run, pass
+  `--keep-worktrees` to keep the worktrees and their processes. `--prune`
+  does not accept that flag; run `--prune` without `--apply` to list the
+  processes without stopping them.
 
 ## After the run
 

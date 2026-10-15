@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -191,7 +192,7 @@ func assertJournalStops(t *testing.T, got, observed []worktree.StoppedProcess) {
 	t.Helper()
 	want := map[int]worktree.StoppedProcess{}
 	for _, proc := range observed {
-		if proc.Signal == "TERM" || proc.Signal == "KILL" {
+		if proc.Confirmed() {
 			want[proc.PID] = proc
 		}
 	}
@@ -346,6 +347,105 @@ func TestLoopStoppedProcessesSurviveResume(t *testing.T) {
 		t.Fatalf("last record = %s", after[len(after)-1].Kind)
 	}
 	assertJournalStops(t, journaledStops(t, after[len(after)-1].Detail), stops.actual())
+}
+
+func TestLoopCleanupStopsSurviveResume(t *testing.T) {
+	f := setup(t)
+	t.Setenv("XDG_CACHE_HOME", tempDir(t))
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	wt := attemptWorktree{Name: "gone", Root: filepath.Join(f.root, "gone"), Branch: "batuta/gone"}
+	earlier := worktree.StoppedProcess{Process: worktree.Process{PID: 777, Command: "server", Cwd: wt.Root, Start: time.Unix(1, 0)}, Signal: "TERM"}
+	unconfirmed := worktree.StoppedProcess{Process: worktree.Process{PID: 778, Command: "worker", Cwd: wt.Root, Start: time.Unix(1, 0)}, Signal: "KILL", Reason: "process still running"}
+	detail := map[string]any{"worktree": wt, "state": "removed", "error": "", "stopped_processes": []worktree.StoppedProcess{earlier, unconfirmed}}
+	if err := r.locked(KindCleanup, "task_1", detail, nil); err != nil {
+		t.Fatal(err)
+	}
+	resumeOpts := f.options("default", &out)
+	resumeOpts.Resume = r.Delivery()
+	resumed, err := Resume(context.Background(), resumeOpts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := resumed.Run(context.Background())
+	if err != nil || state != StateDone {
+		t.Fatalf("resumed Run() = %s, %v\n%s", state, err, out.String())
+	}
+	records := readJournal(t, f, r.Delivery())
+	last := records[len(records)-1]
+	if last.Kind != KindTerminal {
+		t.Fatalf("last record = %s", last.Kind)
+	}
+	stops := journaledStops(t, last.Detail)
+	if !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return reflect.DeepEqual(p, earlier) }) {
+		t.Fatalf("terminal stops = %v; want the earlier cleanup stop %v", stops, earlier)
+	}
+	if slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return p.PID == unconfirmed.PID }) {
+		t.Fatalf("terminal stops = %v; include the unconfirmed PID %d", stops, unconfirmed.PID)
+	}
+}
+
+func TestProcessWorktreeTaskWithoutRestoredState(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	r, err := New(context.Background(), f.options("default", new(bytes.Buffer)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pending-finalization recovery restores neither map.
+	r.worktrees = map[string]attemptWorktree{}
+	r.plan.Set.Tasks = nil
+	home := filepath.Join(f.root, "home")
+	for name, want := range map[string]string{
+		r.worktreeName("task_3", 2): "task_3",
+		"task-3-e2":                 "",
+		"other-task-3-e2":           "",
+		r.plan.Slug + "-notes":      "",
+	} {
+		if got := r.processWorktreeTask(filepath.Join(home, name)); got != want {
+			t.Errorf("processWorktreeTask(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestTrailKeepsUnreadableFile(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root reads any file")
+	}
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := r.trailPath("task_1")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	early := "task_1 stopped pid 900001 (sleep) in /leftover with SIGTERM\n"
+	if err := os.WriteFile(path, []byte(early), 0o200); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Run(context.Background()); err != nil {
+		t.Fatalf("Run() = %v\n%s", err, out.String())
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	trail, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(trail), early) {
+		t.Fatalf("unreadable trail was rewritten:\n%s", trail)
+	}
 }
 
 func TestJournalStoppedProcessesReaders(t *testing.T) {

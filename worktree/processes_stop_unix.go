@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-type processInspector func(pid int) (command, cwd, state string, start time.Time, err error)
+type processInspector func(ctx context.Context, pid int) (command, cwd, state string, start time.Time, err error)
 
 type stopEnv struct {
 	home      string
@@ -89,9 +89,12 @@ func stopOne(ctx context.Context, env stopEnv, dir string, proc Process, grace t
 		return "", "could not open process", err
 	}
 	defer handle.Close()
-	alive, reason, err := processAlive(env.inspect, dir, proc)
+	alive, reason, err := processAlive(ctx, env.inspect, dir, proc)
 	if err != nil || !alive {
 		return "", reason, err
+	}
+	if err := ctx.Err(); err != nil {
+		return "", "cancelled before TERM", err
 	}
 	if err := handle.Signal("TERM"); err != nil {
 		return "", "could not send TERM", err
@@ -103,12 +106,15 @@ func stopOne(ctx context.Context, env stopEnv, dir string, proc Process, grace t
 	if reason != processStillRunning {
 		return "TERM", reason, nil
 	}
-	alive, reason, err = processAlive(env.inspect, dir, proc)
+	alive, reason, err = processAlive(ctx, env.inspect, dir, proc)
 	if err != nil {
 		return "TERM", "could not recheck before KILL", err
 	}
 	if !alive {
 		return "TERM", exitReason(reason), nil
+	}
+	if err := ctx.Err(); err != nil {
+		return "TERM", "cancelled before KILL", err
 	}
 	if err := handle.Signal("KILL"); err != nil {
 		return "TERM", "could not send KILL", err
@@ -132,7 +138,7 @@ func waitProcess(ctx context.Context, inspect processInspector, dir string, proc
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		alive, reason, err := processAlive(inspect, dir, proc)
+		alive, reason, err := processAlive(ctx, inspect, dir, proc)
 		if err != nil {
 			return "", err
 		}
@@ -158,8 +164,8 @@ func exitReason(reason string) string {
 	return reason
 }
 
-func processAlive(inspect processInspector, dir string, proc Process) (bool, string, error) {
-	command, cwd, state, start, err := inspect(proc.PID)
+func processAlive(ctx context.Context, inspect processInspector, dir string, proc Process) (bool, string, error) {
+	command, cwd, state, start, err := inspect(ctx, proc.PID)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, "process ended", nil
 	}

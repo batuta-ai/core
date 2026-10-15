@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func platformProcessInspector(pid int) (string, string, string, time.Time, error) {
+func platformProcessInspector(ctx context.Context, pid int) (string, string, string, time.Time, error) {
 	info, err := unix.SysctlKinfoProc("kern.proc.pid", pid)
 	if errors.Is(err, unix.ESRCH) || info == nil && err == nil {
 		return "", "", "", time.Time{}, os.ErrNotExist
@@ -26,7 +26,7 @@ func platformProcessInspector(pid int) (string, string, string, time.Time, error
 	if info.Proc.P_stat == darwinZombieState {
 		return command, "", "Z", start, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, lsofPath, "-n", "-P", "-p", strconv.Itoa(pid), "-a", "-d", "cwd", "-F", "n").Output()
 	if ctx.Err() != nil {

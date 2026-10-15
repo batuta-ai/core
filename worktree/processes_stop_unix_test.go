@@ -57,7 +57,7 @@ func TestStopProcessesRecheck(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			signaller := &recordingSignaller{}
-			env := testStopEnv(dir, signaller, func(int) (string, string, string, time.Time, error) {
+			env := testStopEnv(dir, signaller, func(context.Context, int) (string, string, string, time.Time, error) {
 				return tc.command, tc.cwd, "S", tc.start, nil
 			})
 			got, err := stopWith(context.Background(), env, dir, []Process{proc}, time.Millisecond)
@@ -89,7 +89,7 @@ func TestStopProcessesGuards(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			signaller := &recordingSignaller{}
-			env := testStopEnv(dir, signaller, func(int) (string, string, string, time.Time, error) {
+			env := testStopEnv(dir, signaller, func(context.Context, int) (string, string, string, time.Time, error) {
 				return proc.Command, proc.Cwd, "S", proc.Start, nil
 			})
 			env.parentPID = func(pid int) (int, error) {
@@ -135,7 +135,7 @@ func TestStopProcessesUnconfirmed(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			signaller := &recordingSignaller{}
-			env := testStopEnv(dir, signaller, func(int) (string, string, string, time.Time, error) {
+			env := testStopEnv(dir, signaller, func(context.Context, int) (string, string, string, time.Time, error) {
 				if len(signaller.calls) == 0 {
 					return "sleep", dir, "S", start, nil
 				}
@@ -161,12 +161,34 @@ func TestStopProcessesStillRunningAfterKill(t *testing.T) {
 	start := time.Unix(123, 0)
 	proc := Process{PID: 50, Command: "sleep", Cwd: dir, Start: start}
 	signaller := &recordingSignaller{}
-	env := testStopEnv(dir, signaller, func(int) (string, string, string, time.Time, error) {
+	env := testStopEnv(dir, signaller, func(context.Context, int) (string, string, string, time.Time, error) {
 		return "sleep", dir, "S", start, nil
 	})
 	got, err := stopWith(context.Background(), env, dir, []Process{proc}, time.Millisecond)
 	if err == nil || len(got) != 1 || got[0].Signal != "KILL" || got[0].Confirmed() {
 		t.Fatalf("stopWith() = %v, %v; want unconfirmed KILL with an error", got, err)
+	}
+}
+
+func TestStopProcessesCancelledBeforeSignal(t *testing.T) {
+	t.Parallel()
+	dir := filepath.Join(tempDir(t), "worktree")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Unix(123, 0)
+	proc := Process{PID: 50, Command: "sleep", Cwd: dir, Start: start}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	signaller := &recordingSignaller{}
+	env := testStopEnv(dir, signaller, func(context.Context, int) (string, string, string, time.Time, error) {
+		// The cancellation lands while the process is being inspected.
+		cancel()
+		return "sleep", dir, "S", start, nil
+	})
+	got, err := stopWith(ctx, env, dir, []Process{proc}, time.Second)
+	if !errors.Is(err, context.Canceled) || len(got) != 1 || got[0].Signal != "" || len(signaller.calls) != 0 {
+		t.Fatalf("stopWith() = %v, %v; signals = %v; want no signal after cancellation", got, err, signaller.calls)
 	}
 }
 
@@ -197,6 +219,19 @@ func startStopChild(t *testing.T, dir string, ignored bool) (*exec.Cmd, Process)
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+	}
+	// The marker appears before the shell execs sleep; scan only once the
+	// child is sleep, or the stop sees an identity change.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		command, _, _, _, err := platformProcessInspector(context.Background(), cmd.Process.Pid)
+		if err == nil && command == "sleep" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child command = %q, %v; want sleep", command, err)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	procs, err := ProcessesInside(context.Background(), dir)
 	if err != nil {
@@ -248,7 +283,7 @@ func TestStopProcessesZombie(t *testing.T) {
 	if err != nil || len(got) != 1 || got[0].Signal != "TERM" {
 		t.Fatalf("StopProcesses() = %v, %v", got, err)
 	}
-	_, _, state, _, inspectErr := platformProcessInspector(cmd.Process.Pid)
+	_, _, state, _, inspectErr := platformProcessInspector(context.Background(), cmd.Process.Pid)
 	if inspectErr != nil || !strings.EqualFold(state, "Z") {
 		t.Fatalf("unreaped child state = %q, %v; want Z", state, inspectErr)
 	}

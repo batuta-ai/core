@@ -373,14 +373,24 @@ func (p GitProvider) processTarget(ctx context.Context, path string) (string, bo
 	if err := safeProcessTarget(canonical, userHome); err != nil {
 		return "", false, err
 	}
+	// The primary checkout is never a batuta worktree, even when a configured
+	// home holds it and git lists it: its processes are the user's own.
+	if pathWithin(canonical, canonicalDir(p.Root)) {
+		return "", false, nil
+	}
 	out, err := p.run(ctx, p.Root, "worktree", "list", "--porcelain", "-z")
 	if err != nil {
 		return "", false, err
 	}
-	for _, record := range worktreeRecords(out.Stdout) {
-		if canonicalDir(record.path) == canonical {
-			return canonical, true, nil
+	for i, record := range worktreeRecords(out.Stdout) {
+		if canonicalDir(record.path) != canonical {
+			continue
 		}
+		if i == 0 {
+			// git lists the main worktree first.
+			return "", false, nil
+		}
+		return canonical, true, nil
 	}
 	return "", false, nil
 }
