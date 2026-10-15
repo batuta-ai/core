@@ -26,8 +26,11 @@ func TestLoopRunExitPreservesSignalCancellationCause(t *testing.T) {
 	}
 	<-ctx.Done()
 	cause := context.Cause(ctx)
-	if !errors.Is(cause, context.Canceled) {
-		t.Fatalf("signal cause = %v; want cancellation", cause)
+	if ctx.Err() != context.Canceled {
+		t.Fatalf("signal context error = %v; want cancellation", ctx.Err())
+	}
+	if cause == nil {
+		t.Fatal("signal cause is nil")
 	}
 	failure := errors.New("independent cleanup failure")
 	for _, tc := range []struct {
@@ -43,7 +46,7 @@ func TestLoopRunExitPreservesSignalCancellationCause(t *testing.T) {
 		{"deadline", errors.Join(cause, context.DeadlineExceeded), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := loopRunExit(loop.StateReviewBlocked, tc.err)
+			got := loopRunExit(loop.StateReviewBlocked, tc.err, ctx)
 			var exit *ExitError
 			if tc.canceled {
 				if !errors.As(got, &exit) || exit.Code != 130 {
