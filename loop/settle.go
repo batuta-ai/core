@@ -208,7 +208,7 @@ func (r *Runner) cleanupAfterSettlement(ctx context.Context, settlement routing.
 		if removeErr != nil {
 			state, blocker = routing.CleanupRetained, "worktree_remove_failed"
 		}
-		if err := r.locked(KindCleanup, taskID, map[string]any{"worktree": wt, "state": state, "error": errorString(removeErr)}, func() error {
+		if err := r.locked(KindCleanup, taskID, map[string]any{"worktree": wt, "state": state, "error": errorString(removeErr), "stopped_processes": r.stoppedProcessesFor(wt.Root)}, func() error {
 			if planned {
 				if _, _, err := r.graph.CompleteCleanup(operation.OperationID, state, blocker); err != nil {
 					return fmt.Errorf("loop: complete cleanup: %w", err)

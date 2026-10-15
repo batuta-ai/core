@@ -154,8 +154,8 @@ type Runner struct {
 
 	worktreeMu       sync.Mutex // add/remove/prune share the repository worktree registry
 	mu               sync.Mutex
-	worktrees        map[string]attemptWorktree // task:execution
-	stoppedProcesses map[string][]worktree.StoppedProcess
+	worktrees        map[string]attemptWorktree           // task:execution
+	stoppedProcesses map[string][]worktree.StoppedProcess // worktree path
 	processErrors    map[string]bool
 	feedback         map[string][]string
 	candidates       map[string]integration.CandidateEvidence

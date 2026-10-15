@@ -27,16 +27,17 @@ const kindFinalizing journal.Kind = "delivery_finalizing"
 const kindCleanup journal.Kind = "delivery_cleanup"
 
 type terminalDetail struct {
-	FinalCommit        string               `json:"final_commit,omitempty"`
-	Deletions          []worktree.ParkedRef `json:"pending_ref_deletions,omitempty"`
-	BookkeepingPending bool                 `json:"bookkeeping_pending,omitempty"`
-	BookkeepingError   string               `json:"bookkeeping_error,omitempty"`
-	PlanPath           string               `json:"plan_path,omitempty"`
-	State              string               `json:"state"`
-	Summary            Summary              `json:"summary"`
-	CleanupPending     bool                 `json:"cleanup_pending,omitempty"`
-	CleanupError       string               `json:"cleanup_error,omitempty"`
-	Worktrees          []attemptWorktree    `json:"retained_worktrees,omitempty"`
+	FinalCommit        string                    `json:"final_commit,omitempty"`
+	Deletions          []worktree.ParkedRef      `json:"pending_ref_deletions,omitempty"`
+	BookkeepingPending bool                      `json:"bookkeeping_pending,omitempty"`
+	BookkeepingError   string                    `json:"bookkeeping_error,omitempty"`
+	PlanPath           string                    `json:"plan_path,omitempty"`
+	State              string                    `json:"state"`
+	Summary            Summary                   `json:"summary"`
+	CleanupPending     bool                      `json:"cleanup_pending,omitempty"`
+	CleanupError       string                    `json:"cleanup_error,omitempty"`
+	Worktrees          []attemptWorktree         `json:"retained_worktrees,omitempty"`
+	StoppedProcesses   []worktree.StoppedProcess `json:"stopped_processes,omitempty"`
 }
 
 // finish snapshots executor work and checkpoints recovery before cleanup.
@@ -52,6 +53,7 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 	r.mu.Lock()
 	detail := terminalDetail{State: state, Summary: r.summaryLocked()}
 	detail.Summary.Parked = parked
+	detail.StoppedProcesses = r.allStoppedProcessesLocked()
 	r.mu.Unlock()
 	final := state == StateDone || state == StateBlocked || state == StateAbandoned
 	if final {
@@ -209,6 +211,7 @@ func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) 
 	detail.Worktrees = retained
 	detail.CleanupPending = cleanupErr != nil
 	detail.CleanupError = errorString(cleanupErr)
+	detail.StoppedProcesses = mergeStoppedProcesses(detail.StoppedProcesses, r.allStoppedProcesses())
 	return cleanupErr
 }
 
@@ -732,8 +735,8 @@ func (r *Runner) reportStoppedProcesses(path string, stopped []worktree.StoppedP
 	taskID := r.processWorktreeTask(path)
 	var lines []string
 	for _, proc := range stopped {
-		r.stoppedProcesses[taskID] = append(r.stoppedProcesses[taskID], proc)
 		if proc.Signal == "TERM" || proc.Signal == "KILL" {
+			r.stoppedProcesses[path] = append(r.stoppedProcesses[path], proc)
 			lines = append(lines, fmt.Sprintf("%s stopped pid %d (%s) in %s with SIG%s", taskID, proc.PID, proc.Command, path, proc.Signal))
 		} else {
 			lines = append(lines, fmt.Sprintf("warning: %s skipped pid %d (%s) in %s: %s", taskID, proc.PID, proc.Command, path, proc.Reason))
@@ -753,6 +756,46 @@ func (r *Runner) reportStoppedProcesses(path string, stopped []worktree.StoppedP
 		_ = os.MkdirAll(filepath.Dir(path), 0o755)
 		appendFile(path, message)
 	}
+}
+
+func (r *Runner) stoppedProcessesFor(path string) []worktree.StoppedProcess {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.stoppedProcesses[path])
+}
+
+func (r *Runner) allStoppedProcesses() []worktree.StoppedProcess {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.allStoppedProcessesLocked()
+}
+
+func (r *Runner) allStoppedProcessesLocked() []worktree.StoppedProcess {
+	paths := make([]string, 0, len(r.stoppedProcesses))
+	for path := range r.stoppedProcesses {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	var stopped []worktree.StoppedProcess
+	for _, path := range paths {
+		stopped = append(stopped, r.stoppedProcesses[path]...)
+	}
+	return stopped
+}
+
+func mergeStoppedProcesses(saved, current []worktree.StoppedProcess) []worktree.StoppedProcess {
+	seen := make(map[worktree.StoppedProcess]bool, len(saved))
+	merged := slices.Clone(saved)
+	for _, proc := range saved {
+		seen[proc] = true
+	}
+	for _, proc := range current {
+		if !seen[proc] {
+			merged = append(merged, proc)
+			seen[proc] = true
+		}
+	}
+	return merged
 }
 
 func (r *Runner) processWorktreeTask(path string) string {
