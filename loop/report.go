@@ -726,6 +726,52 @@ func appendUnderHeading(content, heading string, lines []string) string {
 
 // Run trails: one file per task under .batuta/runs/, appended per attempt.
 
+func (r *Runner) reportStoppedProcesses(path string, stopped []worktree.StoppedProcess, scanErr error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	taskID := r.processWorktreeTask(path)
+	var lines []string
+	for _, proc := range stopped {
+		r.stoppedProcesses[taskID] = append(r.stoppedProcesses[taskID], proc)
+		if proc.Signal == "TERM" || proc.Signal == "KILL" {
+			lines = append(lines, fmt.Sprintf("%s stopped pid %d (%s) in %s with SIG%s", taskID, proc.PID, proc.Command, path, proc.Signal))
+		} else {
+			lines = append(lines, fmt.Sprintf("warning: %s skipped pid %d (%s) in %s: %s", taskID, proc.PID, proc.Command, path, proc.Reason))
+		}
+	}
+	if scanErr != nil && !r.processErrors[scanErr.Error()] {
+		r.processErrors[scanErr.Error()] = true
+		lines = append(lines, fmt.Sprintf("warning: process cleanup: %s", scanErr))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	message := strings.Join(lines, "\n") + "\n"
+	_, _ = io.WriteString(r.out, message)
+	if taskID != "" {
+		path := r.trailPath(taskID)
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		appendFile(path, message)
+	}
+}
+
+func (r *Runner) processWorktreeTask(path string) string {
+	for key, wt := range r.worktrees {
+		if wt.Root == path {
+			taskID, _, _ := strings.Cut(key, ":")
+			return taskID
+		}
+	}
+	name := filepath.Base(path)
+	for _, task := range r.plan.Set.Tasks {
+		prefix := r.plan.Slug + "-" + strings.ReplaceAll(task.ID, "_", "-") + "-e"
+		if strings.HasPrefix(name, prefix) {
+			return task.ID
+		}
+	}
+	return ""
+}
+
 func (r *Runner) trailPath(taskID string) string {
 	return filepath.Join(r.root, ".batuta", "runs", r.trailName(taskID))
 }

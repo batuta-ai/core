@@ -111,6 +111,8 @@ type Options struct {
 	Stdout      io.Writer
 	Inventory   func(context.Context) (inventory.InventorySnapshot, error)
 	Runner      publication.CommandRunner
+	Processes   worktree.ProcessScanner
+	Stopper     worktree.ProcessStopper
 	Environment []string // extra environment for executors (tests)
 	Now         func() time.Time
 	// Judge is the optional decision model; nil keeps today's deterministic rule.
@@ -150,21 +152,23 @@ type Runner struct {
 	now          func() time.Time
 	out          *lockedWriter
 
-	worktreeMu sync.Mutex // add/remove/prune share the repository worktree registry
-	mu         sync.Mutex
-	worktrees  map[string]attemptWorktree // task:execution
-	feedback   map[string][]string
-	candidates map[string]integration.CandidateEvidence
-	commits    map[string]string
-	started    map[string]bool
-	probes     map[capabilityRoute]capabilityProbeDetail
-	probing    map[capabilityRoute]chan struct{}
-	preflights map[string]integration.PreflightResult // operation id → pending preflight
-	terminal   string
-	wavesRun   int
-	warnings   []string
-	journaled  bool
-	ownership  *deliveryOwnership
+	worktreeMu       sync.Mutex // add/remove/prune share the repository worktree registry
+	mu               sync.Mutex
+	worktrees        map[string]attemptWorktree // task:execution
+	stoppedProcesses map[string][]worktree.StoppedProcess
+	processErrors    map[string]bool
+	feedback         map[string][]string
+	candidates       map[string]integration.CandidateEvidence
+	commits          map[string]string
+	started          map[string]bool
+	probes           map[capabilityRoute]capabilityProbeDetail
+	probing          map[capabilityRoute]chan struct{}
+	preflights       map[string]integration.PreflightResult // operation id → pending preflight
+	terminal         string
+	wavesRun         int
+	warnings         []string
+	journaled        bool
+	ownership        *deliveryOwnership
 
 	pendingFinish *terminalDetail
 }
@@ -505,7 +509,7 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 	if !ok {
 		out = &lockedWriter{mu: new(sync.Mutex), writer: opts.Stdout}
 	}
-	return &Runner{
+	r := &Runner{
 		opts: opts, root: root, git: git,
 		gitState: publication.GitClient{Executable: git.Git, Runner: opts.Runner},
 		integ:    integration.GitClient{Executable: git.Git, Runner: opts.Runner, PreservedPlanPath: approvedSnapshotPath(opts.ApprovedSnapshot)},
@@ -515,10 +519,15 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		adapters: map[string]executor.Adapter{}, sections: sections, missing: missing,
 		now: opts.Now, out: out,
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
+		stoppedProcesses: map[string][]worktree.StoppedProcess{}, processErrors: map[string]bool{},
 		candidates: map[string]integration.CandidateEvidence{}, commits: map[string]string{},
 		started: map[string]bool{}, preflights: map[string]integration.PreflightResult{},
 		probes: map[capabilityRoute]capabilityProbeDetail{}, probing: map[capabilityRoute]chan struct{}{},
-	}, nil
+	}
+	r.git.Processes = opts.Processes
+	r.git.Stopper = opts.Stopper
+	r.git.OnProcessesStopped = r.reportStoppedProcesses
+	return r, nil
 }
 
 // The CLI fallback retains the loop's environment and command runner.
