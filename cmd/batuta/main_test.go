@@ -3367,7 +3367,7 @@ func TestLoopPruneUsage(t *testing.T) {
 }
 
 func TestLoopPruneHelp(t *testing.T) {
-	for _, want := range []string{"--prune", "--apply"} {
+	for _, want := range []string{"--prune", "--apply", "process"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage is missing %q", want)
 		}
@@ -3377,6 +3377,26 @@ func TestLoopPruneHelp(t *testing.T) {
 	for _, want := range []string{"-prune", "-apply"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("loop flag help is missing %q", want)
+		}
+	}
+}
+
+func TestLoopDocWorktreeProcesses(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(data), "\n## Worktree processes\n")
+	if !ok {
+		t.Fatal("docs/loop.md has no ## Worktree processes section")
+	}
+	if i := strings.Index(section, "\n## "); i >= 0 {
+		section = section[:i]
+	}
+	wants := []string{"SIGTERM", "SIGKILL", "3 seconds", "windows", "scan error", "editor", "agent session", "--keep-worktrees", "PID reuse"}
+	for _, want := range wants {
+		if !strings.Contains(section, want) {
+			t.Errorf("section is missing %q", want)
 		}
 	}
 }

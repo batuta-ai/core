@@ -258,6 +258,44 @@ Running `batuta loop --prune --apply [--workspace <dir>]` performs the cleanup:
 It exits 0 when all entries are `removed` or `missing`. It exits 2 when any entry
 is `skipped`.
 
+## Worktree processes
+
+Before batuta removes one of its worktrees, it stops the processes whose
+working directory is inside that worktree. This covers loop integration or
+abort, the replacement of a leftover tree, and `batuta loop --prune --apply`.
+A dev server that an executor started with `&`, `nohup` or `setsid` leaves the
+executor's process group and would otherwise outlive the attempt.
+
+A process counts when its working directory is the worktree root or below it,
+after symlinks are resolved. Open files and command-line arguments do not
+count. Only processes of the current user are found. The calling process and
+every ancestor of it are never signalled.
+
+`batuta loop --prune` lists each process under its worktree row as a
+five-column row: `process`, the worktree path, the PID, the command with tabs
+and newlines replaced by spaces, and the signal (`-` in a dry run). A dry run
+that lists processes exits 0.
+
+A stop sends SIGTERM, waits 3 seconds, then sends SIGKILL to any process still
+alive. A zombie counts as ended.
+
+- **Platforms:** Linux and macOS scan and stop processes. On windows the scan
+  is unsupported: batuta prints a warning, stops nothing and removes the
+  worktree as before.
+- **Scan failure:** on a scan error, or a partial scan, batuta prints a
+  warning on stderr and still removes the worktree. A process it could not
+  find keeps running.
+- **PID reuse:** before each signal the process is inspected again, and PID,
+  command, working directory and start time must match. Linux signals through
+  a pidfd, so a reused PID cannot be hit. On macOS a short window remains
+  between the last check and the signal; a PID reuse inside that window with
+  the same command, working directory and start time would be signalled. This
+  residual risk is accepted.
+- **Accepted risk:** an editor, a terminal or another agent session whose
+  working directory is inside a batuta worktree is stopped too, SIGKILL
+  included. Batuta worktrees are batuta's own. Pass `--keep-worktrees` to
+  keep a worktree and its processes.
+
 ## After the run
 
 Normal new, resume, answer and roadmap execution includes passive foreground
