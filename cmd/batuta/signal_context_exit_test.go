@@ -9,7 +9,8 @@ import (
 	"github.com/batuta-ai/core/loop"
 )
 
-func TestLoopRunExitDoesNotTrustOtherContexts(t *testing.T) {
+func TestLoopRunExitPreservesErrorsWithUncanceledOrDeadlineContexts(t *testing.T) {
+	t.Parallel()
 	deadline, cancel := context.WithDeadline(context.Background(), time.Time{})
 	defer cancel()
 	if deadline.Err() != context.DeadlineExceeded {
@@ -26,6 +27,7 @@ func TestLoopRunExitDoesNotTrustOtherContexts(t *testing.T) {
 		{"deadline-with-failure", deadline, errors.Join(context.Canceled, failure)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := loopRunExit(loop.StateReviewBlocked, tc.err, tc.ctx)
 			var exit *ExitError
 			if got != tc.err || errors.As(got, &exit) {

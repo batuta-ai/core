@@ -1068,6 +1068,7 @@ func judgeProviderLine(config judge.Config) string {
 	}
 }
 
+// The optional signalCtx must be the signal.NotifyContext owned by runLoop.
 func loopRunExit(state string, err error, signalCtx ...context.Context) error {
 	if err != nil {
 		var signalCause error
