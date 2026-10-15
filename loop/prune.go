@@ -3,6 +3,7 @@ package loop
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,15 +25,18 @@ const (
 )
 
 type PruneOptions struct {
-	Apply bool
-	Now   func() time.Time
+	Apply     bool
+	Now       func() time.Time
+	Processes worktree.ProcessScanner
+	Stopper   worktree.ProcessStopper
 }
 
 type PruneEntry struct {
-	Path   string `json:"path"`
-	Branch string `json:"branch"`
-	Slug   string `json:"slug"`
-	State  string `json:"state"`
+	Path      string                    `json:"path"`
+	Branch    string                    `json:"branch"`
+	Slug      string                    `json:"slug"`
+	State     string                    `json:"state"`
+	Processes []worktree.StoppedProcess `json:"processes,omitempty"`
 }
 
 type PruneReport struct {
@@ -62,6 +66,28 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 		return PruneReport{}, err
 	}
 	report := PruneReport{Entries: make([]PruneEntry, 0)}
+	var current *PruneEntry
+	warned := make(map[string]bool)
+	warn := func(path string, err error) {
+		message := fmt.Sprintf("process cleanup in %s: %v", path, err)
+		if errors.Is(err, worktree.ErrProcessScanUnsupported) {
+			message = "process cleanup: " + err.Error()
+		}
+		if !warned[message] {
+			warned[message] = true
+			report.Warnings = append(report.Warnings, message)
+		}
+	}
+	git.Processes = opts.Processes
+	git.Stopper = opts.Stopper
+	git.OnProcessesStopped = func(path string, stopped []worktree.StoppedProcess, err error) {
+		if current != nil && current.Path == path {
+			current.Processes = append(current.Processes, stopped...)
+		}
+		if err != nil {
+			warn(path, err)
+		}
+	}
 	for _, wt := range managed {
 		if owned[pruneKey{path: wt.Path, branch: wt.Branch}] {
 			continue
@@ -90,6 +116,21 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 			report.Warnings = append(report.Warnings, fmt.Sprintf("delivery %s has a live runner (pid %d)", delivery, owner.PID))
 		}
 	}
+	if !opts.Apply {
+		for i := range report.Entries {
+			entry := &report.Entries[i]
+			if entry.State != PruneOrphan {
+				continue
+			}
+			procs, err := git.ProcessesIn(ctx, entry.Path)
+			if err != nil {
+				warn(entry.Path, err)
+			}
+			for _, proc := range procs {
+				entry.Processes = append(entry.Processes, worktree.StoppedProcess{Process: proc})
+			}
+		}
+	}
 	slices.Sort(report.Warnings)
 	if opts.Apply {
 		if slices.ContainsFunc(report.Entries, func(e PruneEntry) bool { return e.State == PruneMissing }) {
@@ -112,6 +153,10 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 				entry.State = PruneSkipped
 				continue
 			}
+			current = entry
+			// A failed scan or stop is already a warning through the
+			// callback; the entry is parked and removed regardless.
+			_, _ = git.StopInside(ctx, entry.Path)
 			ref := "refs/batuta/parked/" + strings.TrimPrefix(entry.Branch, "batuta/")
 			if _, err := git.Park(ctx, entry.Path, ref, "wip(batuta): prune "+entry.Branch); err != nil {
 				return report, fmt.Errorf("loop: park %s: %w", entry.Path, err)
@@ -121,6 +166,8 @@ func Prune(ctx context.Context, workspace string, opts PruneOptions) (PruneRepor
 			}
 			entry.State = PruneRemoved
 		}
+		current = nil
+		slices.Sort(report.Warnings)
 	}
 	return report, nil
 }
