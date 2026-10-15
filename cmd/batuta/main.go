@@ -1096,7 +1096,7 @@ func cancellationOnly(err error) bool {
 	case interface{ Unwrap() error }:
 		return cancellationOnly(e.Unwrap())
 	default:
-		return err == context.Canceled
+		return errors.Is(err, context.Canceled)
 	}
 }
 
