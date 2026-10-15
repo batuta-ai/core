@@ -854,7 +854,11 @@ func (r *Runner) writeTrail(ac attemptContext, brief string, result executor.Res
 	var b strings.Builder
 	// Process-stop lines can reach the trail before the first attempt does;
 	// the run heading still goes on top.
-	existing, err := os.ReadFile(path)
+	readTrail := r.readTrail
+	if readTrail == nil {
+		readTrail = os.ReadFile
+	}
+	existing, err := readTrail(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		// An unreadable trail is never rewritten; the attempt goes below it.
 		existing = []byte("# Run — ")
@@ -1226,6 +1230,7 @@ func Abandon(ctx context.Context, opts Options) (state string, abandonErr error)
 	}
 	r.graph = &graph
 	for _, record := range records {
+		r.restoreCleanupStops(record)
 		if record.Kind == KindWorktree {
 			var detail struct {
 				Execution int             `json:"execution"`

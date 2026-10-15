@@ -156,6 +156,7 @@ type Runner struct {
 	mu               sync.Mutex
 	worktrees        map[string]attemptWorktree           // task:execution
 	stoppedProcesses map[string][]worktree.StoppedProcess // worktree path
+	readTrail        func(string) ([]byte, error)         // nil reads with os.ReadFile
 	processErrors    map[string]bool
 	feedback         map[string][]string
 	candidates       map[string]integration.CandidateEvidence

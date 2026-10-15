@@ -416,9 +416,6 @@ func TestProcessWorktreeTaskWithoutRestoredState(t *testing.T) {
 
 func TestTrailKeepsUnreadableFile(t *testing.T) {
 	t.Parallel()
-	if os.Geteuid() == 0 {
-		t.Skip("root reads any file")
-	}
 	f := setup(t)
 	var out bytes.Buffer
 	r, err := New(context.Background(), f.options("default", &out))
@@ -430,21 +427,52 @@ func TestTrailKeepsUnreadableFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	early := "task_1 stopped pid 900001 (sleep) in /leftover with SIGTERM\n"
-	if err := os.WriteFile(path, []byte(early), 0o200); err != nil {
+	if err := os.WriteFile(path, []byte(early), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	r.readTrail = func(string) ([]byte, error) { return nil, errors.New("read failed") }
 	if _, err := r.Run(context.Background()); err != nil {
 		t.Fatalf("Run() = %v\n%s", err, out.String())
-	}
-	if err := os.Chmod(path, 0o644); err != nil {
-		t.Fatal(err)
 	}
 	trail, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(string(trail), early) {
-		t.Fatalf("unreadable trail was rewritten:\n%s", trail)
+	if !strings.HasPrefix(string(trail), early) || !strings.Contains(string(trail), "## Attempt 1") {
+		t.Fatalf("unreadable trail was rewritten or lost the attempt:\n%s", trail)
+	}
+}
+
+func TestAbandonKeepsCleanupStops(t *testing.T) {
+	f := setup(t)
+	t.Setenv("XDG_CACHE_HOME", tempDir(t))
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.open(); err != nil {
+		t.Fatal(err)
+	}
+	wt := attemptWorktree{Name: "gone", Root: filepath.Join(f.root, "gone"), Branch: "batuta/gone"}
+	earlier := worktree.StoppedProcess{Process: worktree.Process{PID: 787, Command: "server", Cwd: wt.Root, Start: time.Unix(1, 0)}, Signal: "KILL"}
+	detail := map[string]any{"worktree": wt, "state": "removed", "error": "", "stopped_processes": []worktree.StoppedProcess{earlier}}
+	if err := r.locked(KindCleanup, "task_1", detail, nil); err != nil {
+		t.Fatal(err)
+	}
+	opts := f.options("default", &out)
+	opts.Resume = r.Delivery()
+	state, err := Abandon(context.Background(), opts)
+	if err != nil || state != StateAbandoned {
+		t.Fatalf("Abandon() = %s, %v\n%s", state, err, out.String())
+	}
+	records := readJournal(t, f, r.Delivery())
+	last := records[len(records)-1]
+	if last.Kind != KindTerminal {
+		t.Fatalf("last record = %s", last.Kind)
+	}
+	if stops := journaledStops(t, last.Detail); !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return reflect.DeepEqual(p, earlier) }) {
+		t.Fatalf("abandoned terminal stops = %v; want %v", stops, earlier)
 	}
 }
 

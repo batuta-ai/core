@@ -375,7 +375,8 @@ func (p GitProvider) processTarget(ctx context.Context, path string) (string, bo
 	}
 	// The primary checkout is never a batuta worktree, even when a configured
 	// home holds it and git lists it: its processes are the user's own.
-	if pathWithin(canonical, canonicalDir(p.Root)) {
+	root := canonicalDir(p.Root)
+	if canonical == root || pathWithin(canonical, root) { // canonical is, or holds, the primary checkout
 		return "", false, nil
 	}
 	out, err := p.run(ctx, p.Root, "worktree", "list", "--porcelain", "-z")

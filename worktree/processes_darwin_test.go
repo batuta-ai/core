@@ -113,3 +113,20 @@ func TestDarwinLongCommandStops(t *testing.T) {
 		t.Fatalf("StopProcesses() = %v, %v; want a confirmed stop", got, err)
 	}
 }
+
+func TestDarwinInspectorHonoursContext(t *testing.T) {
+	t.Parallel()
+	dir := tempDir(t)
+	cmd := exec.Command("sleep", "30")
+	cmd.Dir = dir
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	// A live process reaches the lsof call, which must run under ctx.
+	if _, _, _, _, err := platformProcessInspector(ctx, cmd.Process.Pid); !errors.Is(err, context.Canceled) {
+		t.Fatalf("inspector error = %v; want context.Canceled", err)
+	}
+}

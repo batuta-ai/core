@@ -239,6 +239,30 @@ func errorString(err error) string {
 // replay rebuilds the runner's memory from a journal: the graph from the
 // last record, worktrees, feedback, candidates, integrated commits, started
 // attempts and a pending preflight.
+// restoreCleanupStops keeps the confirmed stops of an earlier cleanup record,
+// so a resumed or abandoned delivery's terminal record still lists them.
+func (r *Runner) restoreCleanupStops(record journal.Record) {
+	var detail struct {
+		Worktree         attemptWorktree           `json:"worktree"`
+		StoppedProcesses []worktree.StoppedProcess `json:"stopped_processes"`
+	}
+	if record.Kind != KindCleanup || json.Unmarshal(record.Detail, &detail) != nil {
+		return
+	}
+	var confirmed []worktree.StoppedProcess
+	for _, proc := range detail.StoppedProcesses {
+		if proc.Confirmed() {
+			confirmed = append(confirmed, proc)
+		}
+	}
+	if len(confirmed) > 0 {
+		root := detail.Worktree.Root
+		r.mu.Lock()
+		r.stoppedProcesses[root] = mergeStoppedProcesses(r.stoppedProcesses[root], confirmed)
+		r.mu.Unlock()
+	}
+}
+
 func (r *Runner) replay(records []journal.Record) error {
 	last := records[len(records)-1]
 	if len(last.Graph) == 0 {
@@ -333,8 +357,7 @@ func (r *Runner) replay(records []journal.Record) error {
 			}
 		case KindCleanup:
 			var detail struct {
-				Worktree         attemptWorktree           `json:"worktree"`
-				StoppedProcesses []worktree.StoppedProcess `json:"stopped_processes"`
+				Worktree attemptWorktree `json:"worktree"`
 			}
 			if json.Unmarshal(record.Detail, &detail) == nil {
 				for key, known := range r.worktrees {
@@ -342,19 +365,8 @@ func (r *Runner) replay(records []journal.Record) error {
 						delete(r.worktrees, key)
 					}
 				}
-				// A resumed run's terminal record still lists the stops an
-				// earlier run journaled at cleanup.
-				var confirmed []worktree.StoppedProcess
-				for _, proc := range detail.StoppedProcesses {
-					if proc.Confirmed() {
-						confirmed = append(confirmed, proc)
-					}
-				}
-				if len(confirmed) > 0 {
-					root := detail.Worktree.Root
-					r.stoppedProcesses[root] = mergeStoppedProcesses(r.stoppedProcesses[root], confirmed)
-				}
 			}
+			r.restoreCleanupStops(record)
 		case KindTerminal:
 			var detail struct {
 				State string `json:"state"`
