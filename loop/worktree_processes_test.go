@@ -200,10 +200,15 @@ func assertJournalStops(t *testing.T, got, observed []worktree.StoppedProcess) {
 		t.Fatalf("journaled stops = %v, want %v", got, want)
 	}
 	for _, proc := range got {
-		if !reflect.DeepEqual(proc, want[proc.PID]) {
+		if !sameStop(proc, want[proc.PID]) {
 			t.Fatalf("journaled stop = %+v, want %+v", proc, want[proc.PID])
 		}
 	}
+}
+
+// sameStop compares Start as an instant: the journal decodes it as time.UTC.
+func sameStop(a, b worktree.StoppedProcess) bool {
+	return stopKey(a) == stopKey(b)
 }
 
 func TestLoopJournalsStoppedProcesses(t *testing.T) {
@@ -383,7 +388,7 @@ func TestLoopCleanupStopsSurviveResume(t *testing.T) {
 		t.Fatalf("last record = %s", last.Kind)
 	}
 	stops := journaledStops(t, last.Detail)
-	if !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return reflect.DeepEqual(p, earlier) }) {
+	if !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return sameStop(p, earlier) }) {
 		t.Fatalf("terminal stops = %v; want the earlier cleanup stop %v", stops, earlier)
 	}
 	if slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return p.PID == unconfirmed.PID }) {
@@ -471,7 +476,7 @@ func TestAbandonKeepsCleanupStops(t *testing.T) {
 	if last.Kind != KindTerminal {
 		t.Fatalf("last record = %s", last.Kind)
 	}
-	if stops := journaledStops(t, last.Detail); !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return reflect.DeepEqual(p, earlier) }) {
+	if stops := journaledStops(t, last.Detail); !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return sameStop(p, earlier) }) {
 		t.Fatalf("abandoned terminal stops = %v; want %v", stops, earlier)
 	}
 }
@@ -507,7 +512,7 @@ func TestPendingFinalizationKeepsCleanupStops(t *testing.T) {
 	if last.Kind != KindTerminal {
 		t.Fatalf("last record = %s", last.Kind)
 	}
-	if stops := journaledStops(t, last.Detail); !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return reflect.DeepEqual(p, earlier) }) {
+	if stops := journaledStops(t, last.Detail); !slices.ContainsFunc(stops, func(p worktree.StoppedProcess) bool { return sameStop(p, earlier) }) {
 		t.Fatalf("terminal stops = %v; want %v", stops, earlier)
 	}
 }
@@ -565,5 +570,16 @@ func TestJournalStoppedProcessesReaders(t *testing.T) {
 	}
 	if !reflect.DeepEqual(states, []string{StateBlocked, StateBlocked}) {
 		t.Fatalf("replayed states = %v", states)
+	}
+}
+
+func TestMergeStoppedProcessesIgnoresTimeZone(t *testing.T) {
+	start := time.Unix(1, 0)
+	saved := worktree.StoppedProcess{Process: worktree.Process{PID: 7, Command: "server", Cwd: "/w", Start: start.UTC()}, Signal: "TERM"}
+	current := saved
+	current.Start = start.In(time.FixedZone("BRT", -3*60*60))
+	merged := mergeStoppedProcesses([]worktree.StoppedProcess{saved}, []worktree.StoppedProcess{current})
+	if len(merged) != 1 {
+		t.Fatalf("merged = %v, want one stop", merged)
 	}
 }

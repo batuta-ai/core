@@ -795,15 +795,22 @@ func mergeStoppedProcesses(saved, current []worktree.StoppedProcess) []worktree.
 	seen := make(map[worktree.StoppedProcess]bool, len(saved))
 	merged := slices.Clone(saved)
 	for _, proc := range saved {
-		seen[proc] = true
+		seen[stopKey(proc)] = true
 	}
 	for _, proc := range current {
-		if !seen[proc] {
+		if !seen[stopKey(proc)] {
 			merged = append(merged, proc)
-			seen[proc] = true
+			seen[stopKey(proc)] = true
 		}
 	}
 	return merged
+}
+
+// stopKey drops the time zone of Start: a stop read back from the journal
+// carries time.UTC while the same stop in memory carries time.Local.
+func stopKey(proc worktree.StoppedProcess) worktree.StoppedProcess {
+	proc.Start = proc.Start.UTC()
+	return proc
 }
 
 var worktreeTaskName = regexp.MustCompile(`^task-(\d+)-e\d+$`)
