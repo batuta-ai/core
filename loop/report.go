@@ -27,16 +27,17 @@ const kindFinalizing journal.Kind = "delivery_finalizing"
 const kindCleanup journal.Kind = "delivery_cleanup"
 
 type terminalDetail struct {
-	FinalCommit        string               `json:"final_commit,omitempty"`
-	Deletions          []worktree.ParkedRef `json:"pending_ref_deletions,omitempty"`
-	BookkeepingPending bool                 `json:"bookkeeping_pending,omitempty"`
-	BookkeepingError   string               `json:"bookkeeping_error,omitempty"`
-	PlanPath           string               `json:"plan_path,omitempty"`
-	State              string               `json:"state"`
-	Summary            Summary              `json:"summary"`
-	CleanupPending     bool                 `json:"cleanup_pending,omitempty"`
-	CleanupError       string               `json:"cleanup_error,omitempty"`
-	Worktrees          []attemptWorktree    `json:"retained_worktrees,omitempty"`
+	FinalCommit        string                    `json:"final_commit,omitempty"`
+	Deletions          []worktree.ParkedRef      `json:"pending_ref_deletions,omitempty"`
+	BookkeepingPending bool                      `json:"bookkeeping_pending,omitempty"`
+	BookkeepingError   string                    `json:"bookkeeping_error,omitempty"`
+	PlanPath           string                    `json:"plan_path,omitempty"`
+	State              string                    `json:"state"`
+	Summary            Summary                   `json:"summary"`
+	CleanupPending     bool                      `json:"cleanup_pending,omitempty"`
+	CleanupError       string                    `json:"cleanup_error,omitempty"`
+	Worktrees          []attemptWorktree         `json:"retained_worktrees,omitempty"`
+	StoppedProcesses   []worktree.StoppedProcess `json:"stopped_processes,omitempty"`
 }
 
 // finish snapshots executor work and checkpoints recovery before cleanup.
@@ -52,6 +53,7 @@ func (r *Runner) finish(ctx context.Context, state string) (string, error) {
 	r.mu.Lock()
 	detail := terminalDetail{State: state, Summary: r.summaryLocked()}
 	detail.Summary.Parked = parked
+	detail.StoppedProcesses = r.allStoppedProcessesLocked()
 	r.mu.Unlock()
 	final := state == StateDone || state == StateBlocked || state == StateAbandoned
 	if final {
@@ -209,6 +211,7 @@ func (r *Runner) cleanFinalization(ctx context.Context, detail *terminalDetail) 
 	detail.Worktrees = retained
 	detail.CleanupPending = cleanupErr != nil
 	detail.CleanupError = errorString(cleanupErr)
+	detail.StoppedProcesses = mergeStoppedProcesses(detail.StoppedProcesses, r.allStoppedProcesses())
 	return cleanupErr
 }
 
@@ -271,6 +274,11 @@ func (r *Runner) restoreFinalization(records []journal.Record, opened openedDeta
 	r.delivery, r.plan.Slug = r.opts.Resume, opened.Slug
 	r.plan.Path = detail.PlanPath
 	r.planPath = filepath.Join(r.root, detail.PlanPath)
+	// A checkpoint can predate stops already journaled at cleanup.
+	for _, record := range records {
+		r.restoreCleanupStops(record)
+	}
+	detail.StoppedProcesses = mergeStoppedProcesses(detail.StoppedProcesses, r.allStoppedProcesses())
 	r.journaled, r.pendingFinish = true, detail
 	return nil
 }
@@ -726,6 +734,111 @@ func appendUnderHeading(content, heading string, lines []string) string {
 
 // Run trails: one file per task under .batuta/runs/, appended per attempt.
 
+func (r *Runner) reportStoppedProcesses(path string, stopped []worktree.StoppedProcess, scanErr error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	taskID := r.processWorktreeTask(path)
+	var lines []string
+	for _, proc := range stopped {
+		switch {
+		case proc.Confirmed():
+			r.stoppedProcesses[path] = append(r.stoppedProcesses[path], proc)
+			lines = append(lines, fmt.Sprintf("%s stopped pid %d (%s) in %s with SIG%s", taskID, proc.PID, proc.Command, path, proc.Signal))
+		case proc.Signal != "":
+			lines = append(lines, fmt.Sprintf("warning: %s sent SIG%s to pid %d (%s) in %s but could not confirm it ended: %s", taskID, proc.Signal, proc.PID, proc.Command, path, proc.Reason))
+		default:
+			lines = append(lines, fmt.Sprintf("warning: %s skipped pid %d (%s) in %s: %s", taskID, proc.PID, proc.Command, path, proc.Reason))
+		}
+	}
+	if scanErr != nil && !r.processErrors[scanErr.Error()] {
+		r.processErrors[scanErr.Error()] = true
+		lines = append(lines, fmt.Sprintf("warning: process cleanup: %s", scanErr))
+	}
+	if len(lines) == 0 {
+		return
+	}
+	message := strings.Join(lines, "\n") + "\n"
+	_, _ = io.WriteString(r.out, message)
+	if taskID != "" {
+		path := r.trailPath(taskID)
+		_ = os.MkdirAll(filepath.Dir(path), 0o755)
+		appendFile(path, message)
+	}
+}
+
+func (r *Runner) stoppedProcessesFor(path string) []worktree.StoppedProcess {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.stoppedProcesses[path])
+}
+
+func (r *Runner) allStoppedProcesses() []worktree.StoppedProcess {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.allStoppedProcessesLocked()
+}
+
+func (r *Runner) allStoppedProcessesLocked() []worktree.StoppedProcess {
+	paths := make([]string, 0, len(r.stoppedProcesses))
+	for path := range r.stoppedProcesses {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	var stopped []worktree.StoppedProcess
+	for _, path := range paths {
+		stopped = append(stopped, r.stoppedProcesses[path]...)
+	}
+	return stopped
+}
+
+func mergeStoppedProcesses(saved, current []worktree.StoppedProcess) []worktree.StoppedProcess {
+	seen := make(map[worktree.StoppedProcess]bool, len(saved))
+	merged := slices.Clone(saved)
+	for _, proc := range saved {
+		seen[stopKey(proc)] = true
+	}
+	for _, proc := range current {
+		if !seen[stopKey(proc)] {
+			merged = append(merged, proc)
+			seen[stopKey(proc)] = true
+		}
+	}
+	return merged
+}
+
+// stopKey drops the time zone of Start: a stop read back from the journal
+// carries time.UTC while the same stop in memory carries time.Local.
+func stopKey(proc worktree.StoppedProcess) worktree.StoppedProcess {
+	proc.Start = proc.Start.UTC()
+	return proc
+}
+
+var worktreeTaskName = regexp.MustCompile(`^task-(\d+)-e\d+$`)
+
+func (r *Runner) processWorktreeTask(path string) string {
+	for key, wt := range r.worktrees {
+		if wt.Root == path {
+			taskID, _, _ := strings.Cut(key, ":")
+			return taskID
+		}
+	}
+	name := filepath.Base(path)
+	if match := worktreeTaskName.FindStringSubmatch(strings.TrimPrefix(name, r.plan.Slug+"-")); match != nil {
+		// Pending-finalization recovery restores neither the worktree map
+		// nor the task list; the attempt name still carries the task.
+		if name != match[0] {
+			return "task_" + match[1]
+		}
+	}
+	for _, task := range r.plan.Set.Tasks {
+		prefix := r.plan.Slug + "-" + strings.ReplaceAll(task.ID, "_", "-") + "-e"
+		if strings.HasPrefix(name, prefix) {
+			return task.ID
+		}
+	}
+	return ""
+}
+
 func (r *Runner) trailPath(taskID string) string {
 	return filepath.Join(r.root, ".batuta", "runs", r.trailName(taskID))
 }
@@ -751,8 +864,24 @@ func (r *Runner) writeTrail(ac attemptContext, brief string, result executor.Res
 	path := r.trailPath(ac.taskID)
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	var b strings.Builder
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+	// Process-stop lines can reach the trail before the first attempt does;
+	// the run heading still goes on top.
+	readTrail := r.readTrail
+	if readTrail == nil {
+		readTrail = os.ReadFile
+	}
+	existing, err := readTrail(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		// An unreadable trail is never rewritten; the attempt goes below it.
+		existing = []byte("# Run — ")
+	}
+	headed := strings.HasPrefix(string(existing), "# Run — ")
+	if !headed {
 		fmt.Fprintf(&b, "# Run — %s\n\n**Date:** %s · **Lane:** %s/%s · **Plan:** %s (%s) · **Delivery:** %s\n\n", ac.plan.Title, r.now().Format("2006-01-02"), ac.plan.Domain, ac.plan.Complexity, r.plan.Slug, ac.taskID, r.delivery)
+		b.Write(existing)
+		if len(existing) > 0 {
+			b.WriteString("\n")
+		}
 	}
 	fmt.Fprintf(&b, "## Attempt %d — %s/%s\n\n", ac.execution, ac.adapter.Name, ac.runtime.Model)
 	fmt.Fprintf(&b, "**Worktree:** %s · **Base:** %s · **Exit:** %d · **Duration:** %s\n\n", ac.worktree.Root, short(ac.base), result.ExitCode, result.Duration.Round(time.Second))
@@ -779,7 +908,15 @@ func (r *Runner) writeTrail(ac attemptContext, brief string, result executor.Res
 		fmt.Fprintf(&b, "\n**Verdict:** %s\n", verdict)
 	}
 	b.WriteString("\n")
-	appendFile(path, b.String())
+	if headed {
+		appendFile(path, b.String())
+		return
+	}
+	// Only a trail that holds just early stop lines, or none, is rewritten.
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, []byte(b.String()), 0o644) == nil {
+		_ = os.Rename(tmp, path)
+	}
 }
 
 func (r *Runner) writeTrailVerdict(taskID, verdict string, feedback []string) {
@@ -1105,6 +1242,7 @@ func Abandon(ctx context.Context, opts Options) (state string, abandonErr error)
 	}
 	r.graph = &graph
 	for _, record := range records {
+		r.restoreCleanupStops(record)
 		if record.Kind == KindWorktree {
 			var detail struct {
 				Execution int             `json:"execution"`

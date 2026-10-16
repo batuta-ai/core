@@ -136,8 +136,12 @@ loop       The mechanical conductor over an approved plan
            ref merges into the delivery branch as TSV lines (ref, status, file,
            conflict); it exits 2 on conflict.
            --prune prints, read-only, the task worktrees no open delivery owns as
-           TSV lines (path, branch, slug, state: orphan or missing); --prune
-           --apply parks each orphan under refs/batuta/parked and removes it,
+           TSV lines (path, branch, slug, state: orphan or missing), each
+           followed by one five-column process row (process, path, pid,
+           command, signal) for every process whose working directory is
+           inside the worktree; --prune --apply stops those processes (the
+           row carries the signal that ended it), then parks each orphan
+           under refs/batuta/parked and removes it,
            printing the final state (removed, missing or skipped); it exits 2
            when any line is skipped. --apply needs --prune.
            Dry-run, dashboard, reconcile and abandon do not launch reviewers.
@@ -1620,11 +1624,25 @@ func printPrune(stdout io.Writer, report loop.PruneReport) error {
 	for _, entry := range report.Entries {
 		fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", reconcileField(entry.Path), reconcileField(entry.Branch), reconcileField(entry.Slug), entry.State)
 		skipped = skipped || entry.State == loop.PruneSkipped
+		for _, proc := range entry.Processes {
+			// Only a confirmed stop names its signal; an unconfirmed one
+			// reaches stderr as a warning.
+			signal := "-"
+			if proc.Confirmed() {
+				signal = proc.Signal
+			}
+			fmt.Fprintf(stdout, "process\t%s\t%d\t%s\t%s\n", reconcileField(entry.Path), proc.PID, processField(proc.Command), signal)
+		}
 	}
 	if skipped {
 		return &ExitError{Code: 2, State: loop.PruneSkipped}
 	}
 	return nil
+}
+
+// processField keeps a command on one tab-separated line.
+func processField(command string) string {
+	return strings.NewReplacer("\t", " ", "\n", " ", "\r", " ").Replace(command)
 }
 
 // reconcileField keeps a path on one tab-separated line: git hands paths

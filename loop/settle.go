@@ -10,6 +10,7 @@ import (
 	"github.com/batuta-ai/core/integration"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
+	"github.com/batuta-ai/core/worktree"
 )
 
 // settleCandidates integrates every wave that holds unsettled candidates,
@@ -208,7 +209,7 @@ func (r *Runner) cleanupAfterSettlement(ctx context.Context, settlement routing.
 		if removeErr != nil {
 			state, blocker = routing.CleanupRetained, "worktree_remove_failed"
 		}
-		if err := r.locked(KindCleanup, taskID, map[string]any{"worktree": wt, "state": state, "error": errorString(removeErr)}, func() error {
+		if err := r.locked(KindCleanup, taskID, map[string]any{"worktree": wt, "state": state, "error": errorString(removeErr), "stopped_processes": r.stoppedProcessesFor(wt.Root)}, func() error {
 			if planned {
 				if _, _, err := r.graph.CompleteCleanup(operation.OperationID, state, blocker); err != nil {
 					return fmt.Errorf("loop: complete cleanup: %w", err)
@@ -233,6 +234,30 @@ func errorString(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+// restoreCleanupStops keeps the confirmed stops of an earlier cleanup record,
+// so a resumed or abandoned delivery's terminal record still lists them.
+func (r *Runner) restoreCleanupStops(record journal.Record) {
+	var detail struct {
+		Worktree         attemptWorktree           `json:"worktree"`
+		StoppedProcesses []worktree.StoppedProcess `json:"stopped_processes"`
+	}
+	if record.Kind != KindCleanup || json.Unmarshal(record.Detail, &detail) != nil {
+		return
+	}
+	var confirmed []worktree.StoppedProcess
+	for _, proc := range detail.StoppedProcesses {
+		if proc.Confirmed() {
+			confirmed = append(confirmed, proc)
+		}
+	}
+	if len(confirmed) > 0 {
+		root := detail.Worktree.Root
+		r.mu.Lock()
+		r.stoppedProcesses[root] = mergeStoppedProcesses(r.stoppedProcesses[root], confirmed)
+		r.mu.Unlock()
+	}
 }
 
 // replay rebuilds the runner's memory from a journal: the graph from the
@@ -341,6 +366,7 @@ func (r *Runner) replay(records []journal.Record) error {
 					}
 				}
 			}
+			r.restoreCleanupStops(record)
 		case KindTerminal:
 			var detail struct {
 				State string `json:"state"`

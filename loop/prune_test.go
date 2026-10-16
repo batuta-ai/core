@@ -488,3 +488,249 @@ func TestPruneApplyStopsOnLaterError(t *testing.T) {
 		}
 	}
 }
+
+func pruneOrphans(t *testing.T, f fixture, slugs ...string) []worktree.ManagedWorktree {
+	t.Helper()
+	trees := make([]worktree.ManagedWorktree, 0, len(slugs))
+	for i, slug := range slugs {
+		trees = append(trees, pruneWorktree(t, f, worktree.RepositoryHome(f.root), slug, i+1, 1))
+	}
+	if _, err := journal.Open(f.root); err != nil {
+		t.Fatal(err)
+	}
+	for _, wt := range trees {
+		if err := os.WriteFile(filepath.Join(wt.Path, "uncommitted.txt"), []byte("recover me"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(wt.Path, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return trees
+}
+
+func assertParked(t *testing.T, f fixture, wt worktree.ManagedWorktree) {
+	t.Helper()
+	ref := "refs/batuta/parked/" + strings.TrimPrefix(wt.Branch, "batuta/")
+	if got := f.run(t, "show", ref+":uncommitted.txt"); got != "recover me" {
+		t.Fatalf("parked content of %s = %q", wt.Branch, got)
+	}
+}
+
+func TestPruneUsesInjectedScanner(t *testing.T) {
+	f := setup(t)
+	wt := pruneOrphans(t, f, "stray")[0]
+	var scanned []string
+	scanner := loopProcessScanner(func(_ context.Context, dir string) ([]worktree.Process, error) {
+		scanned = append(scanned, dir)
+		return nil, nil
+	})
+	if _, err := Prune(context.Background(), f.root, PruneOptions{Processes: scanner}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(scanned, []string{wt.Path}) {
+		t.Fatalf("scanned = %v, want [%s]", scanned, wt.Path)
+	}
+}
+
+func TestPruneListsProcesses(t *testing.T) {
+	f := setup(t)
+	trees := pruneOrphans(t, f, "alpha", "beta")
+	started := time.Unix(100, 0)
+	basePID := func(dir string) int {
+		if dir == trees[1].Path {
+			return 900200
+		}
+		return 900100
+	}
+	scanner := loopProcessScanner(func(_ context.Context, dir string) ([]worktree.Process, error) {
+		pid := basePID(dir)
+		return []worktree.Process{
+			{PID: pid, Command: "next-server", Cwd: dir, Start: started},
+			{PID: pid + 1, Command: "sleep", Cwd: filepath.Join(dir, "sub"), Start: started},
+		}, nil
+	})
+	stops := 0
+	stopper := loopProcessStopper(func(context.Context, string, []worktree.Process, time.Duration) ([]worktree.StoppedProcess, error) {
+		stops++
+		return nil, nil
+	})
+	report, err := Prune(context.Background(), f.root, PruneOptions{Processes: scanner, Stopper: stopper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stops != 0 {
+		t.Fatalf("stopper called %d times in a dry run", stops)
+	}
+	if len(report.Entries) != 2 {
+		t.Fatalf("entries = %+v", report.Entries)
+	}
+	for _, entry := range report.Entries {
+		pid := basePID(entry.Path)
+		want := []worktree.StoppedProcess{
+			{Process: worktree.Process{PID: pid, Command: "next-server", Cwd: entry.Path, Start: started}},
+			{Process: worktree.Process{PID: pid + 1, Command: "sleep", Cwd: filepath.Join(entry.Path, "sub"), Start: started}},
+		}
+		if !reflect.DeepEqual(entry.Processes, want) {
+			t.Fatalf("%s processes = %+v, want %+v", entry.Path, entry.Processes, want)
+		}
+	}
+	if len(report.Warnings) != 0 {
+		t.Fatalf("warnings = %v", report.Warnings)
+	}
+}
+
+func TestPruneApplyStopsProcesses(t *testing.T) {
+	f := setup(t)
+	wt := pruneOrphans(t, f, "stray")[0]
+	proc := worktree.Process{PID: 900300, Command: "next-server", Cwd: wt.Path, Start: time.Unix(100, 0)}
+	stopped := false
+	scans := 0
+	scanner := loopProcessScanner(func(context.Context, string) ([]worktree.Process, error) {
+		scans++
+		if stopped {
+			return nil, nil
+		}
+		return []worktree.Process{proc}, nil
+	})
+	stopCalls := 0
+	stopper := loopProcessStopper(func(_ context.Context, dir string, procs []worktree.Process, _ time.Duration) ([]worktree.StoppedProcess, error) {
+		stopCalls++
+		if dir != wt.Path {
+			t.Errorf("stopper dir = %s, want %s", dir, wt.Path)
+		}
+		if _, err := os.Stat(wt.Path); err != nil {
+			t.Errorf("worktree gone before the stop: %v", err)
+		}
+		if got := f.run(t, "for-each-ref", "refs/batuta/parked/"); got != "" {
+			t.Errorf("parked before the stop: %q", got)
+		}
+		stopped = true
+		return []worktree.StoppedProcess{{Process: procs[0], Signal: "TERM"}}, nil
+	})
+	report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true, Processes: scanner, Stopper: stopper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("stopper called %d times, want 1", stopCalls)
+	}
+	if scans < 2 {
+		t.Fatalf("scans = %d, want the scan inside Remove too", scans)
+	}
+	if len(report.Entries) != 1 || report.Entries[0].State != PruneRemoved {
+		t.Fatalf("entries = %+v", report.Entries)
+	}
+	want := []worktree.StoppedProcess{{Process: proc, Signal: "TERM"}}
+	if !reflect.DeepEqual(report.Entries[0].Processes, want) {
+		t.Fatalf("processes = %+v, want %+v", report.Entries[0].Processes, want)
+	}
+	if _, err := os.Stat(wt.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree still exists: %v", err)
+	}
+	assertParked(t, f, wt)
+}
+
+func TestPruneProcessScanUnsupported(t *testing.T) {
+	for _, apply := range []bool{false, true} {
+		t.Run(strconv.FormatBool(apply), func(t *testing.T) {
+			f := setup(t)
+			trees := pruneOrphans(t, f, "alpha", "beta", "gamma")
+			scanner := loopProcessScanner(func(context.Context, string) ([]worktree.Process, error) {
+				return nil, worktree.ErrProcessScanUnsupported
+			})
+			report, err := Prune(context.Background(), f.root, PruneOptions{Apply: apply, Processes: scanner})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Entries) != len(trees) {
+				t.Fatalf("entries = %+v", report.Entries)
+			}
+			if len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], "unsupported") {
+				t.Fatalf("warnings = %v, want exactly one unsupported warning", report.Warnings)
+			}
+			want := PruneOrphan
+			if apply {
+				want = PruneRemoved
+			}
+			for _, entry := range report.Entries {
+				if entry.State != want {
+					t.Fatalf("entry %s state = %s, want %s", entry.Path, entry.State, want)
+				}
+			}
+		})
+	}
+}
+
+func TestPruneProcessScanError(t *testing.T) {
+	for name, scanErr := range map[string]error{
+		"timeout":    context.DeadlineExceeded,
+		"permission": os.ErrPermission,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := setup(t)
+			wt := pruneOrphans(t, f, "stray")[0]
+			scanner := loopProcessScanner(func(context.Context, string) ([]worktree.Process, error) {
+				return nil, scanErr
+			})
+			report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true, Processes: scanner})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(report.Warnings) != 1 || !strings.Contains(report.Warnings[0], wt.Path) || !strings.Contains(report.Warnings[0], scanErr.Error()) {
+				t.Fatalf("warnings = %v, want one naming %s and %q", report.Warnings, wt.Path, scanErr)
+			}
+			if len(report.Entries) != 1 || report.Entries[0].State != PruneRemoved {
+				t.Fatalf("entries = %+v", report.Entries)
+			}
+			if _, err := os.Stat(wt.Path); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("worktree still exists: %v", err)
+			}
+			assertParked(t, f, wt)
+		})
+	}
+}
+
+func TestPruneMergesRepeatedStops(t *testing.T) {
+	f := setup(t)
+	wt := pruneOrphans(t, f, "stray")[0]
+	survivor := worktree.Process{PID: 900310, Command: "next-server", Cwd: wt.Path, Start: time.Unix(100, 0)}
+	editor := worktree.Process{PID: 900311, Command: "editor", Cwd: wt.Path, Start: time.Unix(100, 0)}
+	scanner := loopProcessScanner(func(context.Context, string) ([]worktree.Process, error) {
+		return []worktree.Process{survivor, editor}, nil
+	})
+	stopCalls := 0
+	stopper := loopProcessStopper(func(_ context.Context, _ string, procs []worktree.Process, _ time.Duration) ([]worktree.StoppedProcess, error) {
+		stopCalls++
+		if stopCalls == 1 {
+			return []worktree.StoppedProcess{
+				{Process: procs[0], Signal: "KILL", Reason: "process still running"},
+				{Process: procs[1], Reason: "process identity changed"},
+			}, nil
+		}
+		return []worktree.StoppedProcess{
+			{Process: procs[0], Signal: "KILL"},
+			{Process: procs[1], Reason: "process identity changed"},
+		}, nil
+	})
+	report, err := Prune(context.Background(), f.root, PruneOptions{Apply: true, Processes: scanner, Stopper: stopper})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopCalls != 2 {
+		t.Fatalf("stopper called %d times, want 2", stopCalls)
+	}
+	want := []worktree.StoppedProcess{
+		{Process: survivor, Signal: "KILL"},
+		{Process: editor, Reason: "process identity changed"},
+	}
+	if len(report.Entries) != 1 || !reflect.DeepEqual(report.Entries[0].Processes, want) {
+		t.Fatalf("entries = %+v, want one row per process %+v", report.Entries, want)
+	}
+	warnings := strings.Join(report.Warnings, "\n")
+	for _, part := range []string{"sent SIGKILL to pid 900310 (next-server) but could not confirm it ended", "skipped pid 900311 (editor): process identity changed"} {
+		if !strings.Contains(warnings, part) {
+			t.Errorf("warnings missing %q:\n%s", part, warnings)
+		}
+	}
+}

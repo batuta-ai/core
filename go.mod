@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260906004030-3986e9119cf9
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/pelletier/go-toml/v2 v2.4.3
+	golang.org/x/sys v0.46.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -30,7 +31,6 @@ require (
 	github.com/sahilm/fuzzy v0.1.3 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/sync v0.21.0 // indirect
-	golang.org/x/sys v0.46.0 // indirect
 )
 
 // v1.0.0 and v1.0.1 were published before the beta line; the module stays

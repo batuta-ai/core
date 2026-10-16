@@ -20,6 +20,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/batuta-ai/core/publication"
 )
@@ -46,10 +47,13 @@ var (
 // GitProvider runs git against one repository root. Home is the directory
 // that holds the task worktrees; empty means RepositoryHome(Root).
 type GitProvider struct {
-	Git    string
-	Runner publication.CommandRunner
-	Root   string
-	Home   string
+	Git                string
+	Runner             publication.CommandRunner
+	Root               string
+	Home               string
+	Processes          ProcessScanner
+	Stopper            ProcessStopper
+	OnProcessesStopped func(path string, stopped []StoppedProcess, err error)
 }
 
 // RepositoryHome is the worktree home inside the repository at root.
@@ -251,6 +255,7 @@ func (p GitProvider) Remove(ctx context.Context, path, branch string) error {
 	var first error
 	if path != "" {
 		if _, err := os.Lstat(path); err == nil {
+			_, _ = p.StopInside(ctx, path)
 			if _, err := p.run(ctx, p.Root, "worktree", "remove", "--force", path); err != nil {
 				first = err
 			}
@@ -265,6 +270,130 @@ func (p GitProvider) Remove(ctx context.Context, path, branch string) error {
 		}
 	}
 	return first
+}
+
+// ProcessesIn lists processes in a registered worktree under an allowed home.
+func (p GitProvider) ProcessesIn(ctx context.Context, path string) ([]Process, error) {
+	canonical, allowed, err := p.processTarget(ctx, path)
+	if err != nil || !allowed {
+		return nil, err
+	}
+	return p.scanProcesses(ctx, canonical)
+}
+
+// StopInside stops processes in a registered worktree and reports the result.
+func (p GitProvider) StopInside(ctx context.Context, path string) ([]StoppedProcess, error) {
+	canonical, allowed, err := p.processTarget(ctx, path)
+	if err != nil || !allowed {
+		p.reportStopped(path, nil, err)
+		return nil, err
+	}
+	procs, scanErr := p.scanProcesses(ctx, canonical)
+	var partial *PartialScanError
+	if scanErr != nil && !errors.As(scanErr, &partial) {
+		p.reportStopped(path, nil, scanErr)
+		return nil, scanErr
+	}
+	var stopped []StoppedProcess
+	var stopErr error
+	if len(procs) > 0 {
+		stopper := p.Stopper
+		if stopper == nil {
+			stopper = platformProcessStopper()
+		}
+		stopped, stopErr = stopper.Stop(ctx, canonical, procs, 3*time.Second)
+	}
+	err = errors.Join(scanErr, stopErr)
+	p.reportStopped(path, stopped, err)
+	return stopped, err
+}
+
+func (p GitProvider) reportStopped(path string, stopped []StoppedProcess, err error) {
+	if p.OnProcessesStopped != nil && (len(stopped) > 0 || err != nil) {
+		p.OnProcessesStopped(path, stopped, err)
+	}
+}
+
+func (p GitProvider) scanProcesses(ctx context.Context, path string) ([]Process, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	scanner := p.Processes
+	if scanner == nil {
+		scanner = platformProcessScanner()
+	}
+	return insideWith(ctx, insideEnv{
+		scanner: scanner, home: home, callerPID: os.Getpid(), parentPID: platformParentPID,
+	}, path)
+}
+
+func (p GitProvider) processTarget(ctx context.Context, path string) (string, bool, error) {
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return "", false, nil
+	}
+	canonical, err := filepath.EvalSymlinks(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("worktree: resolve process target: %w", err)
+	}
+	canonical = filepath.Clean(canonical)
+	homes := []string{p.Home, RepositoryHome(p.Root)}
+	allowed := false
+	for _, home := range homes {
+		if home == "" {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(home)
+		if err == nil && filepath.Dir(canonical) == filepath.Clean(resolved) {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		cache, err := CacheHome(p.Root)
+		if err != nil {
+			return "", false, err
+		}
+		resolved, err := filepath.EvalSymlinks(cache)
+		allowed = err == nil && filepath.Dir(canonical) == filepath.Clean(resolved)
+	}
+	if !allowed {
+		return "", false, nil
+	}
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		return "", false, err
+	}
+	if err := safeProcessTarget(path, userHome); err != nil {
+		return "", false, err
+	}
+	if err := safeProcessTarget(canonical, userHome); err != nil {
+		return "", false, err
+	}
+	// The primary checkout is never a batuta worktree, even when a configured
+	// home holds it and git lists it: its processes are the user's own.
+	root := canonicalDir(p.Root)
+	if canonical == root || pathWithin(canonical, root) { // canonical is, or holds, the primary checkout
+		return "", false, nil
+	}
+	out, err := p.run(ctx, p.Root, "worktree", "list", "--porcelain", "-z")
+	if err != nil {
+		return "", false, err
+	}
+	for i, record := range worktreeRecords(out.Stdout) {
+		if canonicalDir(record.path) != canonical {
+			continue
+		}
+		if i == 0 {
+			// git lists the main worktree first.
+			return "", false, nil
+		}
+		return canonical, true, nil
+	}
+	return "", false, nil
 }
 
 // PruneRegistry drops the registration of every worktree whose directory is

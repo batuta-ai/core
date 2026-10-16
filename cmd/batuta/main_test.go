@@ -3312,6 +3312,34 @@ func TestLoopPruneApplyExitsTwoOnSkipped(t *testing.T) {
 	}
 }
 
+func TestPrintPruneProcessRows(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		proc worktree.StoppedProcess
+		want string
+	}{
+		{"dry run", worktree.StoppedProcess{Process: worktree.Process{PID: 11, Command: "node"}}, "process\t/p/x\t11\tnode\t-"},
+		{"confirmed", worktree.StoppedProcess{Process: worktree.Process{PID: 12, Command: "node"}, Signal: "KILL"}, "process\t/p/x\t12\tnode\tKILL"},
+		{"tab and newline", worktree.StoppedProcess{Process: worktree.Process{PID: 13, Command: "next\tdev\nserver\r"}, Signal: "TERM"}, "process\t/p/x\t13\tnext dev server \tTERM"},
+		{"unconfirmed", worktree.StoppedProcess{Process: worktree.Process{PID: 14, Command: "node"}, Signal: "TERM", Reason: "process identity changed"}, "process\t/p/x\t14\tnode\t-"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			report := loop.PruneReport{Entries: []loop.PruneEntry{{Path: "/p/x", Branch: "batuta/s/task-1-e1", Slug: "s", State: loop.PruneRemoved, Processes: []worktree.StoppedProcess{tc.proc}}}}
+			var stdout bytes.Buffer
+			if err := printPrune(&stdout, report); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSuffix(stdout.String(), "\n"), "\n")
+			if len(lines) != 2 || lines[1] != tc.want {
+				t.Fatalf("rows = %q, want process row %q", lines, tc.want)
+			}
+		})
+	}
+}
+
 // loopFlagTokens reads the flags runLoop defines from its own help output:
 // the name and, for a non-boolean flag, the type word.
 func loopFlagTokens(t *testing.T) map[string]string {
@@ -3367,7 +3395,7 @@ func TestLoopPruneUsage(t *testing.T) {
 }
 
 func TestLoopPruneHelp(t *testing.T) {
-	for _, want := range []string{"--prune", "--apply"} {
+	for _, want := range []string{"--prune", "--apply", "process"} {
 		if !strings.Contains(usage, want) {
 			t.Errorf("usage is missing %q", want)
 		}
@@ -3377,6 +3405,26 @@ func TestLoopPruneHelp(t *testing.T) {
 	for _, want := range []string{"-prune", "-apply"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Errorf("loop flag help is missing %q", want)
+		}
+	}
+}
+
+func TestLoopDocWorktreeProcesses(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "loop.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, section, ok := strings.Cut(string(data), "\n## Worktree processes\n")
+	if !ok {
+		t.Fatal("docs/loop.md has no ## Worktree processes section")
+	}
+	if i := strings.Index(section, "\n## "); i >= 0 {
+		section = section[:i]
+	}
+	wants := []string{"SIGTERM", "SIGKILL", "3 seconds", "windows", "scan error", "editor", "agent session", "--keep-worktrees", "PID reuse"}
+	for _, want := range wants {
+		if !strings.Contains(section, want) {
+			t.Errorf("section is missing %q", want)
 		}
 	}
 }
