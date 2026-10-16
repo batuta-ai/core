@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.1.0-beta.56](https://github.com/batuta-ai/core/compare/v1.1.0-beta.55...v1.1.0-beta.56) (2026-10-16)
+
+
+### Features
+
+* CLI and docs for worktree processes ([8575a59](https://github.com/batuta-ai/core/commit/8575a596ebeffccc737a028842f66b26f8e7a3ef))
+* loop journals the stopped processes ([20ae459](https://github.com/batuta-ai/core/commit/20ae4598d57eebb18bce9f4785bc6ea453209776))
+* loop prints and trails the stopped processes ([2841205](https://github.com/batuta-ai/core/commit/2841205696e347148d436794a055e938d607c3f9))
+* prune lists and stops processes inside orphaned worktrees ([d3bfdc5](https://github.com/batuta-ai/core/commit/d3bfdc54655e9cc0c4127daf958fee96eec3acac))
+* removing a worktree stops its processes first ([dab36a2](https://github.com/batuta-ai/core/commit/dab36a2c59d10ff012058cf8e9af17a1235760f2))
+* stop processes inside a worktree before removing it ([6862ff3](https://github.com/batuta-ai/core/commit/6862ff369b7ad8e53eb81dbaf61820a8f9b9bcde))
+* worktree package matches processes to a directory, pure logic ([b068cab](https://github.com/batuta-ai/core/commit/b068cab1a6fce6c66d4b89904c72cc89524f1a9c))
+* worktree package scans processes on Linux and macOS ([8eca69a](https://github.com/batuta-ai/core/commit/8eca69ae540e92744654aa92a7fa1e0e687fc50b))
+* worktree package stops the processes it found ([d62a436](https://github.com/batuta-ai/core/commit/d62a4364d36974d07e44c710f9129e0b4d6dc4ae))
+
+
+### Bug Fixes
+
+* compare stopped processes across time zones ([9dda3d7](https://github.com/batuta-ai/core/commit/9dda3d7c62a47a52e1324d2357ecbf12fa0957c4))
+* confirm worktree process stops before reporting them ([48e7ab5](https://github.com/batuta-ai/core/commit/48e7ab575fc89cb87d26d6e0c4fa963f7626c4af))
+* guard the primary checkout and keep process stops across resume ([d596a54](https://github.com/batuta-ai/core/commit/d596a544d9eeb22c47c0cff456963d617e08006e))
+* keep cleanup stops on abandon and test context and trail seams ([c043ac8](https://github.com/batuta-ai/core/commit/c043ac85151aa9b31451e1359076f0ba5b449aca))
+* merge cleanup stops into a resumed finalization ([3fd28ca](https://github.com/batuta-ai/core/commit/3fd28ca641c905ac45a90fdcd58f89da2cb0b402))
+
 ## [1.1.0-beta.55](https://github.com/batuta-ai/core/compare/v1.1.0-beta.54...v1.1.0-beta.55) (2026-10-15)
 
 
