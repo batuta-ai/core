@@ -15,6 +15,14 @@ func tempDir(t *testing.T) string {
 	return dir
 }
 
+// symlink links link to target, skipping the test when the system refuses.
+func symlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("cannot create symlink: %v", err)
+	}
+}
+
 func writeFile(t *testing.T, dir, name, content string) {
 	t.Helper()
 	path := filepath.Join(dir, name)
