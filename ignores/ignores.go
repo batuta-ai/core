@@ -50,6 +50,8 @@ var defaultDetectors = []detector{
 	{tool: "vitest", run: checkVitest},
 	{tool: "jest", run: checkJest},
 	{tool: "playwright", run: checkPlaywright},
+	{tool: "eslint", run: checkESLint},
+	{tool: "prettier", run: checkPrettier},
 }
 
 // Check reports the findings for the workspace at root. A root without a
