@@ -54,6 +54,7 @@ var defaultDetectors = []detector{
 	{tool: "prettier", run: checkPrettier},
 	{tool: "biome", run: checkBiome},
 	{tool: "typescript", run: checkTypeScript},
+	{tool: "pytest", run: checkPytest},
 }
 
 // Check reports the findings for the workspace at root. A root without a
