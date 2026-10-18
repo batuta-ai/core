@@ -46,7 +46,11 @@ type detector struct {
 	run  func(root string, pkg *packageJSON) ([]Finding, error)
 }
 
-var defaultDetectors []detector
+var defaultDetectors = []detector{
+	{tool: "vitest", run: checkVitest},
+	{tool: "jest", run: checkJest},
+	{tool: "playwright", run: checkPlaywright},
+}
 
 // Check reports the findings for the workspace at root. A root without a
 // `.batuta/` directory has nothing to protect and yields none.
