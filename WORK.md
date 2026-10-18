@@ -483,6 +483,14 @@
 - [x] Loop journals the stopped processes → codex (gpt-6-sol), 1 retry, commit 20ae4598d57e (trail: .batuta/runs/2026-10-15-worktree-process-cleanup-task-6.md, delivery worktree-process-cleanup-20261015-142144, plan worktree-process-cleanup, 2026-10-15)
 - [x] Prune lists and stops processes inside orphaned worktrees → claude (sonnet), 1 retry, commit d3bfdc54655e (trail: .batuta/runs/2026-10-15-worktree-process-cleanup-task-7.md, delivery worktree-process-cleanup-20261015-142144, plan worktree-process-cleanup, 2026-10-15)
 - [x] CLI and docs for worktree processes → claude (sonnet), commit 8575a596ebef (trail: .batuta/runs/2026-10-15-worktree-process-cleanup-task-8.md, delivery worktree-process-cleanup-20261015-142144, plan worktree-process-cleanup, 2026-10-15)
+- [x] Ignores package skeleton, shared package.json and JSONC parser → claude (sonnet), commit ed2623c52be8 (trail: .batuta/runs/2026-10-18-doctor-tool-ignores-task-1.md, delivery doctor-tool-ignores-20261018-151835, plan doctor-tool-ignores, 2026-10-18)
+- [x] Source lexer for JavaScript and TypeScript configs → claude (sonnet), 1 retry, commit cadce459dacd (trail: .batuta/runs/2026-10-18-doctor-tool-ignores-task-2.md, delivery doctor-tool-ignores-20261018-151835, plan doctor-tool-ignores, 2026-10-18)
+- [x] Ignores package checks Vitest, Jest and Playwright → claude (sonnet), commit ba26885f02a8 (trail: .batuta/runs/2026-10-18-doctor-tool-ignores-task-3.md, delivery doctor-tool-ignores-20261018-151835, plan doctor-tool-ignores, 2026-10-18)
+- [x] Ignores package checks ESLint and Prettier → claude (sonnet), commit 931741fcd826 (trail: .batuta/runs/2026-10-18-doctor-tool-ignores-task-4.md, delivery doctor-tool-ignores-20261018-151835, plan doctor-tool-ignores, 2026-10-18)
+- [x] Ignores package checks Biome → claude (sonnet), commit 358b4ac4d48b (trail: .batuta/runs/2026-10-18-doctor-tool-ignores-task-5.md, delivery doctor-tool-ignores-20261018-151835, plan doctor-tool-ignores, 2026-10-18)
+- [x] Ignores package checks TypeScript → claude (sonnet), commit 45769427d2af (trail: .batuta/runs/2026-10-18-doctor-tool-ignores-task-6.md, delivery doctor-tool-ignores-20261018-151835, plan doctor-tool-ignores, 2026-10-18)
+- [x] Ignores package checks pytest → claude (sonnet), commit 1badb66dd001 (trail: .batuta/runs/2026-10-18-doctor-tool-ignores-task-7.md, delivery doctor-tool-ignores-20261018-151835, plan doctor-tool-ignores, 2026-10-18)
+- [x] Doctor reports the tool ignores → claude (sonnet), 1 retry, commit f63da12b02dd (trail: .batuta/runs/2026-10-18-doctor-tool-ignores-task-8.md, delivery doctor-tool-ignores-20261018-151835, plan doctor-tool-ignores, 2026-10-18)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
