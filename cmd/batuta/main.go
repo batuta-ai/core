@@ -28,6 +28,7 @@ import (
 
 	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/gates"
+	"github.com/batuta-ai/core/ignores"
 	"github.com/batuta-ai/core/inventory"
 	"github.com/batuta-ai/core/inventory/adapters"
 	"github.com/batuta-ai/core/judge"
@@ -187,7 +188,10 @@ inventory  Redacted snapshot of the executor CLIs installed on this machine
            provider/model bindings, credential state, diagnostics. JSON.
 doctor     What a conductor needs to know before the first cycle: which
            executors run, whether the workspace is a git repository, and
-           whether the Batuta skills are installed. Human text, or --json.
+           whether the Batuta skills are installed. With a .batuta/ directory
+           it also reports tool ignores: for each test runner, linter,
+           formatter and type checker, whether it keeps out of .batuta/.
+           Human text, or --json.
 `
 
 func main() {
@@ -374,17 +378,19 @@ func runInventory(args []string, stdout io.Writer) error {
 }
 
 type doctorReport struct {
-	Workspace      string                `json:"workspace"`
-	GitRepository  bool                  `json:"git_repository"`
-	GitToplevel    string                `json:"git_toplevel,omitempty"`
-	GitState       string                `json:"git_state,omitempty"`
-	GitClean       *bool                 `json:"git_clean,omitempty"`
-	GitExecutable  string                `json:"git_executable,omitempty"`
-	Commands       []string              `json:"commands"`
-	SkillsPath     string                `json:"skills_path,omitempty"`
-	Executors      []doctorExecutor      `json:"executors"`
-	Digest         string                `json:"inventory_digest"`
-	ProbeDurations []doctorProbeDuration `json:"-"`
+	Workspace        string                `json:"workspace"`
+	GitRepository    bool                  `json:"git_repository"`
+	GitToplevel      string                `json:"git_toplevel,omitempty"`
+	GitState         string                `json:"git_state,omitempty"`
+	GitClean         *bool                 `json:"git_clean,omitempty"`
+	GitExecutable    string                `json:"git_executable,omitempty"`
+	Commands         []string              `json:"commands"`
+	SkillsPath       string                `json:"skills_path,omitempty"`
+	ToolIgnores      []ignores.Finding     `json:"tool_ignores"`
+	ToolIgnoresError string                `json:"tool_ignores_error,omitempty"`
+	Executors        []doctorExecutor      `json:"executors"`
+	Digest           string                `json:"inventory_digest"`
+	ProbeDurations   []doctorProbeDuration `json:"-"`
 }
 
 type doctorProbeDuration struct {
@@ -450,6 +456,9 @@ type doctorExecutor struct {
 	Diagnostics  []string `json:"diagnostics,omitempty"`
 }
 
+// checkToolIgnores is a variable so a test can inject an error.
+var checkToolIgnores = ignores.Check
+
 func runDoctor(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("doctor", flag.ContinueOnError)
 	workspace := flags.String("workspace", "", "workspace directory (default: current directory)")
@@ -480,6 +489,14 @@ func runDoctor(args []string, stdout io.Writer) error {
 		report.GitRepository = report.GitToplevel != ""
 	}
 	report.SkillsPath = findSkills(root)
+	if findings, err := checkToolIgnores(root); err != nil {
+		report.ToolIgnoresError = err.Error()
+	} else {
+		report.ToolIgnores = findings
+	}
+	if report.ToolIgnores == nil {
+		report.ToolIgnores = []ignores.Finding{}
+	}
 	paths := map[inventory.ExecutorID]string{
 		"compozy": found.Compozy, "codex": found.Codex, "opencode": found.OpenCode,
 		"cursor-agent": found.Cursor, "claude": found.Claude, "agy": found.Agy,
@@ -1594,6 +1611,20 @@ func printDoctor(w io.Writer, report doctorReport) {
 		fmt.Fprintf(w, "skills      %s\n", report.SkillsPath)
 	} else {
 		fmt.Fprintln(w, "skills      not found — npx skills add batuta-ai/skills")
+	}
+	if report.ToolIgnoresError != "" {
+		fmt.Fprintf(w, "tools       check failed: %s\n", report.ToolIgnoresError)
+	}
+	for _, finding := range report.ToolIgnores {
+		config := finding.Config
+		if finding.Key != "" {
+			config += " (" + finding.Key + ")"
+		}
+		fmt.Fprintf(w, "tools       %s %s %s", finding.Tool, config, finding.Status)
+		if finding.Hint != "" && (finding.Status == ignores.Missing || finding.Status == ignores.Unknown) {
+			fmt.Fprintf(w, " — %s", finding.Hint)
+		}
+		fmt.Fprintln(w)
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "%-13s %-12s %-14s %7s  %s\n", "executor", "available", "version", "models", "notes")

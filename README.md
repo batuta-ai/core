@@ -41,7 +41,7 @@ runs external executors through the legacy CLI or its bounded ACP client.
 
 ## The binary
 
-`batuta version` · `capabilities` · `inventory` · `doctor` · `dispatch` · `loop` · `trail`.
+`batuta version` · `capabilities` · `inventory` · [`doctor`](docs/doctor.md) · `dispatch` · `loop` · `trail`.
 Skills probe `batuta capabilities` before calling a subcommand.
 
 ```
