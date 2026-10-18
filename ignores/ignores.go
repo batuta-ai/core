@@ -52,6 +52,7 @@ var defaultDetectors = []detector{
 	{tool: "playwright", run: checkPlaywright},
 	{tool: "eslint", run: checkESLint},
 	{tool: "prettier", run: checkPrettier},
+	{tool: "biome", run: checkBiome},
 }
 
 // Check reports the findings for the workspace at root. A root without a
