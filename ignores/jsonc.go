@@ -38,12 +38,12 @@ func stripJSONC(src []byte) ([]byte, error) {
 			i = end - 1
 			pendingComma = -1
 		case c == '/' && i+1 < len(src) && src[i+1] == '/':
-			for i < len(src) && src[i] != '\n' {
+			for i < len(src) && src[i] != '\n' && src[i] != '\r' {
 				out = append(out, ' ')
 				i++
 			}
 			if i < len(src) {
-				out = append(out, '\n')
+				out = append(out, src[i])
 			}
 		case c == '/' && i+1 < len(src) && src[i+1] == '*':
 			end := bytes.Index(src[i+2:], []byte("*/"))

@@ -71,6 +71,7 @@ func TestStripCommentsErrors(t *testing.T) {
 		{name: "string ends in escape", input: `a = 'open\`, want: "unterminated string"},
 		{name: "template", input: "a = `open", want: "unterminated template"},
 		{name: "template substitution", input: "a = `x${b", want: "unterminated template"},
+		{name: "template substitution under an open object", input: "a = `x${ { a: 1", want: "unterminated template"},
 		{name: "block comment", input: "a /* open", want: "unterminated block comment"},
 		{name: "regex", input: `a = /open`, want: "unterminated regex"},
 		{name: "regex broken by newline", input: "a = /open\n/", want: "unterminated regex"},
@@ -328,6 +329,108 @@ func TestCallLiterals(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("callLiterals(%q, %q) = %q, want %q", stripped, tt.call, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStringLiteralEscapes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{name: "plain", input: `'.batuta'`, want: []string{".batuta"}},
+		{name: "hex", input: `'\x2ebatuta'`, want: []string{".batuta"}},
+		{name: "unicode four digits", input: `'.batuta'`, want: []string{".batuta"}},
+		{name: "unicode braces", input: `'\u{2e}batuta'`, want: []string{".batuta"}},
+		{name: "unicode braces astral", input: `'\u{1F600}'`, want: []string{"\U0001F600"}},
+		{name: "in template", input: "`\\x2ebatuta`", want: []string{".batuta"}},
+		{name: "single-character escapes kept", input: `'a\nb\tc\rd\\e'`, want: []string{"a\nb\tc\rd\\e"}},
+		{name: "malformed hex keeps the letter", input: `'\xzz'`, want: []string{"xzz"}},
+		{name: "short unicode keeps the letter", input: `'\u12'`, want: []string{"u12"}},
+		{name: "unclosed braces keep the letter", input: `'\u{2e'`, want: []string{"u{2e"}},
+		{name: "out of range braces keep the letter", input: `'\u{110000}'`, want: []string{"u{110000}"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := stringLiterals(tt.input)
+			if err != nil {
+				t.Fatalf("stringLiterals(%q): %v", tt.input, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("stringLiterals(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKeyLiteralsComputedSibling(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  []keyOccurrence
+	}{
+		{
+			name:  "computed key before",
+			input: `{ [name]: x, ignores: ['a'] }`,
+			want:  []keyOccurrence{{Literals: []string{"a"}, Siblings: []string{"[computed]"}}},
+		},
+		{
+			name:  "computed key after",
+			input: `{ ignores: ['a'], ['x' + y]: 1 }`,
+			want:  []keyOccurrence{{Literals: []string{"a"}, Siblings: []string{"[computed]"}}},
+		},
+		{
+			name:  "computed method",
+			input: `{ [name]() {}, ignores: ['a'] }`,
+			want:  []keyOccurrence{{Literals: []string{"a"}, Siblings: []string{"[computed]"}}},
+		},
+		{
+			name:  "array value is not a key",
+			input: `{ list: [1, 2], ignores: ['a'] }`,
+			want:  []keyOccurrence{{Literals: []string{"a"}, Siblings: []string{"list"}}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := keyLiterals(tt.input, "ignores")
+			if err != nil {
+				t.Fatalf("keyLiterals(%q): %v", tt.input, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("keyLiterals(%q) = %#v, want %#v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCallLiteralsSkipsDeclarations(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{name: "function declaration", input: `function globalIgnores(a = '.batuta') {}`},
+		{name: "method definition", input: `class A { globalIgnores(a = '.batuta') { return 1 } }`},
+		{name: "object method", input: `x = { globalIgnores(a = '.batuta') {} }`},
+		{name: "call after declaration", input: `function globalIgnores(a) {} globalIgnores(['b'])`, want: []string{"b"}},
+		{name: "call kept", input: `x = globalIgnores(['a'])`, want: []string{"a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := callLiterals(tt.input, "globalIgnores")
+			if err != nil {
+				t.Fatalf("callLiterals(%q): %v", tt.input, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("callLiterals(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

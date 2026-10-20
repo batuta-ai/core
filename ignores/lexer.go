@@ -2,6 +2,8 @@ package ignores
 
 import (
 	"errors"
+	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -112,7 +114,7 @@ func (l *lexer) run() error {
 			l.punct(size)
 		}
 	}
-	if len(l.braces) > 0 && l.braces[len(l.braces)-1] {
+	if slices.Contains(l.braces, true) {
 		return errors.New("unterminated template")
 	}
 	return nil
@@ -159,8 +161,9 @@ func (l *lexer) quoted(quote rune) error {
 			if i >= len(l.src) {
 				return errors.New("unterminated string")
 			}
-			r, size = utf8.DecodeRuneInString(l.src[i:])
-			b.WriteString(unescape(r))
+			var text string
+			text, size = unescape(l.src[i:])
+			b.WriteString(text)
 		default:
 			b.WriteRune(r)
 		}
@@ -192,8 +195,9 @@ func (l *lexer) templateText() error {
 			if i >= len(l.src) {
 				return errors.New("unterminated template")
 			}
-			r, size = utf8.DecodeRuneInString(l.src[i:])
-			b.WriteString(unescape(r))
+			var text string
+			text, size = unescape(l.src[i:])
+			b.WriteString(text)
 		default:
 			b.WriteRune(r)
 		}
@@ -202,16 +206,48 @@ func (l *lexer) templateText() error {
 	return errors.New("unterminated template")
 }
 
-func unescape(r rune) string {
+// unescape decodes the escape that starts right after a backslash and returns
+// its text with the bytes it used. A malformed \x, \u or \u{} escape keeps the
+// character after the backslash, as any unknown escape does.
+func unescape(s string) (string, int) {
+	r, size := utf8.DecodeRuneInString(s)
 	switch r {
 	case 'n':
-		return "\n"
+		return "\n", size
 	case 't':
-		return "\t"
+		return "\t", size
 	case 'r':
-		return "\r"
+		return "\r", size
+	case 'x':
+		if code, ok := hexValue(s, 1, 2); ok {
+			return string(rune(code)), 3
+		}
+	case 'u':
+		if strings.HasPrefix(s, "u{") {
+			if end := strings.IndexByte(s, '}'); end > 2 {
+				if code, ok := hexValue(s, 2, end-2); ok && code <= unicode.MaxRune {
+					return string(rune(code)), end + 1
+				}
+			}
+		} else if code, ok := hexValue(s, 1, 4); ok {
+			return string(rune(code)), 5
+		}
 	}
-	return string(r)
+	return string(r), size
+}
+
+// hexValue parses the n hex digits of s that start at from.
+func hexValue(s string, from, n int) (uint64, bool) {
+	if from+n > len(s) {
+		return 0, false
+	}
+	for _, c := range []byte(s[from : from+n]) {
+		if !('0' <= c && c <= '9' || 'a' <= c && c <= 'f' || 'A' <= c && c <= 'F') {
+			return 0, false
+		}
+	}
+	code, err := strconv.ParseUint(s[from:from+n], 16, 32)
+	return code, err == nil
 }
 
 func (l *lexer) regexAllowed() bool {
@@ -481,6 +517,14 @@ func siblingKeys(tokens []lexToken, at int) []string {
 			depth--
 			continue
 		}
+		if depth == 0 && isPunct(t, "[") && startsMember(tokens, i, start) {
+			if end := valueEnd(tokens, i+1); end+1 < len(tokens) && isPunct(tokens[end], "]") &&
+				(isPunct(tokens[end+1], ":") || isPunct(tokens[end+1], "(")) {
+				out = append(out, "[computed]")
+				i = end
+				continue
+			}
+		}
 		if isOpen(t) {
 			depth++
 			continue
@@ -525,6 +569,9 @@ func callLiterals(src, name string) ([]string, error) {
 		if t.kind != tokIdent || t.text != name || i+1 >= len(lx.tokens) || !isPunct(lx.tokens[i+1], "(") {
 			continue
 		}
+		if i > 0 && lx.tokens[i-1].kind == tokIdent && lx.tokens[i-1].text == "function" {
+			continue
+		}
 		depth := 0
 		for j := i + 1; j < len(lx.tokens); j++ {
 			if isOpen(lx.tokens[j]) {
@@ -532,6 +579,9 @@ func callLiterals(src, name string) ([]string, error) {
 			} else if isClose(lx.tokens[j]) {
 				depth--
 				if depth == 0 {
+					if j+1 < len(lx.tokens) && isPunct(lx.tokens[j+1], "{") {
+						break
+					}
 					out = append(out, literalsIn(lx.tokens[i+2:j])...)
 					break
 				}

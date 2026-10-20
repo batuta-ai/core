@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Statuses a finding can carry; `batuta doctor` prints the same strings.
@@ -67,14 +68,19 @@ func check(root string, detectors []detector) ([]Finding, error) {
 	if _, err := os.ReadDir(root); err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(filepath.Join(root, ".batuta"))
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
+	batuta := filepath.Join(root, ".batuta")
+	info, err := os.Lstat(batuta)
+	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
-	case err != nil:
+	}
+	if err == nil && info.Mode()&fs.ModeSymlink != 0 {
+		info, err = os.Stat(batuta)
+	}
+	if err != nil {
 		return nil, err
-	case !info.IsDir():
-		return nil, fmt.Errorf("%s is not a directory", filepath.Join(root, ".batuta"))
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("%s is not a directory", batuta)
 	}
 
 	findings := []Finding{}
@@ -101,6 +107,17 @@ func check(root string, detectors []detector) ([]Finding, error) {
 		return a.Key < b.Key
 	})
 	return findings, nil
+}
+
+// hasBatutaSegment reports whether a path, glob or pattern names `.batuta` as
+// a whole segment: backslashes drop out and the rest splits on "/".
+func hasBatutaSegment(s string) bool {
+	for _, seg := range strings.Split(strings.ReplaceAll(s, `\`, ""), "/") {
+		if seg == ".batuta" {
+			return true
+		}
+	}
+	return false
 }
 
 // readPackageJSON returns the parsed file, nil when it is missing or invalid.

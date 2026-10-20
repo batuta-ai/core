@@ -268,3 +268,70 @@ func TestIgnoresNoExec(t *testing.T) {
 		t.Fatal("no non-test .go file checked")
 	}
 }
+
+func TestCheckBatutaSymlink(t *testing.T) {
+	t.Parallel()
+	d := reporting("vitest", Finding{Tool: "vitest", Config: "vitest.config.ts", Status: Missing})
+	t.Run("dangling symlink is an error", func(t *testing.T) {
+		t.Parallel()
+		root := tempDir(t)
+		symlink(t, filepath.Join(root, "absent"), filepath.Join(root, ".batuta"))
+		got, err := check(root, []detector{d})
+		if err == nil {
+			t.Fatalf("check = %v, want an error", got)
+		}
+		if len(got) != 0 {
+			t.Fatalf("check returned findings %v with error %v", got, err)
+		}
+	})
+	t.Run("symlink to a file is an error", func(t *testing.T) {
+		t.Parallel()
+		root := tempDir(t)
+		writeFile(t, root, "real", "x")
+		symlink(t, filepath.Join(root, "real"), filepath.Join(root, ".batuta"))
+		if got, err := check(root, []detector{d}); err == nil {
+			t.Fatalf("check = %v, want an error", got)
+		}
+	})
+	t.Run("symlink to a directory is accepted", func(t *testing.T) {
+		t.Parallel()
+		root := tempDir(t)
+		if err := os.Mkdir(filepath.Join(root, "real"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		symlink(t, filepath.Join(root, "real"), filepath.Join(root, ".batuta"))
+		got, err := check(root, []detector{d})
+		if err != nil {
+			t.Fatalf("check: %v", err)
+		}
+		if len(got) != 1 || got[0].Tool != "vitest" {
+			t.Fatalf("check = %v, want the vitest finding", got)
+		}
+	})
+}
+
+func TestHasBatutaSegment(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in   string
+		want bool
+	}{
+		{".batuta", true},
+		{".batuta/", true},
+		{"**/.batuta/**", true},
+		{"<rootDir>/.batuta/", true},
+		{`\.batuta`, true},
+		{".batuta-old", false},
+		{"**/.batuta-old/**", false},
+		{"x.batuta", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			if got := hasBatutaSegment(tt.in); got != tt.want {
+				t.Fatalf("hasBatutaSegment(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}

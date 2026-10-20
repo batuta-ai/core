@@ -50,3 +50,28 @@ two */"a": 1}`, want: map[string]any{"a": 1.0}},
 		})
 	}
 }
+
+func TestParseJSONCLineEnds(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  any
+	}{
+		{name: "CR ends the comment", input: "{\"a\": 1, // c\r\"b\": 2}", want: map[string]any{"a": 1.0, "b": 2.0}},
+		{name: "CRLF ends the comment", input: "{\"a\": 1, // c\r\n\"b\": 2}", want: map[string]any{"a": 1.0, "b": 2.0}},
+		{name: "LF ends the comment", input: "{\"a\": 1, // c\n\"b\": 2}", want: map[string]any{"a": 1.0, "b": 2.0}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := parseJSONC([]byte(tt.input))
+			if err != nil {
+				t.Fatalf("parseJSONC(%q): %v", tt.input, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parseJSONC(%q) = %#v, want %#v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
