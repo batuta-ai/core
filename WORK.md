@@ -495,6 +495,7 @@
 - [x] Script quoting, segment matching and testDir cleaning for the test runners → claude (sonnet), commit cdc07fd4fbc8 (trail: .batuta/runs/2026-10-20-doctor-tool-ignores-fixes-task-2.md, delivery doctor-tool-ignores-fixes-20261020-151517, plan doctor-tool-ignores-fixes, 2026-10-20)
 - [x] Biome pattern rules and pytest testpaths → claude (sonnet), commit fba0f9a0b601 (trail: .batuta/runs/2026-10-20-doctor-tool-ignores-fixes-task-3.md, delivery doctor-tool-ignores-fixes-20261020-151517, plan doctor-tool-ignores-fixes, 2026-10-20)
 - [x] TypeScript files fixtures, doctor doc and done plan rules → claude (sonnet), commit 47970763224b (trail: .batuta/runs/2026-10-20-doctor-tool-ignores-fixes-task-4.md, delivery doctor-tool-ignores-fixes-20261020-151517, plan doctor-tool-ignores-fixes, 2026-10-20)
+- [x] Computed keys with commas, typed method definitions, the unicode escape test and the Biome rule sentence → claude (sonnet), commit 795fa858c695 (trail: .batuta/runs/2026-10-20-doctor-tool-ignores-fixes-2-task-1.md, delivery doctor-tool-ignores-fixes-2-20261020-183940, plan doctor-tool-ignores-fixes-2, 2026-10-20)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)

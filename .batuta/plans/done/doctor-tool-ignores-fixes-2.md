@@ -2,10 +2,10 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Fix the 4 findings of the automatic review of delivery `doctor-tool-ignores-fixes-20261020-151517` (review `27235ead550d`, verdict REWORK): computed keys holding a comma, TypeScript methods with a return type, the unicode escape test that uses no escape, and the Biome rule sentence of the done plan.
-**Created:** 2026-10-20 · **Status:** approved
+**Created:** 2026-10-20 · **Status:** done
 
 ## Tasks
-- [ ] 1. Computed keys with commas, typed method definitions, the unicode escape test and the Biome rule sentence — backend/medium
+- [x] 1. Computed keys with commas, typed method definitions, the unicode escape test and the Biome rule sentence — backend/medium
       Scope: ignores/lexer.go, ignores/lexer_test.go, .batuta/plans/done/doctor-tool-ignores.md
       Accept: `keyLiterals` counts a computed member whose expression holds a top-level comma, such as `[0, 'files']: x`, as the sibling key `[computed]`, and the existing computed cases keep passing → go test -run '^TestKeyLiteralsComputedSibling$' ./ignores/; `callLiterals` skips a TypeScript method definition with a return type, such as `class A { globalIgnores(a = '.batuta'): string[] { return [] } }` and `x = { async globalIgnores(): Promise<string[]> { return [] } }`, and still reads the call in `x = c ? globalIgnores(['a']) : {}` → go test -run '^TestCallLiteralsSkipsDeclarations$' ./ignores/; the "unicode four digits" case of `TestStringLiteralEscapes` feeds the six characters backslash, `u`, `0`, `0`, `2`, `e` before `batuta` and expects `.batuta` → go test -run '^TestStringLiteralEscapes$' ./ignores/ && grep -q 'u002ebatuta' ignores/lexer_test.go; the done plan's Biome v2 sentence states the implemented rule and names `src/.batuta` as a pattern that does not match → grep -q 'src/.batuta' .batuta/plans/done/doctor-tool-ignores.md; the package tests pass → go test ./ignores/ ./cmd/batuta/
 
