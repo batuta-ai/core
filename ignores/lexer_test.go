@@ -343,7 +343,7 @@ func TestStringLiteralEscapes(t *testing.T) {
 	}{
 		{name: "plain", input: `'.batuta'`, want: []string{".batuta"}},
 		{name: "hex", input: `'\x2ebatuta'`, want: []string{".batuta"}},
-		{name: "unicode four digits", input: `'.batuta'`, want: []string{".batuta"}},
+		{name: "unicode four digits", input: `'\u002ebatuta'`, want: []string{".batuta"}},
 		{name: "unicode braces", input: `'\u{2e}batuta'`, want: []string{".batuta"}},
 		{name: "unicode braces astral", input: `'\u{1F600}'`, want: []string{"\U0001F600"}},
 		{name: "in template", input: "`\\x2ebatuta`", want: []string{".batuta"}},
@@ -390,6 +390,11 @@ func TestKeyLiteralsComputedSibling(t *testing.T) {
 			want:  []keyOccurrence{{Literals: []string{"a"}, Siblings: []string{"[computed]"}}},
 		},
 		{
+			name:  "computed key with a comma",
+			input: `{ [0, 'files']: x, ignores: ['a'] }`,
+			want:  []keyOccurrence{{Literals: []string{"a"}, Siblings: []string{"[computed]"}}},
+		},
+		{
 			name:  "array value is not a key",
 			input: `{ list: [1, 2], ignores: ['a'] }`,
 			want:  []keyOccurrence{{Literals: []string{"a"}, Siblings: []string{"list"}}},
@@ -419,6 +424,9 @@ func TestCallLiteralsSkipsDeclarations(t *testing.T) {
 		{name: "function declaration", input: `function globalIgnores(a = '.batuta') {}`},
 		{name: "method definition", input: `class A { globalIgnores(a = '.batuta') { return 1 } }`},
 		{name: "object method", input: `x = { globalIgnores(a = '.batuta') {} }`},
+		{name: "class method with return type", input: `class A { globalIgnores(a = '.batuta'): string[] { return [] } }`},
+		{name: "async object method with return type", input: `x = { async globalIgnores(): Promise<string[]> { return [] } }`},
+		{name: "call in ternary kept", input: `x = c ? globalIgnores(['a']) : {}`, want: []string{"a"}},
 		{name: "call after declaration", input: `function globalIgnores(a) {} globalIgnores(['b'])`, want: []string{"b"}},
 		{name: "call kept", input: `x = globalIgnores(['a'])`, want: []string{"a"}},
 	}

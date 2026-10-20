@@ -518,7 +518,7 @@ func siblingKeys(tokens []lexToken, at int) []string {
 			continue
 		}
 		if depth == 0 && isPunct(t, "[") && startsMember(tokens, i, start) {
-			if end := valueEnd(tokens, i+1); end+1 < len(tokens) && isPunct(tokens[end], "]") &&
+			if end := closingBracket(tokens, i+1); end+1 < len(tokens) && isPunct(tokens[end], "]") &&
 				(isPunct(tokens[end+1], ":") || isPunct(tokens[end+1], "(")) {
 				out = append(out, "[computed]")
 				i = end
@@ -541,6 +541,24 @@ func siblingKeys(tokens []lexToken, at int) []string {
 		}
 	}
 	return out
+}
+
+// closingBracket returns the index of the "]" that closes the "[" just before
+// from, counting nested brackets and ignoring commas, or len(tokens).
+func closingBracket(tokens []lexToken, from int) int {
+	depth := 0
+	for i := from; i < len(tokens); i++ {
+		switch {
+		case isOpen(tokens[i]):
+			depth++
+		case isClose(tokens[i]):
+			if depth == 0 {
+				return i
+			}
+			depth--
+		}
+	}
+	return len(tokens)
 }
 
 func startsMember(tokens []lexToken, i, start int) bool {
@@ -579,7 +597,7 @@ func callLiterals(src, name string) ([]string, error) {
 			} else if isClose(lx.tokens[j]) {
 				depth--
 				if depth == 0 {
-					if j+1 < len(lx.tokens) && isPunct(lx.tokens[j+1], "{") {
+					if isMethodDefinition(lx.tokens, i, j) {
 						break
 					}
 					out = append(out, literalsIn(lx.tokens[i+2:j])...)
@@ -589,4 +607,56 @@ func callLiterals(src, name string) ([]string, error) {
 		}
 	}
 	return out, nil
+}
+
+var memberModifiers = map[string]bool{
+	"async": true, "static": true, "public": true, "private": true,
+	"protected": true, "readonly": true, "get": true, "set": true,
+}
+
+// isMethodDefinition reports whether the name at tokens[name] with its
+// parameters closing at tokens[closeAt] defines a method rather than a call: a
+// body "{" follows, or a ":" and a return type up to a "{" when the name starts
+// a member.
+func isMethodDefinition(tokens []lexToken, name, closeAt int) bool {
+	if closeAt+1 >= len(tokens) {
+		return false
+	}
+	if isPunct(tokens[closeAt+1], "{") {
+		return true
+	}
+	if !isPunct(tokens[closeAt+1], ":") || !startsMemberName(tokens, name) {
+		return false
+	}
+	depth := 0
+	for i := closeAt + 2; i < len(tokens); i++ {
+		t := tokens[i]
+		switch {
+		case depth == 0 && isPunct(t, "{"):
+			return true
+		case isOpen(t):
+			depth++
+		case isClose(t):
+			if depth == 0 {
+				return false
+			}
+			depth--
+		case depth == 0 && (isPunct(t, ";") || isPunct(t, ",") || isPunct(t, "=")):
+			return false
+		}
+	}
+	return false
+}
+
+// startsMemberName reports whether the token before tokens[i] begins a class
+// or object member: a separator or a member modifier.
+func startsMemberName(tokens []lexToken, i int) bool {
+	if i == 0 {
+		return false
+	}
+	prev := tokens[i-1]
+	if prev.kind == tokIdent {
+		return memberModifiers[prev.text]
+	}
+	return isPunct(prev, "{") || isPunct(prev, "}") || isPunct(prev, ";") || isPunct(prev, ",")
 }
