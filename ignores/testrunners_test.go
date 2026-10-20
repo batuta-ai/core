@@ -395,3 +395,81 @@ func TestCheckTestRunnersRootOnly(t *testing.T) {
 		t.Fatalf("findings = %+v, want %+v", got, want)
 	}
 }
+
+func TestCheckTestRunnersSegmentMatch(t *testing.T) {
+	t.Parallel()
+	const jestPatterns = "testPathIgnorePatterns: ['<rootDir>/.batuta-old/'], modulePathIgnorePatterns: ['<rootDir>/.batuta-old/']"
+	tests := []struct {
+		name   string
+		files  map[string]string
+		tool   string
+		config string
+		key    string
+	}{
+		{
+			name:   "vitest exclude",
+			files:  map[string]string{"vitest.config.ts": "export default { test: { exclude: ['**/.batuta-old/**'] } }\n"},
+			tool:   "vitest",
+			config: "vitest.config.ts",
+		},
+		{
+			name:   "playwright testIgnore",
+			files:  map[string]string{"playwright.config.ts": "export default { testIgnore: ['**/.batuta-old/**'] }\n"},
+			tool:   "playwright",
+			config: "playwright.config.ts",
+		},
+		{
+			name:   "jest config file",
+			files:  map[string]string{"jest.config.js": "module.exports = { " + jestPatterns + " }\n"},
+			tool:   "jest",
+			config: "jest.config.js",
+		},
+		{
+			name: "jest key of package.json",
+			files: map[string]string{"package.json": `{"jest": {` +
+				`"testPathIgnorePatterns": ["<rootDir>/.batuta-old/"], ` +
+				`"modulePathIgnorePatterns": ["<rootDir>/.batuta-old/"]}}`},
+			tool:   "jest",
+			config: "package.json",
+			key:    "jest",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := runnerFindings(t, tt.files)
+			if len(got) != 1 || got[0].Tool != tt.tool || got[0].Config != tt.config || got[0].Key != tt.key {
+				t.Fatalf("findings = %+v, want one %s finding on %s", got, tt.tool, tt.config)
+			}
+			if got[0].Status == Ignored {
+				t.Fatalf("status = %q for a pattern that only names .batuta-old", got[0].Status)
+			}
+		})
+	}
+}
+
+func TestCheckPlaywrightTestDirClean(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		testDir string
+		status  string
+		hint    string
+	}{
+		{name: "dot segments", testDir: `'././.batuta'`, status: Missing, hint: wantPlaywrightNamed},
+		{name: "walks into batuta", testDir: `'./tests/../.batuta'`, status: Missing, hint: wantPlaywrightNamed},
+		{name: "walks back to tests", testDir: `'./tests/../tests'`, status: NotNeeded},
+		{name: "walks out of the root", testDir: `'./tests/../../x'`, status: Missing, hint: wantPlaywrightMissing},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			src := "export default { testDir: " + tt.testDir + " }\n"
+			got := runnerFindings(t, map[string]string{"playwright.config.ts": src})
+			want := []Finding{{Tool: "playwright", Config: "playwright.config.ts", Status: tt.status, Hint: tt.hint}}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("findings = %+v, want %+v", got, want)
+			}
+		})
+	}
+}

@@ -43,7 +43,7 @@ func configFiles(root, base string, exts []string) []string {
 
 func hasBatuta(literals []string) bool {
 	for _, s := range literals {
-		if strings.Contains(s, ".batuta") {
+		if hasBatutaSegment(s) {
 			return true
 		}
 	}
@@ -233,7 +233,7 @@ func arrayHasBatuta(value any) bool {
 func valueHasBatuta(value any) bool {
 	switch v := value.(type) {
 	case string:
-		return strings.Contains(v, ".batuta")
+		return hasBatutaSegment(v)
 	case []any:
 		for _, e := range v {
 			if valueHasBatuta(e) {
@@ -269,7 +269,7 @@ func playwrightVerdict(src string) (string, string, error) {
 	if found && !literal {
 		return Unknown, playwrightComputedHint, nil
 	}
-	if first, ok := namedDirectory(value); found && ok {
+	if first, ok := namedDirectory(path.Clean(filepath.ToSlash(value))); found && ok {
 		if first == ".batuta" {
 			return Missing, playwrightNamedHint, nil
 		}

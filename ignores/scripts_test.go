@@ -2,6 +2,7 @@ package ignores
 
 import (
 	"fmt"
+	"reflect"
 	"testing"
 )
 
@@ -65,4 +66,27 @@ func TestScriptTools(t *testing.T) {
 			t.Fatalf("scriptTools(nil) = %v, want none", got)
 		}
 	})
+}
+
+func TestScriptToolsEscapedQuotes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		script string
+		want   map[string]bool
+	}{
+		{name: "escaped quote stays in the word", script: `echo "x \" eslint"`, want: map[string]bool{}},
+		{name: "escaped backslash closes the word", script: `echo "x \\" && eslint .`, want: map[string]bool{"eslint": true}},
+		{name: "tool after an escaped quote word", script: `echo "x \"" && eslint .`, want: map[string]bool{"eslint": true}},
+		{name: "single quotes keep the backslash", script: `echo 'x \' && eslint .`, want: map[string]bool{"eslint": true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			pkg := &packageJSON{Scripts: map[string]string{"s": tt.script}}
+			if got := scriptTools(pkg); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("scriptTools(%q) = %v, want %v", tt.script, got, tt.want)
+			}
+		})
+	}
 }

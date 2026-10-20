@@ -29,6 +29,22 @@ func scriptTools(pkg *packageJSON) map[string]bool {
 	return found
 }
 
+// quotedEnd returns the index of the quote that closes the one at script[open],
+// or len(script) when none does. In double quotes a backslash escapes the next
+// character; in single quotes it is literal.
+func quotedEnd(script string, open int) int {
+	quote := script[open]
+	for i := open + 1; i < len(script); i++ {
+		switch {
+		case quote == '"' && script[i] == '\\':
+			i++
+		case script[i] == quote:
+			return i
+		}
+	}
+	return len(script)
+}
+
 // splitCommands splits a script on `&&`, `||` and `;` into commands, and each
 // command into words. A quoted argument becomes an empty word, so it never
 // matches a tool name.
@@ -55,12 +71,7 @@ func splitCommands(script string) [][]string {
 		case c == '\'' || c == '"':
 			flushWord()
 			words = append(words, "")
-			end := strings.IndexByte(script[i+1:], c)
-			if end < 0 {
-				i = len(script)
-			} else {
-				i += end + 1
-			}
+			i = quotedEnd(script, i)
 		case c == ';':
 			flushCommand()
 		case (c == '&' || c == '|') && i+1 < len(script) && script[i+1] == c:
