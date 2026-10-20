@@ -13,7 +13,7 @@ The output is human text, or JSON with `--json`. `doctor` reports only. It never
 
 Orchestrator state lives in `.batuta/`: run trails, review snapshots and journals stay there whatever `Worktree-home` says. A test runner, linter, formatter or type checker that scans it can fail the project's gate on orchestrator files. When the workspace root has a `.batuta/` directory, `doctor` checks each tool it finds and says whether the tool keeps out of it. The check does not read the profile, and it does nothing without a `.batuta/` directory.
 
-The tools are `vitest`, `jest`, `playwright`, `eslint`, `prettier`, `biome`, `typescript` and `pytest`. `doctor` finds one when the workspace root configures it or the root `package.json` scripts run it.
+The tools are `vitest`, `jest`, `playwright`, `eslint`, `prettier`, `biome`, `typescript` and `pytest`. `doctor` finds `vitest`, `jest`, `playwright`, `eslint`, `prettier` and `biome` when the workspace root configures them or the root `package.json` scripts run them. TypeScript and pytest are found only from their root configs.
 
 Each finding has one status. The text and the JSON use the same strings:
 

@@ -384,3 +384,26 @@ func TestCheckTypeScriptRootOnly(t *testing.T) {
 		t.Fatalf("got %+v, want %+v", got, want)
 	}
 }
+
+func TestCheckTypeScriptExtendsFiles(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		local string
+		base  string
+		want  []Finding
+	}{
+		{"base files reach .batuta from configs", `{ "extends": "./configs/base.json" }`, `{ "files": ["../.batuta/x.ts"] }`, tsWant(Missing, wantTSFiles)},
+		{"base files stay inside configs", `{ "extends": "./configs/base.json" }`, `{ "files": [".batuta/x.ts"] }`, tsWant(NotNeeded, "")},
+		{"local files override base files", `{ "extends": "./configs/base.json", "files": ["src/a.ts"] }`, `{ "files": ["../.batuta/x.ts"] }`, tsWant(NotNeeded, "")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := tsFindings(t, map[string]string{"tsconfig.json": tt.local, "configs/base.json": tt.base})
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("got %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
