@@ -57,13 +57,13 @@ func checkPytest(root string, _ *packageJSON) ([]Finding, error) {
 		if settings == nil {
 			continue
 		}
-		f.Status, f.Hint = pytestVerdict(settings)
+		f.Status, f.Hint = pytestVerdict(root, settings)
 		return []Finding{f}, nil
 	}
 	return nil, nil
 }
 
-func pytestVerdict(s *pytestSettings) (string, string) {
+func pytestVerdict(root string, s *pytestSettings) (string, string) {
 	if !s.hasNorecursedirs {
 		return NotNeeded, ""
 	}
@@ -72,19 +72,27 @@ func pytestVerdict(s *pytestSettings) (string, string) {
 			return Ignored, ""
 		}
 	}
-	if len(s.testpaths) > 0 && allNamedDirectories(s.testpaths) {
+	if testpathsAvoidBatuta(root, s.testpaths) {
 		return NotNeeded, ""
 	}
 	return Missing, pytestMissingHint
 }
 
-func allNamedDirectories(dirs []string) bool {
+// testpathsAvoidBatuta holds when every entry is a named directory outside
+// .batuta and one of them exists: pytest falls back to the root when no entry
+// matches.
+func testpathsAvoidBatuta(root string, dirs []string) bool {
+	exists := false
 	for _, d := range dirs {
-		if _, ok := namedDirectory(d); !ok {
+		first, ok := namedDirectory(d)
+		if !ok || first == ".batuta" {
 			return false
 		}
+		if info, err := os.Stat(filepath.Join(root, strings.TrimPrefix(d, "./"))); err == nil && info.IsDir() {
+			exists = true
+		}
 	}
-	return true
+	return exists
 }
 
 // readPytestTOML reads the [pytest] table; a file without it is still the

@@ -105,15 +105,25 @@ func biomeIncludesIgnore(patterns []string) bool {
 
 func biomePatternMatches(p string) bool {
 	first, _, _ := strings.Cut(p, "/")
-	return p == "**" || p == "**/*" || first == ".batuta" || strings.HasPrefix(p, "**/.batuta")
+	return p == "**" || p == "**/*" || first == ".batuta" || p == "**/.batuta" || strings.HasPrefix(p, "**/.batuta/")
 }
 
+// biomeIgnoreNamesBatuta reports whether a Biome v1 files.ignore entry ignores
+// the root .batuta: only the bare name or its "**/" form, with an optional
+// trailing slash or recursive suffix.
 func biomeIgnoreNamesBatuta(entries []string) bool {
 	for _, e := range entries {
-		for _, segment := range strings.Split(e, "/") {
-			if segment == ".batuta" {
-				return true
-			}
+		e = strings.TrimPrefix(e, "./")
+		switch {
+		case strings.HasSuffix(e, "/**/*"):
+			e = strings.TrimSuffix(e, "/**/*")
+		case strings.HasSuffix(e, "/**"):
+			e = strings.TrimSuffix(e, "/**")
+		default:
+			e = strings.TrimSuffix(e, "/")
+		}
+		if e == ".batuta" || e == "**/.batuta" {
+			return true
 		}
 	}
 	return false

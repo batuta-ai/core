@@ -57,7 +57,7 @@ func TestCheckPytest(t *testing.T) {
 		},
 		{
 			name:  "no match and named testpaths",
-			files: map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = tests src/unit\n"},
+			files: map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = tests src/unit\n", "tests/test_a.py": ""},
 			want:  pytestFinding("pytest.ini", NotNeeded, ""),
 		},
 		{
@@ -97,12 +97,12 @@ func TestCheckPytest(t *testing.T) {
 		},
 		{
 			name:  "pytest.toml with testpaths as a list",
-			files: map[string]string{"pytest.toml": "[pytest]\nnorecursedirs = [\"build\"]\ntestpaths = [\"tests\"]\n"},
+			files: map[string]string{"pytest.toml": "[pytest]\nnorecursedirs = [\"build\"]\ntestpaths = [\"tests\"]\n", "tests/test_a.py": ""},
 			want:  pytestFinding("pytest.toml", NotNeeded, ""),
 		},
 		{
 			name:  "pytest.toml with testpaths as a string",
-			files: map[string]string{"pytest.toml": "[pytest]\nnorecursedirs = \"build\"\ntestpaths = \"tests unit\"\n"},
+			files: map[string]string{"pytest.toml": "[pytest]\nnorecursedirs = \"build\"\ntestpaths = \"tests unit\"\n", "unit/test_a.py": ""},
 			want:  pytestFinding("pytest.toml", NotNeeded, ""),
 		},
 		{
@@ -294,5 +294,31 @@ func TestCheckPytestInvalid(t *testing.T) {
 	got := pytestFindings(t, map[string]string{"pytest.toml": "[pytest\n"})
 	if len(got) != 1 || got[0].Tool != "pytest" || got[0].Config != "pytest.toml" || got[0].Status != Unknown || got[0].Hint == "" {
 		t.Fatalf("got %+v, want one unknown finding for pytest.toml carrying the parse error", got)
+	}
+}
+
+func TestCheckPytestTestpaths(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		files map[string]string
+		want  string
+	}{
+		{"batuta entry", map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = .batuta\n"}, Missing},
+		{"dot slash batuta entry", map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = ./.batuta/x\n", "tests/test_a.py": ""}, Missing},
+		{"batuta beside an existing directory", map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = tests .batuta\n", "tests/test_a.py": ""}, Missing},
+		{"directory that does not exist", map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = tests\n"}, Missing},
+		{"entry that is a file", map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = tests\n", "tests": ""}, Missing},
+		{"directory that exists", map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = tests\n", "tests/test_a.py": ""}, NotNeeded},
+		{"one of two exists", map[string]string{"pytest.ini": "[pytest]\nnorecursedirs = build\ntestpaths = tests missing\n", "tests/test_a.py": ""}, NotNeeded},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := pytestFindings(t, tt.files)
+			if len(got) != 1 || got[0].Status != tt.want {
+				t.Fatalf("got %+v, want one %s finding", got, tt.want)
+			}
+		})
 	}
 }

@@ -323,3 +323,59 @@ func TestCheckBiomeRootOnly(t *testing.T) {
 		t.Fatalf("findings = %+v, want %+v", got, want)
 	}
 }
+
+func TestCheckBiomeSegmentMatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		includes string
+		want     string
+	}{
+		{"look-alike name", `["**", "!**/.batuta-old"]`, Missing},
+		{"look-alike prefix", `["**", "!.batuta-old/**"]`, Missing},
+		{"look-alike with a suffix path", `["**", "!**/.batutax/y"]`, Missing},
+		{"recursive directory", `["**", "!**/.batuta/**"]`, Ignored},
+		{"recursive name", `["**", "!**/.batuta"]`, Ignored},
+		{"rooted name", `["**", "!.batuta"]`, Ignored},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := biomeFindings(t, map[string]string{
+				"biome.json": `{ ` + biomeSchema("2.0.0") + `, "files": { "includes": ` + tt.includes + ` } }`,
+			})
+			if len(got) != 1 || got[0].Status != tt.want {
+				t.Fatalf("got %+v, want one %s finding", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCheckBiomeV1RootMatch(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		ignore string
+		want   string
+	}{
+		{"nested path", `["src/.batuta"]`, Missing},
+		{"look-alike name", `["**/.batuta-old"]`, Missing},
+		{"nested recursive path", `["src/.batuta/**"]`, Missing},
+		{"bare name", `[".batuta"]`, Ignored},
+		{"dot slash recursive", `["./.batuta/**"]`, Ignored},
+		{"recursive name", `["**/.batuta"]`, Ignored},
+		{"trailing slash", `[".batuta/"]`, Ignored},
+		{"recursive suffix with a wildcard", `[".batuta/**/*"]`, Ignored},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := biomeFindings(t, map[string]string{
+				"biome.json": `{ ` + biomeSchema("1.9.4") + `, "files": { "ignore": ` + tt.ignore + ` } }`,
+			})
+			if len(got) != 1 || got[0].Status != tt.want {
+				t.Fatalf("got %+v, want one %s finding", got, tt.want)
+			}
+		})
+	}
+}
