@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.1.0-beta.57](https://github.com/batuta-ai/core/compare/v1.1.0-beta.56...v1.1.0-beta.57) (2026-10-21)
+
+
+### Features
+
+* biome pattern rules and pytest testpaths ([fba0f9a](https://github.com/batuta-ai/core/commit/fba0f9a0b601dd23d59a4e1a314761f4fdf7938b))
+* computed keys with commas, typed method definitions, the unicode ([795fa85](https://github.com/batuta-ai/core/commit/795fa858c695ab8a72c488e8db42926c65abef22))
+* doctor reports the tool ignores ([4edf523](https://github.com/batuta-ai/core/commit/4edf52326941562357145beafdaa0608993f531e))
+* doctor reports the tool ignores ([f63da12](https://github.com/batuta-ai/core/commit/f63da12b02dd8098e80a1f27fe1efdc6f7e9978d))
+* ignores package checks Biome ([358b4ac](https://github.com/batuta-ai/core/commit/358b4ac4d48b5cd291c42b2ec92e3b52edb5f9f0))
+* ignores package checks ESLint and Prettier ([931741f](https://github.com/batuta-ai/core/commit/931741fcd8260f9ec39fd7c6110bfbdf259f9175))
+* ignores package checks pytest ([1badb66](https://github.com/batuta-ai/core/commit/1badb66dd0011869f11bbc5043f35b1cac767138))
+* ignores package checks TypeScript ([4576942](https://github.com/batuta-ai/core/commit/45769427d2af9c7cfaca7c66c27a96c19b660480))
+* ignores package checks Vitest, Jest and Playwright ([ba26885](https://github.com/batuta-ai/core/commit/ba26885f02a8f4d33df0f2856e0cb8cebbabe98c))
+* ignores package skeleton, shared package.json and JSONC parser ([ed2623c](https://github.com/batuta-ai/core/commit/ed2623c52be8ae91165bad350b51cdaaf3f28786))
+* script quoting, segment matching and testDir cleaning for the test ([cdc07fd](https://github.com/batuta-ai/core/commit/cdc07fd4fbc89c550e71fb6fba84043cc97a5b8f))
+* shared helpers: dangling `.batuta`, CR line ends, lexer fixes and a ([5fb6d7c](https://github.com/batuta-ai/core/commit/5fb6d7cfd70033fbee11ea38a02d17e6fa8882f8))
+* source lexer for JavaScript and TypeScript configs ([cadce45](https://github.com/batuta-ai/core/commit/cadce459dacdbd4efd13ed402486c735d36df428))
+* typeScript files fixtures, doctor doc and done plan rules ([4797076](https://github.com/batuta-ai/core/commit/47970763224bc5c6f9f132fc715be211b9199e1d))
+
 ## [1.1.0-beta.56](https://github.com/batuta-ai/core/compare/v1.1.0-beta.55...v1.1.0-beta.56) (2026-10-16)
 
 
