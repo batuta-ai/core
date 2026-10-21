@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/batuta-ai/core/executor"
+	"github.com/batuta-ai/core/ignores"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/loop"
 	"github.com/batuta-ai/core/publication"
@@ -1113,6 +1114,131 @@ func tempDir(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+const vitestMissingHint = "add '**/.batuta/**' to test.exclude, keeping the defaults: exclude: [...configDefaults.exclude, '**/.batuta/**'] (configDefaults from vitest/config)"
+
+// doctorWorkspace builds a workspace with a vitest.config.ts and, when
+// withBatuta, a .batuta/ directory. PATH is emptied so no executor is probed.
+func doctorWorkspace(t *testing.T, withBatuta bool) string {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+	root := tempDir(t)
+	if withBatuta {
+		if err := os.MkdirAll(filepath.Join(root, ".batuta"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "vitest.config.ts"), []byte("export default {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func runDoctorOutput(t *testing.T, root string, extra ...string) string {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	args := append([]string{"doctor", "--workspace", root}, extra...)
+	if err := run(args, &stdout, &stderr); err != nil {
+		t.Fatalf("doctor: %v\nstderr: %s", err, stderr.String())
+	}
+	return stdout.String()
+}
+
+func TestDoctorJSONToolIgnores(t *testing.T) {
+	root := doctorWorkspace(t, true)
+	var report struct {
+		ToolIgnores []struct {
+			Tool, Config, Status, Hint string
+		} `json:"tool_ignores"`
+		ToolIgnoresError string `json:"tool_ignores_error"`
+	}
+	if err := json.Unmarshal([]byte(runDoctorOutput(t, root, "--json")), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.ToolIgnoresError != "" {
+		t.Fatalf("tool_ignores_error = %q", report.ToolIgnoresError)
+	}
+	if len(report.ToolIgnores) != 1 {
+		t.Fatalf("tool_ignores = %+v, want one vitest entry", report.ToolIgnores)
+	}
+	got := report.ToolIgnores[0]
+	if got.Tool != "vitest" || got.Config != "vitest.config.ts" || got.Status != "missing" || got.Hint != vitestMissingHint {
+		t.Fatalf("tool_ignores[0] = %+v", got)
+	}
+}
+
+func TestDoctorPrintsToolIgnores(t *testing.T) {
+	root := doctorWorkspace(t, true)
+	output := runDoctorOutput(t, root)
+	line := "tools       vitest vitest.config.ts missing — " + vitestMissingHint + "\n"
+	skills := strings.Index(output, "skills      ")
+	tools := strings.Index(output, line)
+	table := strings.Index(output, "executor ")
+	if skills < 0 || tools < skills || table < tools {
+		t.Fatalf("want skills line, then %q, then the executor table:\n%s", line, output)
+	}
+}
+
+func TestDoctorPrintsToolIgnoreKey(t *testing.T) {
+	t.Parallel()
+	var output bytes.Buffer
+	printDoctor(&output, doctorReport{ToolIgnores: []ignores.Finding{
+		{Tool: "jest", Config: "package.json", Key: "jest", Status: ignores.Ignored},
+		{Tool: "pytest", Config: "pytest.ini", Status: ignores.Unknown, Hint: "boom"},
+	}})
+	for _, want := range []string{"tools       jest package.json (jest) ignored\n", "tools       pytest pytest.ini unknown — boom\n"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("printDoctor() = %q, want %q", output.String(), want)
+		}
+	}
+}
+
+func TestDoctorNoBatutaDir(t *testing.T) {
+	root := doctorWorkspace(t, false)
+	if output := runDoctorOutput(t, root); strings.Contains(output, "tools  ") {
+		t.Fatalf("text output has a tools line:\n%s", output)
+	}
+	if output := runDoctorOutput(t, root, "--json"); !strings.Contains(output, `"tool_ignores": []`) {
+		t.Fatalf("json output lacks an empty tool_ignores array:\n%s", output)
+	}
+}
+
+func TestDoctorToolIgnoresError(t *testing.T) {
+	root := doctorWorkspace(t, true)
+	previous := checkToolIgnores
+	t.Cleanup(func() { checkToolIgnores = previous })
+	checkToolIgnores = func(string) ([]ignores.Finding, error) { return nil, errors.New("disk on fire") }
+
+	if output := runDoctorOutput(t, root); !strings.Contains(output, "tools       check failed: disk on fire\n") || !strings.Contains(output, "executor ") {
+		t.Fatalf("text output:\n%s", output)
+	}
+	output := runDoctorOutput(t, root, "--json")
+	if !strings.Contains(output, `"tool_ignores_error": "disk on fire"`) || !strings.Contains(output, `"tool_ignores": []`) {
+		t.Fatalf("json output:\n%s", output)
+	}
+}
+
+func TestDoctorHelpToolIgnores(t *testing.T) {
+	t.Parallel()
+	if !strings.Contains(usage, "tool ignores") {
+		t.Fatal("usage does not mention tool ignores")
+	}
+}
+
+func TestDoctorDoc(t *testing.T) {
+	t.Parallel()
+	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "doctor.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := string(data)
+	wants := append([]string{"## Tool ignores", "ignored", "not_needed", "missing", "unknown", "never edits", "/batuta-init", "shared preset", "package extends", "lexer"}, ignores.Tools...)
+	for _, want := range wants {
+		if !strings.Contains(doc, want) {
+			t.Errorf("docs/doctor.md is missing %q", want)
+		}
+	}
 }
 
 func watchDelivery(t *testing.T, root, delivery string) (*journal.Store, json.RawMessage) {

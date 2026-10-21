@@ -8,6 +8,8 @@ Os hosts usam o binário deste módulo em vez de reimplementar essas regras.
 
 ## Uso do binário
 
+`batuta doctor` também informa se cada ferramenta do projeto ignora `.batuta/`; veja [docs/doctor.md](docs/doctor.md).
+
 ```text
 batuta loop --dry-run [<plano>]        mostra ondas e executores sem executar
 batuta dispatch --brief-file <arquivo> --executor <id> --model <id> --cwd <worktree>
