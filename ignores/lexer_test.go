@@ -425,7 +425,7 @@ func TestCallLiteralsSkipsDeclarations(t *testing.T) {
 		{name: "method definition", input: `class A { globalIgnores(a = '.batuta') { return 1 } }`},
 		{name: "object method", input: `x = { globalIgnores(a = '.batuta') {} }`},
 		{name: "class method with return type", input: `class A { globalIgnores(a = '.batuta'): string[] { return [] } }`},
-		{name: "async object method with return type", input: `x = { async globalIgnores(): Promise<string[]> { return [] } }`},
+		{name: "async object method with return type", input: `x = { async globalIgnores(a = '.batuta'): Promise<string[]> { return [] } }`},
 		{name: "call in ternary kept", input: `x = c ? globalIgnores(['a']) : {}`, want: []string{"a"}},
 		{name: "call after declaration", input: `function globalIgnores(a) {} globalIgnores(['b'])`, want: []string{"b"}},
 		{name: "call kept", input: `x = globalIgnores(['a'])`, want: []string{"a"}},
