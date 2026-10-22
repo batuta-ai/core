@@ -1,5 +1,13 @@
 # WORK — core
 
+## Current status — 2026-10-22: doctor tool ignores shipped, beta.57
+- [x] `batuta doctor` reports which project tools would scan `.batuta/` (Vitest, Jest, Playwright, ESLint, Prettier, Biome, TypeScript, pytest), with a status and a hint each, in text and in `--json`; detection only (Tempo retro 4.4, last part). Plan `doctor-tool-ignores`, judged by `batuta council` over four rounds before approval, delivered by the loop in 8 tasks (delivery `doctor-tool-ignores-20261018-151835`).
+- [x] Three review rounds: `3210e9c9a9a2` REWORK with 14 findings (plan `doctor-tool-ignores-fixes`, 4 tasks), `27235ead550d` REWORK with 4 findings (plan `doctor-tool-ignores-fixes-2`, 1 task), `d3d8e501599c` FIX_BEFORE_SHIP with 1 test finding (fixed in `9c007a0`). No supervision judgment was recorded.
+- [x] core#176 merged, release beta.57 (core#177). Host batuta#127 pins beta.57 → v0.7.7.
+- [x] Process cleanup inside removed worktrees (Tempo retro 4.4) shipped earlier in core#174, beta.56, host v0.7.6.
+- [ ] Seen on the way: after `batuta loop --resume` of a `canceled` delivery, `batuta loop --dashboard` kept showing the delivery as `canceled` while task 8 ran. No issue filed yet. `TestLoopStopsWorktreeProcesses` (loop) failed once with an input/output error and passed on a rerun.
+- [ ] Next, in order: the rest of the Tempo backlog (grants, skills items including the TypeScript and Biome rows of the skills `tool-ignores.md` reference, `trail --metrics`); `GOOS=windows go vet` fails on `executor/capability_test.go` (`tempDir` undefined).
+
 ## Current status — 2026-10-13: loop --recover and --reconcile on branch feat/loop-recover, core#168
 - [x] core#165 (#161: loop briefs carry the profile's `## Conventions`) merged, beta.52. Host batuta#111 pins beta.52 → v0.7.1.
 - [x] skills#75 (`check.sh`) fixed by skills#76 → v0.15.1. Host batuta#113 vendors skills v0.15.1 → v0.7.2. This machine still runs core beta.51 and plugin 0.7.0.
