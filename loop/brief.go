@@ -25,6 +25,15 @@ type BriefInput struct {
 	Answer      string            // the human's answer
 	Lane        string            // domain/complexity for the sweep rule
 	Grant       routing.TaskGrant // the task's standing grant, empty when none
+	GrantReply  *GrantReply       // the question the grant answers, nil when none
+}
+
+// GrantReply is a question the standing grant already covers, with what the
+// grant covers.
+type GrantReply struct {
+	Question   string
+	Paths      []string
+	Operations []string
 }
 
 const methodLine = "Work test-first from the acceptance criteria. Investigate root cause before fixing a bug; never silence a signal (cast, suppression, empty catch, sleep) instead of fixing its source — if you must, mark `// WORKAROUND: <reason>` and say so in your report."
@@ -59,6 +68,9 @@ func Brief(input BriefInput) string {
 	}
 	if input.Question != "" {
 		fmt.Fprintf(&b, "You stopped earlier with this question: %s\nThe answer: %s\nContinue from the state of this worktree.\n\n", input.Question, input.Answer)
+	}
+	if input.GrantReply != nil {
+		writeGrantReply(&b, *input.GrantReply)
 	}
 	if len(input.Feedback) > 0 {
 		b.WriteString("### Feedback from the previous attempt\n\nA previous session worked on this task in this worktree and did not pass verification. You are a new session with no memory of it: read the current code before changing anything. Fix only what is missing or wrong — do not reimplement what is already correct and tested. The real cause:\n\n")
@@ -169,6 +181,17 @@ func writeStandingGrant(b *strings.Builder, grant routing.TaskGrant) {
 		b.WriteString("\n")
 	}
 	b.WriteString("The grant never lifts the `## Boundaries` rules.\n\n")
+}
+
+func writeGrantReply(b *strings.Builder, reply GrantReply) {
+	var granted []string
+	if len(reply.Paths) > 0 {
+		granted = append(granted, "paths "+strings.Join(reply.Paths, ", "))
+	}
+	if len(reply.Operations) > 0 {
+		granted = append(granted, "operations "+strings.Join(reply.Operations, ", "))
+	}
+	fmt.Fprintf(b, "You stopped earlier with this question: %s\nAlready granted: %s. Continue. Ask again only with a Beyond grant: clause that names what is not granted; use that clause for scope questions.\n\n", reply.Question, strings.Join(granted, "; "))
 }
 
 // taskProse is the prose under a task line, minus the machine fields.

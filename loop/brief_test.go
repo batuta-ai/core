@@ -221,3 +221,44 @@ func TestBriefGrantProtocolLine(t *testing.T) {
 		t.Error("brief without a grant mentions the Beyond grant clause")
 	}
 }
+
+func TestBriefGrantReply(t *testing.T) {
+	t.Parallel()
+	brief := Brief(BriefInput{
+		Task:     routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Grant task"}},
+		Worktree: "/tmp/worktree",
+		Question: "Which file holds the brief?",
+		Answer:   "loop/brief.go",
+		GrantReply: &GrantReply{
+			Question:   "May I edit docs?",
+			Paths:      []string{"docs/**", "scripts/run.sh"},
+			Operations: []string{"git-commit", "test"},
+		},
+	})
+	human := "You stopped earlier with this question: Which file holds the brief?\nThe answer: loop/brief.go\nContinue from the state of this worktree.\n\n"
+	reply := "You stopped earlier with this question: May I edit docs?\nAlready granted: paths docs/**, scripts/run.sh; operations git-commit, test. Continue. Ask again only with a Beyond grant: clause that names what is not granted; use that clause for scope questions.\n\n"
+	humanAt, replyAt := strings.Index(brief, human), strings.Index(brief, reply)
+	if humanAt < 0 || replyAt < humanAt+len(human) {
+		t.Fatalf("context lacks the human Q/A followed by the grant reply:\n%s", brief)
+	}
+	if strings.Index(brief, "## Conventions") < replyAt {
+		t.Errorf("grant reply renders outside ## Context:\n%s", brief)
+	}
+}
+
+func TestBriefHumanAnswerUnchanged(t *testing.T) {
+	t.Parallel()
+	brief := Brief(BriefInput{
+		Task:     routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Human task"}},
+		Worktree: "/tmp/worktree",
+		Question: "Which file holds the brief?",
+		Answer:   "loop/brief.go",
+	})
+	want := "You stopped earlier with this question: Which file holds the brief?\nThe answer: loop/brief.go\nContinue from the state of this worktree.\n\n"
+	if !strings.Contains(brief, want) {
+		t.Errorf("human answer block changed:\n%s", brief)
+	}
+	if strings.Contains(brief, "Already granted") {
+		t.Error("brief without a grant reply renders Already granted")
+	}
+}
