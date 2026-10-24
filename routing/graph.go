@@ -125,12 +125,13 @@ type TaskQuestion struct {
 }
 
 type TaskAnswer struct {
-	QuestionOperationID string `json:"question_operation_id"`
-	LoopRunID           string `json:"loop_run_id"`
-	Generation          int    `json:"generation"`
-	NodeID              string `json:"node_id"`
-	ItemIndex           int    `json:"item_index"`
-	Value               string `json:"value"`
+	QuestionOperationID string     `json:"question_operation_id"`
+	LoopRunID           string     `json:"loop_run_id"`
+	Generation          int        `json:"generation"`
+	NodeID              string     `json:"node_id"`
+	ItemIndex           int        `json:"item_index"`
+	Value               string     `json:"value"`
+	Grant               *TaskGrant `json:"grant,omitempty"`
 }
 
 type ConflictProof struct {
@@ -685,6 +686,25 @@ func (g *DeliveryGraph) RecordQuestion(
 	return false, nil
 }
 
+// StandingGrant is the normalized union of the grants recorded on the answered
+// attempts of one task. It is empty when the task has none.
+func (g *DeliveryGraph) StandingGrant(taskID string) TaskGrant {
+	if g == nil {
+		return TaskGrant{}
+	}
+	task := graphTaskByID(g.Tasks, taskID)
+	if task == nil {
+		return TaskGrant{}
+	}
+	var grants []TaskGrant
+	for _, attempt := range task.Attempts {
+		if attempt.Question != nil && attempt.Question.Answer != nil && attempt.Question.Answer.Grant != nil {
+			grants = append(grants, *attempt.Question.Answer.Grant)
+		}
+	}
+	return unionGrants(grants...)
+}
+
 func (g *DeliveryGraph) RecordAnswer(
 	taskID string,
 	execution int,
@@ -695,6 +715,7 @@ func (g *DeliveryGraph) RecordAnswer(
 		!validTaskAnswer(&answer) || endedAt.IsZero() || endedAt.Location() != time.UTC {
 		return 0, false, ErrInvalidDeliveryTransition
 	}
+	answer.Grant = normalizedGrantPointer(answer.Grant)
 	candidate := cloneDeliveryGraph(g)
 	task := graphTaskByID(candidate.Tasks, taskID)
 	if task == nil || len(task.Attempts) < execution {
@@ -713,6 +734,12 @@ func (g *DeliveryGraph) RecordAnswer(
 	}
 	if task.State != GraphTaskWaitingInput || attempt.State != GraphTaskWaitingInput || len(task.Attempts) != execution {
 		return 0, false, ErrInvalidDeliveryTransition
+	}
+	if answer.Grant != nil {
+		standing := unionGrants(candidate.StandingGrant(taskID), *answer.Grant)
+		if len(standing.Paths) > maxGrantPaths || len(standing.Operations) > maxGrantOperations {
+			return 0, false, ErrInvalidDeliveryTransition
+		}
 	}
 	attempt.Question.Answer = cloneTaskAnswer(&answer)
 	attempt.State = GraphTaskRunning
@@ -2258,7 +2285,8 @@ func validTaskWorktreeIntent(intent *TaskWorktreeIntent) bool {
 func validTaskAnswer(answer *TaskAnswer) bool {
 	return answer != nil && canonicalSHA256.MatchString(answer.QuestionOperationID) &&
 		boundedArgument(answer.LoopRunID) && answer.Generation >= 1 && boundedArgument(answer.NodeID) &&
-		answer.ItemIndex >= 0 && boundedGraphText(answer.Value, maxAnswerBytes)
+		answer.ItemIndex >= 0 && boundedGraphText(answer.Value, maxAnswerBytes) &&
+		(answer.Grant == nil || answer.Grant.valid())
 }
 
 func validTaskCandidateEvidence(evidence *TaskCandidateEvidence, taskID, verificationDigest string) bool {
@@ -2568,6 +2596,7 @@ func cloneTaskAnswer(answer *TaskAnswer) *TaskAnswer {
 		return nil
 	}
 	cloned := *answer
+	cloned.Grant = cloneTaskGrant(answer.Grant)
 	return &cloned
 }
 
