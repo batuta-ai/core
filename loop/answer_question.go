@@ -34,10 +34,16 @@ var (
 // answer was appended but cleanup failed. An append error can have uncertain
 // effect; callers must inspect the journal rather than blindly retry.
 func AnswerQuestion(ctx context.Context, workspace string, target QuestionTarget, text string) (string, error) {
+	return AnswerQuestionGrant(ctx, workspace, target, text, nil)
+}
+
+// AnswerQuestionGrant is AnswerQuestion with a standing grant for the task. A
+// nil grant answers exactly as AnswerQuestion does.
+func AnswerQuestionGrant(ctx context.Context, workspace string, target QuestionTarget, text string, grant *routing.TaskGrant) (string, error) {
 	if !filepath.IsAbs(workspace) || !validQuestionTarget(target) {
 		return "", ErrInvalidQuestionTarget
 	}
-	return answerSelectedContext(ctx, workspace, target.DeliveryID, target.TaskID, target.Execution, target.QuestionID, text, time.Now().UTC(), &target)
+	return answerSelectedGrant(ctx, workspace, target.DeliveryID, target.TaskID, target.Execution, target.QuestionID, text, time.Now().UTC(), &target, grant)
 }
 
 var questionDigestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)

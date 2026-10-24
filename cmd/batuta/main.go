@@ -49,7 +49,8 @@ Usage:
   batuta dispatch  --brief-file <path> --executor <id> --model <id> [--effort <value>] --cwd <worktree> [--transport cli|acp|auto] [--timeout 45m] [--preflight]
   batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [--transport cli|acp|auto] [<plan>]
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
-  batuta loop      --resume <delivery> | --answer <task> "<text>" | --abandon <delivery>
+  batuta loop      --resume <delivery> | --abandon <delivery>
+  batuta loop      --answer <task> [--allow-path <glob>]... [--allow-op <ops>] [--until task] "<text>"
   batuta loop      --recover <delivery> <task> | --reconcile <delivery> <task>
   batuta loop      --prune [--apply] [--workspace <dir>]
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
@@ -665,6 +666,27 @@ func runDispatch(args []string, stdout, stderr io.Writer) error {
 	return finish(err)
 }
 
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (l *stringList) String() string { return strings.Join(*l, ",") }
+
+func (l *stringList) Set(value string) error {
+	*l = append(*l, value)
+	return nil
+}
+
+// tokens splits each value on commas, so --allow-op takes a list and may repeat.
+func (l stringList) tokens() []string {
+	var tokens []string
+	for _, value := range l {
+		for _, token := range strings.Split(value, ",") {
+			tokens = append(tokens, strings.TrimSpace(token))
+		}
+	}
+	return tokens
+}
+
 func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	flags := flag.NewFlagSet("loop", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -676,6 +698,10 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 	resume := flags.String("resume", "", "continue a delivery from its journal")
 	abandon := flags.String("abandon", "", "close a delivery that will not continue; ticks what integrated")
 	answer := flags.String("answer", "", "task (task_N or N) to answer; the text follows as the next argument")
+	var allowPaths, allowOps stringList
+	flags.Var(&allowPaths, "allow-path", "with --answer, grant a path glob until the task ends; repeatable")
+	flags.Var(&allowOps, "allow-op", "with --answer, grant operations as a comma list; repeatable")
+	until := flags.String("until", "", "with --answer, how long the grant lasts; only task")
 	recoverTask := flags.Bool("recover", false, "run the gates on a task parked in waiting_input: <delivery> <task>")
 	reconcile := flags.Bool("reconcile", false, "print how a task's parked ref merges into the delivery branch: <delivery> <task>")
 	prune := flags.Bool("prune", false, "print the task worktrees no open delivery owns as TSV: path, branch, slug, state")
@@ -741,6 +767,12 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if conflict != "" || len(rest) != 0 {
 			return errors.New("usage: batuta loop --prune [--apply] [--workspace <dir>]; it takes no plan and no other loop flag")
 		}
+	}
+	if *answer == "" && (len(allowPaths) > 0 || len(allowOps) > 0 || *until != "") {
+		return errors.New("usage: --allow-path, --allow-op and --until require --answer <task>")
+	}
+	if *until != "" && *until != routing.GrantUntilTask {
+		return fmt.Errorf("usage: --until accepts only %q", routing.GrantUntilTask)
 	}
 	if *recoverTask || *reconcile {
 		var conflict string
@@ -995,7 +1027,13 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		if len(rest) != 1 {
 			return errors.New("usage: batuta loop --answer <task> \"<text>\"")
 		}
-		delivery, err := loop.Answer(*workspace, *answer, rest[0])
+		var delivery string
+		var err error
+		if grant := (routing.TaskGrant{Paths: allowPaths, Operations: allowOps.tokens()}); len(grant.Paths) > 0 || len(grant.Operations) > 0 {
+			delivery, err = loop.AnswerGrant(*workspace, *answer, rest[0], grant)
+		} else {
+			delivery, err = loop.Answer(*workspace, *answer, rest[0])
+		}
 		if err != nil {
 			return err
 		}

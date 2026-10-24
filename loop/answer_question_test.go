@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -414,5 +415,28 @@ func TestAnswerQuestionNativeRepeatedResume(t *testing.T) {
 	}
 	if id, err := AnswerQuestion(context.Background(), f.root, second, "second"); err != nil || id != runner.Delivery() {
 		t.Fatalf("current native question rejected: %q %v", id, err)
+	}
+}
+
+func TestAnswerQuestionGrant(t *testing.T) {
+	t.Parallel()
+	root, store, target := exactAnswerFixture(t)
+	grant := routing.TaskGrant{Paths: []string{"docs/**"}, Operations: []string{"test"}}
+	if id, err := AnswerQuestionGrant(context.Background(), "relative", target, "go ahead", &grant); id != "" || !errors.Is(err, ErrInvalidQuestionTarget) {
+		t.Fatalf("relative workspace: id=%q err=%v", id, err)
+	}
+	if id, err := AnswerQuestionGrant(context.Background(), root, target, "go ahead", &grant); err != nil || id != target.DeliveryID {
+		t.Fatalf("AnswerQuestionGrant() = %q, %v", id, err)
+	}
+	record, graph := lastAnswerRecord(t, store, target.DeliveryID)
+	want := `{"answer":"go ahead","execution":1,"grant":{"paths":["docs/**"],"operations":["test"],"until":"task"},"question":"Choose the behavior"}`
+	if string(record.Detail) != want {
+		t.Fatalf("detail = %s\nwant     %s", record.Detail, want)
+	}
+	if standing := graph.StandingGrant(target.TaskID); !reflect.DeepEqual(standing.Paths, []string{"docs/**"}) {
+		t.Fatalf("standing grant = %+v", standing)
+	}
+	if id, err := AnswerQuestionGrant(context.Background(), root, target, "go ahead", &grant); id != "" || !errors.Is(err, ErrStaleQuestion) {
+		t.Fatalf("repeat: id=%q err=%v", id, err)
 	}
 }
