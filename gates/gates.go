@@ -281,6 +281,44 @@ func Scope(changed, scope []string) Verdict {
 	return verdict
 }
 
+// ScopeWithGrant is Scope with a standing grant: a changed path also passes
+// when the grant covers it and boundary does not name it. The plan Scope still
+// covers any path it names, boundary or not. A managed path stays report-only
+// unless the grant itself reached for a boundary path the plan Scope does not
+// cover. With no grant, or no plan Scope, it is Scope.
+func ScopeWithGrant(changed, scope, granted []string, boundary func(string) bool) Verdict {
+	if len(granted) == 0 || len(scope) == 0 || boundary == nil {
+		return Scope(changed, scope)
+	}
+	verdict := Verdict{Name: "scope", Pass: true, Paths: make([]string, len(changed))}
+	var outside, managed []string
+	for i, changedPath := range changed {
+		clean := filepath.ToSlash(changedPath)
+		verdict.Paths[i] = clean
+		inPlan := InScope(clean, scope)
+		inGrant := InScope(clean, granted)
+		blocked := boundary(clean)
+		switch {
+		case worktree.IsManaged(clean) && !(inGrant && blocked && !inPlan):
+			managed = append(managed, clean)
+		case inPlan, inGrant && !blocked:
+		default:
+			outside = append(outside, clean)
+		}
+	}
+	switch {
+	case len(outside) > 0:
+		verdict.Pass = false
+		verdict.Signal = fmt.Sprintf("%d path(s) outside Scope", len(outside))
+		verdict.Detail = strings.Join(outside, "\n")
+	case len(managed) > 0:
+		verdict.Signal = "within Scope; managed state also touched: " + strings.Join(managed, ", ")
+	default:
+		verdict.Signal = "within Scope"
+	}
+	return verdict
+}
+
 // InScope says whether one path matches any Scope entry.
 func InScope(changed string, scope []string) bool {
 	for _, entry := range scope {

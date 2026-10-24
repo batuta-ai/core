@@ -248,10 +248,11 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	criteria := gates.ParseCriteria(ac.plan.Accept)
 	r.mu.Lock()
 	feedback := append([]string(nil), r.feedback[taskID]...)
+	grant := r.graph.StandingGrant(taskID)
 	r.mu.Unlock()
 	input := BriefInput{
 		Plan: r.plan, Task: ac.plan, Profile: r.profile, Conventions: r.sections, Missing: r.missing,
-		Worktree: ac.worktree.Root, Base: ac.base, Criteria: criteria, Feedback: feedback,
+		Worktree: ac.worktree.Root, Base: ac.base, Criteria: criteria, Feedback: feedback, Grant: grant,
 		Lane: string(ac.plan.Domain) + "/" + string(ac.plan.Complexity),
 	}
 	if ac.previous != nil && ac.previous.Question != nil {
@@ -459,7 +460,10 @@ func (r *Runner) attemptGates(ctx context.Context, ac *attemptContext, result ex
 			return
 		}
 		changedPaths = changed
-		report.Scope = gates.Scope(changed, ac.plan.Scope)
+		r.mu.Lock()
+		grant := r.graph.StandingGrant(ac.taskID)
+		r.mu.Unlock()
+		report.Scope = gates.ScopeWithGrant(changed, ac.plan.Scope, grant.Paths, routing.IsGrantBoundary)
 		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
 		proofless := slices.ContainsFunc(criteria, func(criterion gates.Criterion) bool { return criterion.Proof == "" })
 		if rejected := rejectedGates(report); rejected != "" {

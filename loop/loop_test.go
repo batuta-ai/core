@@ -155,6 +155,15 @@ case "${FAKE_SCENARIO:-default}" in
   ask)
     if [ "$n" = 1 ] && [ -z "$answered" ]; then echo "BATUTA-QUESTION: which greeting?"; exit 0; fi
     if [ "$n" = 1 ]; then echo "$answered" > out/1.txt; else echo "ok" > out/$n.txt; fi;;
+  grant-granted|grant-work)
+    if [ "$n" = 1 ] && [ -z "$answered" ] && [ "$retry" = 0 ]; then echo "BATUTA-QUESTION: may I touch more files?"; exit 0; fi
+    echo "ok" > out/$n.txt
+    if [ "$n" = 1 ]; then
+      case "$FAKE_SCENARIO" in
+        grant-granted) mkdir -p docs; echo "granted" > docs/extra.md;;
+        grant-work) echo "plan edits" > WORK.md;;
+      esac
+    fi;;
   question-at-ceiling)
     if [ "$n" = 1 ]; then
       case "$answered" in
@@ -4214,4 +4223,40 @@ func TestJudgeOffNeverAsks(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestScopeGateHonoursGrant(t *testing.T) {
+	for _, tc := range []struct {
+		name, scenario string
+		grant          routing.TaskGrant
+		want           string
+	}{
+		{"granted path outside the plan Scope passes", "grant-granted", routing.TaskGrant{Paths: []string{"docs/**"}}, StateDone},
+		{"WORK.md fails under a grant of everything", "grant-work", routing.TaskGrant{Paths: []string{"**"}}, StateBlocked},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := setup(t)
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options(tc.scenario, &out))
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+				t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+			}
+			delivery, err := AnswerGrant(f.root, "1", "go ahead", tc.grant)
+			if err != nil || delivery != r.Delivery() {
+				t.Fatalf("AnswerGrant() = %s, %v", delivery, err)
+			}
+			resumeOpts := f.options(tc.scenario, &out)
+			resumeOpts.Resume = delivery
+			resumed, err := Resume(context.Background(), resumeOpts)
+			if err != nil {
+				t.Fatalf("Resume() error = %v\n%s", err, out.String())
+			}
+			if state, err := resumed.Run(context.Background()); err != nil || state != tc.want {
+				t.Fatalf("resumed Run() = %s, %v, want %s\n%s", state, err, tc.want, out.String())
+			}
+		})
+	}
 }
