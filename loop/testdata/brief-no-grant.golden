@@ -1,0 +1,72 @@
+# Brief — Render the golden brief
+
+Work only inside `/tmp/worktree`. It is a git worktree on its own branch; commit there as you like, your history never reaches the base branch.
+
+## Goal
+
+Render the golden brief.
+
+This task is part of the plan "golden plan": Keep the brief stable.
+
+## Context
+
+Shared decision.
+
+**Task 2.** Decision for two.
+
+Tasks 1 of the plan are already integrated on the base commit `0123456789ab`; build on them.
+
+You stopped earlier with this question: Which file holds the brief?
+The answer: loop/brief.go
+Continue from the state of this worktree.
+
+### Feedback from the previous attempt
+
+A previous session worked on this task in this worktree and did not pass verification. You are a new session with no memory of it: read the current code before changing anything. Fix only what is missing or wrong — do not reimplement what is already correct and tested. The real cause:
+
+- the previous attempt failed its proof
+
+## Conventions
+
+Stack: go
+Test command: `go test ./...` — run the suite with exactly this command; verification uses it and no other runner.
+Leave no TODO, placeholder or skipped test behind: the task is done when its criteria hold on the real code.
+
+Unknown — no stack template was found; follow the existing code style of the files you touch and change only what this brief asks.
+
+## Acceptance criteria
+
+1. the brief renders — proof: `go test ./loop/` exits 0
+
+## Progress protocol
+
+For each acceptance criterion n, print an isolated line `BATUTA-PROGRESS <n> START` before the first edit toward it and `BATUTA-PROGRESS <n> DONE` when its proof passes locally. Same shape as the `BATUTA-QUESTION:` line: plain text on stdout, nothing else on that line, no tool required. Criterion numbers are the 1-based positions of the `## Acceptance criteria` list.
+
+## Boundaries
+
+Do not touch CI configuration, licenses, lockfiles (except through an allowed dependency), `WORK.md` or anything under `.batuta/`. Do not push, do not merge, do not change branches.
+
+## Scope
+
+- `loop/brief.go`
+- `loop/testdata/**`
+
+Do not change anything outside this list; if the task requires it, stop and report.
+
+## Expected evidence
+
+In your final message: the paths you touched, each command you ran with its real output, and anything you did not verify, declared as such. Never claim a result you did not observe.
+
+## Stop conditions
+
+Stop and report instead of improvising when: (1) the code's shape contradicts this brief; (2) the same command fails twice; (3) the fix needs edits beyond Scope or Boundaries. To ask the human a question, print exactly one final line `BATUTA-QUESTION: <your question>` and exit 0; the run pauses and resumes in this worktree with the answer.
+
+## Test laws
+
+1. Test the behavior, never the mock.
+2. A failing test means fix the code, not the test.
+3. No test-only flags or branches in production code.
+
+## Method
+
+Work test-first from the acceptance criteria. Investigate root cause before fixing a bug; never silence a signal (cast, suppression, empty catch, sleep) instead of fixing its source — if you must, mark `// WORKAROUND: <reason>` and say so in your report.
