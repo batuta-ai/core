@@ -1447,6 +1447,8 @@ func recordSummary(record journal.Record) string {
 		return pick("question")
 	case KindAnswer:
 		return pick("answer")
+	case KindGrantReplied:
+		return pick("execution", "turn", "request_id", "grant_digest")
 	default:
 		return pick("wave", "execution", "state", "reason", "error")
 	}

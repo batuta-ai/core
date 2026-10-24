@@ -44,6 +44,7 @@ const (
 	KindProgress          journal.Kind = "task_progress"
 	KindFinished          journal.Kind = "executor_finished"
 	KindQuestion          journal.Kind = "question_recorded"
+	KindGrantReplied      journal.Kind = "grant_replied"
 	KindAnswer            journal.Kind = "answer_recorded"
 	KindGates             journal.Kind = "gates_reported"
 	KindCandidate         journal.Kind = "candidate_recorded"
