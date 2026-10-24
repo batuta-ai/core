@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** An answer to a parked task can carry a structured grant: paths and operations, valid until the task ends. The grant persists on the delivery graph. Every later brief of that task renders it as a standing authorization, and the granted paths join the task's effective Scope, never past the brief's Boundaries. When the executor asks again without naming something outside the grant, the runner answers from the grant inside the same execution instead of parking, within a bounded number of turns and the execution's own time budget. That closes Tempo finding 4.5, core part.
-**Created:** 2026-10-24 · **Status:** proposed
+**Created:** 2026-10-24 · **Status:** approved
 
 ## Tasks
 - [ ] 1. Grant type, boundary list, validation and storage on the graph — backend/medium
