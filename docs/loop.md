@@ -11,7 +11,8 @@ list, with the same invariants:
    Nothing is reused across sessions.
 2. **Zero questions** by default. An executor that must stop prints one
    `BATUTA-QUESTION: <text>` line; the task parks and the run ends with
-   `waiting_input` until `--answer` brings the text back.
+   `waiting_input` until `--answer` brings the text back. An answer can also
+   carry a standing grant; see [Standing grants on answers](#standing-grants-on-answers).
 3. A task is done only when it passes the **four gates**, never on the
    executor's exit code or report.
 4. A **usage limit is not a failure**: the loop waits for the reset and runs
@@ -691,6 +692,115 @@ The older `Answer` and `AnswerDelivery` entry points retain their existing
 signatures and behavior. `AnswerDelivery` does not receive an expected
 execution or opening digest and cannot provide these stronger identity checks.
 
+## Standing grants on answers
+
+An answer can carry a **standing grant**, so the executor is not asked the same
+scope question again. The operator, or the conductor acting for them, writes
+the grant when answering a parked task. The grant flags go before the answer
+text, because Go flag parsing stops at the first positional argument:
+
+```sh
+batuta loop --answer task_3 --allow-path 'docs/**' --allow-op regenerate-golden --until task "Yes, update the docs."
+```
+
+- `--allow-path <glob>` grants a repository-relative path glob. It repeats.
+  Absolute paths, `..`, invalid globs and boundary paths are refused with exit 1.
+- `--allow-op <ops>` grants operations: lowercase tokens (`^[a-z][a-z0-9-]{0,31}$`)
+  in a comma list. It repeats.
+- `--until task` is the only duration and the default. The grant lasts until the
+  task ends in this delivery. It never reaches another task or another delivery.
+- The flags are refused without `--answer`. An answer without grant flags
+  behaves as before.
+
+A grant only adds. The standing grant of a task is the union of the grants on
+its answered attempts, normalized, at most 32 paths and 16 operations. Resume and
+replay read it from the delivery graph, so a restart never widens it.
+
+### Effective scope
+
+The effective Scope of a granted task is the plan Scope plus the granted paths.
+The brief lists both, and the scope gate accepts a changed path when the plan
+Scope covers it or when a granted path covers it and it is not a boundary path.
+A plan with no Scope still passes the gate with a signal; a grant never narrows
+that.
+
+A grant never reaches the boundary paths, whatever its globs say, even `**`:
+
+- `WORK.md` and `.batuta/**`
+- CI configuration: `.github/**`, `.gitlab-ci.yml`, `.circleci/**`,
+  `azure-pipelines.yml`, `.buildkite/**`, `Jenkinsfile`
+- licenses at any depth: `LICENSE*`, `COPYING*`, `NOTICE*`
+- lockfiles at any depth: `go.sum`, `package-lock.json`, `npm-shrinkwrap.json`,
+  `yarn.lock`, `pnpm-lock.yaml`, `bun.lockb`, `bun.lock`, `Cargo.lock`,
+  `poetry.lock`, `uv.lock`, `Pipfile.lock`, `Gemfile.lock`, `composer.lock`
+
+A boundary file that the plan Scope itself names stays allowed, as without a grant.
+
+### The `Beyond grant:` clause
+
+The brief tells the executor to end a question that needs something the grant
+does not cover with a clause on the last non-empty line:
+
+```text
+Beyond grant: paths: Makefile, src/x/; operations: deploy
+```
+
+- Groups come in the order `paths:` then `operations:`, separated by `;`. Either
+  may be omitted. Items are comma separated and trimmed.
+- Path items are matched like Scope entries. A directory item with a trailing
+  `/` is covered only when a grant entry covers every descendant: `src/x`,
+  `src/x/**` and `src/**` cover `src/x/`, and `src/x/*` does not.
+- Operation items are compared by equality.
+- The clause is malformed when it is not on the last line, is empty, names an
+  unknown or empty group, has an empty item, repeats or reorders groups, or has
+  an absolute or `..` path item.
+
+### When the runner replies and when it parks
+
+When a task with a standing grant stops with a question, the runner checks it.
+It replies, without parking, when the question has no clause or when every item
+in its clause is granted. It then appends a `grant_replied` record to the
+journal, runs the executor again in the same attempt and worktree, and the new
+brief carries the question and `Already granted: <paths and operations>`. A
+grant reply does not consume an execution, so `MaxTaskExecutions` is unchanged.
+
+Otherwise the task parks as `waiting_input`, as without a grant. The
+`question_recorded` record and the ask file then carry a `grant_park` reason:
+
+| `grant_park` | Cause |
+|---|---|
+| `not_covered` | the clause names ungranted items; `beyond_grant` lists them |
+| `malformed_clause` | the clause breaks the grammar |
+| `turn_cap` | the execution already used 3 grant turns |
+| `repeat` | the question is a repeat of an earlier grant turn question |
+| `deadline` | no time is left for another turn |
+
+A question without a grant keeps today's record and ask file, without these keys.
+
+### Bounds on grant turns
+
+- **3 grant turns** per execution. The fourth covered question parks.
+- **Repeat rule**: a question that equals an earlier grant turn question of the
+  same execution parks. Equality ignores whitespace differences (runs of
+  whitespace collapse, ends are trimmed), so an executor that loops on one or two
+  questions cannot spend the turns.
+- **Shared deadline**: one deadline per execution, fixed at its first dispatch
+  from `--task-timeout`. Each turn gets the time left. A usage limit wait moves
+  the deadline by the wait, so waiting does not spend it.
+- **Tokens**: grant turns reserve no tokens. The attempt's token reservation on
+  the graph stays as it was.
+
+A crash inside a grant turn resumes as one interrupted execution. The next
+execution's brief carries the pending question and the grant reply.
+
+### Trust limit
+
+The executor reports its own coverage. A question without a `Beyond grant:`
+clause gets the grant reply even when it is a design choice and not a scope
+question; the reply tells the executor to use the clause for scope questions.
+The runner checks the clause against the grant, not the executor's judgment of
+what it needs. The scope gate and the boundary paths still decide what lands.
+
 ## Roadmap
 
 A roadmap is the level above the plan: the delivery as a whole, split into
@@ -737,7 +847,7 @@ and from the scope check, committed by the loop with the plan bookkeeping.
 | `.batuta/runs/<date>-<slug>-task-N.md` (+ `-e<k>.brief.md`, `-e<k>.out.log`) | no | per attempt |
 | `.batuta/runs/supervision/<delivery>.json` | no (`.git/info/exclude`) | durable foreground observer cursor |
 | `.batuta/reviews/supervision/<job-id>/` | no (`.git/info/exclude`) | final review snapshot, reports, job state and progression judgment |
-| `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` or `--recover` |
+| `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` or `--recover`; under a standing grant it also names the `grant_park` reason |
 | `WORK.md`, `.batuta/plans/<slug>.md` | yes | generated from the terminal delivery summary and journal, once at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
 | `.batuta/plans/done/<slug>.md` | yes | when all tasks are done; the bookkeeping commit carries the plan move |
 
