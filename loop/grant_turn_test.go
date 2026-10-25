@@ -6,18 +6,29 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/batuta-ai/core/executor"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
 )
 
+func isolateGrantCache(t *testing.T) {
+	t.Helper()
+	cache := tempDir(t)
+	t.Setenv("HOME", cache)
+	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+}
+
 func runGrantedQuestion(t *testing.T, scenario string) (fixture, *Runner, string) {
 	t.Helper()
+	isolateGrantCache(t)
 	f := setup(t)
 	var out bytes.Buffer
 	r, err := New(context.Background(), f.options(scenario, &out))
@@ -33,6 +44,8 @@ func runGrantedQuestion(t *testing.T, scenario string) (fixture, *Runner, string
 	}
 	opts := f.options(scenario, &out)
 	opts.Resume = delivery
+	resumeClock := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	opts.Now = func() time.Time { return resumeClock }
 	resumed, err := Resume(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -42,6 +55,223 @@ func runGrantedQuestion(t *testing.T, scenario string) (fixture, *Runner, string
 		t.Fatalf("resumed Run() = %s, %v\n%s", state, err, out.String())
 	}
 	return f, resumed, state
+}
+
+type grantTestBackend struct {
+	backend executor.Backend
+	before  func(executor.Execution)
+	after   func()
+}
+
+func (b grantTestBackend) Execute(ctx context.Context, e executor.Execution) (executor.Result, error) {
+	if b.before != nil {
+		b.before(e)
+	}
+	result, err := b.backend.Execute(ctx, e)
+	if b.after != nil {
+		b.after()
+	}
+	return result, err
+}
+
+func runGrantTurnScenario(t *testing.T, scenario string, configure func(*Options), beforeRun func(*Runner)) (fixture, *Runner, string) {
+	t.Helper()
+	isolateGrantCache(t)
+	f := setup(t)
+	plan := "# Plan — Greetings\n\n**Goal:** Greeting.\n**Created:** 2026-09-06 · **Status:** approved\n\n## Tasks\n- [ ] 1. Add greeting one — backend/low\n      Scope: out/1.txt\n      Accept: greeting exists → test -f out/1.txt\n"
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "test: one grant task")
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options(scenario, &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("initial Run() = %s, %v\n%s", state, err, out.String())
+	}
+	delivery, err := AnswerGrant(f.root, "1", "go ahead", routing.TaskGrant{Paths: []string{"out/1.txt"}, Operations: []string{"write"}})
+	if err != nil || delivery != r.Delivery() {
+		t.Fatalf("AnswerGrant() = %s, %v", delivery, err)
+	}
+	opts := f.options(scenario, &out)
+	opts.Resume = delivery
+	resumeClock := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	opts.Now = func() time.Time { return resumeClock }
+	if configure != nil {
+		configure(&opts)
+	}
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeRun != nil {
+		beforeRun(resumed)
+	}
+	state, err := resumed.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resumed Run() = %s, %v\n%s", state, err, out.String())
+	}
+	return f, resumed, state
+}
+
+func grantReplyQuestions(t *testing.T, f fixture, r *Runner) []string {
+	t.Helper()
+	var questions []string
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.TaskID != "task_1" || record.Kind != KindGrantReplied {
+			continue
+		}
+		var detail struct {
+			Question string `json:"question"`
+		}
+		if err := json.Unmarshal(record.Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		questions = append(questions, detail.Question)
+	}
+	return questions
+}
+
+func TestLoopGrantRepeatParks(t *testing.T) {
+	f, r, state := runGrantTurnScenario(t, "grant-repeat", nil, nil)
+	if state != StateWaitingInput {
+		t.Fatalf("state = %s, want waiting_input", state)
+	}
+	questions := grantReplyQuestions(t, f, r)
+	if len(questions) != 2 || questions[0] != "may I edit the greeting?" || questions[1] != "may I edit the second greeting?" {
+		t.Fatalf("grant replies = %q", questions)
+	}
+	task, _ := r.graph.Task("task_1")
+	if len(task.Attempts) != 2 || task.Attempts[1].Question == nil || task.Attempts[1].Question.Prompt != "may I   edit the greeting?" {
+		t.Fatalf("parked task = %+v", task)
+	}
+}
+
+func TestLoopGrantTurnCap(t *testing.T) {
+	f, r, state := runGrantTurnScenario(t, "grant-cap", nil, nil)
+	if state != StateWaitingInput {
+		t.Fatalf("state = %s, want waiting_input", state)
+	}
+	if questions := grantReplyQuestions(t, f, r); len(questions) != 3 {
+		t.Fatalf("grant replies = %q, want three", questions)
+	}
+	task, _ := r.graph.Task("task_1")
+	if len(task.Attempts) != 2 || task.Attempts[1].Question == nil || task.Attempts[1].Question.Prompt != "may I edit greeting number 4?" {
+		t.Fatalf("parked task = %+v", task)
+	}
+}
+
+func TestLoopGrantTurnsShareDeadline(t *testing.T) {
+	clock := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	var timeouts []time.Duration
+	calls := 0
+	f, r, state := runGrantTurnScenario(t, "grant-deadline", func(opts *Options) {
+		opts.Now = func() time.Time { return clock }
+	}, func(r *Runner) {
+		r.backend = grantTestBackend{backend: r.backend, before: func(e executor.Execution) {
+			timeouts = append(timeouts, e.Timeout)
+		}, after: func() {
+			calls++
+			if calls == 1 {
+				clock = clock.Add(30 * time.Second)
+			} else {
+				clock = clock.Add(2 * time.Minute)
+			}
+		}}
+	})
+	if state != StateWaitingInput {
+		t.Fatalf("state = %s, want waiting_input", state)
+	}
+	if len(timeouts) != 2 || timeouts[0] != 2*time.Minute || timeouts[1] != 90*time.Second {
+		t.Fatalf("dispatch timeouts = %v, want [2m 1m30s]", timeouts)
+	}
+	if questions := grantReplyQuestions(t, f, r); len(questions) != 1 {
+		t.Fatalf("grant replies = %q, want one before deadline exhaustion", questions)
+	}
+	task, _ := r.graph.Task("task_1")
+	if task.Attempts[1].Question == nil || task.Attempts[1].Question.Prompt != "may I edit greeting number 2?" {
+		t.Fatalf("parked task = %+v", task)
+	}
+}
+
+func TestLoopGrantLimitWaitKeepsDeadline(t *testing.T) {
+	clock := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	reset := clock.Add(10 * time.Second)
+	var timeouts []time.Duration
+	var waited []time.Duration
+	f, r, state := runGrantTurnScenario(t, "grant-limit-wait", func(opts *Options) {
+		opts.Now = func() time.Time { return clock }
+		opts.MaxLimitWaits = 2
+		opts.Environment = append(opts.Environment, "FAKE_RESET_AT="+fmt.Sprint(reset.Unix()))
+		opts.Sleep = fixtureSleep(func(delay time.Duration) {
+			waited = append(waited, delay)
+			clock = clock.Add(delay)
+		})
+	}, func(r *Runner) {
+		r.backend = grantTestBackend{backend: r.backend, before: func(e executor.Execution) {
+			timeouts = append(timeouts, e.Timeout)
+		}}
+	})
+	if state != StateDone {
+		t.Fatalf("state = %s, want done", state)
+	}
+	if len(waited) != 1 || waited[0] != 10*time.Second+time.Millisecond {
+		t.Fatalf("waited = %v", waited)
+	}
+	if len(timeouts) != 4 || timeouts[0] != 2*time.Minute || timeouts[1] != 2*time.Minute || timeouts[2] != timeouts[1] {
+		t.Fatalf("dispatch timeouts = %v", timeouts)
+	}
+	if questions := grantReplyQuestions(t, f, r); len(questions) != 2 {
+		t.Fatalf("grant replies = %q", questions)
+	}
+}
+
+func TestLoopGrantTurnsKeepTokenReservation(t *testing.T) {
+	const reservation int64 = 317
+	first := true
+	f, r, state := runGrantTurnScenario(t, "grant-reservation", nil, func(r *Runner) {
+		r.backend = grantTestBackend{backend: r.backend, before: func(executor.Execution) {
+			if !first {
+				return
+			}
+			first = false
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			for i := range r.graph.Tasks {
+				if r.graph.Tasks[i].TaskID == "task_1" {
+					r.graph.Tasks[i].Attempts[1].TokenAllowance = reservation
+					return
+				}
+			}
+			t.Fatal("task_1 missing from graph")
+		}}
+	})
+	if state != StateDone {
+		t.Fatalf("state = %s, want done", state)
+	}
+	if questions := grantReplyQuestions(t, f, r); len(questions) != 2 {
+		t.Fatalf("grant replies = %q", questions)
+	}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.TaskID != "task_1" || (record.Kind != KindGrantReplied && record.Kind != KindDispatchResult) {
+			continue
+		}
+		var graph routing.DeliveryGraph
+		if err := json.Unmarshal(record.Graph, &graph); err != nil {
+			t.Fatal(err)
+		}
+		task, _ := graph.Task("task_1")
+		if len(task.Attempts) == 2 && task.Attempts[1].TokenAllowance != reservation {
+			t.Fatalf("%s allowance = %d, want %d", record.Kind, task.Attempts[1].TokenAllowance, reservation)
+		}
+	}
+	task, _ := r.graph.Task("task_1")
+	if task.Attempts[1].TokenAllowance != reservation {
+		t.Fatalf("final allowance = %d, want %d", task.Attempts[1].TokenAllowance, reservation)
+	}
 }
 
 func TestLoopGrantRepliesWithoutParking(t *testing.T) {

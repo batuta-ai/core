@@ -321,15 +321,16 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		if progressErr != nil {
 			return progressErr
 		}
+		questionKey := grantQuestionKey(result.Question)
 		if ctx.Err() == nil && execErr == nil && result.Finished && result.Question != "" &&
-			routing.SafeTaskQuestionText(result.Question) && len(result.Question) <= 2000 && grantTurns < 3 && !seenQuestions[result.Question] &&
+			routing.SafeTaskQuestionText(result.Question) && len(result.Question) <= 2000 && grantTurns < 3 && !seenQuestions[questionKey] &&
 			deadline.After(r.now()) {
 			r.mu.Lock()
 			standing := r.graph.StandingGrant(taskID)
 			r.mu.Unlock()
 			if grantCovers(result.Question, standing).Covered {
 				grantTurns++
-				seenQuestions[result.Question] = true
+				seenQuestions[questionKey] = true
 				requestID := digestString("question:" + ac.runID + ":" + result.Question)
 				if err := r.locked(KindGrantReplied, taskID, grantRepliedDetail(ac.execution, ac.runID, result.Question, requestID, standing, grantTurns), nil); err != nil {
 					return err

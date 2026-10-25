@@ -169,6 +169,34 @@ case "${FAKE_SCENARIO:-default}" in
       printf '%s\n' "$text" > "$state/grant-reply-brief"
     fi
     echo "ok" > out/$n.txt;;
+  grant-repeat|grant-cap|grant-deadline|grant-limit-wait|grant-reservation)
+    if [ "$n" = 1 ]; then
+      if [ -z "$answered" ]; then echo "BATUTA-QUESTION: initial approval?"; exit 0; fi
+      calls=0
+      if [ -f "$state/grant-calls" ]; then calls=$(cat "$state/grant-calls"); fi
+      calls=$((calls+1))
+      echo "$calls" > "$state/grant-calls"
+      case "$FAKE_SCENARIO" in
+        grant-repeat)
+          case "$calls" in
+            1) question="may I edit the greeting?";;
+            2) question="may I edit the second greeting?";;
+            *) question="may I   edit the greeting?";;
+          esac;;
+        grant-cap|grant-deadline)
+          question="may I edit greeting number $calls?";;
+        grant-limit-wait)
+          if [ "$calls" = 2 ]; then echo "Rate limit reached reset_at=$FAKE_RESET_AT" >&2; exit 1; fi
+          if [ "$calls" = 3 ]; then question="may I edit the second greeting?"
+          elif [ "$calls" = 1 ]; then question="may I edit the greeting?"
+          else echo "ok" > out/1.txt; exit 0; fi;;
+        grant-reservation)
+          if [ "$calls" -le 2 ]; then question="may I edit greeting number $calls?"; else echo "ok" > out/1.txt; exit 0; fi;;
+      esac
+      echo "BATUTA-QUESTION: $question"
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   grant-granted|grant-work)
     if [ "$n" = 1 ] && [ -z "$answered" ] && [ "$retry" = 0 ]; then echo "BATUTA-QUESTION: may I touch more files?"; exit 0; fi
     echo "ok" > out/$n.txt

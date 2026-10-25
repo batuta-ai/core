@@ -20,6 +20,10 @@ func grantDigest(grant routing.TaskGrant) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+func grantQuestionKey(question string) string {
+	return strings.Join(strings.Fields(question), " ")
+}
+
 func grantRepliedDetail(execution int, runID, question, requestID string, grant routing.TaskGrant, turn int) map[string]any {
 	return map[string]any{
 		"execution": execution, "run_id": runID, "question": question, "request_id": requestID,
