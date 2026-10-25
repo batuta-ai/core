@@ -260,6 +260,10 @@ func (r *Runner) restoreCleanupStops(record journal.Record) {
 	}
 }
 
+type grantReply struct {
+	Question string `json:"question"`
+}
+
 // replay rebuilds the runner's memory from a journal: the graph from the
 // last record, worktrees, feedback, candidates, integrated commits, started
 // attempts and a pending preflight.
@@ -301,6 +305,22 @@ func (r *Runner) replay(records []journal.Record) error {
 				return fmt.Errorf("loop: dispatch journal: %w", err)
 			}
 			dispatches[attemptKey(record.TaskID, detail.Execution)] = detail
+		case KindGrantReplied:
+			var detail struct {
+				Execution int `json:"execution"`
+				grantReply
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				return fmt.Errorf("loop: grant reply journal: %w", err)
+			}
+			r.grantReplies[attemptKey(record.TaskID, detail.Execution)] = detail.grantReply
+		case KindQuestion:
+			var detail struct {
+				Execution int `json:"execution"`
+			}
+			if json.Unmarshal(record.Detail, &detail) == nil {
+				delete(r.grantReplies, attemptKey(record.TaskID, detail.Execution))
+			}
 		case KindVerifierIntent, KindVerifierResult:
 			var detail dispatchDetail
 			if err := json.Unmarshal(record.Detail, &detail); err != nil {

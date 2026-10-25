@@ -26,6 +26,149 @@ func isolateGrantCache(t *testing.T) {
 	t.Setenv("LocalAppData", cache)
 }
 
+func grantCrashJournal(t *testing.T, backend string, turnStarted bool) (fixture, Options, string, string, routing.TaskGrant) {
+	t.Helper()
+	isolateGrantCache(t)
+	f := setup(t)
+	plan := "# Plan — Greetings\n\n**Goal:** Greeting.\n**Created:** 2026-09-06 · **Status:** approved\n\n## Tasks\n- [ ] 1. Add greeting one — backend/low\n      Scope: out/1.txt\n      Accept: greeting exists → test -f out/1.txt\n"
+	if err := os.WriteFile(filepath.Join(f.root, ".batuta", "plans", "greetings.md"), []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", "-A")
+	f.run(t, "commit", "-q", "-m", "test: one grant task")
+	var out bytes.Buffer
+	opts := f.options("default", &out)
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delivery := r.Delivery()
+	appendRecord := func(kind journal.Kind, taskID string, detail any) {
+		t.Helper()
+		encodedDetail, err := json.Marshal(detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		encodedGraph, err := json.Marshal(r.graph)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.store.Append(delivery, journal.Record{Kind: kind, TaskID: taskID, Detail: encodedDetail, Graph: encodedGraph, At: opts.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	appendRecord(KindOpened, "", openedDetail{Slug: r.plan.Slug, PlanPath: r.plan.Path, PlanDigest: r.plan.Set.Digest,
+		Branch: r.branch, Head: r.openedHead, Parallel: r.parallel, Workspace: r.root, Generation: r.generation})
+	wave, err := r.graph.AdmitReadyWave(routing.ReadyWaveInput{IntegrationHeadSHA: r.openedHead, RemainingSlots: 1, ReachableCommits: map[string]bool{r.openedHead: true}})
+	if err != nil || len(wave.TaskIDs) != 1 || wave.TaskIDs[0] != "task_1" {
+		t.Fatalf("AdmitReadyWave() = %+v, %v", wave, err)
+	}
+	if err := r.graph.BeginWaveAttempts(wave.Number, r.generation); err != nil {
+		t.Fatal(err)
+	}
+	name, branch := r.worktreeName("task_1", 1), r.branchName("task_1", 1)
+	root := r.git.Path(name)
+	f.run(t, "worktree", "add", "-q", "-b", branch, root, r.openedHead)
+	if _, err := r.graph.AttachWorktree("task_1", 1, routing.GraphWorktree{ID: name, Root: root, Ready: true}); err != nil {
+		t.Fatal(err)
+	}
+	wt := attemptWorktree{Name: name, Branch: branch, Root: root}
+	appendRecord(KindWorktree, "task_1", map[string]any{"execution": 1, "worktree": wt})
+	const firstQuestion = "May I edit the greeting?"
+	runID := delivery + "-task-1-e1"
+	question := routing.TaskQuestion{RequestID: digestString("question:" + runID + ":" + firstQuestion), Prompt: firstQuestion, ContextDigest: digestString("context")}
+	if _, err := r.graph.RecordQuestion("task_1", 1, runID, question, opts.Now()); err != nil {
+		t.Fatal(err)
+	}
+	appendRecord(KindQuestion, "task_1", map[string]any{"execution": 1, "question": firstQuestion, "request_id": question.RequestID})
+	grant := routing.TaskGrant{Paths: []string{"out/1.txt"}, Operations: []string{"write"}}
+	if _, _, err := r.graph.RecordAnswer("task_1", 1, routing.TaskAnswer{QuestionOperationID: question.RequestID, LoopRunID: runID,
+		Generation: 1, NodeID: "loop", Value: "go ahead", Grant: &grant}, opts.Now()); err != nil {
+		t.Fatal(err)
+	}
+	appendRecord(KindAnswer, "task_1", map[string]any{"execution": 1, "answer": "go ahead", "grant": grant})
+	appendRecord(KindStarted, "task_1", map[string]any{"execution": 2, "dispatch": dispatchDetail{Execution: 2, RunID: runID}})
+	appendRecord(KindDispatchResult, "task_1", dispatchDetail{Execution: 2, RunID: runID, Backend: backend, Submission: executor.SubmissionUnknown})
+	const pendingQuestion = "May I write out/1.txt?"
+	appendRecord(KindGrantReplied, "task_1", grantRepliedDetail(2, runID, pendingQuestion, digestString("question:"+runID+":"+pendingQuestion), grant, 1))
+	if turnStarted {
+		appendRecord(KindDispatchIntent, "task_1", dispatchDetail{Execution: 2, Turn: 1, RunID: runID, Backend: backend, Submission: executor.SubmissionUncertain})
+	}
+	opts.Resume = delivery
+	return f, opts, delivery, pendingQuestion, grant
+}
+
+func TestLoopGrantTurnInterrupted(t *testing.T) {
+	f, opts, delivery, _, _ := grantCrashJournal(t, "cli", true)
+	r, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Release()
+	task, _ := r.graph.Task("task_1")
+	if task.State != routing.GraphTaskPreparing || len(task.Attempts) != 3 || task.Attempts[1].BlockerCode != blockerInterrupted {
+		t.Fatalf("replayed task = %+v", task)
+	}
+	if counts := kinds(readJournal(t, f, delivery)); counts[KindFailure] != 1 || counts[KindQuestion] != 1 {
+		t.Fatalf("replay records = %v", counts)
+	}
+}
+
+func TestLoopGrantReplyThenCrash(t *testing.T) {
+	f, opts, delivery, question, grant := grantCrashJournal(t, "cli", false)
+	r, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Release()
+	task, _ := r.graph.Task("task_1")
+	if task.State != routing.GraphTaskPreparing || len(task.Attempts) != 3 || task.Attempts[1].BlockerCode != blockerInterrupted {
+		t.Fatalf("replayed task = %+v", task)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v", state, err)
+	}
+	brief, err := os.ReadFile(r.grantTurnBriefPath("task_1", 3, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{question, "Already granted: paths " + grant.Paths[0] + "; operations " + grant.Operations[0], "## Standing grant"} {
+		if !strings.Contains(string(brief), want) {
+			t.Fatalf("next brief lacks %q:\n%s", want, brief)
+		}
+	}
+	if counts := kinds(readJournal(t, f, delivery)); counts[KindFailure] != 1 || counts[KindQuestion] != 1 {
+		t.Fatalf("replayed records = %v", counts)
+	}
+}
+
+func TestLoopGrantTurnACPUncertain(t *testing.T) {
+	for _, turnStarted := range []bool{true, false} {
+		name := "reply_then_crash"
+		if turnStarted {
+			name = "turn_started"
+		}
+		t.Run(name, func(t *testing.T) {
+			f, opts, delivery, _, _ := grantCrashJournal(t, "acp", turnStarted)
+			r, err := Resume(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Release()
+			task, _ := r.graph.Task("task_1")
+			if task.State != routing.GraphTaskBlocked || len(task.Attempts) != 2 || task.BlockerCode != blockerSubmissionUncertain {
+				t.Fatalf("replayed task = %+v", task)
+			}
+			if state, err := r.Run(context.Background()); err != nil || state != StateBlocked {
+				t.Fatalf("Run() = %s, %v", state, err)
+			}
+			if counts := kinds(readJournal(t, f, delivery)); counts[KindFailure] != 1 || counts[KindQuestion] != 1 {
+				t.Fatalf("replay records = %v", counts)
+			}
+		})
+	}
+}
+
 func runGrantedQuestion(t *testing.T, scenario string) (fixture, *Runner, string) {
 	t.Helper()
 	isolateGrantCache(t)

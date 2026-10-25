@@ -225,6 +225,16 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 			ac.previous = &earlier
 		}
 	}
+	var pendingReply *GrantReply
+	if len(task.Attempts) >= 2 {
+		earlier := task.Attempts[len(task.Attempts)-2]
+		if earlier.BlockerCode == blockerInterrupted {
+			if reply, found := r.grantReplies[attemptKey(taskID, earlier.Execution)]; found {
+				grant := r.graph.StandingGrant(taskID)
+				pendingReply = &GrantReply{Question: reply.Question, Paths: grant.Paths, Operations: grant.Operations}
+			}
+		}
+	}
 	r.mu.Unlock()
 
 	// A canceled executor must finish unwinding before its partial work is
@@ -279,7 +289,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	r.mu.Unlock()
 	input := BriefInput{
 		Plan: r.plan, Task: ac.plan, Profile: r.profile, Conventions: r.sections, Missing: r.missing,
-		Worktree: ac.worktree.Root, Base: ac.base, Criteria: criteria, Feedback: feedback, Grant: grant,
+		Worktree: ac.worktree.Root, Base: ac.base, Criteria: criteria, Feedback: feedback, Grant: grant, GrantReply: pendingReply,
 		Lane: string(ac.plan.Domain) + "/" + string(ac.plan.Complexity),
 	}
 	if ac.previous != nil && ac.previous.Question != nil {
