@@ -2,7 +2,7 @@
 <!-- inputs: profile.md@sha256:e18a00765937 routing.md@sha256:bdb31fda5c7d -->
 
 **Goal:** Finish the standing grants of `.batuta/plans/answer-grants.md` on branch `feat/answer-grants`: bound the grant turns of one execution, report why a question parks when a grant exists, resume correctly after a crash inside a grant turn, and document grants. That closes Tempo finding 4.5, core part.
-**Created:** 2026-10-25 · **Status:** proposed
+**Created:** 2026-10-25 · **Status:** approved
 
 ## Tasks
 - [ ] 1. Bounds on grant turns — backend/high
