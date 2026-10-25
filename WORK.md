@@ -510,6 +510,10 @@
 - [x] Question coverage check against a grant → claude (sonnet), commit 774587b7922b (trail: .batuta/runs/2026-10-24-answer-grants-task-4.md, delivery answer-grants-20261024-205132, plan answer-grants, 2026-10-24)
 - [x] Grant turn records, summaries and turn files → claude (sonnet), 1 retry, commit 219f93ea631d (trail: .batuta/runs/2026-10-24-answer-grants-task-5.md, delivery answer-grants-20261024-205132, plan answer-grants, 2026-10-24)
 - [x] Brief renders a grant reply → claude (sonnet), commit 069c05d215ec (trail: .batuta/runs/2026-10-24-answer-grants-task-6.md, delivery answer-grants-20261024-205132, plan answer-grants, 2026-10-24)
+- [x] Bounds on grant turns → codex (gpt-6-sol), commit 61d7e8ba1b3b (trail: .batuta/runs/2026-10-25-answer-grants-2-task-1.md, delivery answer-grants-2-20261025-164735, plan answer-grants-2, 2026-10-25)
+- [x] A parked question reports what the grant does not cover → claude (sonnet), commit 12a42f410b09 (trail: .batuta/runs/2026-10-25-answer-grants-2-task-2.md, delivery answer-grants-2-20261025-164735, plan answer-grants-2, 2026-10-25)
+- [x] Resume after a crash inside a grant turn → codex (gpt-6-sol), 1 retry, commit f1c087204d7c (trail: .batuta/runs/2026-10-25-answer-grants-2-task-3.md, delivery answer-grants-2-20261025-164735, plan answer-grants-2, 2026-10-25)
+- [x] Document grants → claude (sonnet), escalated from agy after 2 fails, commit a40557ca6edc (trail: .batuta/runs/2026-10-25-answer-grants-2-task-4.md, delivery answer-grants-2-20261025-164735, plan answer-grants-2, 2026-10-25)
 
 ## Blocked
 - [ ] Uncommitted executor work is snapshotted before a park, a retry or a cleanup → codex (gpt-6-astra), 1 retry, aborted: needs_conducting_session (trail: .batuta/runs/2026-09-08-loop-deadends-task-2.md, plan loop-deadends, 2026-09-08)
