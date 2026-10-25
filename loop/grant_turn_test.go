@@ -2,9 +2,11 @@ package loop
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +15,143 @@ import (
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
 )
+
+func runGrantedQuestion(t *testing.T, scenario string) (fixture, *Runner, string) {
+	t.Helper()
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options(scenario, &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("initial Run() = %s, %v\n%s", state, err, out.String())
+	}
+	delivery, err := AnswerGrant(f.root, "1", "go ahead", routing.TaskGrant{Paths: []string{"out/1.txt"}, Operations: []string{"write"}})
+	if err != nil || delivery != r.Delivery() {
+		t.Fatalf("AnswerGrant() = %s, %v", delivery, err)
+	}
+	opts := f.options(scenario, &out)
+	opts.Resume = delivery
+	resumed, err := Resume(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := resumed.Run(context.Background())
+	if err != nil {
+		t.Fatalf("resumed Run() = %s, %v\n%s", state, err, out.String())
+	}
+	return f, resumed, state
+}
+
+func TestLoopGrantRepliesWithoutParking(t *testing.T) {
+	f, r, state := runGrantedQuestion(t, "grant-reply")
+	if state != StateDone {
+		t.Fatalf("state = %s, want done", state)
+	}
+	brief, err := os.ReadFile(filepath.Join(f.state, "grant-reply-brief"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"may I edit the greeting?", "Already granted:"} {
+		if !bytes.Contains(brief, []byte(want)) {
+			t.Fatalf("second brief lacks %q", want)
+		}
+	}
+	task, found := r.graph.Task("task_1")
+	if !found || len(task.Attempts) != 2 || task.State != routing.GraphTaskIntegrated {
+		t.Fatalf("task after grant reply = %+v", task)
+	}
+	if _, err := os.Stat(filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md")); !os.IsNotExist(err) {
+		t.Fatalf("ask file remains: %v", err)
+	}
+	counts := map[journal.Kind]int{}
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.TaskID == "task_1" {
+			counts[record.Kind]++
+		}
+	}
+	if counts[KindGrantReplied] != 1 || counts[KindQuestion] != 1 || counts[KindDispatchResult] != 3 {
+		t.Fatalf("task journal counts = %v", counts)
+	}
+}
+
+func TestLoopGrantUnsafeQuestion(t *testing.T) {
+	f, r, state := runGrantedQuestion(t, "grant-unsafe")
+	if state != StateWaitingInput {
+		t.Fatalf("state = %s, want waiting_input after the unsafe failure retries", state)
+	}
+	// A later retry may ask a safe question and get a grant reply; only the
+	// execution that asked the unsafe question must never be replied to.
+	records := readJournal(t, f, r.Delivery())
+	unsafe := map[int]bool{}
+	for _, record := range records {
+		if record.TaskID == "task_1" && record.Kind == KindFailure && bytes.Contains(record.Detail, []byte(blockerUnsafeQuestion)) {
+			var detail struct {
+				Execution int `json:"execution"`
+			}
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+			unsafe[detail.Execution] = true
+		}
+	}
+	if len(unsafe) == 0 {
+		t.Fatal("no question_unsafe failure recorded")
+	}
+	for _, record := range records {
+		if record.TaskID != "task_1" || record.Kind != KindGrantReplied {
+			continue
+		}
+		var detail struct {
+			Execution int    `json:"execution"`
+			Question  string `json:"question"`
+		}
+		if err := json.Unmarshal(record.Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if unsafe[detail.Execution] || strings.Contains(detail.Question, "/private/secret") {
+			t.Fatalf("unsafe question got a grant reply: %s", record.Detail)
+		}
+	}
+}
+
+func TestLoopGrantTurnRunIdentity(t *testing.T) {
+	f, r, state := runGrantedQuestion(t, "grant-reply")
+	if state != StateDone {
+		t.Fatalf("state = %s, want done", state)
+	}
+	task, _ := r.graph.Task("task_1")
+	wantRunID := task.Attempts[1].ChildRunID
+	var dispatches, replies int
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.TaskID != "task_1" || (record.Kind != KindDispatchIntent && record.Kind != KindDispatchResult && record.Kind != KindGrantReplied) {
+			continue
+		}
+		var detail struct {
+			Execution int    `json:"execution"`
+			RunID     string `json:"run_id"`
+		}
+		if err := json.Unmarshal(record.Detail, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if detail.RunID == "" {
+			t.Fatal("empty run_id")
+		}
+		if record.Kind == KindGrantReplied {
+			replies++
+		}
+		if detail.Execution == 2 && detail.RunID != wantRunID {
+			t.Fatalf("%s run_id = %s, want %s", record.Kind, detail.RunID, wantRunID)
+		}
+		if record.Kind != KindGrantReplied {
+			dispatches++
+		}
+	}
+	if dispatches != 6 || replies != 1 || len(r.summaryLocked().Integrated) != 3 {
+		t.Fatalf("dispatches=%d replies=%d summary=%+v", dispatches, replies, r.summaryLocked())
+	}
+}
 
 func TestGrantRepliedDetail(t *testing.T) {
 	t.Parallel()

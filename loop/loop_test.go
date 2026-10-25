@@ -155,6 +155,20 @@ case "${FAKE_SCENARIO:-default}" in
   ask)
     if [ "$n" = 1 ] && [ -z "$answered" ]; then echo "BATUTA-QUESTION: which greeting?"; exit 0; fi
     if [ "$n" = 1 ]; then echo "$answered" > out/1.txt; else echo "ok" > out/$n.txt; fi;;
+  grant-reply|grant-unsafe)
+    if [ "$n" = 1 ]; then
+      if [ -z "$answered" ]; then echo "BATUTA-QUESTION: initial approval?"; exit 0; fi
+      if [ "$FAKE_SCENARIO" = grant-unsafe ]; then
+        echo "BATUTA-QUESTION: may I read /private/secret?"
+        exit 0
+      fi
+      if ! printf '%s\n' "$text" | grep -q 'Already granted:'; then
+        echo "BATUTA-QUESTION: may I edit the greeting?"
+        exit 0
+      fi
+      printf '%s\n' "$text" > "$state/grant-reply-brief"
+    fi
+    echo "ok" > out/$n.txt;;
   grant-granted|grant-work)
     if [ "$n" = 1 ] && [ -z "$answered" ] && [ "$retry" = 0 ]; then echo "BATUTA-QUESTION: may I touch more files?"; exit 0; fi
     echo "ok" > out/$n.txt

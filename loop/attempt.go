@@ -67,6 +67,7 @@ type attemptContext struct {
 // a result proves non-submission, a crash at that boundary requires reconciliation.
 type dispatchDetail struct {
 	Execution              int                      `json:"execution"`
+	Turn                   int                      `json:"turn,omitempty"`
 	RunID                  string                   `json:"run_id"`
 	Backend                string                   `json:"backend"`
 	Executor               string                   `json:"executor"`
@@ -263,14 +264,14 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	briefPath := filepath.Join(ac.worktree.Root, ".batuta", "brief-"+strings.ReplaceAll(taskID, "_", "-")+".md")
 	trail := r.trailPath(taskID)
 	_ = os.MkdirAll(filepath.Dir(trail), 0o755)
-	_ = os.WriteFile(strings.TrimSuffix(trail, ".md")+"-e"+fmt.Sprint(ac.execution)+".brief.md", []byte(brief), 0o644)
+	_ = os.WriteFile(r.grantTurnBriefPath(taskID, ac.execution, 0), []byte(brief), 0o644)
 
 	before, err := r.gitState.WorktreeState(ctx, ac.worktree.Root)
 	if err != nil {
 		return fmt.Errorf("loop: snapshot %s: %w", ac.worktree.Name, err)
 	}
 	logPath := r.runLogPath(taskID, ac.execution)
-	invocation, err := r.startRuntime(&ac, brief, briefPath, logPath)
+	invocation, err := r.startRuntime(&ac, brief, briefPath, logPath, 0)
 	if err != nil {
 		return err
 	}
@@ -291,20 +292,26 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("loop: open executor log: %w", err)
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
 	// Invariant from the harness this loop descends from: a usage limit is
 	// not a failure. Wait or switch runtimes within the SAME attempt;
 	// neither consumes a retry or escalation.
 	var (
-		result  executor.Result
-		execErr error
-		waits   int
+		result     executor.Result
+		execErr    error
+		waits      int
+		grantTurns int
 	)
+	// Grant turns share one deadline, fixed at the first dispatch; a usage
+	// limit wait moves it, so waiting never spends the execution's time.
+	seenQuestions := map[string]bool{}
+	deadline := r.now().Add(r.opts.TaskTimeout)
 	for {
 		var journalErr error
+		remaining := deadline.Sub(r.now())
 		result, execErr, journalErr = r.dispatchAttempt(ctx, &ac, executor.Execution{
-			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: r.opts.TaskTimeout,
+			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: remaining,
 			Progress: progress, Stdout: logFile, Stderr: logFile,
 		})
 		ac.result = &result
@@ -313,6 +320,41 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		}
 		if progressErr != nil {
 			return progressErr
+		}
+		if ctx.Err() == nil && execErr == nil && result.Finished && result.Question != "" &&
+			routing.SafeTaskQuestionText(result.Question) && len(result.Question) <= 2000 && grantTurns < 3 && !seenQuestions[result.Question] &&
+			deadline.After(r.now()) {
+			r.mu.Lock()
+			standing := r.graph.StandingGrant(taskID)
+			r.mu.Unlock()
+			if grantCovers(result.Question, standing).Covered {
+				grantTurns++
+				seenQuestions[result.Question] = true
+				requestID := digestString("question:" + ac.runID + ":" + result.Question)
+				if err := r.locked(KindGrantReplied, taskID, grantRepliedDetail(ac.execution, ac.runID, result.Question, requestID, standing, grantTurns), nil); err != nil {
+					return err
+				}
+				if err := logFile.Close(); err != nil {
+					return fmt.Errorf("loop: close executor log: %w", err)
+				}
+				r.writeLogAt(logPath, result)
+				input.Grant = standing
+				input.GrantReply = &GrantReply{Question: result.Question, Paths: standing.Paths, Operations: standing.Operations}
+				brief = Brief(input)
+				logPath = r.grantTurnLogPath(taskID, ac.execution, grantTurns)
+				if err := os.WriteFile(r.grantTurnBriefPath(taskID, ac.execution, grantTurns), []byte(brief), 0o644); err != nil {
+					return err
+				}
+				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath, grantTurns)
+				if err != nil {
+					return err
+				}
+				logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o644)
+				if err != nil {
+					return fmt.Errorf("loop: open executor log: %w", err)
+				}
+				continue
+			}
 		}
 		if ctx.Err() != nil || execErr != nil || !result.RateLimited || result.Receipt != nil {
 			break
@@ -341,7 +383,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 				if !probe.Pass {
 					return r.recordIncapable(ctx, ac, probe)
 				}
-				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath)
+				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath, grantTurns)
 				if err != nil {
 					return err
 				}
@@ -361,12 +403,13 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		if err := r.sleep(ctx, delay); err != nil {
 			return nil // the deferred interruption handler parks the attempt
 		}
+		deadline = deadline.Add(delay)
 	}
 	_ = os.Remove(briefPath)
 	if err := logFile.Close(); err != nil {
 		return fmt.Errorf("loop: close executor log: %w", err)
 	}
-	r.writeLog(taskID, ac.execution, result)
+	r.writeLogAt(logPath, result)
 	if ctx.Err() != nil {
 		return nil // the deferred interruption handler parks the attempt
 	}
@@ -567,7 +610,7 @@ func reportedDoneProofFailures(feedback []string, criteria []gates.Criterion, pr
 	return feedback
 }
 
-func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath string) (executor.Invocation, error) {
+func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath string, turn int) (executor.Invocation, error) {
 	adapter, err := r.adapterLocked(ac.runtime.Provider)
 	if err != nil {
 		return executor.Invocation{}, err
@@ -596,7 +639,7 @@ func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath stri
 		backend = transport.Mode
 	}
 	ac.dispatch = dispatchDetail{
-		Execution: ac.execution, RunID: ac.runID, Backend: backend, Executor: ac.adapter.Name,
+		Execution: ac.execution, Turn: turn, RunID: ac.runID, Backend: backend, Executor: ac.adapter.Name,
 		Model: ac.runtime.Model, Reasoning: ac.runtime.Reasoning, Workspace: ac.worktree.Root,
 		BriefDigest: digestString(brief), Submission: executor.SubmissionNotSubmitted,
 	}
@@ -1225,7 +1268,10 @@ func tailBytes(s string, max int) string {
 }
 
 func (r *Runner) writeLog(taskID string, execution int, result executor.Result) {
-	path := r.runLogPath(taskID, execution)
+	r.writeLogAt(r.runLogPath(taskID, execution), result)
+}
+
+func (r *Runner) writeLogAt(path string, result executor.Result) {
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	var b strings.Builder
 	fmt.Fprintf(&b, "# exit %d · finished %v · timed out %v · rate limited %v · %s\n\n## stdout\n\n", result.ExitCode, result.Finished, result.TimedOut, result.RateLimited, result.Duration.Round(time.Second))
