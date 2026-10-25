@@ -197,6 +197,17 @@ case "${FAKE_SCENARIO:-default}" in
       exit 0
     fi
     echo "ok" > out/$n.txt;;
+  grant-expansion|grant-malformed)
+    if [ "$n" = 1 ]; then
+      if [ -z "$answered" ]; then echo "BATUTA-QUESTION: initial approval?"; exit 0; fi
+      if [ "$FAKE_SCENARIO" = grant-expansion ]; then
+        echo "BATUTA-QUESTION: Beyond grant: paths: docs/extra.md; operations: install"
+      else
+        echo "BATUTA-QUESTION: Beyond grant: nonsense"
+      fi
+      exit 0
+    fi
+    echo "ok" > out/$n.txt;;
   grant-granted|grant-work)
     if [ "$n" = 1 ] && [ -z "$answered" ] && [ "$retry" = 0 ]; then echo "BATUTA-QUESTION: may I touch more files?"; exit 0; fi
     echo "ok" > out/$n.txt

@@ -507,3 +507,129 @@ func TestPanelSummarizesGrantReply(t *testing.T) {
 		t.Fatalf("a grant reply must not raise a question: %+v", model.Attention)
 	}
 }
+
+func parkedQuestion(t *testing.T, f fixture, r *Runner) (string, map[string]any) {
+	t.Helper()
+	ask, err := os.ReadFile(filepath.Join(f.root, ".batuta", "asks", "greetings-task-1.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail map[string]any
+	for _, record := range readJournal(t, f, r.Delivery()) {
+		if record.TaskID == "task_1" && record.Kind == KindQuestion {
+			detail = nil
+			if err := json.Unmarshal(record.Detail, &detail); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if detail == nil {
+		t.Fatal("no question_recorded detail for task_1")
+	}
+	return string(ask), detail
+}
+
+func TestLoopGrantParksOnExpansion(t *testing.T) {
+	f, r, state := runGrantTurnScenario(t, "grant-expansion", nil, nil)
+	if state != StateWaitingInput {
+		t.Fatalf("state = %s, want waiting_input", state)
+	}
+	ask, detail := parkedQuestion(t, f, r)
+	if detail["grant_park"] != "not_covered" {
+		t.Fatalf("grant_park = %v, want not_covered", detail["grant_park"])
+	}
+	if beyond, _ := detail["beyond_grant"].([]any); len(beyond) != 2 || beyond[0] != "docs/extra.md" || beyond[1] != "install" {
+		t.Fatalf("beyond_grant = %v", detail["beyond_grant"])
+	}
+	for _, want := range []string{"grant_park: not_covered", "beyond_grant: docs/extra.md, install"} {
+		if !strings.Contains(ask, want) {
+			t.Fatalf("ask file lacks %q:\n%s", want, ask)
+		}
+	}
+}
+
+func TestLoopGrantParksOnMalformedClause(t *testing.T) {
+	f, r, state := runGrantTurnScenario(t, "grant-malformed", nil, nil)
+	if state != StateWaitingInput {
+		t.Fatalf("state = %s, want waiting_input", state)
+	}
+	ask, detail := parkedQuestion(t, f, r)
+	if detail["grant_park"] != "malformed_clause" {
+		t.Fatalf("grant_park = %v, want malformed_clause", detail["grant_park"])
+	}
+	if _, found := detail["beyond_grant"]; found {
+		t.Fatalf("detail carries an item list: %v", detail)
+	}
+	if !strings.Contains(ask, "grant_park: malformed_clause") || strings.Contains(ask, "beyond_grant") {
+		t.Fatalf("ask file:\n%s", ask)
+	}
+}
+
+func TestLoopGrantParkReason(t *testing.T) {
+	tests := []struct{ name, scenario, reason string }{
+		{"turn cap", "grant-cap", "turn_cap"},
+		{"repeated question", "grant-repeat", "repeat"},
+		{"deadline", "grant-deadline", "deadline"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var configure func(*Options)
+			var beforeRun func(*Runner)
+			if test.scenario == "grant-deadline" {
+				clock := time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+				calls := 0
+				configure = func(opts *Options) { opts.Now = func() time.Time { return clock } }
+				beforeRun = func(r *Runner) {
+					r.backend = grantTestBackend{backend: r.backend, after: func() {
+						calls++
+						if calls == 1 {
+							clock = clock.Add(30 * time.Second)
+						} else {
+							clock = clock.Add(2 * time.Minute)
+						}
+					}}
+				}
+			}
+			f, r, state := runGrantTurnScenario(t, test.scenario, configure, beforeRun)
+			if state != StateWaitingInput {
+				t.Fatalf("state = %s, want waiting_input", state)
+			}
+			ask, detail := parkedQuestion(t, f, r)
+			if detail["grant_park"] != test.reason {
+				t.Fatalf("grant_park = %v, want %s", detail["grant_park"], test.reason)
+			}
+			if _, found := detail["beyond_grant"]; found {
+				t.Fatalf("detail carries an item list: %v", detail)
+			}
+			if !strings.Contains(ask, "grant_park: "+test.reason) {
+				t.Fatalf("ask file lacks the reason:\n%s", ask)
+			}
+		})
+	}
+}
+
+func TestLoopQuestionWithoutGrantUnchanged(t *testing.T) {
+	isolateGrantCache(t)
+	f := setup(t)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("ask", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state, err := r.Run(context.Background()); err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	ask, detail := parkedQuestion(t, f, r)
+	if len(detail) != 5 {
+		t.Fatalf("detail keys = %v", detail)
+	}
+	for _, key := range []string{"execution", "run_id", "question", "request_id", "ask_path"} {
+		if _, found := detail[key]; !found {
+			t.Fatalf("detail lacks %q: %v", key, detail)
+		}
+	}
+	// The worktree path in the ask file embeds the test name.
+	if strings.Contains(strings.ToLower(strings.ReplaceAll(ask, f.root, "")), "grant") {
+		t.Fatalf("ask file mentions a grant:\n%s", ask)
+	}
+}

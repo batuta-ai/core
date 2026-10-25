@@ -61,6 +61,32 @@ type attemptContext struct {
 	dispatch         dispatchDetail
 	verifierDispatch dispatchDetail
 	previous         *routing.GraphTaskAttempt // the answered attempt, on a continuation
+	grantPark        grantPark
+}
+
+// grantPark says why a question reached the human although the task holds a
+// standing grant. Its zero value means no grant, or no question.
+type grantPark struct {
+	Reason string
+	Beyond []string
+}
+
+// parkReason is why a question the hook did not answer parks, or "" when the
+// grant answers it.
+func parkReason(coverage grantCoverage, turns int, repeated, inTime bool) string {
+	switch {
+	case coverage.Malformed:
+		return "malformed_clause"
+	case !coverage.Covered:
+		return "not_covered"
+	case turns >= 3:
+		return "turn_cap"
+	case repeated:
+		return "repeat"
+	case !inTime:
+		return "deadline"
+	}
+	return ""
 }
 
 // An intent is synced before entering a backend that can submit a prompt. Until
@@ -322,39 +348,48 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 			return progressErr
 		}
 		questionKey := grantQuestionKey(result.Question)
+		ac.grantPark = grantPark{}
 		if ctx.Err() == nil && execErr == nil && result.Finished && result.Question != "" &&
-			routing.SafeTaskQuestionText(result.Question) && len(result.Question) <= 2000 && grantTurns < 3 && !seenQuestions[questionKey] &&
-			deadline.After(r.now()) {
+			routing.SafeTaskQuestionText(result.Question) && len(result.Question) <= 2000 {
 			r.mu.Lock()
 			standing := r.graph.StandingGrant(taskID)
 			r.mu.Unlock()
-			if grantCovers(result.Question, standing).Covered {
-				grantTurns++
-				seenQuestions[questionKey] = true
-				requestID := digestString("question:" + ac.runID + ":" + result.Question)
-				if err := r.locked(KindGrantReplied, taskID, grantRepliedDetail(ac.execution, ac.runID, result.Question, requestID, standing, grantTurns), nil); err != nil {
-					return err
+			if len(standing.Paths) > 0 || len(standing.Operations) > 0 {
+				coverage := grantCovers(result.Question, standing)
+				reason := parkReason(coverage, grantTurns, seenQuestions[questionKey], deadline.After(r.now()))
+				if reason != "" {
+					ac.grantPark = grantPark{Reason: reason}
+					if reason == "not_covered" {
+						ac.grantPark.Beyond = coverage.Uncovered
+					}
+				} else {
+					grantTurns++
+					seenQuestions[questionKey] = true
+					requestID := digestString("question:" + ac.runID + ":" + result.Question)
+					if err := r.locked(KindGrantReplied, taskID, grantRepliedDetail(ac.execution, ac.runID, result.Question, requestID, standing, grantTurns), nil); err != nil {
+						return err
+					}
+					if err := logFile.Close(); err != nil {
+						return fmt.Errorf("loop: close executor log: %w", err)
+					}
+					r.writeLogAt(logPath, result)
+					input.Grant = standing
+					input.GrantReply = &GrantReply{Question: result.Question, Paths: standing.Paths, Operations: standing.Operations}
+					brief = Brief(input)
+					logPath = r.grantTurnLogPath(taskID, ac.execution, grantTurns)
+					if err := os.WriteFile(r.grantTurnBriefPath(taskID, ac.execution, grantTurns), []byte(brief), 0o644); err != nil {
+						return err
+					}
+					invocation, err = r.startRuntime(&ac, brief, briefPath, logPath, grantTurns)
+					if err != nil {
+						return err
+					}
+					logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o644)
+					if err != nil {
+						return fmt.Errorf("loop: open executor log: %w", err)
+					}
+					continue
 				}
-				if err := logFile.Close(); err != nil {
-					return fmt.Errorf("loop: close executor log: %w", err)
-				}
-				r.writeLogAt(logPath, result)
-				input.Grant = standing
-				input.GrantReply = &GrantReply{Question: result.Question, Paths: standing.Paths, Operations: standing.Operations}
-				brief = Brief(input)
-				logPath = r.grantTurnLogPath(taskID, ac.execution, grantTurns)
-				if err := os.WriteFile(r.grantTurnBriefPath(taskID, ac.execution, grantTurns), []byte(brief), 0o644); err != nil {
-					return err
-				}
-				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath, grantTurns)
-				if err != nil {
-					return err
-				}
-				logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o644)
-				if err != nil {
-					return fmt.Errorf("loop: open executor log: %w", err)
-				}
-				continue
 			}
 		}
 		if ctx.Err() != nil || execErr != nil || !result.RateLimited || result.Receipt != nil {
@@ -900,14 +935,24 @@ func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result e
 		return fmt.Errorf("loop: create ask directory: %w", err)
 	}
 	atCeiling := ac.execution == routing.MaxTaskExecutions
-	body := fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer with:\n\n    batuta loop --answer %s \"<your answer>\"\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt, ac.taskID)
+	shown := question.Prompt
+	detail := map[string]any{"execution": ac.execution, "run_id": ac.runID, "question": question.Prompt, "request_id": question.RequestID, "ask_path": askPath}
+	if ac.grantPark.Reason != "" {
+		shown += "\n\ngrant_park: " + ac.grantPark.Reason
+		detail["grant_park"] = ac.grantPark.Reason
+		if len(ac.grantPark.Beyond) > 0 {
+			shown += "\nbeyond_grant: " + strings.Join(ac.grantPark.Beyond, ", ")
+			detail["beyond_grant"] = ac.grantPark.Beyond
+		}
+	}
+	body := fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer with:\n\n    batuta loop --answer %s \"<your answer>\"\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, shown, ac.taskID)
 	if atCeiling {
-		body = fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer by hand in a new plan or an interactive cycle; this task has reached the execution ceiling.\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt)
+		body = fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer by hand in a new plan or an interactive cycle; this task has reached the execution ceiling.\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, shown)
 	}
 	if err := os.WriteFile(askPath, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("loop: write ask file: %w", err)
 	}
-	err := r.locked(KindQuestion, ac.taskID, map[string]any{"execution": ac.execution, "run_id": ac.runID, "question": question.Prompt, "request_id": question.RequestID, "ask_path": askPath}, func() error {
+	err := r.locked(KindQuestion, ac.taskID, detail, func() error {
 		if _, err := r.graph.RecordQuestion(ac.taskID, ac.execution, ac.runID, question, r.now()); err != nil {
 			return fmt.Errorf("loop: record question: %w", err)
 		}
