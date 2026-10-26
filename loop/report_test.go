@@ -700,3 +700,92 @@ func TestSupervisionBookkeepingIdentityMatches(t *testing.T) {
 		})
 	}
 }
+
+func lastAnswerRecord(t *testing.T, store *journal.Store, delivery string) (journal.Record, routing.DeliveryGraph) {
+	t.Helper()
+	records := answerRecords(t, store, delivery)
+	last := records[len(records)-1]
+	if last.Kind != KindAnswer {
+		t.Fatalf("last record kind = %q, want %q", last.Kind, KindAnswer)
+	}
+	var graph routing.DeliveryGraph
+	if err := json.Unmarshal(last.Graph, &graph); err != nil {
+		t.Fatal(err)
+	}
+	return last, graph
+}
+
+func TestAnswerRecordsGrant(t *testing.T) {
+	t.Parallel()
+	root, store, target := exactAnswerFixture(t)
+	grant := routing.TaskGrant{Paths: []string{"src/x/**", "Makefile"}, Operations: []string{"test", "git-commit"}}
+	if id, err := AnswerGrant(root, "1", "go ahead", grant); err != nil || id != target.DeliveryID {
+		t.Fatalf("AnswerGrant() = %q, %v", id, err)
+	}
+	record, graph := lastAnswerRecord(t, store, target.DeliveryID)
+	want := `{"answer":"go ahead","execution":1,"grant":{"paths":["Makefile","src/x/**"],"operations":["git-commit","test"],"until":"task"},"question":"Choose the behavior"}`
+	if string(record.Detail) != want {
+		t.Fatalf("detail = %s\nwant     %s", record.Detail, want)
+	}
+	standing := graph.StandingGrant(target.TaskID)
+	if !reflect.DeepEqual(standing.Paths, []string{"Makefile", "src/x/**"}) ||
+		!reflect.DeepEqual(standing.Operations, []string{"git-commit", "test"}) || standing.Until != routing.GrantUntilTask {
+		t.Fatalf("standing grant on the graph = %+v", standing)
+	}
+}
+
+func TestAnswerRejectsInvalidGrant(t *testing.T) {
+	t.Parallel()
+	for _, grant := range []routing.TaskGrant{
+		{Paths: []string{"WORK.md"}},
+		{Paths: []string{"/abs"}},
+		{Operations: []string{"Not Valid"}},
+	} {
+		root, store, target := exactAnswerFixture(t)
+		before := answerRecords(t, store, target.DeliveryID)
+		if id, err := AnswerGrant(root, "1", "go ahead", grant); err == nil || id != "" {
+			t.Fatalf("AnswerGrant(%+v) = %q, %v; want an error", grant, id, err)
+		}
+		if after := answerRecords(t, store, target.DeliveryID); len(after) != len(before) {
+			t.Fatalf("invalid grant %+v appended %d records", grant, len(after)-len(before))
+		}
+	}
+}
+
+func TestAnswerWithoutGrantUnchanged(t *testing.T) {
+	t.Parallel()
+	const want = `{"answer":"go ahead","execution":1,"question":"Choose the behavior"}`
+	for name, answer := range map[string]func(root string, target QuestionTarget) error{
+		"AnswerQuestion": func(root string, target QuestionTarget) error {
+			_, err := AnswerQuestion(context.Background(), root, target, "go ahead")
+			return err
+		},
+		"AnswerDelivery": func(root string, target QuestionTarget) error {
+			_, err := AnswerDelivery(root, target.DeliveryID, target.TaskID, target.QuestionID, "go ahead")
+			return err
+		},
+		"Answer": func(root string, target QuestionTarget) error {
+			_, err := Answer(root, "1", "go ahead")
+			return err
+		},
+		"empty grant": func(root string, target QuestionTarget) error {
+			_, err := AnswerGrant(root, "1", "go ahead", routing.TaskGrant{})
+			return err
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root, store, target := exactAnswerFixture(t)
+			if err := answer(root, target); err != nil {
+				t.Fatal(err)
+			}
+			record, graph := lastAnswerRecord(t, store, target.DeliveryID)
+			if string(record.Detail) != want {
+				t.Fatalf("detail = %s\nwant     %s", record.Detail, want)
+			}
+			if standing := graph.StandingGrant(target.TaskID); standing.Until != "" || len(standing.Paths) != 0 || len(standing.Operations) != 0 {
+				t.Fatalf("standing grant = %+v, want none", standing)
+			}
+		})
+	}
+}

@@ -163,3 +163,102 @@ func TestBriefWithoutProfileConventions(t *testing.T) {
 		})
 	}
 }
+
+func grantedBrief() string {
+	return Brief(BriefInput{
+		Task:     routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Grant task"}, Scope: []string{"out/1.txt"}},
+		Worktree: "/tmp/worktree",
+		Grant:    routing.TaskGrant{Paths: []string{"docs/**", "scripts/run.sh"}, Operations: []string{"git-commit", "test"}, Until: routing.GrantUntilTask},
+	})
+}
+
+func briefSection(t *testing.T, brief, heading string) string {
+	t.Helper()
+	_, section, found := strings.Cut(brief, heading+"\n\n")
+	if !found {
+		t.Fatalf("brief has no %q section:\n%s", heading, brief)
+	}
+	section, _, _ = strings.Cut(section, "\n## ")
+	return section
+}
+
+func TestBriefRendersStandingGrant(t *testing.T) {
+	t.Parallel()
+	section := briefSection(t, grantedBrief(), "## Standing grant")
+	for _, want := range []string{"`docs/**`", "`scripts/run.sh`", "`git-commit`", "`test`", "until the task ends", "never lifts the `## Boundaries` rules"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("standing grant section lacks %q:\n%s", want, section)
+		}
+	}
+	if strings.Contains(Brief(BriefInput{Task: routing.PlanTask{Scope: []string{"out/1.txt"}}}), "## Standing grant") {
+		t.Error("brief without a grant renders a standing grant section")
+	}
+}
+
+func TestBriefEffectiveScope(t *testing.T) {
+	t.Parallel()
+	section := briefSection(t, grantedBrief(), "## Scope")
+	plan := strings.Index(section, "- `out/1.txt`\n")
+	granted := strings.Index(section, "- `docs/**` (standing grant)\n")
+	other := strings.Index(section, "- `scripts/run.sh` (standing grant)\n")
+	if plan < 0 || granted < plan || other < granted {
+		t.Fatalf("scope does not list the plan Scope then the granted paths:\n%s", section)
+	}
+	if !strings.Contains(section, "does not lift the `## Boundaries` rules") {
+		t.Errorf("scope does not say the grant keeps the Boundaries:\n%s", section)
+	}
+}
+
+func TestBriefGrantProtocolLine(t *testing.T) {
+	t.Parallel()
+	section := briefSection(t, grantedBrief(), "## Stop conditions")
+	for _, want := range []string{"BATUTA-QUESTION:", "`Beyond grant: paths: <paths>; operations: <operations>`", "must end with"} {
+		if !strings.Contains(section, want) {
+			t.Errorf("stop conditions lack %q:\n%s", want, section)
+		}
+	}
+	if strings.Contains(briefSection(t, Brief(BriefInput{}), "## Stop conditions"), "Beyond grant") {
+		t.Error("brief without a grant mentions the Beyond grant clause")
+	}
+}
+
+func TestBriefGrantReply(t *testing.T) {
+	t.Parallel()
+	brief := Brief(BriefInput{
+		Task:     routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Grant task"}},
+		Worktree: "/tmp/worktree",
+		Question: "Which file holds the brief?",
+		Answer:   "loop/brief.go",
+		GrantReply: &GrantReply{
+			Question:   "May I edit docs?",
+			Paths:      []string{"docs/**", "scripts/run.sh"},
+			Operations: []string{"git-commit", "test"},
+		},
+	})
+	human := "You stopped earlier with this question: Which file holds the brief?\nThe answer: loop/brief.go\nContinue from the state of this worktree.\n\n"
+	reply := "You stopped earlier with this question: May I edit docs?\nAlready granted: paths docs/**, scripts/run.sh; operations git-commit, test. Continue. Ask again only with a Beyond grant: clause that names what is not granted; use that clause for scope questions.\n\n"
+	humanAt, replyAt := strings.Index(brief, human), strings.Index(brief, reply)
+	if humanAt < 0 || replyAt < humanAt+len(human) {
+		t.Fatalf("context lacks the human Q/A followed by the grant reply:\n%s", brief)
+	}
+	if strings.Index(brief, "## Conventions") < replyAt {
+		t.Errorf("grant reply renders outside ## Context:\n%s", brief)
+	}
+}
+
+func TestBriefHumanAnswerUnchanged(t *testing.T) {
+	t.Parallel()
+	brief := Brief(BriefInput{
+		Task:     routing.PlanTask{TaskArtifact: routing.TaskArtifact{Title: "Human task"}},
+		Worktree: "/tmp/worktree",
+		Question: "Which file holds the brief?",
+		Answer:   "loop/brief.go",
+	})
+	want := "You stopped earlier with this question: Which file holds the brief?\nThe answer: loop/brief.go\nContinue from the state of this worktree.\n\n"
+	if !strings.Contains(brief, want) {
+		t.Errorf("human answer block changed:\n%s", brief)
+	}
+	if strings.Contains(brief, "Already granted") {
+		t.Error("brief without a grant reply renders Already granted")
+	}
+}

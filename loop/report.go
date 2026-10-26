@@ -1016,7 +1016,16 @@ func answerSelected(workspace, delivery, taskRef string, execution int, question
 	return answerSelectedContext(context.Background(), workspace, delivery, taskRef, execution, questionID, text, now, nil)
 }
 
+// AnswerGrant records an answer that also carries a standing grant for the task.
+func AnswerGrant(workspace, taskRef, text string, grant routing.TaskGrant) (string, error) {
+	return answerSelectedGrant(context.Background(), workspace, "", taskRef, 0, "", text, time.Now().UTC(), nil, &grant)
+}
+
 func answerSelectedContext(ctx context.Context, workspace, delivery, taskRef string, execution int, questionID, text string, now time.Time, target *QuestionTarget) (string, error) {
+	return answerSelectedGrant(ctx, workspace, delivery, taskRef, execution, questionID, text, now, target, nil)
+}
+
+func answerSelectedGrant(ctx context.Context, workspace, delivery, taskRef string, execution int, questionID, text string, now time.Time, target *QuestionTarget, grant *routing.TaskGrant) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -1172,11 +1181,18 @@ func answerSelectedContext(ctx context.Context, workspace, delivery, taskRef str
 			QuestionOperationID: attempt.Question.RequestID, LoopRunID: attempt.ChildRunID,
 			Generation: 1, NodeID: "loop", ItemIndex: 0, Value: text,
 		}
+		detailFields := map[string]any{"execution": attempt.Execution, "answer": text, "question": attempt.Question.Prompt}
+		if grant != nil {
+			if normalized := grant.Normalize(); normalized.Until != "" {
+				answer.Grant = &normalized
+				detailFields["grant"] = normalized
+			}
+		}
 		if _, _, err := graph.RecordAnswer(taskID, attempt.Execution, answer, now); err != nil {
 			return "", errors.Join(fmt.Errorf("loop: record answer: %w", err), ownership.stop())
 		}
 		graphJSON, _ := json.Marshal(graph)
-		detail, _ := json.Marshal(map[string]any{"execution": attempt.Execution, "answer": text, "question": attempt.Question.Prompt})
+		detail, _ := json.Marshal(detailFields)
 		if err := ctx.Err(); err != nil {
 			return "", errors.Join(err, ownership.stop())
 		}
@@ -1431,6 +1447,8 @@ func recordSummary(record journal.Record) string {
 		return pick("question")
 	case KindAnswer:
 		return pick("answer")
+	case KindGrantReplied:
+		return pick("execution", "turn", "request_id", "grant_digest")
 	default:
 		return pick("wave", "execution", "state", "reason", "error")
 	}

@@ -3,12 +3,14 @@ package gates
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/batuta-ai/core/publication"
+	"github.com/batuta-ai/core/routing"
 )
 
 func TestHasTaskLines(t *testing.T) {
@@ -408,4 +410,89 @@ func TestProofsMixedNoTestFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+func boundarySample(pattern string, nested bool) string {
+	sample := strings.NewReplacer("/**", "/x.txt", "LICENSE*", "LICENSE-MIT", "COPYING*", "COPYING.md", "NOTICE*", "NOTICE.txt").Replace(pattern)
+	if rest, anyDepth := strings.CutPrefix(sample, "**/"); anyDepth {
+		sample = rest
+	}
+	if nested {
+		return "pkg/sub/" + sample
+	}
+	return sample
+}
+
+func TestScopeGrantKeepsBoundaries(t *testing.T) {
+	t.Parallel()
+	plan := []string{"out/1.txt"}
+	t.Run("grant covers a path outside the plan Scope", func(t *testing.T) {
+		t.Parallel()
+		verdict := ScopeWithGrant([]string{"out/1.txt", "docs/a/b.md"}, plan, []string{"docs/**"}, routing.IsGrantBoundary)
+		if !verdict.Pass || verdict.Signal != "within Scope" {
+			t.Fatalf("verdict = %#v", verdict)
+		}
+	})
+	t.Run("an ungranted path fails", func(t *testing.T) {
+		t.Parallel()
+		verdict := ScopeWithGrant([]string{"docs/a.md", "src/b.go"}, plan, []string{"docs/**"}, routing.IsGrantBoundary)
+		if verdict.Pass || verdict.Detail != "src/b.go" {
+			t.Fatalf("verdict = %#v", verdict)
+		}
+	})
+	t.Run("an empty plan Scope passes with a signal", func(t *testing.T) {
+		t.Parallel()
+		verdict := ScopeWithGrant([]string{"anything.go"}, nil, []string{"docs/**"}, routing.IsGrantBoundary)
+		if !verdict.Pass || !strings.Contains(verdict.Signal, "no Scope declared") {
+			t.Fatalf("verdict = %#v", verdict)
+		}
+	})
+	t.Run("managed paths are reported, not failed", func(t *testing.T) {
+		t.Parallel()
+		verdict := ScopeWithGrant([]string{"out/1.txt", "WORK.md", ".batuta/runs/x.md"}, plan, []string{"docs/**"}, routing.IsGrantBoundary)
+		if !verdict.Pass || !strings.Contains(verdict.Signal, "managed state also touched") {
+			t.Fatalf("verdict = %#v", verdict)
+		}
+	})
+	t.Run("a git-quoted path never passes through the grant", func(t *testing.T) {
+		t.Parallel()
+		for _, quoted := range []string{`".github/workflows/a\303\247.yml"`, `"pkg/\303\247/go.sum"`, `"docs/\303\247.md"`} {
+			verdict := ScopeWithGrant([]string{quoted}, plan, []string{"**"}, routing.IsGrantBoundary)
+			if verdict.Pass || verdict.Detail != quoted {
+				t.Fatalf("grant of ** let %s through: %#v", quoted, verdict)
+			}
+		}
+	})
+	t.Run("no grant is Scope", func(t *testing.T) {
+		t.Parallel()
+		changed := []string{"out/1.txt", "docs/a.md"}
+		if got, want := ScopeWithGrant(changed, plan, nil, routing.IsGrantBoundary), Scope(changed, plan); !reflect.DeepEqual(got, want) {
+			t.Fatalf("verdict = %#v, want %#v", got, want)
+		}
+	})
+	for _, pattern := range routing.GrantBoundaryPaths {
+		for _, nested := range []bool{false, true} {
+			target := boundarySample(pattern, nested)
+			if nested && !strings.HasPrefix(pattern, "**/") {
+				continue
+			}
+			t.Run(target, func(t *testing.T) {
+				t.Parallel()
+				if !routing.IsGrantBoundary(target) {
+					t.Fatalf("sample %q is not a boundary path", target)
+				}
+				verdict := ScopeWithGrant([]string{target}, plan, []string{"**"}, routing.IsGrantBoundary)
+				if verdict.Pass || verdict.Detail != target {
+					t.Fatalf("grant of ** let %q through: %#v", target, verdict)
+				}
+			})
+		}
+	}
+	t.Run("a boundary file the plan Scope names passes", func(t *testing.T) {
+		t.Parallel()
+		verdict := ScopeWithGrant([]string{"go.sum", "pkg/go.sum"}, []string{"go.sum", "pkg/go.sum"}, []string{"**"}, routing.IsGrantBoundary)
+		if !verdict.Pass {
+			t.Fatalf("verdict = %#v", verdict)
+		}
+	})
 }

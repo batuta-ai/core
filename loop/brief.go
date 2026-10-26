@@ -20,10 +20,20 @@ type BriefInput struct {
 	Worktree    string
 	Base        string
 	Criteria    []gates.Criterion
-	Feedback    []string // failures of the previous attempt, verbatim
-	Question    string   // the question the executor asked, when continuing
-	Answer      string   // the human's answer
-	Lane        string   // domain/complexity for the sweep rule
+	Feedback    []string          // failures of the previous attempt, verbatim
+	Question    string            // the question the executor asked, when continuing
+	Answer      string            // the human's answer
+	Lane        string            // domain/complexity for the sweep rule
+	Grant       routing.TaskGrant // the task's standing grant, empty when none
+	GrantReply  *GrantReply       // the question the grant answers, nil when none
+}
+
+// GrantReply is a question the standing grant already covers, with what the
+// grant covers.
+type GrantReply struct {
+	Question   string
+	Paths      []string
+	Operations []string
 }
 
 const methodLine = "Work test-first from the acceptance criteria. Investigate root cause before fixing a bug; never silence a signal (cast, suppression, empty catch, sleep) instead of fixing its source — if you must, mark `// WORKAROUND: <reason>` and say so in your report."
@@ -58,6 +68,9 @@ func Brief(input BriefInput) string {
 	}
 	if input.Question != "" {
 		fmt.Fprintf(&b, "You stopped earlier with this question: %s\nThe answer: %s\nContinue from the state of this worktree.\n\n", input.Question, input.Answer)
+	}
+	if input.GrantReply != nil {
+		writeGrantReply(&b, *input.GrantReply)
 	}
 	if len(input.Feedback) > 0 {
 		b.WriteString("### Feedback from the previous attempt\n\nA previous session worked on this task in this worktree and did not pass verification. You are a new session with no memory of it: read the current code before changing anything. Fix only what is missing or wrong — do not reimplement what is already correct and tested. The real cause:\n\n")
@@ -111,12 +124,24 @@ func Brief(input BriefInput) string {
 	b.WriteString("## Boundaries\n\n")
 	b.WriteString("Do not touch CI configuration, licenses, lockfiles (except through an allowed dependency), `WORK.md` or anything under `.batuta/`. Do not push, do not merge, do not change branches.\n\n")
 
+	granted := len(input.Grant.Paths) > 0 || len(input.Grant.Operations) > 0
+	if granted {
+		writeStandingGrant(&b, input.Grant)
+	}
+
 	b.WriteString("## Scope\n\n")
 	if len(task.Scope) > 0 {
 		for _, entry := range task.Scope {
 			b.WriteString("- `" + strings.TrimSpace(entry) + "`\n")
 		}
-		b.WriteString("\nDo not change anything outside this list; if the task requires it, stop and report.\n\n")
+		for _, grantedPath := range input.Grant.Paths {
+			b.WriteString("- `" + grantedPath + "` (standing grant)\n")
+		}
+		b.WriteString("\nDo not change anything outside this list; if the task requires it, stop and report.")
+		if len(input.Grant.Paths) > 0 {
+			b.WriteString(" The standing grant adds its paths to the Scope; it does not lift the `## Boundaries` rules.")
+		}
+		b.WriteString("\n\n")
 	} else {
 		b.WriteString("Unknown — the plan declares no Scope; keep changes to the files the criteria name and report every path you touch.\n\n")
 	}
@@ -126,13 +151,47 @@ func Brief(input BriefInput) string {
 
 	b.WriteString("## Stop conditions\n\n")
 	b.WriteString("Stop and report instead of improvising when: (1) the code's shape contradicts this brief; (2) the same command fails twice; (3) the fix needs edits beyond Scope or Boundaries. ")
-	fmt.Fprintf(&b, "To ask the human a question, print exactly one final line `%s <your question>` and exit 0; the run pauses and resumes in this worktree with the answer.\n\n", executor.QuestionPrefix)
+	fmt.Fprintf(&b, "To ask the human a question, print exactly one final line `%s <your question>` and exit 0; the run pauses and resumes in this worktree with the answer.", executor.QuestionPrefix)
+	if granted {
+		b.WriteString(" A standing grant covers this task: a question that asks for something the grant does not cover must end with a `Beyond grant: paths: <paths>; operations: <operations>` clause, on that same line, naming each ungranted item (either group may be left out). A question without that clause gets the grant reply, so use the clause for every scope question.")
+	}
+	b.WriteString("\n\n")
 
 	if needsTestLaws(input.Criteria, input.Profile) {
 		b.WriteString("## Test laws\n\n" + testLaws + "\n\n")
 	}
 	b.WriteString("## Method\n\n" + methodLine + "\n")
 	return b.String()
+}
+
+func writeStandingGrant(b *strings.Builder, grant routing.TaskGrant) {
+	b.WriteString("## Standing grant\n\nThe human granted this task the following. It stays valid in every execution of this task until the task ends, whether or not this brief repeats the answer.\n\n")
+	if len(grant.Paths) > 0 {
+		b.WriteString("Paths:\n")
+		for _, grantedPath := range grant.Paths {
+			b.WriteString("- `" + grantedPath + "`\n")
+		}
+		b.WriteString("\n")
+	}
+	if len(grant.Operations) > 0 {
+		b.WriteString("Operations:\n")
+		for _, operation := range grant.Operations {
+			b.WriteString("- `" + operation + "`\n")
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("The grant never lifts the `## Boundaries` rules.\n\n")
+}
+
+func writeGrantReply(b *strings.Builder, reply GrantReply) {
+	var granted []string
+	if len(reply.Paths) > 0 {
+		granted = append(granted, "paths "+strings.Join(reply.Paths, ", "))
+	}
+	if len(reply.Operations) > 0 {
+		granted = append(granted, "operations "+strings.Join(reply.Operations, ", "))
+	}
+	fmt.Fprintf(b, "You stopped earlier with this question: %s\nAlready granted: %s. Continue. Ask again only with a Beyond grant: clause that names what is not granted; use that clause for scope questions.\n\n", reply.Question, strings.Join(granted, "; "))
 }
 
 // taskProse is the prose under a task line, minus the machine fields.

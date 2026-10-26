@@ -1708,3 +1708,340 @@ func TestRecordFailureBlocksWhenEscalationTargetIsSelf(t *testing.T) {
 		t.Fatalf("task after self escalation = %#v, want one blocked attempt with needs_conducting_session", task)
 	}
 }
+
+func grantFixtureGraph(t *testing.T, taskIDs ...string) (*DeliveryGraph, time.Time) {
+	t.Helper()
+	artifacts := make([]TaskArtifact, len(taskIDs))
+	for index, id := range taskIDs {
+		artifacts[index] = graphTaskArtifact(id, "pending", DomainBackend, ComplexityLow)
+	}
+	snapshot := graphSnapshotFixture(t, artifacts)
+	generation := graphGenerationFixture(t, snapshot)
+	base := graphGitSHA("grant-base")
+	graph, err := NewDeliveryGraph(snapshot, generation, base)
+	if err != nil {
+		t.Fatalf("NewDeliveryGraph() error = %v", err)
+	}
+	wave, err := graph.AdmitReadyWave(ReadyWaveInput{IntegrationHeadSHA: base, RemainingSlots: len(taskIDs), ReachableCommits: map[string]bool{}})
+	if err != nil || len(wave.TaskIDs) != len(taskIDs) {
+		t.Fatalf("AdmitReadyWave() = %#v, error = %v", wave, err)
+	}
+	if err := graph.BeginWaveAttempts(wave.Number, generation); err != nil {
+		t.Fatalf("BeginWaveAttempts() error = %v", err)
+	}
+	for _, id := range taskIDs {
+		if _, err := graph.AttachWorktree(id, 1, GraphWorktree{ID: "wt-" + id, Root: "/managed/" + id, Ready: true}); err != nil {
+			t.Fatalf("AttachWorktree(%s) error = %v", id, err)
+		}
+	}
+	return graph, time.Date(2026, time.October, 24, 12, 0, 0, 0, time.UTC)
+}
+
+// answerWithGrant parks the running attempt of one task on a question and
+// answers it with the grant. It returns the answer it passed to RecordAnswer.
+func answerWithGrant(t *testing.T, graph *DeliveryGraph, taskID string, execution int, grant *TaskGrant, at time.Time) (TaskAnswer, error) {
+	t.Helper()
+	runID := "run-" + taskID
+	question := TaskQuestion{
+		RequestID:     digestFixture(fmt.Sprintf("grant-request-%s-%d", taskID, execution)),
+		Prompt:        "Which files may change?",
+		ContextDigest: digestFixture(fmt.Sprintf("grant-context-%s-%d", taskID, execution)),
+	}
+	if _, err := graph.RecordQuestion(taskID, execution, runID, question, at); err != nil {
+		t.Fatalf("RecordQuestion(%s, %d) error = %v", taskID, execution, err)
+	}
+	answer := TaskAnswer{
+		QuestionOperationID: question.RequestID, LoopRunID: runID, Generation: 2, NodeID: "ask_operator",
+		Value: "yes", Grant: grant,
+	}
+	_, _, err := graph.RecordAnswer(taskID, execution, answer, at.Add(time.Minute))
+	return answer, err
+}
+
+func storedAnswerGrant(t *testing.T, graph *DeliveryGraph, taskID string, execution int) *TaskGrant {
+	t.Helper()
+	task, exists := graph.Task(taskID)
+	if !exists || len(task.Attempts) < execution || task.Attempts[execution-1].Question == nil ||
+		task.Attempts[execution-1].Question.Answer == nil {
+		t.Fatalf("task %s execution %d has no stored answer: %#v", taskID, execution, task)
+	}
+	return task.Attempts[execution-1].Question.Answer.Grant
+}
+
+func TestRecordAnswerWithGrant(t *testing.T) {
+	t.Parallel()
+
+	t.Run("stores normalized", func(t *testing.T) {
+		t.Parallel()
+		graph, at := grantFixtureGraph(t, "task_01")
+		_, err := answerWithGrant(t, graph, "task_01", 1,
+			&TaskGrant{Paths: []string{"web/**", "src/**", "web/**"}, Operations: []string{"run", "edit"}}, at)
+		if err != nil {
+			t.Fatalf("RecordAnswer() error = %v", err)
+		}
+		want := TaskGrant{Paths: []string{"src/**", "web/**"}, Operations: []string{"edit", "run"}, Until: GrantUntilTask}
+		if got := storedAnswerGrant(t, graph, "task_01", 1); got == nil || !reflect.DeepEqual(*got, want) {
+			t.Fatalf("stored grant = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("empty grant stored as nil", func(t *testing.T) {
+		t.Parallel()
+		for name, grant := range map[string]*TaskGrant{
+			"nil": nil, "zero": {}, "empty slices": {Paths: []string{}, Operations: []string{}}, "until only": {Until: "task"},
+		} {
+			graph, at := grantFixtureGraph(t, "task_01")
+			if _, err := answerWithGrant(t, graph, "task_01", 1, grant, at); err != nil {
+				t.Fatalf("%s: RecordAnswer() error = %v", name, err)
+			}
+			if got := storedAnswerGrant(t, graph, "task_01", 1); got != nil {
+				t.Fatalf("%s: stored grant = %#v, want nil", name, got)
+			}
+		}
+	})
+
+	t.Run("replay with equal grant in any order is idempotent", func(t *testing.T) {
+		t.Parallel()
+		graph, at := grantFixtureGraph(t, "task_01")
+		answer, err := answerWithGrant(t, graph, "task_01", 1, &TaskGrant{Paths: []string{"a/**", "b/**"}, Operations: []string{"edit", "run"}}, at)
+		if err != nil {
+			t.Fatalf("RecordAnswer() error = %v", err)
+		}
+		replay := answer
+		replay.Grant = &TaskGrant{Paths: []string{"b/**", "a/**", "a/**"}, Operations: []string{"run", "edit"}, Until: "task"}
+		next, isReplay, err := graph.RecordAnswer("task_01", 1, replay, at.Add(time.Hour))
+		if err != nil || !isReplay || next != 2 {
+			t.Fatalf("RecordAnswer(replay) next=%d replay=%v error=%v", next, isReplay, err)
+		}
+	})
+
+	t.Run("nil and empty grants compare equal on replay", func(t *testing.T) {
+		t.Parallel()
+		graph, at := grantFixtureGraph(t, "task_01")
+		answer, err := answerWithGrant(t, graph, "task_01", 1, nil, at)
+		if err != nil {
+			t.Fatalf("RecordAnswer() error = %v", err)
+		}
+		replay := answer
+		replay.Grant = &TaskGrant{Paths: []string{}}
+		if _, isReplay, err := graph.RecordAnswer("task_01", 1, replay, at.Add(time.Hour)); err != nil || !isReplay {
+			t.Fatalf("RecordAnswer(empty grant replay) replay=%v error=%v", isReplay, err)
+		}
+	})
+
+	t.Run("different grant is refused", func(t *testing.T) {
+		t.Parallel()
+		stored := TaskGrant{Paths: []string{"a/**", "b/**"}, Operations: []string{"edit"}}
+		for name, other := range map[string]*TaskGrant{
+			"nil grant":         nil,
+			"empty grant":       {},
+			"subset of paths":   {Paths: []string{"a/**"}, Operations: []string{"edit"}},
+			"wider paths":       {Paths: []string{"a/**", "b/**", "c/**"}, Operations: []string{"edit"}},
+			"other operations":  {Paths: []string{"a/**", "b/**"}, Operations: []string{"run"}},
+			"dropped operation": {Paths: []string{"a/**", "b/**"}},
+		} {
+			graph, at := grantFixtureGraph(t, "task_01")
+			answer, err := answerWithGrant(t, graph, "task_01", 1, &stored, at)
+			if err != nil {
+				t.Fatalf("%s: RecordAnswer() error = %v", name, err)
+			}
+			replay := answer
+			replay.Grant = other
+			if _, _, err := graph.RecordAnswer("task_01", 1, replay, at.Add(time.Hour)); !errors.Is(err, ErrInvalidDeliveryTransition) {
+				t.Fatalf("%s: RecordAnswer(different grant) error = %v, want ErrInvalidDeliveryTransition", name, err)
+			}
+		}
+	})
+
+	t.Run("invalid grant is refused before anything is stored", func(t *testing.T) {
+		t.Parallel()
+		for name, grant := range map[string]*TaskGrant{
+			"absolute":      {Paths: []string{"/etc"}},
+			"boundary":      {Paths: []string{".github/workflows/ci.yml"}},
+			"unknown until": {Paths: []string{"src/**"}, Until: "delivery"},
+		} {
+			graph, at := grantFixtureGraph(t, "task_01")
+			if _, err := answerWithGrant(t, graph, "task_01", 1, grant, at); !errors.Is(err, ErrInvalidDeliveryTransition) {
+				t.Fatalf("%s: RecordAnswer() error = %v, want ErrInvalidDeliveryTransition", name, err)
+			}
+			task, _ := graph.Task("task_01")
+			if task.Attempts[0].Question.Answer != nil || len(task.Attempts) != 1 {
+				t.Fatalf("%s: invalid grant left state behind: %#v", name, task.Attempts)
+			}
+		}
+	})
+}
+
+func TestStandingGrantLimits(t *testing.T) {
+	t.Parallel()
+
+	numbered := func(prefix string, from, to int) []string {
+		var out []string
+		for index := from; index < to; index++ {
+			out = append(out, fmt.Sprintf("%s%d", prefix, index))
+		}
+		return out
+	}
+
+	t.Run("answers within limits accumulate", func(t *testing.T) {
+		t.Parallel()
+		graph, at := grantFixtureGraph(t, "task_01")
+		if _, err := answerWithGrant(t, graph, "task_01", 1,
+			&TaskGrant{Paths: numbered("a/", 0, 20), Operations: numbered("op-", 0, 8)}, at); err != nil {
+			t.Fatalf("first answer error = %v", err)
+		}
+		if _, err := answerWithGrant(t, graph, "task_01", 2,
+			&TaskGrant{Paths: numbered("a/", 10, 32), Operations: numbered("op-", 4, 16)}, at.Add(time.Hour)); err != nil {
+			t.Fatalf("second answer error = %v", err)
+		}
+		standing := graph.StandingGrant("task_01")
+		if len(standing.Paths) != maxGrantPaths || len(standing.Operations) != maxGrantOperations {
+			t.Fatalf("StandingGrant() = %d paths, %d operations", len(standing.Paths), len(standing.Operations))
+		}
+	})
+
+	t.Run("paths past the limit are refused", func(t *testing.T) {
+		t.Parallel()
+		graph, at := grantFixtureGraph(t, "task_01")
+		if _, err := answerWithGrant(t, graph, "task_01", 1, &TaskGrant{Paths: numbered("a/", 0, 20)}, at); err != nil {
+			t.Fatalf("first answer error = %v", err)
+		}
+		_, err := answerWithGrant(t, graph, "task_01", 2, &TaskGrant{Paths: numbered("a/", 10, 33)}, at.Add(time.Hour))
+		if !errors.Is(err, ErrInvalidDeliveryTransition) {
+			t.Fatalf("second answer error = %v, want ErrInvalidDeliveryTransition", err)
+		}
+		if got := len(graph.StandingGrant("task_01").Paths); got != 20 {
+			t.Fatalf("standing paths = %d, want 20 after refusal", got)
+		}
+	})
+
+	t.Run("operations past the limit are refused", func(t *testing.T) {
+		t.Parallel()
+		graph, at := grantFixtureGraph(t, "task_01")
+		if _, err := answerWithGrant(t, graph, "task_01", 1, &TaskGrant{Operations: numbered("op-", 0, 10)}, at); err != nil {
+			t.Fatalf("first answer error = %v", err)
+		}
+		_, err := answerWithGrant(t, graph, "task_01", 2, &TaskGrant{Operations: numbered("op-", 5, 17)}, at.Add(time.Hour))
+		if !errors.Is(err, ErrInvalidDeliveryTransition) {
+			t.Fatalf("second answer error = %v, want ErrInvalidDeliveryTransition", err)
+		}
+	})
+}
+
+func TestRecordedGrantIsDeepCopied(t *testing.T) {
+	t.Parallel()
+
+	graph, at := grantFixtureGraph(t, "task_01")
+	input := &TaskGrant{Paths: []string{"a/**", "b/**"}, Operations: []string{"edit"}}
+	if _, err := answerWithGrant(t, graph, "task_01", 1, input, at); err != nil {
+		t.Fatalf("RecordAnswer() error = %v", err)
+	}
+	input.Paths[0] = "mutated/**"
+	input.Operations[0] = "mutated"
+	input.Paths = append(input.Paths, "extra/**")
+	want := TaskGrant{Paths: []string{"a/**", "b/**"}, Operations: []string{"edit"}, Until: GrantUntilTask}
+	if got := storedAnswerGrant(t, graph, "task_01", 1); got == nil || !reflect.DeepEqual(*got, want) {
+		t.Fatalf("stored grant after input mutation = %#v, want %#v", got, want)
+	}
+
+	clone := cloneDeliveryGraph(graph)
+	cloned := storedAnswerGrant(t, clone, "task_01", 1)
+	cloned.Paths[0] = "clone/**"
+	cloned.Operations[0] = "clone"
+	if got := storedAnswerGrant(t, graph, "task_01", 1); !reflect.DeepEqual(*got, want) {
+		t.Fatalf("stored grant after clone mutation = %#v, want %#v", got, want)
+	}
+
+	standing := graph.StandingGrant("task_01")
+	standing.Paths[0] = "standing/**"
+	if got := storedAnswerGrant(t, graph, "task_01", 1); !reflect.DeepEqual(*got, want) {
+		t.Fatalf("stored grant after standing mutation = %#v, want %#v", got, want)
+	}
+}
+
+func TestStandingGrantUnion(t *testing.T) {
+	t.Parallel()
+
+	graph, at := grantFixtureGraph(t, "task_01", "task_02")
+	if got := graph.StandingGrant("task_01"); !reflect.DeepEqual(got, TaskGrant{}) {
+		t.Fatalf("StandingGrant(no answers) = %#v, want empty", got)
+	}
+	if _, err := answerWithGrant(t, graph, "task_01", 1, &TaskGrant{Paths: []string{"b/**", "a/**"}, Operations: []string{"edit"}}, at); err != nil {
+		t.Fatalf("task_01 first answer error = %v", err)
+	}
+	if _, err := answerWithGrant(t, graph, "task_02", 1, &TaskGrant{Paths: []string{"other/**"}, Operations: []string{"deploy"}}, at.Add(time.Minute)); err != nil {
+		t.Fatalf("task_02 answer error = %v", err)
+	}
+	if _, err := answerWithGrant(t, graph, "task_01", 2, nil, at.Add(2*time.Minute)); err != nil {
+		t.Fatalf("task_01 answer without grant error = %v", err)
+	}
+	if _, err := answerWithGrant(t, graph, "task_01", 3, &TaskGrant{Paths: []string{"a/**", "c/**"}, Operations: []string{"run"}}, at.Add(3*time.Minute)); err != nil {
+		t.Fatalf("task_01 third answer error = %v", err)
+	}
+
+	want := TaskGrant{Paths: []string{"a/**", "b/**", "c/**"}, Operations: []string{"edit", "run"}, Until: GrantUntilTask}
+	if got := graph.StandingGrant("task_01"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("StandingGrant(task_01) = %#v, want %#v", got, want)
+	}
+	other := TaskGrant{Paths: []string{"other/**"}, Operations: []string{"deploy"}, Until: GrantUntilTask}
+	if got := graph.StandingGrant("task_02"); !reflect.DeepEqual(got, other) {
+		t.Fatalf("StandingGrant(task_02) = %#v, want %#v", got, other)
+	}
+	if got := graph.StandingGrant("missing"); !reflect.DeepEqual(got, TaskGrant{}) {
+		t.Fatalf("StandingGrant(missing) = %#v, want empty", got)
+	}
+	var nilGraph *DeliveryGraph
+	if got := nilGraph.StandingGrant("task_01"); !reflect.DeepEqual(got, TaskGrant{}) {
+		t.Fatalf("StandingGrant(nil graph) = %#v, want empty", got)
+	}
+}
+
+func TestGraphWithoutGrantsLoads(t *testing.T) {
+	t.Parallel()
+
+	const oldQuestion = `{
+		"request_id": "sha256:8f3aa128644d1881832f6b9d4fcc63d704627715d80cb077dc77a29f9ebdc750",
+		"prompt": "Which public behavior should task_1 implement?",
+		"context_digest": "sha256:74bad2ae825e22fc7be89dad88e81cd9d68d80f8d0e9465dbed4b90992f12d99",
+		"choices": ["Preserve compatibility", "Adopt the new contract"],
+		"answer": {
+			"question_operation_id": "sha256:8f3aa128644d1881832f6b9d4fcc63d704627715d80cb077dc77a29f9ebdc750",
+			"loop_run_id": "loop-task-1",
+			"generation": 2,
+			"node_id": "ask_operator",
+			"item_index": 0,
+			"value": "Preserve compatibility"
+		}
+	}`
+	var question TaskQuestion
+	if err := json.Unmarshal([]byte(oldQuestion), &question); err != nil {
+		t.Fatalf("Unmarshal(old question) error = %v", err)
+	}
+	if !validTaskQuestion(&question) || question.Answer == nil || question.Answer.Grant != nil {
+		t.Fatalf("old-format question = %#v, want valid with no grant", question)
+	}
+
+	graph, at := grantFixtureGraph(t, "task_01")
+	if _, err := answerWithGrant(t, graph, "task_01", 1, nil, at); err != nil {
+		t.Fatalf("RecordAnswer() error = %v", err)
+	}
+	encoded, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatalf("Marshal(graph) error = %v", err)
+	}
+	if strings.Contains(string(encoded), `"grant"`) {
+		t.Fatalf("graph without grants encodes a grant field: %s", encoded)
+	}
+	var decoded DeliveryGraph
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("Unmarshal(graph) error = %v", err)
+	}
+	for _, task := range decoded.Tasks {
+		if err := validateGraphTask(task, "pending"); err != nil {
+			t.Fatalf("validateGraphTask(%s) error = %v", task.TaskID, err)
+		}
+	}
+	if got := decoded.StandingGrant("task_01"); !reflect.DeepEqual(got, TaskGrant{}) {
+		t.Fatalf("StandingGrant(old graph) = %#v, want empty", got)
+	}
+}

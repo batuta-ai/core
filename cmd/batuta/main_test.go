@@ -3554,3 +3554,72 @@ func TestLoopDocWorktreeProcesses(t *testing.T) {
 		}
 	}
 }
+
+func TestLoopGrantFlags(t *testing.T) {
+	usage := []struct {
+		name string
+		args []string
+	}{
+		{"allow-path without answer", []string{"--allow-path", "src/**", "--dry-run"}},
+		{"allow-op without answer", []string{"--allow-op", "test", "--dry-run"}},
+		{"until without answer", []string{"--until", "task", "--dry-run"}},
+		{"until other than task", []string{"--answer", "1", "--until", "delivery", "text"}},
+	}
+	for _, tc := range usage {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var stdout, stderr bytes.Buffer
+			err := run(append([]string{"loop", "--workspace", t.TempDir()}, tc.args...), &stdout, &stderr)
+			var exit *ExitError
+			if err == nil || errors.As(err, &exit) || !strings.Contains(err.Error(), "usage") || stdout.Len() != 0 {
+				t.Fatalf("run = %v, stdout=%q; want a usage error", err, &stdout)
+			}
+		})
+	}
+
+	answerDetails := func(t *testing.T, root, delivery string) []string {
+		t.Helper()
+		store, err := journal.Open(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		records, err := store.Read(delivery)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var details []string
+		for _, record := range records {
+			if record.Kind == loop.KindAnswer {
+				details = append(details, string(record.Detail))
+			}
+		}
+		return details
+	}
+
+	for _, rejected := range []string{"WORK.md", "/abs"} {
+		t.Run("rejects "+rejected, func(t *testing.T) {
+			root, skills, delivery := loopParkedFixture(t, "ok")
+			var stdout, stderr bytes.Buffer
+			err := run([]string{"loop", "--workspace", root, "--skills", skills, "--answer", "1", "--allow-path", rejected, "text"}, &stdout, &stderr)
+			var exit *ExitError
+			if err == nil || errors.As(err, &exit) || !errors.Is(err, routing.ErrInvalidGrant) || !strings.Contains(err.Error(), rejected) {
+				t.Fatalf("run = %v; want the routing validation error naming %q with exit 1", err, rejected)
+			}
+			if details := answerDetails(t, root, delivery); len(details) != 0 {
+				t.Fatalf("rejected grant recorded %v", details)
+			}
+		})
+	}
+
+	t.Run("records the grant", func(t *testing.T) {
+		root, skills, delivery := loopParkedFixture(t, "ok")
+		var stdout, stderr bytes.Buffer
+		_ = run([]string{"loop", "--workspace", root, "--skills", skills, "--answer", "1",
+			"--allow-path", "src/x/**", "--allow-path", "Makefile", "--allow-op", "test,git-commit", "--until", "task", "text"}, &stdout, &stderr)
+		details := answerDetails(t, root, delivery)
+		want := `{"answer":"text","execution":1,"grant":{"paths":["Makefile","src/x/**"],"operations":["git-commit","test"],"until":"task"},"question":"keep this greeting?"}`
+		if len(details) != 1 || details[0] != want {
+			t.Fatalf("answer details = %v\nwant [%s]\nstderr=%s", details, want, &stderr)
+		}
+	})
+}

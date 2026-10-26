@@ -44,6 +44,7 @@ const (
 	KindProgress          journal.Kind = "task_progress"
 	KindFinished          journal.Kind = "executor_finished"
 	KindQuestion          journal.Kind = "question_recorded"
+	KindGrantReplied      journal.Kind = "grant_replied"
 	KindAnswer            journal.Kind = "answer_recorded"
 	KindGates             journal.Kind = "gates_reported"
 	KindCandidate         journal.Kind = "candidate_recorded"
@@ -162,6 +163,7 @@ type Runner struct {
 	candidates       map[string]integration.CandidateEvidence
 	commits          map[string]string
 	started          map[string]bool
+	grantReplies     map[string]grantReply
 	probes           map[capabilityRoute]capabilityProbeDetail
 	probing          map[capabilityRoute]chan struct{}
 	preflights       map[string]integration.PreflightResult // operation id → pending preflight
@@ -522,7 +524,7 @@ func prepare(ctx context.Context, opts Options) (*Runner, error) {
 		worktrees: map[string]attemptWorktree{}, feedback: map[string][]string{},
 		stoppedProcesses: map[string][]worktree.StoppedProcess{}, processErrors: map[string]bool{},
 		candidates: map[string]integration.CandidateEvidence{}, commits: map[string]string{},
-		started: map[string]bool{}, preflights: map[string]integration.PreflightResult{},
+		started: map[string]bool{}, grantReplies: map[string]grantReply{}, preflights: map[string]integration.PreflightResult{},
 		probes: map[capabilityRoute]capabilityProbeDetail{}, probing: map[capabilityRoute]chan struct{}{},
 	}
 	r.git.Processes = opts.Processes

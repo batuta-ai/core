@@ -61,12 +61,39 @@ type attemptContext struct {
 	dispatch         dispatchDetail
 	verifierDispatch dispatchDetail
 	previous         *routing.GraphTaskAttempt // the answered attempt, on a continuation
+	grantPark        grantPark
+}
+
+// grantPark says why a question reached the human although the task holds a
+// standing grant. Its zero value means no grant, or no question.
+type grantPark struct {
+	Reason string
+	Beyond []string
+}
+
+// parkReason is why a question the hook did not answer parks, or "" when the
+// grant answers it.
+func parkReason(coverage grantCoverage, turns int, repeated, inTime bool) string {
+	switch {
+	case coverage.Malformed:
+		return "malformed_clause"
+	case !coverage.Covered:
+		return "not_covered"
+	case turns >= 3:
+		return "turn_cap"
+	case repeated:
+		return "repeat"
+	case !inTime:
+		return "deadline"
+	}
+	return ""
 }
 
 // An intent is synced before entering a backend that can submit a prompt. Until
 // a result proves non-submission, a crash at that boundary requires reconciliation.
 type dispatchDetail struct {
 	Execution              int                      `json:"execution"`
+	Turn                   int                      `json:"turn,omitempty"`
 	RunID                  string                   `json:"run_id"`
 	Backend                string                   `json:"backend"`
 	Executor               string                   `json:"executor"`
@@ -198,6 +225,16 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 			ac.previous = &earlier
 		}
 	}
+	var pendingReply *GrantReply
+	if len(task.Attempts) >= 2 {
+		earlier := task.Attempts[len(task.Attempts)-2]
+		if earlier.BlockerCode == blockerInterrupted {
+			if reply, found := r.grantReplies[attemptKey(taskID, earlier.Execution)]; found {
+				grant := r.graph.StandingGrant(taskID)
+				pendingReply = &GrantReply{Question: reply.Question, Paths: grant.Paths, Operations: grant.Operations}
+			}
+		}
+	}
 	r.mu.Unlock()
 
 	// A canceled executor must finish unwinding before its partial work is
@@ -248,10 +285,11 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	criteria := gates.ParseCriteria(ac.plan.Accept)
 	r.mu.Lock()
 	feedback := append([]string(nil), r.feedback[taskID]...)
+	grant := r.graph.StandingGrant(taskID)
 	r.mu.Unlock()
 	input := BriefInput{
 		Plan: r.plan, Task: ac.plan, Profile: r.profile, Conventions: r.sections, Missing: r.missing,
-		Worktree: ac.worktree.Root, Base: ac.base, Criteria: criteria, Feedback: feedback,
+		Worktree: ac.worktree.Root, Base: ac.base, Criteria: criteria, Feedback: feedback, Grant: grant, GrantReply: pendingReply,
 		Lane: string(ac.plan.Domain) + "/" + string(ac.plan.Complexity),
 	}
 	if ac.previous != nil && ac.previous.Question != nil {
@@ -262,14 +300,14 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	briefPath := filepath.Join(ac.worktree.Root, ".batuta", "brief-"+strings.ReplaceAll(taskID, "_", "-")+".md")
 	trail := r.trailPath(taskID)
 	_ = os.MkdirAll(filepath.Dir(trail), 0o755)
-	_ = os.WriteFile(strings.TrimSuffix(trail, ".md")+"-e"+fmt.Sprint(ac.execution)+".brief.md", []byte(brief), 0o644)
+	_ = os.WriteFile(r.grantTurnBriefPath(taskID, ac.execution, 0), []byte(brief), 0o644)
 
 	before, err := r.gitState.WorktreeState(ctx, ac.worktree.Root)
 	if err != nil {
 		return fmt.Errorf("loop: snapshot %s: %w", ac.worktree.Name, err)
 	}
 	logPath := r.runLogPath(taskID, ac.execution)
-	invocation, err := r.startRuntime(&ac, brief, briefPath, logPath)
+	invocation, err := r.startRuntime(&ac, brief, briefPath, logPath, 0)
 	if err != nil {
 		return err
 	}
@@ -290,20 +328,36 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("loop: open executor log: %w", err)
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 
 	// Invariant from the harness this loop descends from: a usage limit is
 	// not a failure. Wait or switch runtimes within the SAME attempt;
 	// neither consumes a retry or escalation.
 	var (
-		result  executor.Result
-		execErr error
-		waits   int
+		result     executor.Result
+		execErr    error
+		waits      int
+		grantTurns int
 	)
+	// Grant turns share one deadline, fixed at the first dispatch; a usage
+	// limit wait moves it, so waiting never spends the execution's time. Turn 0
+	// keeps the full task timeout on every dispatch, as without a grant, and no
+	// dispatch ever gets a timeout of zero or less, which means no timeout.
+	seenQuestions := map[string]bool{}
+	deadline := r.now().Add(r.opts.TaskTimeout)
 	for {
 		var journalErr error
+		timeout := r.opts.TaskTimeout
+		if grantTurns > 0 {
+			if timeout = deadline.Sub(r.now()); timeout <= 0 {
+				if result.Question != "" {
+					ac.grantPark = grantPark{Reason: "deadline"}
+				}
+				break
+			}
+		}
 		result, execErr, journalErr = r.dispatchAttempt(ctx, &ac, executor.Execution{
-			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: r.opts.TaskTimeout,
+			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: timeout,
 			Progress: progress, Stdout: logFile, Stderr: logFile,
 		})
 		ac.result = &result
@@ -312,6 +366,51 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		}
 		if progressErr != nil {
 			return progressErr
+		}
+		questionKey := grantQuestionKey(result.Question)
+		ac.grantPark = grantPark{}
+		if ctx.Err() == nil && execErr == nil && result.Finished && result.Question != "" &&
+			routing.SafeTaskQuestionText(result.Question) && len(result.Question) <= 2000 {
+			r.mu.Lock()
+			standing := r.graph.StandingGrant(taskID)
+			r.mu.Unlock()
+			if len(standing.Paths) > 0 || len(standing.Operations) > 0 {
+				coverage := grantCovers(result.Question, standing)
+				reason := parkReason(coverage, grantTurns, seenQuestions[questionKey], deadline.After(r.now()))
+				if reason != "" {
+					ac.grantPark = grantPark{Reason: reason}
+					if reason == "not_covered" {
+						ac.grantPark.Beyond = coverage.Uncovered
+					}
+				} else {
+					grantTurns++
+					seenQuestions[questionKey] = true
+					requestID := digestString("question:" + ac.runID + ":" + result.Question)
+					if err := r.locked(KindGrantReplied, taskID, grantRepliedDetail(ac.execution, ac.runID, result.Question, requestID, standing, grantTurns), nil); err != nil {
+						return err
+					}
+					if err := logFile.Close(); err != nil {
+						return fmt.Errorf("loop: close executor log: %w", err)
+					}
+					r.writeLogAt(logPath, result)
+					input.Grant = standing
+					input.GrantReply = &GrantReply{Question: result.Question, Paths: standing.Paths, Operations: standing.Operations}
+					brief = Brief(input)
+					logPath = r.grantTurnLogPath(taskID, ac.execution, grantTurns)
+					if err := os.WriteFile(r.grantTurnBriefPath(taskID, ac.execution, grantTurns), []byte(brief), 0o644); err != nil {
+						return err
+					}
+					invocation, err = r.startRuntime(&ac, brief, briefPath, logPath, grantTurns)
+					if err != nil {
+						return err
+					}
+					logFile, err = os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|os.O_APPEND, 0o644)
+					if err != nil {
+						return fmt.Errorf("loop: open executor log: %w", err)
+					}
+					continue
+				}
+			}
 		}
 		if ctx.Err() != nil || execErr != nil || !result.RateLimited || result.Receipt != nil {
 			break
@@ -340,7 +439,7 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 				if !probe.Pass {
 					return r.recordIncapable(ctx, ac, probe)
 				}
-				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath)
+				invocation, err = r.startRuntime(&ac, brief, briefPath, logPath, grantTurns)
 				if err != nil {
 					return err
 				}
@@ -360,12 +459,13 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		if err := r.sleep(ctx, delay); err != nil {
 			return nil // the deferred interruption handler parks the attempt
 		}
+		deadline = deadline.Add(delay)
 	}
 	_ = os.Remove(briefPath)
 	if err := logFile.Close(); err != nil {
 		return fmt.Errorf("loop: close executor log: %w", err)
 	}
-	r.writeLog(taskID, ac.execution, result)
+	r.writeLogAt(logPath, result)
 	if ctx.Err() != nil {
 		return nil // the deferred interruption handler parks the attempt
 	}
@@ -459,7 +559,10 @@ func (r *Runner) attemptGates(ctx context.Context, ac *attemptContext, result ex
 			return
 		}
 		changedPaths = changed
-		report.Scope = gates.Scope(changed, ac.plan.Scope)
+		r.mu.Lock()
+		grant := r.graph.StandingGrant(ac.taskID)
+		r.mu.Unlock()
+		report.Scope = gates.ScopeWithGrant(changed, ac.plan.Scope, grant.Paths, routing.IsGrantBoundary)
 		report.Proofs = gates.Proofs(ctx, r.shell, ac.worktree.Root, criteria)
 		proofless := slices.ContainsFunc(criteria, func(criterion gates.Criterion) bool { return criterion.Proof == "" })
 		if rejected := rejectedGates(report); rejected != "" {
@@ -563,7 +666,7 @@ func reportedDoneProofFailures(feedback []string, criteria []gates.Criterion, pr
 	return feedback
 }
 
-func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath string) (executor.Invocation, error) {
+func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath string, turn int) (executor.Invocation, error) {
 	adapter, err := r.adapterLocked(ac.runtime.Provider)
 	if err != nil {
 		return executor.Invocation{}, err
@@ -592,7 +695,7 @@ func (r *Runner) startRuntime(ac *attemptContext, brief, briefPath, logPath stri
 		backend = transport.Mode
 	}
 	ac.dispatch = dispatchDetail{
-		Execution: ac.execution, RunID: ac.runID, Backend: backend, Executor: ac.adapter.Name,
+		Execution: ac.execution, Turn: turn, RunID: ac.runID, Backend: backend, Executor: ac.adapter.Name,
 		Model: ac.runtime.Model, Reasoning: ac.runtime.Reasoning, Workspace: ac.worktree.Root,
 		BriefDigest: digestString(brief), Submission: executor.SubmissionNotSubmitted,
 	}
@@ -852,14 +955,24 @@ func (r *Runner) recordQuestion(ctx context.Context, ac attemptContext, result e
 		return fmt.Errorf("loop: create ask directory: %w", err)
 	}
 	atCeiling := ac.execution == routing.MaxTaskExecutions
-	body := fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer with:\n\n    batuta loop --answer %s \"<your answer>\"\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt, ac.taskID)
+	shown := question.Prompt
+	detail := map[string]any{"execution": ac.execution, "run_id": ac.runID, "question": question.Prompt, "request_id": question.RequestID, "ask_path": askPath}
+	if ac.grantPark.Reason != "" {
+		shown += "\n\ngrant_park: " + ac.grantPark.Reason
+		detail["grant_park"] = ac.grantPark.Reason
+		if len(ac.grantPark.Beyond) > 0 {
+			shown += "\nbeyond_grant: " + strings.Join(ac.grantPark.Beyond, ", ")
+			detail["beyond_grant"] = ac.grantPark.Beyond
+		}
+	}
+	body := fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer with:\n\n    batuta loop --answer %s \"<your answer>\"\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, shown, ac.taskID)
 	if atCeiling {
-		body = fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer by hand in a new plan or an interactive cycle; this task has reached the execution ceiling.\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, question.Prompt)
+		body = fmt.Sprintf("# Question — %s (%s)\n\n**Delivery:** %s · **Executor:** %s/%s · **Worktree:** %s\n\n%s\n\nAnswer by hand in a new plan or an interactive cycle; this task has reached the execution ceiling.\n", ac.plan.Title, ac.taskID, r.delivery, ac.adapter.Name, ac.runtime.Model, ac.worktree.Root, shown)
 	}
 	if err := os.WriteFile(askPath, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("loop: write ask file: %w", err)
 	}
-	err := r.locked(KindQuestion, ac.taskID, map[string]any{"execution": ac.execution, "run_id": ac.runID, "question": question.Prompt, "request_id": question.RequestID, "ask_path": askPath}, func() error {
+	err := r.locked(KindQuestion, ac.taskID, detail, func() error {
 		if _, err := r.graph.RecordQuestion(ac.taskID, ac.execution, ac.runID, question, r.now()); err != nil {
 			return fmt.Errorf("loop: record question: %w", err)
 		}
@@ -1221,7 +1334,10 @@ func tailBytes(s string, max int) string {
 }
 
 func (r *Runner) writeLog(taskID string, execution int, result executor.Result) {
-	path := r.runLogPath(taskID, execution)
+	r.writeLogAt(r.runLogPath(taskID, execution), result)
+}
+
+func (r *Runner) writeLogAt(path string, result executor.Result) {
 	_ = os.MkdirAll(filepath.Dir(path), 0o755)
 	var b strings.Builder
 	fmt.Fprintf(&b, "# exit %d · finished %v · timed out %v · rate limited %v · %s\n\n## stdout\n\n", result.ExitCode, result.Finished, result.TimedOut, result.RateLimited, result.Duration.Round(time.Second))

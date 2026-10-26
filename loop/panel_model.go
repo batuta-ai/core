@@ -401,6 +401,8 @@ func (task *panelTaskView) apply(record journal.Record, event panelEvent, now ti
 		task.limit = nil
 	case KindAnswer:
 		task.detail.Question = ""
+	case KindGrantReplied:
+		task.limit = nil
 	case KindLimitWait:
 		task.limit = &event
 	case KindFinished:
