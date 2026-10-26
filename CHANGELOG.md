@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.1.0-beta.58](https://github.com/batuta-ai/core/compare/v1.1.0-beta.57...v1.1.0-beta.58) (2026-10-26)
+
+
+### Features
+
+* A parked question reports what the grant does not cover ([12a42f4](https://github.com/batuta-ai/core/commit/12a42f410b09b4d1e9495fa5067cdff0584f60bf))
+* answer path and CLI flags carry the grant ([8cab621](https://github.com/batuta-ai/core/commit/8cab6214da26627f417d147b32894324d9d841cd))
+* bounds on grant turns ([61d7e8b](https://github.com/batuta-ai/core/commit/61d7e8ba1b3bd3ced051ded3e7f096ab656218c2))
+* brief and scope gate apply the standing grant within the Boundaries ([010d9f9](https://github.com/batuta-ai/core/commit/010d9f9d4db59892b530bae1d2a168cb199ea33e))
+* brief renders a grant reply ([069c05d](https://github.com/batuta-ai/core/commit/069c05d215eca6d80ee31e1bb4536896634e63b2))
+* grant turn records, summaries and turn files ([219f93e](https://github.com/batuta-ai/core/commit/219f93ea631d9457c75f1888f480456a2d854fbf))
+* grant type, boundary list, validation and storage on the graph ([bdf51a4](https://github.com/batuta-ai/core/commit/bdf51a4d3978b13981430cb008b5aa9f6b739634))
+* **loop:** standing grants on answers ([1b87f8d](https://github.com/batuta-ai/core/commit/1b87f8df3f81d09ab2373bac072f420956284f5e))
+* question coverage check against a grant ([774587b](https://github.com/batuta-ai/core/commit/774587b7922b22d62cf4ba7b63106ad4d652420e))
+* resume after a crash inside a grant turn ([f1c0872](https://github.com/batuta-ai/core/commit/f1c087204d7cbbaf7c0edea2ea381c4dc7cc6533))
+* runner answers a covered question from the grant ([ed62257](https://github.com/batuta-ai/core/commit/ed62257b8f012e4ff8241f8d945b89321e685de1))
+
+
+### Bug Fixes
+
+* close review findings on standing grants ([7b62bef](https://github.com/batuta-ai/core/commit/7b62bef11478c255d497ef338534de34a3195b93))
+
 ## [1.1.0-beta.57](https://github.com/batuta-ai/core/compare/v1.1.0-beta.56...v1.1.0-beta.57) (2026-10-21)
 
 
