@@ -454,6 +454,15 @@ func TestScopeGrantKeepsBoundaries(t *testing.T) {
 			t.Fatalf("verdict = %#v", verdict)
 		}
 	})
+	t.Run("a git-quoted path never passes through the grant", func(t *testing.T) {
+		t.Parallel()
+		for _, quoted := range []string{`".github/workflows/a\303\247.yml"`, `"pkg/\303\247/go.sum"`, `"docs/\303\247.md"`} {
+			verdict := ScopeWithGrant([]string{quoted}, plan, []string{"**"}, routing.IsGrantBoundary)
+			if verdict.Pass || verdict.Detail != quoted {
+				t.Fatalf("grant of ** let %s through: %#v", quoted, verdict)
+			}
+		}
+	})
 	t.Run("no grant is Scope", func(t *testing.T) {
 		t.Parallel()
 		changed := []string{"out/1.txt", "docs/a.md"}

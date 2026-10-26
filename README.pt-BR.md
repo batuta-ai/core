@@ -16,7 +16,7 @@ batuta dispatch --brief-file <arquivo> --executor <id> --model <id> --cwd <workt
                                        executa uma tentativa externa limitada
 batuta loop [<plano>]                  executa um plano aprovado
 batuta loop --resume <entrega>         continua uma entrega interrompida
-batuta loop --answer <task> [--allow-path <glob>]... [--allow-op <ops>] [--until task] "<texto>"
+batuta loop --answer <task> [--allow-path <glob>]... [--allow-op <ops>]... [--until task] "<texto>"
                                        responde uma tarefa aguardando entrada; as opções concedem permissão contínua
 batuta loop --recover <entrega> <tarefa> executa verificações em tarefa pausada, gera candidato e continua
 batuta loop --reconcile <entrega> <tarefa> mostra merge e conflitos da ref pausada com o branch

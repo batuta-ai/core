@@ -340,14 +340,24 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 		grantTurns int
 	)
 	// Grant turns share one deadline, fixed at the first dispatch; a usage
-	// limit wait moves it, so waiting never spends the execution's time.
+	// limit wait moves it, so waiting never spends the execution's time. Turn 0
+	// keeps the full task timeout on every dispatch, as without a grant, and no
+	// dispatch ever gets a timeout of zero or less, which means no timeout.
 	seenQuestions := map[string]bool{}
 	deadline := r.now().Add(r.opts.TaskTimeout)
 	for {
 		var journalErr error
-		remaining := deadline.Sub(r.now())
+		timeout := r.opts.TaskTimeout
+		if grantTurns > 0 {
+			if timeout = deadline.Sub(r.now()); timeout <= 0 {
+				if result.Question != "" {
+					ac.grantPark = grantPark{Reason: "deadline"}
+				}
+				break
+			}
+		}
 		result, execErr, journalErr = r.dispatchAttempt(ctx, &ac, executor.Execution{
-			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: remaining,
+			Adapter: ac.adapter, Request: ac.request, Invocation: invocation, Timeout: timeout,
 			Progress: progress, Stdout: logFile, Stderr: logFile,
 		})
 		ac.result = &result

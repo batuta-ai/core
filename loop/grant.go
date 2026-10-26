@@ -55,9 +55,10 @@ func grantCovers(question string, grant routing.TaskGrant) grantCoverage {
 	return grantCoverage{Covered: len(uncovered) == 0, Uncovered: uncovered}
 }
 
-// grantClauseBody returns the text after `Beyond grant:` on the last non-empty
-// line. found is false when the question has no clause; ok is false when the
-// clause is not exactly on the last line or has no body.
+// grantClauseBody returns the text after the last `Beyond grant:` on the last
+// non-empty line, so the clause may follow the question on its single
+// BATUTA-QUESTION line. found is false when the question has no clause; ok is
+// false when a clause appears on an earlier line or has no body.
 func grantClauseBody(question string) (body string, found, ok bool) {
 	lines := strings.Split(strings.ReplaceAll(question, "\r\n", "\n"), "\n")
 	last := -1
@@ -75,13 +76,12 @@ func grantClauseBody(question string) (body string, found, ok bool) {
 			return "", true, false
 		}
 	}
-	line := strings.TrimSpace(lines[last])
-	if !strings.Contains(line, grantClausePrefix) {
+	at := strings.LastIndex(lines[last], grantClausePrefix)
+	if at < 0 {
 		return "", false, false
 	}
-	rest, hasPrefix := strings.CutPrefix(line, grantClausePrefix)
-	rest = strings.TrimSpace(rest)
-	return rest, true, hasPrefix && rest != ""
+	rest := strings.TrimSpace(lines[last][at+len(grantClausePrefix):])
+	return rest, true, rest != ""
 }
 
 // parseGrantClause splits a clause body into its optional paths and operations

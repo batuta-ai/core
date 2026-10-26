@@ -153,7 +153,7 @@ func Brief(input BriefInput) string {
 	b.WriteString("Stop and report instead of improvising when: (1) the code's shape contradicts this brief; (2) the same command fails twice; (3) the fix needs edits beyond Scope or Boundaries. ")
 	fmt.Fprintf(&b, "To ask the human a question, print exactly one final line `%s <your question>` and exit 0; the run pauses and resumes in this worktree with the answer.", executor.QuestionPrefix)
 	if granted {
-		b.WriteString(" A standing grant covers this task: a question that asks for something the grant does not cover must end with a `Beyond grant: <what you need that is not granted>` clause naming each ungranted item. A question without that clause gets the grant reply, so use the clause for every scope question.")
+		b.WriteString(" A standing grant covers this task: a question that asks for something the grant does not cover must end with a `Beyond grant: paths: <paths>; operations: <operations>` clause, on that same line, naming each ungranted item (either group may be left out). A question without that clause gets the grant reply, so use the clause for every scope question.")
 	}
 	b.WriteString("\n\n")
 

@@ -212,7 +212,7 @@ func TestBriefEffectiveScope(t *testing.T) {
 func TestBriefGrantProtocolLine(t *testing.T) {
 	t.Parallel()
 	section := briefSection(t, grantedBrief(), "## Stop conditions")
-	for _, want := range []string{"BATUTA-QUESTION:", "`Beyond grant: <what you need that is not granted>`", "must end with"} {
+	for _, want := range []string{"BATUTA-QUESTION:", "`Beyond grant: paths: <paths>; operations: <operations>`", "must end with"} {
 		if !strings.Contains(section, want) {
 			t.Errorf("stop conditions lack %q:\n%s", want, section)
 		}

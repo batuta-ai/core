@@ -50,7 +50,7 @@ Usage:
   batuta loop      [--dry-run] [--parallel N] [--skills <dir>] [--transport cli|acp|auto] [<plan>]
   batuta loop      --roadmap [--dry-run] [--resume <delivery>]
   batuta loop      --resume <delivery> | --abandon <delivery>
-  batuta loop      --answer <task> [--allow-path <glob>]... [--allow-op <ops>] [--until task] "<text>"
+  batuta loop      --answer <task> [--allow-path <glob>]... [--allow-op <ops>]... [--until task] "<text>"
   batuta loop      --recover <delivery> <task> | --reconcile <delivery> <task>
   batuta loop      --prune [--apply] [--workspace <dir>]
   batuta loop      --dashboard [--watch] [--interval 500ms] [<delivery>]
@@ -1030,6 +1030,9 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 		var delivery string
 		var err error
 		if grant := (routing.TaskGrant{Paths: allowPaths, Operations: allowOps.tokens()}); len(grant.Paths) > 0 || len(grant.Operations) > 0 {
+			if err := grant.Validate(); err != nil {
+				return err
+			}
 			delivery, err = loop.AnswerGrant(*workspace, *answer, rest[0], grant)
 		} else {
 			delivery, err = loop.Answer(*workspace, *answer, rest[0])

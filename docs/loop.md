@@ -704,7 +704,9 @@ batuta loop --answer task_3 --allow-path 'docs/**' --allow-op regenerate-golden 
 ```
 
 - `--allow-path <glob>` grants a repository-relative path glob. It repeats.
-  Absolute paths, `..`, invalid globs and boundary paths are refused with exit 1.
+  The glob must be clean (`docs/**`, not `docs/` or `./docs`) and at most 256
+  bytes. Absolute paths, `..`, backslashes, control characters, invalid globs
+  and boundary paths are refused with exit 1 and an error naming the path.
 - `--allow-op <ops>` grants operations: lowercase tokens (`^[a-z][a-z0-9-]{0,31}$`)
   in a comma list. It repeats.
 - `--until task` is the only duration and the default. The grant lasts until the
@@ -719,10 +721,15 @@ replay read it from the delivery graph, so a restart never widens it.
 ### Effective scope
 
 The effective Scope of a granted task is the plan Scope plus the granted paths.
-The brief lists both, and the scope gate accepts a changed path when the plan
+The brief lists the granted paths under `## Standing grant`, next to the plan
+Scope when the plan has one. The scope gate accepts a changed path when the plan
 Scope covers it or when a granted path covers it and it is not a boundary path.
-A plan with no Scope still passes the gate with a signal; a grant never narrows
-that.
+A plan with no Scope still passes with a signal, as without a grant. Managed
+state (`WORK.md`, `.batuta/`) is still only reported, unless a granted glob
+reaches it and the plan Scope does not cover it: then the gate fails, because a
+grant never reaches a boundary path. A path
+git can only report quoted (non-ASCII or control characters in its name) never
+passes through a grant; it needs the plan Scope.
 
 A grant never reaches the boundary paths, whatever its globs say, even `**`:
 
@@ -739,10 +746,12 @@ A boundary file that the plan Scope itself names stays allowed, as without a gra
 ### The `Beyond grant:` clause
 
 The brief tells the executor to end a question that needs something the grant
-does not cover with a clause on the last non-empty line:
+does not cover with a clause. The clause is the end of the last non-empty line
+of the question, so it can follow the question on its one `BATUTA-QUESTION:`
+line:
 
 ```text
-Beyond grant: paths: Makefile, src/x/; operations: deploy
+BATUTA-QUESTION: May I add a make target? Beyond grant: paths: Makefile, src/x/; operations: deploy
 ```
 
 - Groups come in the order `paths:` then `operations:`, separated by `;`. Either
@@ -751,9 +760,9 @@ Beyond grant: paths: Makefile, src/x/; operations: deploy
   `/` is covered only when a grant entry covers every descendant: `src/x`,
   `src/x/**` and `src/**` cover `src/x/`, and `src/x/*` does not.
 - Operation items are compared by equality.
-- The clause is malformed when it is not on the last line, is empty, names an
-  unknown or empty group, has an empty item, repeats or reorders groups, or has
-  an absolute or `..` path item.
+- The clause is malformed when `Beyond grant:` also appears on an earlier line,
+  when it is empty, names an unknown or empty group, has an empty item, repeats
+  or reorders groups, or has a path item that is absolute or contains `..`.
 
 ### When the runner replies and when it parks
 
@@ -775,7 +784,8 @@ Otherwise the task parks as `waiting_input`, as without a grant. The
 | `repeat` | the question is a repeat of an earlier grant turn question |
 | `deadline` | no time is left for another turn |
 
-A question without a grant keeps today's record and ask file, without these keys.
+A question on a task without a grant keeps the same record and ask file as
+before grants existed, without these keys.
 
 ### Bounds on grant turns
 
@@ -785,13 +795,17 @@ A question without a grant keeps today's record and ask file, without these keys
   whitespace collapse, ends are trimmed), so an executor that loops on one or two
   questions cannot spend the turns.
 - **Shared deadline**: one deadline per execution, fixed at its first dispatch
-  from `--task-timeout`. Each turn gets the time left. A usage limit wait moves
-  the deadline by the wait, so waiting does not spend it.
+  from `--task-timeout`. The first dispatch, and its usage limit retries, get
+  the full timeout as without a grant. Each grant turn gets the time left. A
+  usage limit wait moves the deadline by the wait, so waiting does not spend it.
 - **Tokens**: grant turns reserve no tokens. The attempt's token reservation on
   the graph stays as it was.
 
-A crash inside a grant turn resumes as one interrupted execution. The next
-execution's brief carries the pending question and the grant reply.
+A crash inside a grant turn resumes as one interrupted execution when every
+dispatch of that execution ran over the CLI or provably never submitted an ACP
+prompt. The next execution's brief carries the pending question and the grant
+reply. When any turn of the execution may have submitted an ACP prompt, the
+task blocks with `submission_uncertain` for reconciliation instead.
 
 ### Trust limit
 
@@ -847,7 +861,7 @@ and from the scope check, committed by the loop with the plan bookkeeping.
 | `.batuta/runs/<date>-<slug>-task-N.md` (+ `-e<k>.brief.md`, `-e<k>.out.log`) | no | per attempt |
 | `.batuta/runs/supervision/<delivery>.json` | no (`.git/info/exclude`) | durable foreground observer cursor |
 | `.batuta/reviews/supervision/<job-id>/` | no (`.git/info/exclude`) | final review snapshot, reports, job state and progression judgment |
-| `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` or `--recover`; under a standing grant it also names the `grant_park` reason |
+| `.batuta/asks/<slug>-task-N.md` | no | when a task asks; removed by `--answer` or `--recover`; under a standing grant it also names the `grant_park` reason and, when not covered, the `beyond_grant` items |
 | `WORK.md`, `.batuta/plans/<slug>.md` | yes | generated from the terminal delivery summary and journal, once at a final state, in one `chore(batuta): <slug> — loop <state>` commit |
 | `.batuta/plans/done/<slug>.md` | yes | when all tasks are done; the bookkeeping commit carries the plan move |
 

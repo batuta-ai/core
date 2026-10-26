@@ -285,7 +285,9 @@ func Scope(changed, scope []string) Verdict {
 // when the grant covers it and boundary does not name it. The plan Scope still
 // covers any path it names, boundary or not. A managed path stays report-only
 // unless the grant itself reached for a boundary path the plan Scope does not
-// cover. With no grant, or no plan Scope, it is Scope.
+// cover. A path git reported C-quoted (non-ASCII or control bytes) never passes
+// through the grant: boundary cannot read it.
+// With no grant, or no plan Scope, it is Scope.
 func ScopeWithGrant(changed, scope, granted []string, boundary func(string) bool) Verdict {
 	if len(granted) == 0 || len(scope) == 0 || boundary == nil {
 		return Scope(changed, scope)
@@ -297,7 +299,7 @@ func ScopeWithGrant(changed, scope, granted []string, boundary func(string) bool
 		verdict.Paths[i] = clean
 		inPlan := InScope(clean, scope)
 		inGrant := InScope(clean, granted)
-		blocked := boundary(clean)
+		blocked := boundary(clean) || strings.HasPrefix(clean, `"`)
 		switch {
 		case worktree.IsManaged(clean) && !(inGrant && blocked && !inPlan):
 			managed = append(managed, clean)

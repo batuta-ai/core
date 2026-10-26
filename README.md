@@ -51,7 +51,7 @@ batuta dispatch --brief-file <path> --executor <id> --model <id> --cwd <worktree
 batuta loop --roadmap [--dry-run]       run the approved roadmap delivery
 batuta loop [<plan>]                    run the approved plan to a terminal state
 batuta loop --resume <delivery>         continue after an interruption
-batuta loop --answer <task> [--allow-path <glob>]... [--allow-op <ops>] [--until task] "<text>"
+batuta loop --answer <task> [--allow-path <glob>]... [--allow-op <ops>]... [--until task] "<text>"
                                         answer a parked task and continue; the flags add a standing grant
 batuta loop --recover <delivery> <task>  run gates on a parked task, candidate and continue
 batuta loop --reconcile <delivery> <task> print parked task changed paths and conflicts

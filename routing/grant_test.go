@@ -3,6 +3,7 @@ package routing
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -38,6 +39,8 @@ func TestTaskGrantValidation(t *testing.T) {
 		{name: "nested parent segment", grant: TaskGrant{Paths: []string{"src/../../outside"}}},
 		{name: "bare parent", grant: TaskGrant{Paths: []string{".."}}},
 		{name: "invalid glob", grant: TaskGrant{Paths: []string{"src/[a-"}}},
+		{name: "repeated operations count once", grant: TaskGrant{Operations: slices.Repeat([]string{"test"}, maxGrantOperations+1)}, valid: true},
+		{name: "repeated paths count once", grant: TaskGrant{Paths: slices.Repeat([]string{"src/**"}, maxGrantPaths+1)}, valid: true},
 		{name: "empty path", grant: TaskGrant{Paths: []string{""}}},
 		{name: "unclean path", grant: TaskGrant{Paths: []string{"./src"}}},
 		{name: "backslash path", grant: TaskGrant{Paths: []string{`src\main.go`}}},

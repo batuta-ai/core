@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +27,18 @@ func isolateGrantCache(t *testing.T) {
 	t.Setenv("LocalAppData", cache)
 }
 
-func grantCrashJournal(t *testing.T, backend string, turnStarted bool) (fixture, Options, string, string, routing.TaskGrant) {
+type grantCrashStage int
+
+const (
+	crashReplied grantCrashStage = iota
+	crashTurnStarted
+	crashTurnDispatched
+)
+
+// grantCrashJournal builds a journal that dies inside a grant turn: after the
+// reply (crashReplied), after the next turn's start record (crashTurnStarted),
+// or after its dispatch intent (crashTurnDispatched).
+func grantCrashJournal(t *testing.T, backend string, stage grantCrashStage) (fixture, Options, string, string, routing.TaskGrant) {
 	t.Helper()
 	isolateGrantCache(t)
 	f := setup(t)
@@ -91,7 +103,10 @@ func grantCrashJournal(t *testing.T, backend string, turnStarted bool) (fixture,
 	appendRecord(KindDispatchResult, "task_1", dispatchDetail{Execution: 2, RunID: runID, Backend: backend, Submission: executor.SubmissionUnknown})
 	const pendingQuestion = "May I write out/1.txt?"
 	appendRecord(KindGrantReplied, "task_1", grantRepliedDetail(2, runID, pendingQuestion, digestString("question:"+runID+":"+pendingQuestion), grant, 1))
-	if turnStarted {
+	if stage >= crashTurnStarted {
+		appendRecord(KindStarted, "task_1", map[string]any{"execution": 2, "dispatch": dispatchDetail{Execution: 2, Turn: 1, RunID: runID, Backend: backend, Submission: executor.SubmissionNotSubmitted}})
+	}
+	if stage >= crashTurnDispatched {
 		appendRecord(KindDispatchIntent, "task_1", dispatchDetail{Execution: 2, Turn: 1, RunID: runID, Backend: backend, Submission: executor.SubmissionUncertain})
 	}
 	opts.Resume = delivery
@@ -99,7 +114,7 @@ func grantCrashJournal(t *testing.T, backend string, turnStarted bool) (fixture,
 }
 
 func TestLoopGrantTurnInterrupted(t *testing.T) {
-	f, opts, delivery, _, _ := grantCrashJournal(t, "cli", true)
+	f, opts, delivery, _, _ := grantCrashJournal(t, "cli", crashTurnDispatched)
 	r, err := Resume(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +130,7 @@ func TestLoopGrantTurnInterrupted(t *testing.T) {
 }
 
 func TestLoopGrantReplyThenCrash(t *testing.T) {
-	f, opts, delivery, question, grant := grantCrashJournal(t, "cli", false)
+	f, opts, delivery, question, grant := grantCrashJournal(t, "cli", crashReplied)
 	r, err := Resume(context.Background(), opts)
 	if err != nil {
 		t.Fatal(err)
@@ -143,13 +158,9 @@ func TestLoopGrantReplyThenCrash(t *testing.T) {
 }
 
 func TestLoopGrantTurnACPUncertain(t *testing.T) {
-	for _, turnStarted := range []bool{true, false} {
-		name := "reply_then_crash"
-		if turnStarted {
-			name = "turn_started"
-		}
+	for name, stage := range map[string]grantCrashStage{"reply_then_crash": crashReplied, "next_turn_registered": crashTurnStarted, "turn_started": crashTurnDispatched} {
 		t.Run(name, func(t *testing.T) {
-			f, opts, delivery, _, _ := grantCrashJournal(t, "acp", turnStarted)
+			f, opts, delivery, _, _ := grantCrashJournal(t, "acp", stage)
 			r, err := Resume(context.Background(), opts)
 			if err != nil {
 				t.Fatal(err)
@@ -774,5 +785,50 @@ func TestLoopQuestionWithoutGrantUnchanged(t *testing.T) {
 	// The worktree path in the ask file embeds the test name.
 	if strings.Contains(strings.ToLower(strings.ReplaceAll(ask, f.root, "")), "grant") {
 		t.Fatalf("ask file mentions a grant:\n%s", ask)
+	}
+}
+
+func TestLoopLimitRetryWithoutGrantKeepsTaskTimeout(t *testing.T) {
+	isolateGrantCache(t)
+	f := setup(t)
+	var (
+		mu       sync.Mutex
+		clock    = time.Date(2027, 1, 1, 10, 0, 0, 0, time.UTC)
+		timeouts []time.Duration
+	)
+	var out bytes.Buffer
+	opts := f.options("limit", &out)
+	opts.Now = func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		return clock
+	}
+	opts.Sleep = fixtureSleep(func(delay time.Duration) {
+		mu.Lock()
+		defer mu.Unlock()
+		clock = clock.Add(delay)
+	})
+	r, err := New(context.Background(), opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Each dispatch spends most of the task timeout before the next one starts.
+	r.backend = grantTestBackend{backend: r.backend, before: func(e executor.Execution) {
+		mu.Lock()
+		defer mu.Unlock()
+		timeouts = append(timeouts, e.Timeout)
+		clock = clock.Add(100 * time.Second)
+	}}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	if len(timeouts) < 2 {
+		t.Fatalf("dispatch timeouts = %v, want a limit retry", timeouts)
+	}
+	for _, timeout := range timeouts {
+		if timeout != opts.TaskTimeout {
+			t.Fatalf("dispatch timeouts = %v, want every one %s without a grant", timeouts, opts.TaskTimeout)
+		}
 	}
 }

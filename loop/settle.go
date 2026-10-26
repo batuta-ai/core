@@ -279,6 +279,25 @@ func (r *Runner) replay(records []journal.Record) error {
 	r.graph = &graph
 	settledOps := map[string]bool{}
 	dispatches := map[string]dispatchDetail{}
+	// Grant turns add dispatch records to the same execution. The last record
+	// wins for identity and within a turn, but a turn whose last record says
+	// an ACP prompt may have submitted keeps the whole execution uncertain.
+	turns := map[string]map[int]dispatchDetail{}
+	noteDispatch := func(key string, detail dispatchDetail) {
+		dispatches[key] = detail
+		if turns[key] == nil {
+			turns[key] = map[int]dispatchDetail{}
+		}
+		turns[key][detail.Turn] = detail
+	}
+	uncertain := func(key string) bool {
+		for _, detail := range turns[key] {
+			if detail.mayHaveSubmitted() || detail.ReconciliationRequired {
+				return true
+			}
+		}
+		return false
+	}
 	verifiers := map[string]dispatchDetail{}
 	for _, record := range records {
 		switch record.Kind {
@@ -297,14 +316,14 @@ func (r *Runner) replay(records []journal.Record) error {
 			}
 			if json.Unmarshal(record.Detail, &detail) == nil {
 				r.started[attemptKey(record.TaskID, detail.Execution)] = true
-				dispatches[attemptKey(record.TaskID, detail.Execution)] = detail.Dispatch
+				noteDispatch(attemptKey(record.TaskID, detail.Execution), detail.Dispatch)
 			}
 		case KindDispatchIntent, KindDispatchResult:
 			var detail dispatchDetail
 			if err := json.Unmarshal(record.Detail, &detail); err != nil {
 				return fmt.Errorf("loop: dispatch journal: %w", err)
 			}
-			dispatches[attemptKey(record.TaskID, detail.Execution)] = detail
+			noteDispatch(attemptKey(record.TaskID, detail.Execution), detail)
 		case KindGrantReplied:
 			var detail struct {
 				Execution int `json:"execution"`
@@ -423,7 +442,7 @@ func (r *Runner) replay(records []journal.Record) error {
 			ac.runID = ac.dispatch.RunID
 		}
 		ac.verifierDispatch = verifiers[attemptKey(task.TaskID, attempt.Execution)]
-		if ac.dispatch.mayHaveSubmitted() || ac.dispatch.ReconciliationRequired || ac.verifierDispatch.mayHaveSubmitted() || ac.verifierDispatch.ReconciliationRequired {
+		if uncertain(attemptKey(task.TaskID, attempt.Execution)) || ac.verifierDispatch.mayHaveSubmitted() || ac.verifierDispatch.ReconciliationRequired {
 			if err := r.recordBlocked(context.Background(), ac, nil, blockerSubmissionUncertain, []string{"the previous ACP dispatch has no verified candidate; reconcile its preserved workspace before another execution"}); err != nil {
 				return err
 			}

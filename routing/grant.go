@@ -1,6 +1,8 @@
 package routing
 
 import (
+	"errors"
+	"fmt"
 	"path"
 	"regexp"
 	"slices"
@@ -86,22 +88,40 @@ func (g TaskGrant) empty() bool {
 	return len(g.Paths) == 0 && len(g.Operations) == 0
 }
 
+// ErrInvalidGrant marks a grant that Validate refuses.
+var ErrInvalidGrant = errors.New("routing: invalid grant")
+
 func (g TaskGrant) valid() bool {
-	if (g.Until != "" && g.Until != GrantUntilTask) || len(g.Paths) > maxGrantPaths ||
-		len(g.Operations) > maxGrantOperations {
-		return false
+	return g.Validate() == nil
+}
+
+// Validate reports why a grant cannot be recorded. Limits count the
+// normalized grant, so a repeated path or operation counts once.
+func (g TaskGrant) Validate() error {
+	if g.Until != "" && g.Until != GrantUntilTask {
+		return fmt.Errorf("%w: until %q: only %q is accepted", ErrInvalidGrant, g.Until, GrantUntilTask)
 	}
 	for _, grantPath := range g.Paths {
 		if !validGrantPath(grantPath) {
-			return false
+			if IsGrantBoundary(grantPath) {
+				return fmt.Errorf("%w: path %q is a boundary path a grant never covers", ErrInvalidGrant, grantPath)
+			}
+			return fmt.Errorf("%w: path %q: want a clean repository-relative glob of at most %d bytes, without .. or backslashes", ErrInvalidGrant, grantPath, maxGrantPathBytes)
 		}
 	}
 	for _, operation := range g.Operations {
 		if !grantOperationToken.MatchString(operation) {
-			return false
+			return fmt.Errorf("%w: operation %q: want lowercase letters, digits and dashes, at most 32 bytes", ErrInvalidGrant, operation)
 		}
 	}
-	return true
+	normalized := g.Normalize()
+	if len(normalized.Paths) > maxGrantPaths {
+		return fmt.Errorf("%w: %d paths, at most %d", ErrInvalidGrant, len(normalized.Paths), maxGrantPaths)
+	}
+	if len(normalized.Operations) > maxGrantOperations {
+		return fmt.Errorf("%w: %d operations, at most %d", ErrInvalidGrant, len(normalized.Operations), maxGrantOperations)
+	}
+	return nil
 }
 
 func validGrantPath(grantPath string) bool {

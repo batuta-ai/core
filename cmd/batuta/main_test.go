@@ -3602,8 +3602,8 @@ func TestLoopGrantFlags(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			err := run([]string{"loop", "--workspace", root, "--skills", skills, "--answer", "1", "--allow-path", rejected, "text"}, &stdout, &stderr)
 			var exit *ExitError
-			if err == nil || errors.As(err, &exit) || !errors.Is(err, routing.ErrInvalidDeliveryTransition) {
-				t.Fatalf("run = %v; want the routing validation error with exit 1", err)
+			if err == nil || errors.As(err, &exit) || !errors.Is(err, routing.ErrInvalidGrant) || !strings.Contains(err.Error(), rejected) {
+				t.Fatalf("run = %v; want the routing validation error naming %q with exit 1", err, rejected)
 			}
 			if details := answerDetails(t, root, delivery); len(details) != 0 {
 				t.Fatalf("rejected grant recorded %v", details)
