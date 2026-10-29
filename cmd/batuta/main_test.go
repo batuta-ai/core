@@ -1023,6 +1023,100 @@ func TestLoopSubcommandRefusesToRunOutsideAPreparedWorkspace(t *testing.T) {
 	}
 }
 
+func TestLoopConventionsWarningOutput(t *testing.T) {
+	for _, mode := range []string{"ordinary", "roadmap"} {
+		t.Run(mode, func(t *testing.T) {
+			root, skills := loopSupervisionFixtureWithoutAmbientSkills(t)
+			git, err := exec.LookPath("git")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for name, payload := range map[string]string{
+				"git":   "#!/bin/sh\nexec '" + strings.ReplaceAll(git, "'", "'\"'\"'") + "' \"$@\"\n",
+				"codex": "#!/bin/sh\ncase \"$1\" in\n--version) echo 'codex 1.0.0';;\ndebug) echo '{\"models\":[{\"slug\":\"review-model\"}]}';;\ndoctor|plugin) echo '{}';;\n*) exit 91;;\nesac\n",
+			} {
+				if err := os.WriteFile(filepath.Join(skills, name), []byte(payload), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", skills)
+			profilePath := filepath.Join(root, ".batuta", "profile.md")
+			profile, err := os.ReadFile(profilePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(profilePath, append(profile, []byte("\n## Conventions\n"+strings.Repeat("é", 801)+"\n")...), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			planPath := filepath.Join(root, ".batuta", "plans", "demo.md")
+			plan, err := os.ReadFile(planPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan = bytes.Replace(plan, []byte("- [ ]"), []byte("- [x]"), 1)
+			plan = bytes.Replace(plan, []byte("backend/low"), []byte("backend/high"), 1)
+			if err := os.WriteFile(planPath, plan, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			reviewGit(t, root, "add", ".batuta/profile.md", ".batuta/plans/demo.md")
+			reviewGit(t, root, "commit", "-qm", "test: completed plan and conventions")
+			args := []string{"loop", "--workspace", root, "--skills", skills, "demo"}
+			var stdout, stderr bytes.Buffer
+			warning := "profile Conventions section is 1602 UTF-8 bytes (limit 1600)"
+			if mode == "ordinary" {
+				if err := run([]string{"loop", "--workspace", root, "--skills", skills, "--dry-run", "demo"}, &stdout, &stderr); err != nil {
+					t.Fatalf("dry-run: %v\n%s", err, stderr.String())
+				}
+				if !strings.Contains(stdout.String(), "warning   "+warning) || stderr.Len() != 0 {
+					t.Fatalf("dry-run output: stdout=%s stderr=%s", &stdout, &stderr)
+				}
+				stdout.Reset()
+			} else {
+				args = []string{"loop", "--workspace", root, "--skills", skills, "--roadmap"}
+				store, err := journal.Open(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(store.Path("supervised")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := run(args, &stdout, &stderr); err != nil {
+				t.Fatalf("run: %v\nstdout=%s stderr=%s", err, &stdout, &stderr)
+			}
+			if count := strings.Count(stderr.String(), "warning: "+warning+"\n"); count != 1 {
+				t.Fatalf("stderr warning count = %d; stderr = %q", count, stderr.String())
+			}
+			store, err := journal.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids, err := store.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var warned bool
+			for _, id := range ids {
+				if id == "supervised" {
+					continue
+				}
+				records, err := store.Read(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, record := range records {
+					if record.Kind == loop.KindProfileWarning {
+						warned = true
+					}
+				}
+			}
+			if !warned {
+				t.Fatal("live startup omitted profile warning journal record")
+			}
+		})
+	}
+}
+
 func TestLoopRoadmapDryRunPrintsTheChain(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, ".batuta", "plans", "done"), 0o755); err != nil {

@@ -30,6 +30,32 @@ func TestProfileConventionsSection(t *testing.T) {
 	}
 }
 
+func TestProfileConventionsWarning(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"missing", "Stack: Go\n", ""},
+		{"empty", "## Conventions\n\n## Notes\nOther text\n", ""},
+		{"below ceiling", "## Conventions\n" + strings.Repeat("a", 1599), ""},
+		{"at ceiling", "## Conventions\n" + strings.Repeat("a", 1600), ""},
+		{"above ceiling", "## Conventions\n" + strings.Repeat("a", 1601), "profile Conventions section is 1601 UTF-8 bytes (limit 1600)"},
+		{"multibyte at ceiling", "## Conventions\n" + strings.Repeat("é", 800), ""},
+		{"multibyte above ceiling", "## Conventions\n" + strings.Repeat("é", 801), "profile Conventions section is 1602 UTF-8 bytes (limit 1600)"},
+		{"only extracted section", "## Conventions\nShort.\n\n## Notes\n" + strings.Repeat("a", 1601), ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := ParseProfile(tt.raw).conventionsWarning(); got != tt.want {
+				t.Errorf("conventionsWarning() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestParseProfileWorktreeHome(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
