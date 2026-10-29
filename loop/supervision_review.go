@@ -3,6 +3,8 @@ package loop
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/base32"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -388,7 +390,28 @@ func prepareSupervisionReviewSnapshot(ctx context.Context, opts SupervisionOptio
 	if err := os.RemoveAll(job.Snapshot); err != nil {
 		return err
 	}
-	if _, err := supervisionReviewGit(ctx, opts.Workspace, "clone", "--no-hardlinks", "--no-checkout", "--", opts.Workspace, job.Snapshot); err != nil {
+	gitDirectory := filepath.Join(job.Snapshot, ".git")
+	cloneArgs := []string{"clone", "--no-hardlinks", "--no-checkout"}
+	if runtime.GOOS == "windows" {
+		// Git discovers metadata before loading core.longpaths. Keep that
+		// bootstrap path shorter than the snapshot's tracked source paths.
+		identity, err := hex.DecodeString(job.ID)
+		if err != nil || len(identity) != sha256.Size {
+			return errors.New("loop: invalid review job identity")
+		}
+		// Retain the full identity inside the already excluded runtime namespace.
+		name := "git-" + strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(identity))
+		gitDirectory = filepath.Join(opts.Workspace, ".batuta", "reviews", "supervision", name)
+		if err := os.RemoveAll(gitDirectory); err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(gitDirectory), 0700); err != nil {
+			return err
+		}
+		cloneArgs = append(cloneArgs, "--separate-git-dir="+gitDirectory, "--config=core.longpaths=true")
+	}
+	cloneArgs = append(cloneArgs, "--", opts.Workspace, job.Snapshot)
+	if _, err := supervisionReviewGit(ctx, opts.Workspace, cloneArgs...); err != nil {
 		return err
 	}
 	if _, err := supervisionReviewGit(ctx, job.Snapshot, "checkout", "--detach", job.FinalCommit, "--"); err != nil {
@@ -425,7 +448,7 @@ func prepareSupervisionReviewSnapshot(ctx context.Context, opts SupervisionOptio
 		}
 	}
 
-	exclude := filepath.Join(job.Snapshot, ".git", "info", "exclude")
+	exclude := filepath.Join(gitDirectory, "info", "exclude")
 	file, err := os.OpenFile(exclude, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
 	if err != nil {
 		return err
