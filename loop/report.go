@@ -1335,7 +1335,10 @@ func Dashboard(workspace, delivery string, w io.Writer) error {
 
 func lastTerminal(records []journal.Record) string {
 	for index := len(records) - 1; index >= 0; index-- {
-		if records[index].Kind == KindTerminal {
+		switch records[index].Kind {
+		case KindStarted, KindAttempts, KindAnswer:
+			return ""
+		case KindTerminal:
 			var detail struct {
 				State string `json:"state"`
 			}
