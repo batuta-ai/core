@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0-beta.60](https://github.com/batuta-ai/core/compare/v1.1.0-beta.59...v1.1.0-beta.60) (2026-10-29)
+
+
+### Features
+
+* **loop:** warn on oversized profile conventions without truncation ([550d4ff](https://github.com/batuta-ai/core/commit/550d4fff976d88380d0d352d45702f20f6d92c5a))
+
+
+### Bug Fixes
+
+* **loop:** retain long titles and complete commit subjects ([88af91b](https://github.com/batuta-ai/core/commit/88af91babb32bf6ca7d9fb6689739211053f4c9b))
+
 ## [1.1.0-beta.59](https://github.com/batuta-ai/core/compare/v1.1.0-beta.58...v1.1.0-beta.59) (2026-10-29)
 
 
