@@ -282,6 +282,47 @@ func TestProofsNoTestsRan(t *testing.T) {
 	}
 }
 
+func TestNoTestsRanDirect(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		output string
+		want   bool
+	}{
+		{"go warning", "testing: warning: no tests to run\nPASS\nok  \tpkg\t0.01s [no tests to run]\n", true},
+		{"go warning crlf", "testing: warning: no tests to run\r\nPASS\r\nok  \tpkg\t0.01s [no tests to run]\r\n", true},
+		{"every package without a test", "ok  \ta\t0.01s [no tests to run]\nok  \tb\t(cached) [no tests to run]\n", true},
+		{"go package summary", "ok  \tgithub.com/x/y\t0.004s [no tests to run]\n", true},
+		{"go cached package summary", "ok  \tgithub.com/x/y\t(cached) [no tests to run]\n", true},
+		{"package without tests", "?   \tgithub.com/x/y\t[no test files]\n", true},
+		{"every package without test files", "?   \ta\t[no test files]\n?   \tb\t[no test files]\n", true},
+		{"coverage summary", "ok  \tgithub.com/x/y\t0.15s\tcoverage: 0.0% of statements [no tests to run]\n", true},
+		{"coverage without statements", "ok  \tpkg\t(cached)\tcoverage: [no statements] [no tests to run]\n", true},
+		{"test files and coverage mixed", "?   \ta\t[no test files]\nok  \tb\t0.1s\tcoverage: 0.0% of statements [no tests to run]\n", true},
+		{"jest", "No tests found, exiting with code 0\n", true},
+		{"jest crlf", "No tests found, exiting with code 0\r\n", true},
+		{"go tests ran", "ok  \tgithub.com/x/y\t0.004s\n", false},
+		{"words inside a sentence", "the runner printed testing: warning: no tests to run once\n", false},
+		{"words quoted by a test", "=== RUN TestX\n    x_test.go:3: want \"No tests found, exiting with code 0\"\n--- PASS: TestX (0.00s)\n", false},
+		{"summary text with a suffix", "ok  \tpkg\t0.1s [no tests to run] elsewhere\n", false},
+		{"one package ran", "ok  \ta\t0.01s [no tests to run]\nok  \tb\t0.02s\n", false},
+		{"cached package ran", "ok  \ta\t0.01s [no tests to run]\nok  \tb\t(cached)\n", false},
+		{"verbose pass line with no tests pkg", "ok  \ta\t0.01s [no tests to run]\n=== RUN TestX\n--- PASS: TestX (0.00s)\nPASS\nok  \tb\t0.02s\n", false},
+		{"package ran with no test files", "?   \ta\t[no test files]\nok  \tb\t0.02s\n", false},
+		{"package ran with coverage and no test files", "?   \ta\t[no test files]\nok  \tb\t0.02s\tcoverage: 61.5% of statements\n", false},
+		{"cached package ran with coverage", "ok  \ta\t0.01s\tcoverage: 0.0% of statements [no tests to run]\nok  \tb\t(cached)\tcoverage: 80.0% of statements\n", false},
+		{"verbose pass line with no test files", "?   \ta\t[no test files]\n--- PASS: TestX (0.00s)\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := noTestsRan(tt.output); got != tt.want {
+				t.Fatalf("noTestsRan(%q) = %v, want %v", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestProofsTestsRan(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
