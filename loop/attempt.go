@@ -273,6 +273,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 	if err != nil {
 		return err
 	}
+	if probe.ReconciliationRequired {
+		return r.recordBlocked(ctx, ac, nil, blockerSubmissionUncertain, []string{"the ACP capability probe may have changed the worktree"})
+	}
 	if !probe.Pass {
 		return r.recordIncapable(ctx, ac, probe)
 	}
@@ -435,6 +438,9 @@ func (r *Runner) runAttempt(ctx context.Context, taskID string) (runErr error) {
 				probe, err := r.probeRoute(ctx, ac)
 				if err != nil {
 					return err
+				}
+				if probe.ReconciliationRequired {
+					return r.recordBlocked(ctx, ac, nil, blockerSubmissionUncertain, []string{"the ACP capability probe may have changed the worktree"})
 				}
 				if !probe.Pass {
 					return r.recordIncapable(ctx, ac, probe)
@@ -1063,13 +1069,14 @@ func (r *Runner) recordBlocked(ctx context.Context, ac attemptContext, result *e
 }
 
 func (r *Runner) recordFailureWithPolicy(ctx context.Context, ac attemptContext, result *executor.Result, code string, feedback []string, policy routing.FailurePolicy) error {
+	submissionUncertain := code == blockerSubmissionUncertain
 	// Cancellation during gates or candidate preparation is an interruption,
 	// not a failed proof or candidate. Keep the usual resumable failure policy.
 	if ctx.Err() != nil {
 		code, policy = blockerInterrupted, routing.ConductingFailurePolicy
 		feedback = []string{"the run was interrupted while this executor was working; the parked ref keeps whatever it wrote"}
 	}
-	preserveSubmission := code == blockerSubmissionUncertain || ac.dispatch.ReconciliationRequired || ac.verifierDispatch.ReconciliationRequired || requiresReconciliation(result) || (code == blockerInterrupted && (ac.dispatch.mayHaveSubmitted() || (result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)))
+	preserveSubmission := submissionUncertain || ac.dispatch.ReconciliationRequired || ac.verifierDispatch.ReconciliationRequired || requiresReconciliation(result) || (code == blockerInterrupted && (ac.dispatch.mayHaveSubmitted() || (result != nil && result.Receipt != nil && result.Receipt.Submission.State != executor.SubmissionNotSubmitted)))
 	if preserveSubmission {
 		code, policy = blockerSubmissionUncertain, routing.FailurePolicy{}
 		feedback = append(feedback, "ACP submission may have changed the worktree; reconcile the preserved work before another execution")

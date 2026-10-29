@@ -1,11 +1,13 @@
 package executor
 
 import (
-	"bytes"
 	"context"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/batuta-ai/core/publication"
 )
 
 const (
@@ -47,11 +49,12 @@ type ProbeResult struct {
 	ExitCode int
 	Duration time.Duration
 	Tail     string // bounded tail of the executor output
+	Receipt  *Receipt
 }
 
 // ProbeCapability asks the adapter's executor to run a command in dir and
 // reports whether it did. The marker must carry the HEAD of dir, and the
-// worktree status and HEAD must remain unchanged. A command that could not
+// worktree contents and HEAD must remain unchanged. A command that could not
 // start is an error, not a verdict.
 func ProbeCapability(ctx context.Context, backend Backend, adapter Adapter, route ProbeRoute, dir string, timeout time.Duration) (ProbeResult, error) {
 	request := Request{Brief: probeBrief, Cwd: dir, Model: route.Model, Effort: route.Effort}
@@ -59,17 +62,39 @@ func ProbeCapability(ctx context.Context, backend Backend, adapter Adapter, rout
 	if err != nil {
 		return ProbeResult{}, err
 	}
-	before, tracked := porcelainStatus(ctx, dir)
-	head, hasHead := headSHA(ctx, dir)
-	result, err := backend.Execute(ctx, Execution{Adapter: adapter, Request: request, Invocation: invocation, Timeout: timeout})
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return ProbeResult{}, err
 	}
-	probe := ProbeResult{ExitCode: result.ExitCode, Duration: result.Duration, Tail: probeTail(result)}
+	before, beforeErr := probeWorktreeState(ctx, dir)
+	if err := ctx.Err(); err != nil {
+		return ProbeResult{}, err
+	}
+	result, err := backend.Execute(ctx, Execution{Adapter: adapter, Request: request, Invocation: invocation, Timeout: timeout})
+	probe := ProbeResult{ExitCode: result.ExitCode, Duration: result.Duration, Tail: probeTail(result), Receipt: result.Receipt}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		if probe.Receipt == nil {
+			return ProbeResult{}, ctxErr
+		}
+		return probe, ctxErr
+	}
+	if err != nil {
+		return probe, err
+	}
+	var after publication.WorktreeState
+	var afterErr error
+	if beforeErr == nil {
+		after, afterErr = probeWorktreeState(ctx, dir)
+	}
+	if err := ctx.Err(); err != nil {
+		if probe.Receipt == nil {
+			return ProbeResult{}, err
+		}
+		return probe, err
+	}
 	switch {
-	case !hasHead || !tracked:
+	case beforeErr != nil:
 		probe.Reason = ProbeNoRepository
-	case statusChanged(ctx, dir, before) || headChanged(ctx, dir, head):
+	case afterErr != nil || after != before:
 		probe.Reason = ProbeTreeChanged
 	case result.TimedOut:
 		probe.Reason = ProbeTimeout
@@ -78,42 +103,32 @@ func ProbeCapability(ctx context.Context, backend Backend, adapter Adapter, rout
 	case !result.Finished:
 		probe.Reason = ProbeUnfinished
 	default:
-		probe.Reason = markerReason(result.Stdout, head)
+		probe.Reason = markerReason(result.Stdout, before.HeadSHA)
 		probe.Pass = probe.Reason == ""
+	}
+	if err := ctx.Err(); err != nil {
+		if probe.Receipt == nil {
+			return ProbeResult{}, err
+		}
+		return probe, err
 	}
 	return probe, nil
 }
 
-func headSHA(ctx context.Context, dir string) (string, bool) {
-	command := exec.CommandContext(ctx, "git", "rev-parse", "HEAD")
-	command.Dir = dir
-	var out bytes.Buffer
-	command.Stdout = &out
-	if err := command.Run(); err != nil {
-		return "", false
+func probeWorktreeState(ctx context.Context, dir string) (publication.WorktreeState, error) {
+	git, err := exec.LookPath("git")
+	if err != nil {
+		return publication.WorktreeState{}, err
 	}
-	return strings.TrimSpace(out.String()), true
-}
-
-func headChanged(ctx context.Context, dir, before string) bool {
-	after, ok := headSHA(ctx, dir)
-	return !ok || after != before
-}
-
-func porcelainStatus(ctx context.Context, dir string) (string, bool) {
-	command := exec.CommandContext(ctx, "git", "status", "--porcelain")
-	command.Dir = dir
-	var out bytes.Buffer
-	command.Stdout = &out
-	if err := command.Run(); err != nil {
-		return "", false
+	git, err = filepath.Abs(git)
+	if err != nil {
+		return publication.WorktreeState{}, err
 	}
-	return out.String(), true
-}
-
-func statusChanged(ctx context.Context, dir, before string) bool {
-	after, ok := porcelainStatus(ctx, dir)
-	return !ok || after != before
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return publication.WorktreeState{}, err
+	}
+	return (publication.GitClient{Executable: git, Runner: publication.ExecRunner{}}).WorktreeState(ctx, dir)
 }
 
 func markerReason(stdout []byte, head string) string {
@@ -143,7 +158,13 @@ func probeTail(result Result) string {
 		}
 	}
 	if len(tail) > probeTailBytes {
-		tail = tail[len(tail)-probeTailBytes:]
+		cutoff := len(tail) - probeTailBytes
+		for start := range tail {
+			if start >= cutoff {
+				tail = tail[start:]
+				break
+			}
+		}
 	}
 	return tail
 }

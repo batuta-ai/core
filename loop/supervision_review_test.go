@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/publication"
@@ -988,48 +989,87 @@ func TestSupervisionReconciledDeletionEntersReview(t *testing.T) {
 
 func TestSupervisionReviewJobWithinLimit(t *testing.T) {
 	t.Parallel()
-	opts, _, spec := supervisionReviewFixture(t)
-	launches := 0
-	engine := fakeSupervisionReview(t, opts, spec, &launches)
-	original := engine.Runner
-	const count = 400
-	engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
-		result, err := original.Run(ctx, c)
-		if len(c.Args) <= 2 {
-			return result, err
-		}
-		writeSupervisionReviewEvidence(t, c, "REWORK", false)
-		failures := make([]SupervisionReviewFailure, count)
-		for i := range failures {
-			code := 7
-			failures[i] = SupervisionReviewFailure{Kind: "operational", Cohort: strconv.Itoa(i), Reason: "reviewer exited before coverage", ExitCode: &code, Tail: strings.Repeat("x", 4096)}
-		}
-		data, err := json.Marshal(failures)
-		if err != nil {
-			return result, err
-		}
-		if err := os.WriteFile(filepath.Join(c.Args[7], "review_failures.json"), data, 0600); err != nil {
-			return result, err
-		}
-		result.ExitCode = 4
-		return result, supervisionReviewExitError(t, ctx, 4)
-	})
-	job, err := RunSupervisionReview(context.Background(), opts, engine)
-	if err != nil || job.State != "reported" || len(job.ReviewFailures) != count {
-		t.Fatalf("run: %+v, %v", job, err)
+	tests := []struct {
+		name  string
+		count int
+		tail  string
+	}{
+		{"many failures", 400, strings.Repeat("x", 4096)},
+		{"html escaping", 64, strings.Repeat("<", 4096)},
+		{"mixed escaped unicode", 64, strings.Repeat("<界😀\\\"\n&", 341)},
 	}
-	replayed, err := RunSupervisionReview(context.Background(), opts, engine)
-	if err != nil || replayed.State != "reported" || len(replayed.ReviewFailures) != count || launches != 1 {
-		t.Fatalf("replay: %+v, launches=%d, %v", replayed, launches, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			opts, _, spec := supervisionReviewFixture(t)
+			launches := 0
+			engine := fakeSupervisionReview(t, opts, spec, &launches)
+			original := engine.Runner
+			failures := make([]SupervisionReviewFailure, tt.count)
+			for i := range failures {
+				code := 7
+				failures[i] = SupervisionReviewFailure{Kind: "operational", Cohort: strconv.Itoa(i), Reason: "reviewer exited before coverage", ExitCode: &code, Tail: tt.tail}
+			}
+			engine.Runner = commandRunnerFunc(func(ctx context.Context, c publication.Command) (publication.CommandResult, error) {
+				result, err := original.Run(ctx, c)
+				if len(c.Args) <= 2 {
+					return result, err
+				}
+				writeSupervisionReviewEvidence(t, c, "REWORK", false)
+				data, err := json.Marshal(failures)
+				if err != nil {
+					return result, err
+				}
+				if err := os.WriteFile(filepath.Join(c.Args[7], "review_failures.json"), data, 0600); err != nil {
+					return result, err
+				}
+				result.ExitCode = 4
+				return result, supervisionReviewExitError(t, ctx, 4)
+			})
+			job, err := RunSupervisionReview(context.Background(), opts, engine)
+			if err != nil || job.State != "reported" || len(job.ReviewFailures) != tt.count {
+				t.Fatalf("run: state=%q failures=%d err=%v", job.State, len(job.ReviewFailures), err)
+			}
+			data, err := readSupervisionFile(filepath.Join(supervisionReviewDirectory(opts, *job), "job.json"), 1<<20)
+			if err != nil || len(data) > 1<<20 {
+				t.Fatalf("job size = %d, err = %v", len(data), err)
+			}
+			var source []SupervisionReviewFailure
+			data, err = os.ReadFile(filepath.Join(job.Artifacts, "review_failures.json"))
+			if err != nil || json.Unmarshal(data, &source) != nil || len(source) != tt.count {
+				t.Fatalf("source failures changed: %d records, err = %v", len(source), err)
+			}
+			for i, failure := range source {
+				if failure.Kind != failures[i].Kind || failure.Cohort != failures[i].Cohort || failure.Reason != failures[i].Reason || failure.ExitCode == nil || *failure.ExitCode != *failures[i].ExitCode || failure.Tail != tt.tail {
+					t.Fatalf("source failure %d changed", i)
+				}
+			}
+			replayed, err := RunSupervisionReview(context.Background(), opts, engine)
+			if err != nil || replayed.State != "reported" || len(replayed.ReviewFailures) != tt.count || launches != 1 {
+				t.Fatalf("replay: state=%q failures=%d launches=%d err=%v", replayed.State, len(replayed.ReviewFailures), launches, err)
+			}
+			encodedTails := 0
+			for i, failure := range replayed.ReviewFailures {
+				if failure.Kind != "operational" || failure.Cohort != strconv.Itoa(i) || failure.Reason != "reviewer exited before coverage" || failure.ExitCode == nil || *failure.ExitCode != 7 || !utf8.ValidString(failure.Tail) {
+					t.Fatalf("failure %d changed: %+v", i, failure)
+				}
+				encoded, err := json.Marshal(failure.Tail)
+				if err != nil {
+					t.Fatal(err)
+				}
+				encodedTails += len(encoded) - 2
+			}
+			if encodedTails > supervisionReviewTailBudget || replayed.Outcome != "incomplete_coverage" || replayed.ExitCode != 4 || !strings.Contains(replayed.Reason, "cohort 1: reviewer exited before coverage (exit 7)") || replayed.ArtifactDigests["review_failures.json"] == "" {
+				t.Fatalf("review facts or tail budget changed: encoded=%d outcome=%q exit=%d reason=%q", encodedTails, replayed.Outcome, replayed.ExitCode, replayed.Reason)
+			}
+		})
 	}
-	tails := 0
-	for i, failure := range replayed.ReviewFailures {
-		if failure.Kind != "operational" || failure.Cohort != strconv.Itoa(i) || failure.Reason != "reviewer exited before coverage" || failure.ExitCode == nil || *failure.ExitCode != 7 {
-			t.Fatalf("failure %d changed: %+v", i, failure)
-		}
-		tails += len(failure.Tail)
-	}
-	if tails > supervisionReviewTailBudget {
-		t.Fatalf("tails total %d bytes, budget %d", tails, supervisionReviewTailBudget)
+}
+
+func TestSupervisionReviewRejectsOversizedMetadataWithoutFailures(t *testing.T) {
+	t.Parallel()
+	job := &SupervisionReviewJob{State: "failed", Outcome: "execution_failed", Reason: strings.Repeat("<", 200000)}
+	if err := boundSupervisionReviewTails(job); err == nil {
+		t.Fatal("encoded job metadata exceeds the reader limit without an error")
 	}
 }
