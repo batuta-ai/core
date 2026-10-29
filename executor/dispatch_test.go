@@ -252,14 +252,17 @@ func TestDispatchReportCompactionPreservesFailureAndEvidence(t *testing.T) {
 func TestDispatchPreflightEscapingFitsReceipt(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		output string
+		name            string
+		output          string
+		retainedDetails []string
 	}{
-		{"quotes", strings.Repeat(`"`, probeTailBytes)},
-		{"backslashes", strings.Repeat(`\`, probeTailBytes)},
-		{"controls", strings.Repeat("\t\r", probeTailBytes/2)},
-		{"html", strings.Repeat("<>&", probeTailBytes)},
-		{"unicode", strings.Repeat("<&\\\"\t界", probeTailBytes/4)},
+		{"quotes", strings.Repeat(`"`, probeTailBytes), nil},
+		{"backslashes", strings.Repeat(`\`, probeTailBytes), nil},
+		{"controls", strings.Repeat("\t\r", probeTailBytes/2), nil},
+		{"html", strings.Repeat("<>&", probeTailBytes), nil},
+		{"unicode", strings.Repeat("<&\\\"\t界", probeTailBytes/4), nil},
+		{"invalid utf8", string(bytes.Repeat([]byte{0xff}, 1000)), nil},
+		{"mixed invalid utf8", strings.Repeat("<", 700) + "diagnostic before invalid: 界\n" + string(bytes.Repeat([]byte{0xff}, 1000)) + "\ndiagnostic after invalid: <&界", []string{"diagnostic before invalid: 界", "diagnostic after invalid: <&界"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -292,11 +295,19 @@ func TestDispatchPreflightEscapingFitsReceipt(t *testing.T) {
 			if err := json.Unmarshal(evidence, &full); err != nil {
 				t.Fatal(err)
 			}
-			if full.Preflight == nil || full.Preflight.Tail != probeTail(result) || saved.Preflight == nil || saved.Preflight.Reason != ProbeNoRepository || saved.Preflight.Pass || saved.ExitClass != "executor_incapable" || saved.ExitCode != 6 || saved.WorkerExitCode != -1 || saved.RequestedTransport != "auto" || saved.Receipt.Submission.State != SubmissionNotSubmitted || saved.Receipt.Transport.Outcome != TransportNotStarted || saved.Receipt.Worker.Outcome != WorkerClaimUnknown {
+			if full.Preflight == nil || full.Preflight.Tail != string([]rune(probeTail(result))) || saved.Preflight == nil || saved.Preflight.Reason != ProbeNoRepository || saved.Preflight.Pass || saved.ExitClass != "executor_incapable" || saved.ExitCode != 6 || saved.WorkerExitCode != -1 || saved.RequestedTransport != "auto" || saved.Receipt.Submission.State != SubmissionNotSubmitted || saved.Receipt.Transport.Outcome != TransportNotStarted || saved.Receipt.Worker.Outcome != WorkerClaimUnknown {
 				t.Fatalf("failure facts changed: saved=%+v full=%+v", saved, full)
 			}
-			if !saved.Receipt.Overflow || saved.Receipt.OmittedBytes != len(full.Preflight.Tail)-len(saved.Preflight.Tail) || !strings.HasSuffix(full.Preflight.Tail, saved.Preflight.Tail) || saved.Receipt.Evidence == nil || saved.Receipt.Evidence.Path != filepath.Join(report.Artifacts.Directory, report.Artifacts.Evidence) || report.Preflight.Tail != saved.Preflight.Tail {
+			if !saved.Receipt.Overflow || saved.Receipt.OmittedBytes < 0 || saved.Receipt.OmittedBytes != len(full.Preflight.Tail)-len(saved.Preflight.Tail) || !strings.HasSuffix(full.Preflight.Tail, saved.Preflight.Tail) || saved.Receipt.Evidence == nil || saved.Receipt.Evidence.Path != filepath.Join(report.Artifacts.Directory, report.Artifacts.Evidence) || report.Preflight.Tail != saved.Preflight.Tail {
 				t.Fatalf("compaction or evidence mismatch: saved=%+v full=%+v", saved, full)
+			}
+			if len(tt.retainedDetails) > 0 && saved.Receipt.OmittedBytes == 0 {
+				t.Fatalf("mixed malformed tail was not compacted: %+v", saved)
+			}
+			for _, detail := range tt.retainedDetails {
+				if !strings.Contains(saved.Preflight.Tail, detail) {
+					t.Fatalf("lost neighboring diagnostic %q: %q", detail, saved.Preflight.Tail)
+				}
 			}
 		})
 	}

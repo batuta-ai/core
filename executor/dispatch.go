@@ -334,7 +334,7 @@ func marshalDispatchReport(report DispatchReport) ([]byte, error) {
 		preflight := *report.Preflight
 		report.Preflight = &preflight
 		tail := []rune(preflight.Tail)
-		originalBytes := len(preflight.Tail)
+		originalBytes := len(string(tail))
 		omittedBytes := report.Receipt.OmittedBytes
 		low, high := 0, len(tail)
 		for low < high {
