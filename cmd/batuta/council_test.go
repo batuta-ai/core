@@ -439,7 +439,7 @@ func TestCouncilIncompleteCrossReview(t *testing.T) {
 	}
 	report := stdout.String()
 	synthesis := strings.Index(report, "## Chairman synthesis")
-	note := strings.Index(report, "fewer than two cross-reviews parsed")
+	note := strings.Index(report, "fewer than two critiques or cross-reviews parsed")
 	if !strings.Contains(report, "Recommendation: INCOMPLETE") || note < 0 || synthesis < 0 || note > synthesis {
 		t.Errorf("council.md = %s", report)
 	}
@@ -474,6 +474,15 @@ func TestCouncilIncompleteArtefacts(t *testing.T) {
 	markdown, readErr := os.ReadFile(filepath.Join(directory, "council.md"))
 	if readErr != nil || !strings.Contains(string(markdown), "Recommendation: INCOMPLETE") {
 		t.Errorf("council.md = %q, %v", markdown, readErr)
+	}
+	report := string(markdown)
+	synthesis := strings.Index(report, "## Chairman synthesis")
+	note := strings.Index(report, "fewer than two critiques or cross-reviews parsed")
+	if note < 0 || synthesis < 0 || note > synthesis {
+		t.Errorf("council.md missing or misplaced incomplete note: %s", report)
+	}
+	if strings.Contains(report, "fewer than two cross-reviews parsed") {
+		t.Errorf("council.md asserted cross-reviews parsed when critiques failed: %s", report)
 	}
 }
 
