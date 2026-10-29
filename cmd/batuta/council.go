@@ -306,7 +306,7 @@ func councilReport(planFile string, artifact councilArtifact, complete bool) str
 	fmt.Fprintf(&b, "# Council report\n\nPlan: %s (%s)\nRecommendation: %s\n\n", planFile, artifact.PlanDigest, recommendation)
 	b.WriteString("The council is advice for the maintainer; it never approves a plan.\n\n")
 	if artifact.Aggregate.Recommendation == council.Incomplete {
-		b.WriteString("Incomplete: fewer than two cross-reviews parsed, so the findings and ranking below are not cross-checked.\n\n")
+		b.WriteString("Incomplete: fewer than two critiques or cross-reviews parsed, so the findings and ranking below are not cross-checked.\n\n")
 	}
 	b.WriteString("## Chairman synthesis\n\n")
 	if strings.TrimSpace(artifact.Synthesis) == "" {
