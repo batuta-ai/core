@@ -137,8 +137,14 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 		if err == nil {
 			err = r.record(KindCapabilityProbe, ac.taskID, detail)
 			if err == nil {
-				r.probes[route] = detail
-				delete(r.pendingProbes, ac.taskID)
+				if detail.ReconciliationRequired {
+					r.pendingProbes[ac.taskID] = detail
+				} else {
+					r.probes[route] = detail
+					if intent, ok := r.pendingProbes[ac.taskID]; ok && sameProbeRoute(intent.capabilityRoute, detail.capabilityRoute) {
+						delete(r.pendingProbes, ac.taskID)
+					}
+				}
 			}
 		}
 		delete(r.probing, route)
@@ -157,7 +163,7 @@ func (r *Runner) loadCapabilityProbes(records []journal.Record) error {
 		if err := json.Unmarshal(record.Detail, &detail); err != nil {
 			return fmt.Errorf("loop: capability probe journal: %w", err)
 		}
-		if record.Kind == KindCapabilityProbeIntent {
+		if record.Kind == KindCapabilityProbeIntent || detail.ReconciliationRequired {
 			r.pendingProbes[record.TaskID] = detail
 			continue
 		}

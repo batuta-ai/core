@@ -342,64 +342,82 @@ func TestLoopACPProbeShutdownRequiresReconciliation(t *testing.T) {
 }
 
 func TestLoopUnresolvedProbeIntentBlocksResume(t *testing.T) {
-	for _, resumeMode := range []string{"acp", "default_cli", "auto"} {
-		t.Run(resumeMode, func(t *testing.T) {
-			t.Parallel()
-			f := setup(t)
-			var out bytes.Buffer
-			opts := f.options("default", &out)
-			opens := 0
-			transport := loopACPTransport(t, func(executor.Execution) (string, string) {
-				t.Error("task prompt started after unresolved probe")
-				return "", "end_turn"
+	for _, recorded := range []bool{false, true} {
+		for _, resumeMode := range []string{"acp", "default_cli", "auto"} {
+			name := resumeMode
+			if recorded {
+				name = "recorded_" + name
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				f := setup(t)
+				var out bytes.Buffer
+				opts := f.options("default", &out)
+				opens := 0
+				transport := loopACPTransport(t, func(executor.Execution) (string, string) {
+					t.Error("task prompt started after unresolved probe")
+					return "", "end_turn"
+				})
+				open := transport.ACP.Open
+				transport.ACP.Open = func(ctx context.Context, e executor.Execution) (*acp.Connection, func() error, error) {
+					opens++
+					return open(ctx, e)
+				}
+				opts.Transport = transport
+				r := prepareACPAttempt(t, f, opts)
+				if err := r.graph.BeginWaveAttempts(1, r.generation); err != nil {
+					t.Fatal(err)
+				}
+				task, _ := r.graph.Task("task_1")
+				attempt := task.Attempts[0]
+				ac := attemptContext{taskID: "task_1", execution: attempt.Execution, runtime: attempt.Runtime, base: attempt.BaseHeadSHA}
+				if err := r.ensureWorktree(context.Background(), &ac, attempt); err != nil {
+					t.Fatal(err)
+				}
+				intent := capabilityProbeDetail{capabilityRoute: r.capabilityRoute(ac.runtime), Reason: "probe_unresolved", ReconciliationRequired: true}
+				if err := r.record(KindCapabilityProbeIntent, ac.taskID, intent); err != nil {
+					t.Fatal(err)
+				}
+				if recorded {
+					uncertain := intent
+					uncertain.Reason = "probe_error"
+					uncertain.Receipt = json.RawMessage(`{"submission":{"state":"submitted"},"transport":{"outcome":"failed","failure":"shutdown"},"worker":{"outcome":"unknown"}}`)
+					if err := r.record(KindCapabilityProbe, ac.taskID, uncertain); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := r.Release(); err != nil {
+					t.Fatal(err)
+				}
+				switch resumeMode {
+				case "default_cli":
+					opts.Transport = nil
+				case "auto":
+					auto := *transport
+					auto.Mode = "auto"
+					opts.Transport = &auto
+				}
+				opts.Resume = r.Delivery()
+				resumed, err := Resume(context.Background(), opts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if state, err := resumed.Run(context.Background()); err != nil || state != StateBlocked {
+					t.Fatalf("resumed Run() = %s, %v\n%s", state, err, out.String())
+				}
+				task, _ = resumed.graph.Task("task_1")
+				if task.BlockerCode != blockerSubmissionUncertain || len(task.Attempts) != 1 || opens != 0 {
+					t.Fatalf("unresolved probe replayed: task=%+v opens=%d", task, opens)
+				}
+				wantProbes := 0
+				if recorded {
+					wantProbes = 1
+				}
+				if counts := kinds(readJournal(t, f, r.Delivery())); counts[KindStarted] != 0 || counts[KindCapabilityProbe] != wantProbes {
+					t.Fatalf("resume dispatched task or probe: %v", counts)
+				}
 			})
-			open := transport.ACP.Open
-			transport.ACP.Open = func(ctx context.Context, e executor.Execution) (*acp.Connection, func() error, error) {
-				opens++
-				return open(ctx, e)
-			}
-			opts.Transport = transport
-			r := prepareACPAttempt(t, f, opts)
-			if err := r.graph.BeginWaveAttempts(1, r.generation); err != nil {
-				t.Fatal(err)
-			}
-			task, _ := r.graph.Task("task_1")
-			attempt := task.Attempts[0]
-			ac := attemptContext{taskID: "task_1", execution: attempt.Execution, runtime: attempt.Runtime, base: attempt.BaseHeadSHA}
-			if err := r.ensureWorktree(context.Background(), &ac, attempt); err != nil {
-				t.Fatal(err)
-			}
-			intent := capabilityProbeDetail{capabilityRoute: r.capabilityRoute(ac.runtime), Reason: "probe_unresolved", ReconciliationRequired: true}
-			if err := r.record(KindCapabilityProbeIntent, ac.taskID, intent); err != nil {
-				t.Fatal(err)
-			}
-			if err := r.Release(); err != nil {
-				t.Fatal(err)
-			}
-			switch resumeMode {
-			case "default_cli":
-				opts.Transport = nil
-			case "auto":
-				auto := *transport
-				auto.Mode = "auto"
-				opts.Transport = &auto
-			}
-			opts.Resume = r.Delivery()
-			resumed, err := Resume(context.Background(), opts)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if state, err := resumed.Run(context.Background()); err != nil || state != StateBlocked {
-				t.Fatalf("resumed Run() = %s, %v\n%s", state, err, out.String())
-			}
-			task, _ = resumed.graph.Task("task_1")
-			if task.BlockerCode != blockerSubmissionUncertain || len(task.Attempts) != 1 || opens != 0 {
-				t.Fatalf("unresolved probe replayed: task=%+v opens=%d", task, opens)
-			}
-			if counts := kinds(readJournal(t, f, r.Delivery())); counts[KindStarted] != 0 || counts[KindCapabilityProbe] != 0 {
-				t.Fatalf("resume dispatched task or probe: %v", counts)
-			}
-		})
+		}
 	}
 }
 
