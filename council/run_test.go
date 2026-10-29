@@ -164,6 +164,8 @@ func TestRunStages(t *testing.T) {
 
 func TestRunParsesRawWhenDecodedDropsLines(t *testing.T) {
 	t.Parallel()
+	var decodedOutput strings.Builder
+	var alphaDecoded string
 	runner := councilRunner(func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
 		model, prompt := councilCommand(command)
 		answer := critiqueAnswer(model)
@@ -175,16 +177,28 @@ func TestRunParsesRawWhenDecodedDropsLines(t *testing.T) {
 		}
 		if strings.HasPrefix(prompt, "Review the other counsellors") {
 			answer = crossReviewAnswer(strings.ToUpper(model[:1]))
-			if model != "alpha-model" {
+			if model == "alpha-model" {
+				answer = fmt.Sprintf(`{"type":"assistant","message":{"content":[{"type":"text","text":%q}]}}`+"\n", answer)
+			} else {
 				answer = strings.Replace(answer, "A1: AGREE\n", "A1: AGREE\nA2: AGREE\n", 1)
 			}
 		}
 		if strings.HasPrefix(prompt, "Synthesize this council") {
 			answer = "Synthesis"
 		}
+		before := decodedOutput.Len()
+		if command.Observer != nil {
+			if _, err := command.Observer.Write([]byte(answer)); err != nil {
+				return publication.CommandResult{}, err
+			}
+		}
+		if model == "alpha-model" && !strings.HasPrefix(prompt, "Review the other counsellors") {
+			alphaDecoded = decodedOutput.String()[before:]
+		}
 		return publication.CommandResult{Stdout: []byte(answer)}, nil
 	})
 	table, opts := councilFixture(t, 1, runner)
+	opts.Subprocess.Stdout = &decodedOutput
 	path := filepath.Join(opts.Skills, "adapters", "alpha.md")
 	adapter, err := os.ReadFile(path)
 	if err != nil {
@@ -203,6 +217,9 @@ func TestRunParsesRawWhenDecodedDropsLines(t *testing.T) {
 	}
 	if got := result.Critiques[0].Findings; len(got) != 2 || got[0].Claim != "first finding" || got[1].Claim != "second finding" {
 		t.Fatalf("raw findings = %+v", got)
+	}
+	if alphaDecoded != "<<<COUNCILCOUNCIL>>>VERDICT: REVISE" {
+		t.Fatalf("decoded alpha output = %q, want markers and verdict without JSON findings", alphaDecoded)
 	}
 }
 

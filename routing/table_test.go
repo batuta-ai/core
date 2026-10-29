@@ -2,6 +2,7 @@ package routing
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -447,6 +448,50 @@ func TestParseCouncilRoles(t *testing.T) {
 	sameExecutorOtherModel := "| council | — | codex | model-a |\n| council | — | codex | model-b |\n"
 	if table, err := ParseRoutingTable([]byte(routingTableWithoutRole() + roleTable + sameExecutorOtherModel)); err != nil || len(table.Council) != 2 {
 		t.Fatalf("same executor with other models: %+v, %v", table.Council, err)
+	}
+}
+
+func TestCouncilMemberDigest(t *testing.T) {
+	t.Parallel()
+	source := routingTableFixture + "\n" + routingCouncilFixture
+	base, err := ParseRoutingTable([]byte(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(base.Council) != 3 || base.Chairman == nil {
+		t.Fatalf("base council roles = %+v, chairman = %+v", base.Council, base.Chairman)
+	}
+	for _, tc := range []struct {
+		name     string
+		newRow   string
+		executor inventory.ExecutorID
+		model    string
+	}{
+		{"executor", "| council | — | cursor-agent | gpt-5.6-sol |", inventory.ExecutorCursorAgent, "gpt-5.6-sol"},
+		{"model", "| council | — | codex | gpt-5.6-terra |", inventory.ExecutorCodex, "gpt-5.6-terra"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			changedSource := strings.Replace(source, "| council | — | codex | gpt-5.6-sol |", tc.newRow, 1)
+			changed, err := ParseRoutingTable([]byte(changedSource))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(changed.Council) != len(base.Council) || changed.Chairman == nil {
+				t.Fatalf("changed council roles = %+v, chairman = %+v", changed.Council, changed.Chairman)
+			}
+			if !slices.Equal(changed.Rows, base.Rows) || !slices.Equal(changed.Research, base.Research) || changed.Review != base.Review || *changed.Chairman != *base.Chairman || !slices.Equal(changed.Council[:1], base.Council[:1]) || !slices.Equal(changed.Council[2:], base.Council[2:]) {
+				t.Fatalf("unrelated routes changed: base = %+v, changed = %+v", base, changed)
+			}
+			wantMember := base.Council[1]
+			wantMember.Executor, wantMember.Model = tc.executor, tc.model
+			if changed.Council[1] != wantMember {
+				t.Fatalf("council member = %+v, want %+v", changed.Council[1], wantMember)
+			}
+			if changed.Digest == base.Digest {
+				t.Fatal("digest must change when one council member changes")
+			}
+		})
 	}
 }
 
