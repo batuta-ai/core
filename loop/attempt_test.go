@@ -456,54 +456,64 @@ func TestCommitMessageCutsAtWordBoundary(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		title    string
-		expected string
+		name         string
+		title        string
+		expected     string
+		expectedBody string
 	}{
 		{
-			name:     "PRD-v1.md translation cut at word boundary before 68 bytes",
-			title:    "PRD-v1.md in English: the historical PRD is translated in place, strings",
-			expected: "PRD-v1.md in English: the historical PRD is translated in place",
+			name:         "PRD-v1.md translation uses task identity when exceeding 68 bytes",
+			title:        "PRD-v1.md in English: the historical PRD is translated in place, strings",
+			expected:     "complete task-1",
+			expectedBody: "PRD-v1.md in English: the historical PRD is translated in place, strings\n\nPlan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 		{
-			name:     "long title without spaces cut at 68",
-			title:    strings.Repeat("a", 80),
-			expected: strings.Repeat("a", 68),
+			name:         "long title without spaces uses task identity when exceeding 68 bytes",
+			title:        strings.Repeat("a", 80),
+			expected:     "complete task-1",
+			expectedBody: strings.Repeat("a", 80) + "\n\nPlan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 		{
-			name:     "title <= 68 remains intact",
-			title:    "Short title under limit",
-			expected: "short title under limit",
+			name:         "title <= 68 remains intact",
+			title:        "Short title under limit",
+			expected:     "short title under limit",
+			expectedBody: "Plan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 		{
-			name:     "trims trailing punctuation after word boundary cut",
-			title:    "This is a long title that needs to be cut here, and-more-words-exceeding-limit",
-			expected: "this is a long title that needs to be cut here",
+			name:         "trims trailing punctuation in long title and uses task identity",
+			title:        "This is a long title that needs to be cut here, and-more-words-exceeding-limit",
+			expected:     "complete task-1",
+			expectedBody: "This is a long title that needs to be cut here, and-more-words-exceeding-limit\n\nPlan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 		{
-			name:     "trims trailing colon after cut",
-			title:    "This is a long title that needs to be cut here: and-more-words-exceeding-limit",
-			expected: "this is a long title that needs to be cut here",
+			name:         "trims trailing colon in long title and uses task identity",
+			title:        "This is a long title that needs to be cut here: and-more-words-exceeding-limit",
+			expected:     "complete task-1",
+			expectedBody: "This is a long title that needs to be cut here: and-more-words-exceeding-limit\n\nPlan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 		{
-			name:     "trims trailing semicolon after cut",
-			title:    "This is a long title that needs to be cut here; and-more-words-exceeding-limit",
-			expected: "this is a long title that needs to be cut here",
+			name:         "trims trailing semicolon in long title and uses task identity",
+			title:        "This is a long title that needs to be cut here; and-more-words-exceeding-limit",
+			expected:     "complete task-1",
+			expectedBody: "This is a long title that needs to be cut here; and-more-words-exceeding-limit\n\nPlan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 		{
-			name:     "trims trailing em-dash after cut",
-			title:    "This is a long title that needs to be cut here— and-more-words-exceeding-limit",
-			expected: "this is a long title that needs to be cut here",
+			name:         "trims trailing em-dash in long title and uses task identity",
+			title:        "This is a long title that needs to be cut here— and-more-words-exceeding-limit",
+			expected:     "complete task-1",
+			expectedBody: "This is a long title that needs to be cut here— and-more-words-exceeding-limit\n\nPlan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 		{
-			name:     "trims trailing hyphen after cut",
-			title:    "This is a long title that needs to be cut here- and-more-words-exceeding-limit",
-			expected: "this is a long title that needs to be cut here",
+			name:         "trims trailing hyphen in long title and uses task identity",
+			title:        "This is a long title that needs to be cut here- and-more-words-exceeding-limit",
+			expected:     "complete task-1",
+			expectedBody: "This is a long title that needs to be cut here- and-more-words-exceeding-limit\n\nPlan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 		{
-			name:     "space at byte 68 is the word boundary",
-			title:    strings.Repeat("a", 62) + " word, and more words",
-			expected: strings.Repeat("a", 62) + " word",
+			name:         "space at byte 68 is the word boundary exceeding 68 bytes uses task identity",
+			title:        strings.Repeat("a", 62) + " word, and more words",
+			expected:     "complete task-1",
+			expectedBody: strings.Repeat("a", 62) + " word, and more words\n\nPlan test-plan, task-1. Delivered by batuta loop.\n",
 		},
 	}
 
@@ -529,6 +539,10 @@ func TestCommitMessageCutsAtWordBoundary(t *testing.T) {
 			subject := parts[1]
 			if subject != tt.expected {
 				t.Errorf("got subject %q, want %q", subject, tt.expected)
+			}
+			body := strings.Join(lines[2:], "\n")
+			if body != tt.expectedBody {
+				t.Errorf("got body %q, want %q", body, tt.expectedBody)
 			}
 		})
 	}

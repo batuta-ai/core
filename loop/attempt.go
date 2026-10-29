@@ -1246,23 +1246,7 @@ func commitMessage(task routing.PlanTask, slug string) string {
 	}
 	title = strings.TrimSuffix(title, ".")
 	if len(title) > 68 {
-		lastSpace := -1
-		byteCount := 0
-		for _, r := range title {
-			runeBytes := len(string(r))
-			if r == ' ' {
-				lastSpace = byteCount
-			}
-			if byteCount+runeBytes > 68 {
-				break
-			}
-			byteCount += runeBytes
-		}
-		if lastSpace != -1 {
-			title = strings.TrimRight(title[:lastSpace], " ,:;—-")
-		} else {
-			title = strings.TrimSpace(title[:byteCount])
-		}
+		return fmt.Sprintf("%s: complete %s\n\n%s\n\nPlan %s, %s. Delivered by batuta loop.\n", kind, task.ID, task.Title, slug, task.ID)
 	}
 	return fmt.Sprintf("%s: %s\n\nPlan %s, %s. Delivered by batuta loop.\n", kind, title, slug, task.ID)
 }
