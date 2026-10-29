@@ -1,6 +1,32 @@
 package executor
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestDropSecretFieldLinesMultiline(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{
+		"\n\"synthetic-secret\"",
+		"\n{\n\"nested\": \"synthetic-secret\"\n}",
+		"\n[\n\"synthetic-secret\"\n]",
+		"\n\"unterminated synthetic-secret",
+		strings.Repeat("\n ", 45) + "\"synthetic-secret\"",
+	} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			in := "before\n{\"token\":" + value + "}\nafter"
+			got := DropSecretFieldLines(in)
+			if strings.Contains(got, "synthetic-secret") || !strings.HasPrefix(got, "before") {
+				t.Fatalf("unsafe or lost preceding context: %q", got)
+			}
+			if !strings.Contains(value, "unterminated") && !strings.HasSuffix(got, "after") {
+				t.Fatalf("lost following context: %q", got)
+			}
+		})
+	}
+}
 
 func TestRedactPathsKeepsRelative(t *testing.T) {
 	t.Parallel()

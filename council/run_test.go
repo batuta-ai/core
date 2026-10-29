@@ -316,6 +316,15 @@ func TestRunFailures(t *testing.T) {
 	}
 }
 
+func TestCouncilFailureMultilineSecretOutsideTail(t *testing.T) {
+	t.Parallel()
+	output := "before\n{\"token\":" + strings.Repeat("\n ", 45) + "\"synthetic-secret\"}\nafter"
+	got := councilFailure("A", "critique", "failed", nil, output).Tail
+	if strings.Contains(got, "synthetic-secret") || !strings.Contains(got, "after") {
+		t.Fatalf("failure tail = %q", got)
+	}
+}
+
 func TestRunFailuresNeedTwoCritiques(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex

@@ -324,6 +324,15 @@ func reviewFailuresReport() Report {
 	}, spec)
 }
 
+func TestReviewStreamMultilineSecretOutsideTail(t *testing.T) {
+	t.Parallel()
+	payload := "before\n{\"token\":" + strings.Repeat("\n ", 45) + "\"synthetic-secret\"}\nafter"
+	got := redactStreamTail([]byte(payload))
+	if strings.Contains(got, "synthetic-secret") || !strings.Contains(got, "after") {
+		t.Fatalf("stream tail = %q", got)
+	}
+}
+
 func TestReportReviewFailures(t *testing.T) {
 	t.Parallel()
 	if got := BuildReport(Manifest{}, nil, nil).ReviewFailures; got == nil || len(got) != 0 {

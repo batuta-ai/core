@@ -1,6 +1,7 @@
 package executor
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -53,16 +54,34 @@ func DropSecretBearingLines(value string) string {
 }
 
 // DropSecretFieldLines removes every line that holds a secret-shaped
-// assignment anywhere in it or a JSON field whose key names a secret, such as
-// {"api_key":"sk-x"}. Escaped key names are not decoded.
+// assignment anywhere in it or any part of a JSON field whose key names a
+// secret. An incomplete secret value suppresses the remaining output.
+// Escaped key names are not decoded.
 func DropSecretFieldLines(value string) string {
 	if value == "" {
 		return ""
 	}
+	var spans [][2]int
+	for _, match := range secretField.FindAllStringIndex(value, -1) {
+		decoder := json.NewDecoder(strings.NewReader(value[match[1]:]))
+		var field json.RawMessage
+		end := len(value)
+		if err := decoder.Decode(&field); err == nil {
+			end = match[1] + int(decoder.InputOffset())
+		}
+		spans = append(spans, [2]int{match[0], end})
+	}
 	lines := strings.Split(value, "\n")
 	kept := make([]string, 0, len(lines))
+	offset, span := 0, 0
 	for _, line := range lines {
-		if secretAssign.MatchString(line) || secretField.MatchString(line) {
+		end := offset + len(line) + 1
+		for span < len(spans) && spans[span][1] <= offset {
+			span++
+		}
+		hasSecret := span < len(spans) && spans[span][0] < end
+		offset = end
+		if secretAssign.MatchString(line) || hasSecret {
 			continue
 		}
 		kept = append(kept, line)

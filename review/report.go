@@ -347,7 +347,8 @@ func ExistingTailPaths(directory string) []string {
 }
 
 func redactStreamTail(payload []byte) string {
-	return executor.DropSecretFieldLines(executor.DropSecretLines(executor.RedactPaths(executor.Tail(payload, 40), "")))
+	redacted := executor.DropSecretFieldLines(string(payload))
+	return executor.RedactPaths(executor.Tail([]byte(redacted), 40), "")
 }
 
 func joinTails(parts ...string) string {
