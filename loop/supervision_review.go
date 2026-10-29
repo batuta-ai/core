@@ -599,9 +599,6 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 const supervisionReviewTailBudget = 256 << 10
 
 func boundSupervisionReviewTails(job *SupervisionReviewJob) error {
-	if len(job.ReviewFailures) == 0 {
-		return nil
-	}
 	tails := make([]string, len(job.ReviewFailures))
 	for i := range job.ReviewFailures {
 		tails[i], job.ReviewFailures[i].Tail = job.ReviewFailures[i].Tail, ""

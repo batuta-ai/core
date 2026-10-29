@@ -1065,3 +1065,11 @@ func TestSupervisionReviewJobWithinLimit(t *testing.T) {
 		})
 	}
 }
+
+func TestSupervisionReviewRejectsOversizedMetadataWithoutFailures(t *testing.T) {
+	t.Parallel()
+	job := &SupervisionReviewJob{State: "failed", Outcome: "execution_failed", Reason: strings.Repeat("<", 200000)}
+	if err := boundSupervisionReviewTails(job); err == nil {
+		t.Fatal("encoded job metadata exceeds the reader limit without an error")
+	}
+}

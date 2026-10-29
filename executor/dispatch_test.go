@@ -340,3 +340,29 @@ func TestDispatchCompactedPassingPreflightKeepsWorkerFailure(t *testing.T) {
 		t.Fatalf("worker or preflight facts changed: %+v", report)
 	}
 }
+
+func TestDispatchEvidencePreservesMalformedTailInterior(t *testing.T) {
+	t.Parallel()
+	output := strings.Repeat("A", 1024) + string([]byte{0xff}) + strings.Repeat("B", 1024)
+	opts := dispatchTestOptions(t, dispatchBackendFunc(func(context.Context, Execution) (Result, error) {
+		return Result{Stdout: []byte(output), Finished: true}, nil
+	}))
+	opts.Preflight = true
+	report, err := Dispatch(context.Background(), opts)
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(report.Artifacts.Directory, report.Artifacts.Evidence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var full DispatchReport
+	if err := json.Unmarshal(data, &full); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat("A", 1023) + "\uFFFD" + strings.Repeat("B", 1024)
+	if full.Preflight == nil || full.Preflight.Tail != want {
+		t.Fatal("full evidence lost the malformed byte's diagnostic representation")
+	}
+}

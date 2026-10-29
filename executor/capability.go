@@ -158,7 +158,13 @@ func probeTail(result Result) string {
 		}
 	}
 	if len(tail) > probeTailBytes {
-		tail = strings.ToValidUTF8(tail[len(tail)-probeTailBytes:], "")
+		cutoff := len(tail) - probeTailBytes
+		for start := range tail {
+			if start >= cutoff {
+				tail = tail[start:]
+				break
+			}
+		}
 	}
 	return tail
 }
