@@ -31,6 +31,7 @@ import (
 // Journal kinds written by the loop.
 const (
 	KindOpened            journal.Kind = "delivery_opened"
+	KindProfileWarning    journal.Kind = "profile_warning"
 	KindWave              journal.Kind = "wave_admitted"
 	KindAttempts          journal.Kind = "attempts_begun"
 	KindWorktree          journal.Kind = "worktree_attached"
@@ -112,6 +113,7 @@ type Options struct {
 	// must support concurrent calls and context cancellation.
 	Sleep       func(context.Context, time.Duration) error
 	Stdout      io.Writer
+	Stderr      io.Writer
 	Inventory   func(context.Context) (inventory.InventorySnapshot, error)
 	Runner      publication.CommandRunner
 	Processes   worktree.ProcessScanner
@@ -716,11 +718,17 @@ func (r *Runner) Delivery() string { return r.delivery }
 // table overrides, missing templates).
 func (r *Runner) Warnings() []string {
 	warnings := slices.Clone(r.warnings)
+	if warning := r.ConventionsWarning(); warning != "" {
+		warnings = append(warnings, warning)
+	}
 	if len(r.missing) > 0 {
 		warnings = append(warnings, "templates not installed: "+strings.Join(r.missing, ", "))
 	}
 	return warnings
 }
+
+// ConventionsWarning reports an oversized profile section copied into briefs.
+func (r *Runner) ConventionsWarning() string { return r.profile.conventionsWarning() }
 
 // Preview is what --dry-run prints: the waves in dependency order with
 // the executor and model per task, computed on a copy of the graph.
@@ -858,6 +866,9 @@ func PrintPreview(w io.Writer, preview Preview) {
 // Run drives the delivery to a terminal state, or returns ErrStopped when
 // --max-waves ended it early.
 func (r *Runner) Run(ctx context.Context) (state string, runErr error) {
+	if warning := r.ConventionsWarning(); warning != "" && r.opts.Stderr != nil {
+		fmt.Fprintf(r.opts.Stderr, "warning: %s\n", warning)
+	}
 	if r.opts.Supervisor != nil {
 		return r.runSupervised(ctx, *r.opts.Supervisor)
 	}
@@ -884,6 +895,11 @@ func (r *Runner) runOwned(ctx context.Context, opened func() error) (state strin
 	}
 	if err := r.recordPendingPresenceTakeover(); err != nil {
 		return "", err
+	}
+	if r.ConventionsWarning() != "" {
+		if err := r.record(KindProfileWarning, "", map[string]int{"bytes": len(r.profile.ConventionsSection()), "limit": maxConventionsBytes}); err != nil {
+			return "", err
+		}
 	}
 
 	if opened != nil {

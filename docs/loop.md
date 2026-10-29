@@ -131,6 +131,11 @@ settle      integration.GitClient.Preflight in a disposable worktree →
 terminal    done | blocked | waiting_input | canceled | abandoned
 ```
 
+If the `.batuta/profile.md` Conventions section exceeds 1600 UTF-8 bytes, the
+loop warns in the dry-run preview and, on live startup, writes a warning to
+stderr and the delivery journal. The full section still reaches executor briefs;
+its size does not block execution.
+
 | State | Owner | Written by | Leaves through |
 |---|---|---|---|
 | `pending` | runner | opening the delivery | `AdmitReadyWave` |

@@ -35,6 +35,8 @@ type Profile struct {
 
 var profileLine = regexp.MustCompile(`(?i)^(Stack|Methodology|Test|Build|Install|Execution|Worktree-home|Worktree|Template):\s*(.*)$`)
 
+const maxConventionsBytes = 1600
+
 // LoadProfile reads `.batuta/profile.md` under the workspace root.
 func LoadProfile(root string) (Profile, error) {
 	payload, err := os.ReadFile(filepath.Join(root, ".batuta", "profile.md"))
@@ -236,6 +238,14 @@ func (p Profile) ConventionsSection() string {
 		offset += len(line)
 	}
 	return ""
+}
+
+func (p Profile) conventionsWarning() string {
+	size := len(p.ConventionsSection())
+	if size <= maxConventionsBytes {
+		return ""
+	}
+	return fmt.Sprintf("profile Conventions section is %d UTF-8 bytes (limit %d)", size, maxConventionsBytes)
 }
 
 // sectionOf returns the body of a `## heading` up to the next `## `.

@@ -739,7 +739,7 @@ func runLoop(args []string, stdout, stderr io.Writer) (runErr error) {
 			Transport: &backend,
 			Workspace: *workspace, Skills: *skills, Parallel: *parallel, TaskTimeout: *taskTimeout, TestTimeout: *testTimeout,
 			MaxWaves: *maxWaves, KeepWorktrees: *keep, MaxLimitWaits: *maxLimitWaits, LimitWaitDefault: *limitWait, LimitHorizon: *limitHorizon,
-			Stdout: stdout, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
+			Stdout: stdout, Stderr: stderr, Inventory: func(ctx context.Context) (inventory.InventorySnapshot, error) {
 				root, err := workspaceRoot(*workspace)
 				if err != nil {
 					return inventory.InventorySnapshot{}, err

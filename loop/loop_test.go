@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -264,6 +265,9 @@ case "${FAKE_SCENARIO:-default}" in
     echo "live stdout: task $n"
     echo "live stderr: task $n" >&2
     echo "ok" > out/$n.txt;;
+  conventions-brief)
+    printf '%s' "$text" > "$state/conventions-brief"
+    echo 'BATUTA-QUESTION: confirm the full brief';;
   *)
     if [ "${FAKE_SCENARIO:-default}" = default ]; then
       criteria=$(printf '%s\n' "$text" | sed -n '/^## Acceptance criteria$/,/^## /p' | grep -c '^[0-9][0-9]*\. ' || true)
@@ -483,6 +487,109 @@ func TestDryRunShowsDependencySafeWaves(t *testing.T) {
 	}
 	if status := f.run(t, "status", "--porcelain"); status != "" {
 		t.Fatalf("dry run dirtied the tree:\n%s", status)
+	}
+}
+
+func TestConventionsWarningPreview(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name       string
+		convention string
+		warning    string
+	}{
+		{"ordinary", "Short rule.", ""},
+		{"oversized", strings.Repeat("é", 801), "profile Conventions section is 1602 UTF-8 bytes (limit 1600)"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t)
+			setFixtureConventions(t, f, tt.convention)
+			var out bytes.Buffer
+			r, err := New(context.Background(), f.options("default", &out))
+			if err != nil {
+				t.Fatal(err)
+			}
+			preview, err := r.DryRun()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rendered bytes.Buffer
+			PrintPreview(&rendered, preview)
+			if tt.warning == "" {
+				if len(preview.Warnings) != 0 || strings.Contains(rendered.String(), "warning   ") {
+					t.Fatalf("ordinary preview warnings = %v\n%s", preview.Warnings, rendered.String())
+				}
+			} else if !slices.Contains(preview.Warnings, tt.warning) || !strings.Contains(rendered.String(), "warning   "+tt.warning) {
+				t.Fatalf("preview warnings = %v\n%s", preview.Warnings, rendered.String())
+			}
+		})
+	}
+}
+
+func setFixtureConventions(t *testing.T, f fixture, section string) {
+	t.Helper()
+	path := filepath.Join(f.root, ".batuta", "profile.md")
+	payload, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(payload, []byte("\n## Conventions\n"+section+"\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/profile.md")
+	f.run(t, "commit", "-q", "-m", "test: profile conventions")
+}
+
+func TestOversizedConventionsStartup(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	section := strings.Repeat("é", 801)
+	setFixtureConventions(t, f, section)
+	planPath := filepath.Join(f.root, ".batuta", "plans", "greetings.md")
+	plan := strings.ReplaceAll(testPlan, "- [ ]", "- [x]")
+	if err := os.WriteFile(planPath, []byte(plan), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f.run(t, "add", ".batuta/plans/greetings.md")
+	f.run(t, "commit", "-q", "-m", "test: complete plan")
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("default", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateDone {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	records := readJournal(t, f, r.Delivery())
+	if kinds(records)[KindProfileWarning] != 1 || !strings.Contains(string(records[1].Detail), `"bytes":1602`) || !strings.Contains(string(records[1].Detail), `"limit":1600`) {
+		t.Fatalf("profile warning record = %#v", records)
+	}
+}
+
+func TestOversizedConventionsReachExecutor(t *testing.T) {
+	t.Parallel()
+	f := setup(t)
+	section := strings.Repeat("é", 801) + " LAST RULE"
+	setFixtureConventions(t, f, section)
+	var out bytes.Buffer
+	r, err := New(context.Background(), f.options("conventions-brief", &out))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := r.Run(context.Background())
+	if err != nil || state != StateWaitingInput {
+		t.Fatalf("Run() = %s, %v\n%s", state, err, out.String())
+	}
+	brief, err := os.ReadFile(filepath.Join(f.state, "conventions-brief"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(brief), "### From .batuta/profile.md\n\n"+section+"\n\n") {
+		t.Fatal("executor brief omitted or truncated profile Conventions")
+	}
+	if kinds(readJournal(t, f, r.Delivery()))[KindQuestion] == 0 {
+		t.Fatal("oversized conventions prevented task execution")
 	}
 }
 
