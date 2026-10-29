@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type probeBackend struct {
@@ -462,5 +463,14 @@ func TestProbeTailSources(t *testing.T) {
 				t.Fatalf("probeTail = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProbeTailPreservesUTF8AtByteLimit(t *testing.T) {
+	t.Parallel()
+	result := Result{Stdout: []byte(strings.Repeat("界", probeTailBytes))}
+	tail := probeTail(result)
+	if len(tail) > probeTailBytes || !utf8.ValidString(tail) || tail != strings.Repeat("界", probeTailBytes/3) {
+		t.Fatalf("tail is %d bytes, valid UTF-8 = %t", len(tail), utf8.ValidString(tail))
 	}
 }

@@ -193,7 +193,12 @@ func RunSupervisionReview(ctx context.Context, observer SupervisionOptions, opts
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	persist := func() (*SupervisionReviewJob, error) { return job, writeSupervisionJSON(statePath, job) }
+	persist := func() (*SupervisionReviewJob, error) {
+		if err := boundSupervisionReviewTails(job); err != nil {
+			return job, err
+		}
+		return job, writeSupervisionJSON(statePath, job)
+	}
 	fail := func(err error) (*SupervisionReviewJob, error) {
 		job.State = "failed"
 		job.Outcome, job.Acceptance = "execution_failed", "pending"
@@ -521,7 +526,6 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 		if len(failuresData) == 0 || failuresData[0] != '[' || json.Unmarshal(failuresData, &job.ReviewFailures) != nil {
 			return errors.New("loop: malformed review evidence: review_failures.json must be a JSON list")
 		}
-		boundSupervisionReviewTails(job.ReviewFailures)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("loop: malformed review evidence: %w", err)
 	}
@@ -590,20 +594,58 @@ func classifySupervisionReview(job *SupervisionReviewJob) error {
 	return nil
 }
 
-// job.json is read back with a 1 MiB limit, so failure tails share a budget
-// well under it; the full tails stay in review_failures.json.
+// job.json is read back with a 1 MiB limit; the full tails stay in
+// review_failures.json.
 const supervisionReviewTailBudget = 256 << 10
 
-func boundSupervisionReviewTails(failures []SupervisionReviewFailure) {
-	remaining := supervisionReviewTailBudget
-	for i := range failures {
-		tail := failures[i].Tail
-		if len(tail) > remaining {
-			tail = strings.ToValidUTF8(tail[len(tail)-remaining:], "")
-		}
-		failures[i].Tail = tail
-		remaining -= len(tail)
+func boundSupervisionReviewTails(job *SupervisionReviewJob) error {
+	tails := make([]string, len(job.ReviewFailures))
+	for i := range job.ReviewFailures {
+		tails[i], job.ReviewFailures[i].Tail = job.ReviewFailures[i].Tail, ""
 	}
+	base, err := json.Marshal(job)
+	if err != nil {
+		return err
+	}
+	if len(base) > 1<<20 {
+		return errors.New("loop: essential review job exceeds limit")
+	}
+	remaining := min(supervisionReviewTailBudget, 1<<20-len(base))
+	for i, tail := range tails {
+		if tail == "" || remaining == 0 {
+			continue
+		}
+		encoded, err := json.Marshal(tail)
+		if err != nil {
+			return err
+		}
+		if len(encoded)+len(`,"tail":`) > remaining {
+			runes := []rune(tail)
+			low, high := 0, len(runes)
+			for low < high {
+				middle := low + (high-low)/2
+				candidate, marshalErr := json.Marshal(string(runes[middle:]))
+				if marshalErr != nil {
+					return marshalErr
+				}
+				if len(candidate)+len(`,"tail":`) <= remaining {
+					high = middle
+				} else {
+					low = middle + 1
+				}
+			}
+			tail = string(runes[low:])
+			encoded, err = json.Marshal(tail)
+			if err != nil {
+				return err
+			}
+		}
+		if tail != "" {
+			job.ReviewFailures[i].Tail = tail
+			remaining -= len(encoded) + len(`,"tail":`)
+		}
+	}
+	return nil
 }
 
 func loadSupervisionReview(opts SupervisionOptions, candidate *SupervisionReviewJob) (*SupervisionReviewJob, error) {
