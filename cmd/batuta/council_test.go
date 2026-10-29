@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -228,33 +227,168 @@ func TestCouncilCommandOut(t *testing.T) {
 }
 
 func TestCouncilArtefactsAtomic(t *testing.T) {
-	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		t.Skip("a read-only directory does not stop writes on this platform or user")
+	for _, tc := range []struct {
+		name string
+		old  map[string][]byte
+	}{
+		{name: "existing", old: map[string][]byte{"council.json": []byte("old json\n"), "council.md": []byte("old md\n")}},
+		{name: "fresh", old: map[string][]byte{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			directory := tempDir(t)
+			for name, content := range tc.old {
+				if err := os.WriteFile(filepath.Join(directory, name), content, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			installs := 0
+			installFailure := errors.New("second install blocked")
+			rename := func(oldpath, newpath string) error {
+				if filepath.Base(newpath) == "council.json" || filepath.Base(newpath) == "council.md" {
+					installs++
+					if installs == 2 {
+						return installFailure
+					}
+				}
+				return os.Rename(oldpath, newpath)
+			}
+			err := writeCouncilArtifactsWithRename(directory, map[string][]byte{"council.json": []byte("new json\n"), "council.md": []byte("new md\n")}, rename)
+			if !errors.Is(err, installFailure) {
+				t.Fatalf("writeCouncilArtifactsWithRename error = %v, want second install failure", err)
+			}
+			if installs < 2 {
+				t.Errorf("install attempts = %d, want at least 2", installs)
+			}
+			for _, name := range []string{"council.json", "council.md"} {
+				got, readErr := os.ReadFile(filepath.Join(directory, name))
+				want, existed := tc.old[name]
+				if existed && (readErr != nil || !bytes.Equal(got, want)) {
+					t.Errorf("%s = %q (%v), want previous %q", name, got, readErr, want)
+				}
+				if !existed && !errors.Is(readErr, os.ErrNotExist) {
+					t.Errorf("%s remains after failed fresh publication: %q (%v)", name, got, readErr)
+				}
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != len(tc.old) {
+				t.Errorf("directory holds %d entries, want %d artifacts and no staged or backup files", len(entries), len(tc.old))
+			}
+		})
 	}
+}
+
+func TestCouncilArtefactsRejectIncompatibleDestinations(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, directory string)
+	}{
+		{name: "directory", setup: func(t *testing.T, directory string) {
+			t.Helper()
+			if err := os.Mkdir(filepath.Join(directory, "council.md"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "symlink", setup: func(t *testing.T, directory string) {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(directory, "referent"), []byte("unrelated\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("referent", filepath.Join(directory, "council.md")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			directory := tempDir(t)
+			oldJSON := []byte("old json\n")
+			if err := os.WriteFile(filepath.Join(directory, "council.json"), oldJSON, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tc.setup(t, directory)
+			if err := writeCouncilArtifacts(directory, map[string][]byte{"council.json": []byte("new json\n"), "council.md": []byte("new md\n")}); err == nil {
+				t.Fatal("writeCouncilArtifacts succeeded with incompatible destination")
+			}
+			got, err := os.ReadFile(filepath.Join(directory, "council.json"))
+			if err != nil || !bytes.Equal(got, oldJSON) {
+				t.Errorf("council.json = %q (%v), want %q", got, err, oldJSON)
+			}
+			if tc.name == "directory" {
+				info, err := os.Lstat(filepath.Join(directory, "council.md"))
+				if err != nil || !info.IsDir() {
+					t.Errorf("council.md directory lost: %v", err)
+				}
+			} else {
+				got, err := os.ReadFile(filepath.Join(directory, "referent"))
+				if err != nil || string(got) != "unrelated\n" {
+					t.Errorf("referent = %q (%v), want unrelated", got, err)
+				}
+				info, err := os.Lstat(filepath.Join(directory, "council.md"))
+				if err != nil || info.Mode()&os.ModeSymlink == 0 {
+					t.Errorf("council.md symlink lost: %v", err)
+				}
+			}
+			entries, err := os.ReadDir(directory)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantEntries := 2
+			if tc.name == "symlink" {
+				wantEntries++
+			}
+			if len(entries) != wantEntries {
+				t.Errorf("directory holds %d entries, want %d and no staged files", len(entries), wantEntries)
+			}
+		})
+	}
+}
+
+func TestCouncilArtefactsRollbackFailurePreservesBackup(t *testing.T) {
+	t.Parallel()
 	directory := tempDir(t)
-	old := map[string][]byte{"council.json": []byte("old json\n"), "council.md": []byte("old md\n")}
-	for name, content := range old {
+	for name, content := range map[string][]byte{"council.json": []byte("old json\n"), "council.md": []byte("old md\n")} {
 		if err := os.WriteFile(filepath.Join(directory, name), content, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := os.Chmod(directory, 0o555); err != nil {
+	installFailure := errors.New("second install blocked")
+	rollbackFailure := errors.New("restore blocked")
+	renames := 0
+	rename := func(oldpath, newpath string) error {
+		renames++
+		switch renames {
+		case 2:
+			return installFailure
+		case 3:
+			return rollbackFailure
+		}
+		return os.Rename(oldpath, newpath)
+	}
+	err := writeCouncilArtifactsWithRename(directory, map[string][]byte{"council.json": []byte("new json\n"), "council.md": []byte("new md\n")}, rename)
+	if !errors.Is(err, installFailure) || !errors.Is(err, rollbackFailure) {
+		t.Fatalf("error = %v, want install and rollback failures", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.Chmod(directory, 0o755) })
-	err := writeCouncilArtifacts(directory, map[string][]byte{"council.json": []byte("new json\n"), "council.md": []byte("new md\n")})
-	if err == nil {
-		t.Fatal("writeCouncilArtifacts succeeded in a read-only directory")
-	}
-	for name, want := range old {
-		got, readErr := os.ReadFile(filepath.Join(directory, name))
-		if readErr != nil || !bytes.Equal(got, want) {
-			t.Errorf("%s = %q (%v), want the previous %q", name, got, readErr, want)
+	foundBackup := false
+	for _, entry := range entries {
+		if !strings.HasPrefix(entry.Name(), ".council.json-backup-") {
+			continue
 		}
+		content, err := os.ReadFile(filepath.Join(directory, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundBackup = bytes.Equal(content, []byte("old json\n"))
 	}
-	entries, _ := os.ReadDir(directory)
-	if len(entries) != len(old) {
-		t.Errorf("directory holds %d entries, want only the %d artefacts", len(entries), len(old))
+	if !foundBackup {
+		t.Errorf("old council.json backup not preserved after rollback failure: %v", entries)
 	}
 }
 

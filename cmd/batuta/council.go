@@ -159,35 +159,112 @@ func runCouncil(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-// writeCouncilArtifacts stages every file beside its destination and renames
-// them into place only after all of them were written and closed, so a failed
-// write leaves the previous artefacts untouched.
 func writeCouncilArtifacts(directory string, files map[string][]byte) error {
+	return writeCouncilArtifactsWithRename(directory, files, os.Rename)
+}
+
+type councilArtifactInstall struct {
+	name      string
+	path      string
+	staged    string
+	backup    string
+	installed bool
+	previous  bool
+}
+
+func writeCouncilArtifactsWithRename(directory string, files map[string][]byte, rename func(string, string) error) (result error) {
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	staged := make(map[string]string, len(names))
+	installs := make([]councilArtifactInstall, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(directory, name)
+		info, err := os.Lstat(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("check %s: %w", name, err)
+		}
+		if err == nil && !info.Mode().IsRegular() {
+			return fmt.Errorf("check %s: destination is not a regular file", name)
+		}
+		installs = append(installs, councilArtifactInstall{name: name, path: path, previous: err == nil})
+	}
+	cleanup := true
 	defer func() {
-		for _, temporaryName := range staged {
-			os.Remove(temporaryName)
+		if cleanup {
+			result = errors.Join(result, cleanupCouncilArtifacts(installs))
 		}
 	}()
-	for _, name := range names {
-		temporaryName, err := stageCouncilArtifact(directory, name, files[name])
+	for i := range installs {
+		install := &installs[i]
+		staged, err := stageCouncilArtifact(directory, install.name, files[install.name])
 		if err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
+			return fmt.Errorf("write %s: %w", install.name, err)
 		}
-		staged[name] = temporaryName
+		install.staged = staged
 	}
-	for _, name := range names {
-		if err := os.Rename(staged[name], filepath.Join(directory, name)); err != nil {
-			return fmt.Errorf("write %s: %w", name, err)
+	for i := range installs {
+		install := &installs[i]
+		if !install.previous {
+			continue
 		}
-		delete(staged, name)
+		previous, err := os.ReadFile(install.path)
+		if err != nil {
+			return fmt.Errorf("backup %s: %w", install.name, err)
+		}
+		backup, err := stageCouncilArtifact(directory, install.name+"-backup", previous)
+		if err != nil {
+			return fmt.Errorf("backup %s: %w", install.name, err)
+		}
+		install.backup = backup
+	}
+	for i := range installs {
+		install := &installs[i]
+		if err := rename(install.staged, install.path); err != nil {
+			rollbackErr := rollbackCouncilArtifacts(installs[:i], rename)
+			if rollbackErr != nil {
+				cleanup = false
+			}
+			return errors.Join(fmt.Errorf("write %s: %w", install.name, err), rollbackErr)
+		}
+		install.staged = ""
+		install.installed = true
 	}
 	return nil
+}
+
+func rollbackCouncilArtifacts(installs []councilArtifactInstall, rename func(string, string) error) error {
+	var rollbackErr error
+	for i := len(installs) - 1; i >= 0; i-- {
+		install := installs[i]
+		if !install.installed {
+			continue
+		}
+		if install.previous {
+			if err := rename(install.backup, install.path); err != nil {
+				rollbackErr = errors.Join(rollbackErr, fmt.Errorf("restore %s: %w", install.name, err))
+			}
+		} else if err := os.Remove(install.path); err != nil {
+			rollbackErr = errors.Join(rollbackErr, fmt.Errorf("remove %s: %w", install.name, err))
+		}
+	}
+	return rollbackErr
+}
+
+func cleanupCouncilArtifacts(installs []councilArtifactInstall) error {
+	var cleanupErr error
+	for _, install := range installs {
+		for _, path := range []string{install.staged, install.backup} {
+			if path == "" {
+				continue
+			}
+			if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				cleanupErr = errors.Join(cleanupErr, fmt.Errorf("clean up %s: %w", path, err))
+			}
+		}
+	}
+	return cleanupErr
 }
 
 func stageCouncilArtifact(directory, name string, payload []byte) (string, error) {
