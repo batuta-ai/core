@@ -127,14 +127,20 @@ func probeRecords(t *testing.T, records []journal.Record) []capabilityProbeDetai
 }
 
 func TestLoopProbeUsesRouteTransport(t *testing.T) {
-	for _, mode := range []string{"cli", "acp"} {
-		t.Run(mode, func(t *testing.T) {
+	for _, tc := range []struct {
+		mode, transport, requested string
+	}{
+		{mode: "cli", transport: "cli"},
+		{mode: "acp", transport: "acp"},
+		{mode: "auto", transport: "acp", requested: "auto"},
+	} {
+		t.Run(tc.mode, func(t *testing.T) {
 			t.Parallel()
 			f := setup(t)
 			var out bytes.Buffer
 			opts := f.options("default", &out)
 			taskPrompts, probeOpens, acpOpens, acpShutdowns, activeSessions := 0, 0, 0, 0, 0
-			if mode == "acp" {
+			if tc.transport == "acp" {
 				transport := loopACPTransport(t, func(e executor.Execution) (string, string) {
 					taskPrompts++
 					if e.Request.Brief != "task brief" {
@@ -161,6 +167,7 @@ func TestLoopProbeUsesRouteTransport(t *testing.T) {
 						return shutdown()
 					}, nil
 				}
+				transport.Mode = tc.mode
 				opts.Transport = transport
 			}
 			r, err := New(context.Background(), opts)
@@ -171,7 +178,7 @@ func TestLoopProbeUsesRouteTransport(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if mode == "acp" {
+			if tc.transport == "acp" {
 				adapter.ACP = &executor.ACPLaunch{Run: "codex-acp", Version: "fixture-v1"}
 			}
 			if err := r.open(); err != nil {
@@ -179,13 +186,13 @@ func TestLoopProbeUsesRouteTransport(t *testing.T) {
 			}
 			ac := attemptContext{taskID: "task_1", adapter: adapter, runtime: routing.RuntimeValue{Provider: "codex", Model: "fake-low", Reasoning: "low"}, worktree: attemptWorktree{Root: f.root}}
 			probe, err := r.probeRoute(context.Background(), ac)
-			if err != nil || !probe.Pass || probe.Transport != mode {
+			if err != nil || !probe.Pass || probe.Transport != tc.transport || probe.RequestedTransport != tc.requested {
 				t.Fatalf("probe = %+v, %v", probe, err)
 			}
 			if taskPrompts != 0 {
 				t.Fatalf("task prompts during probe = %d", taskPrompts)
 			}
-			if mode == "acp" {
+			if tc.transport == "acp" {
 				if probeOpens != 1 || acpOpens != 1 || acpShutdowns != 1 || activeSessions != 0 {
 					t.Fatalf("after probe: probe opens=%d opens=%d shutdowns=%d active=%d", probeOpens, acpOpens, acpShutdowns, activeSessions)
 				}
@@ -199,7 +206,7 @@ func TestLoopProbeUsesRouteTransport(t *testing.T) {
 					t.Fatalf("task = %+v, %v; task prompts=%d probe opens=%d opens=%d shutdowns=%d active=%d", result, err, taskPrompts, probeOpens, acpOpens, acpShutdowns, activeSessions)
 				}
 			}
-			if mode == "cli" {
+			if tc.transport == "cli" {
 				if models := probeModels(t, f); strings.Join(models, ",") != "fake-low" {
 					t.Fatalf("CLI probes = %v", models)
 				}
@@ -207,8 +214,28 @@ func TestLoopProbeUsesRouteTransport(t *testing.T) {
 				t.Fatalf("CLI probe file exists or cannot be inspected: %v", err)
 			}
 			probes := probeRecords(t, readJournal(t, f, r.Delivery()))
-			if len(probes) != 1 || probes[0].Transport != mode || !probes[0].Pass {
+			if len(probes) != 1 || probes[0].Transport != tc.transport || probes[0].RequestedTransport != tc.requested || !probes[0].Pass {
 				t.Fatalf("journaled probes = %+v", probes)
+			}
+			if tc.mode == "auto" {
+				if err := r.Release(); err != nil {
+					t.Fatal(err)
+				}
+				resumeOpts := f.options("default", &out)
+				resumeOpts.Transport = opts.Transport
+				resumeOpts.Resume = r.Delivery()
+				resumed, err := Resume(context.Background(), resumeOpts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer resumed.Release()
+				cached, err := resumed.probeRoute(context.Background(), ac)
+				if err != nil || !cached.Pass || cached.Transport != "acp" || cached.RequestedTransport != "auto" || probeOpens != 1 || acpOpens != 2 || acpShutdowns != 2 || activeSessions != 0 {
+					t.Fatalf("resumed probe = %+v, %v; probe opens=%d opens=%d shutdowns=%d active=%d", cached, err, probeOpens, acpOpens, acpShutdowns, activeSessions)
+				}
+				if probes := probeRecords(t, readJournal(t, f, r.Delivery())); len(probes) != 1 {
+					t.Fatalf("resumed probe records = %+v", probes)
+				}
 			}
 		})
 	}
