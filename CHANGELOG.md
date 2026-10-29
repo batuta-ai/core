@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.55.1](https://github.com/batuta-ai/core/compare/v1.1.0-beta.55...v1.1.0-beta.55.1) (2026-10-29)
+
+### Bug Fixes
+
+* **worktree:** avoid rebuilding integrated clean snapshots while preserving staged contents, recovery refs and cancellation revalidation ([#186](https://github.com/batuta-ai/core/issues/186)).
+
+
 ## [1.1.0-beta.55](https://github.com/batuta-ai/core/compare/v1.1.0-beta.54...v1.1.0-beta.55) (2026-10-15)
 
 
