@@ -1,5 +1,8 @@
 # WORK — core
 
+## Correções de issues — 2026-10-29
+- [x] core#159 implementada em candidato isolado: remoção de valores JSON multilinha antes do tail, chaves Unicode decodificadas e streams separados; publicação com preflight, backups e rollback. Critical/self na remoção de segredos, codex/gpt-6-sol/high no writer (primeira implementação); três achados da revisão aceitos e corrigidos por self. Candidatos38ff2ac/34a3f0d/6999e56; revisão independente final8/8DONE, nenhum achado. Provas focadas e auditoria159verdes; pacotescmd/council/executor/review e ACPverdes em rodada isolada; testeCLIWindows compilado, sem alegar execuçãoWindows. Suíte geral isolada ainda em execução; nenhum merge/release/install. Trilhas: `.batuta/runs/priority-issues-2026-10-29/`.
+
 ## Current status — 2026-10-22: doctor tool ignores shipped, beta.57
 - [x] `batuta doctor` reports which project tools would scan `.batuta/` (Vitest, Jest, Playwright, ESLint, Prettier, Biome, TypeScript, pytest), with a status and a hint each, in text and in `--json`; detection only (Tempo retro 4.4, last part). Plan `doctor-tool-ignores`, judged by `batuta council` over four rounds before approval, delivered by the loop in 8 tasks (delivery `doctor-tool-ignores-20261018-151835`).
 - [x] Three review rounds: `3210e9c9a9a2` REWORK with 14 findings (plan `doctor-tool-ignores-fixes`, 4 tasks), `27235ead550d` REWORK with 4 findings (plan `doctor-tool-ignores-fixes-2`, 1 task), `d3d8e501599c` FIX_BEFORE_SHIP with 1 test finding (fixed in `9c007a0`). No supervision judgment was recorded.
