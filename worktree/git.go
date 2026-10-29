@@ -293,6 +293,13 @@ func (p GitProvider) Park(ctx context.Context, root, ref, message string) (strin
 		return "", err
 	}
 	defer os.RemoveAll(scratch)
+	clean, err := p.cleanIntegratedWorktree(ctx, root, head, filepath.Join(scratch, "clean-index"))
+	if err != nil {
+		return "", err
+	}
+	if clean {
+		return "", nil
+	}
 	env := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
 	if _, err := p.runEnvironment(ctx, root, nil, env, "read-tree", head); err != nil {
 		return "", err
@@ -338,6 +345,52 @@ func (p GitProvider) Park(ctx context.Context, root, ref, message string) (strin
 		}
 	}
 	return p.parkTree(ctx, root, ref, message, head, tree, false)
+}
+
+func (p GitProvider) cleanIntegratedWorktree(ctx context.Context, root, head, index string) (bool, error) {
+	// A fresh index prevents the real index's assume-unchanged or skip-worktree
+	// flags from hiding working data. The fallback uses its own unchanged index.
+	env := []string{"GIT_INDEX_FILE=" + index}
+	options := []string{"-c", "core.fsmonitor=false", "-c", "core.ignorestat=false", "-c", "core.sparsecheckout=false", "-c", "index.sparse=false"}
+	probe := func(args ...string) (publication.CommandResult, error) {
+		return p.runEnvironment(ctx, root, nil, env, append(slices.Clone(options), args...)...)
+	}
+	if _, err := probe("read-tree", head); err != nil {
+		return false, err
+	}
+	status, err := p.Runner.Run(ctx, publication.Command{
+		Executable: p.Git, Directory: root,
+		Args:        append(slices.Clone(options), "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"),
+		Environment: append([]string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"}, env...),
+		StdoutLimit: 16 << 20, StderrLimit: 64 << 10,
+	})
+	if err != nil {
+		if detail := strings.TrimSpace(string(status.Stderr)); detail != "" {
+			return false, fmt.Errorf("git status: %w: %s", err, firstLine(detail))
+		}
+		return false, fmt.Errorf("git status: %w", err)
+	}
+	if status.ExitCode != 0 {
+		return false, fmt.Errorf("git status: command exited with code %d", status.ExitCode)
+	}
+	if status.StderrTruncated {
+		return false, errors.New("worktree: git output exceeded bound")
+	}
+	// Successful status overflow proves this optional probe cannot establish
+	// cleanliness. It must not prevent the full snapshot from preserving data.
+	if status.StdoutTruncated || len(status.Stdout) != 0 {
+		return false, nil
+	}
+	// Observe staged data after working data, including changes made while the
+	// probe ran. Neither proof changes the real index or creates recovery refs.
+	staged, err := p.run(ctx, root, "diff-index", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", head, "--")
+	if err != nil {
+		if staged.ExitCode == 1 && !staged.StdoutTruncated && !staged.StderrTruncated {
+			return false, nil
+		}
+		return false, err
+	}
+	return p.IsAncestor(ctx, head, "HEAD")
 }
 
 // parkConflictStages serializes each side separately: a single Git tree cannot
