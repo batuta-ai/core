@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.1.0-beta.55.2](https://github.com/batuta-ai/core/compare/v1.1.0-beta.55.1...v1.1.0-beta.55.2) (2026-10-29)
+
+### Bug Fixes
+
+* **loop:** bind Windows supervision snapshot operations to their own repository, preventing ancestor fallback ([#199](https://github.com/batuta-ai/core/pull/199)).
+* **loop:** keep independent Windows review metadata within the existing runtime namespace and support the qualified long snapshot path without changing the original workspace ([#200](https://github.com/batuta-ai/core/pull/200)).
+
+### Build System
+
+* Build and verify CLI releases with Go 1.27.3 while preserving the SDK's module minimum and dependency graph.
+
 ## [1.1.0-beta.55.1](https://github.com/batuta-ai/core/compare/v1.1.0-beta.55...v1.1.0-beta.55.1) (2026-10-29)
 
 ### Bug Fixes

@@ -1,5 +1,8 @@
 name: release-binaries
 
+env:
+  GOTOOLCHAIN: local
+
 # release-please pushes the tag with the org PAT, which fires this workflow;
 # goreleaser builds the archives and attaches them to the release that
 # already exists for the tag. Recovery for a partial upload: run it by hand
@@ -22,7 +25,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version-file: go.mod
+          go-version: '1.27.3'
       - uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6
         with:
           distribution: goreleaser
