@@ -327,6 +327,34 @@ func marshalDispatchReport(report DispatchReport) ([]byte, error) {
 	report.Receipt.Worker.Detail = ""
 	report.Receipt.Overflow = true
 	payload, err = json.Marshal(report)
+	if err != nil || len(payload)+1 <= ReceiptLimit {
+		return payload, err
+	}
+	if report.Preflight != nil && report.Preflight.Tail != "" {
+		preflight := *report.Preflight
+		report.Preflight = &preflight
+		tail := []rune(preflight.Tail)
+		originalBytes := len(preflight.Tail)
+		omittedBytes := report.Receipt.OmittedBytes
+		low, high := 0, len(tail)
+		for low < high {
+			middle := low + (high-low)/2
+			preflight.Tail = string(tail[middle:])
+			report.Receipt.OmittedBytes = omittedBytes + originalBytes - len(preflight.Tail)
+			candidate, marshalErr := json.Marshal(report)
+			if marshalErr != nil {
+				return nil, marshalErr
+			}
+			if len(candidate)+1 <= ReceiptLimit {
+				high = middle
+			} else {
+				low = middle + 1
+			}
+		}
+		preflight.Tail = string(tail[low:])
+		report.Receipt.OmittedBytes = omittedBytes + originalBytes - len(preflight.Tail)
+		payload, err = json.Marshal(report)
+	}
 	if err == nil && len(payload)+1 > ReceiptLimit {
 		err = errors.New("dispatch: essential report exceeds receipt limit")
 	}
