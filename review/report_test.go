@@ -349,9 +349,9 @@ func TestReportReviewFailures(t *testing.T) {
 		exitCode *int
 		tail     string
 	}{
-		{"1", "reviewer failed", &exit, "boom"},
+		{"1", "reviewer failed", &exit, "out line\nboom"},
 		{"2", "never ran", nil, ""},
-		{"spec", "sweep failed", &exit, "boom"},
+		{"spec", "sweep failed", &exit, "out line\nboom"},
 	}
 	for i, tc := range cases {
 		failure := got[i]
@@ -361,13 +361,53 @@ func TestReportReviewFailures(t *testing.T) {
 		if (failure.ExitCode == nil) != (tc.exitCode == nil) || (tc.exitCode != nil && *failure.ExitCode != *tc.exitCode) {
 			t.Errorf("failure %d exit code = %v, want %v", i, failure.ExitCode, tc.exitCode)
 		}
-		if !strings.Contains(failure.Tail, tc.tail) || (tc.tail == "" && failure.Tail != "") {
-			t.Errorf("failure %d tail = %q, want it to contain %q", i, failure.Tail, tc.tail)
+		if failure.Tail != tc.tail {
+			t.Errorf("failure %d tail = %q, want %q", i, failure.Tail, tc.tail)
 		}
 	}
-	payload, err := json.Marshal(got[0])
-	if err != nil || !strings.Contains(string(payload), `"exit_code":2`) || !strings.Contains(string(payload), `"cohort":"1"`) {
-		t.Errorf("failure JSON = %s, %v", payload, err)
+	complete := BuildReport(Manifest{}, nil, nil)
+	completeBytes, err := json.Marshal(complete)
+	if err != nil {
+		t.Fatalf("Marshal(complete) error = %v", err)
+	}
+	var completeFields map[string]json.RawMessage
+	if err := json.Unmarshal(completeBytes, &completeFields); err != nil {
+		t.Fatalf("Unmarshal(completeBytes) error = %v", err)
+	}
+	if raw, ok := completeFields["review_failures"]; !ok || string(raw) != "[]" {
+		t.Errorf("complete report review_failures = %s, want []", raw)
+	}
+
+	failedReport := reviewFailuresReport()
+	failedBytes, err := json.Marshal(failedReport)
+	if err != nil {
+		t.Fatalf("Marshal(failedReport) error = %v", err)
+	}
+	var failedFields map[string]json.RawMessage
+	if err := json.Unmarshal(failedBytes, &failedFields); err != nil {
+		t.Fatalf("Unmarshal(failedBytes) error = %v", err)
+	}
+	rawFailures, ok := failedFields["review_failures"]
+	if !ok {
+		t.Fatal("failed report missing review_failures field")
+	}
+	var failures []ReviewFailure
+	if err := json.Unmarshal(rawFailures, &failures); err != nil {
+		t.Fatalf("Unmarshal(review_failures) error = %v", err)
+	}
+	if len(failures) != 3 {
+		t.Fatalf("got %d failures from whole report, want 3", len(failures))
+	}
+	for i, f := range failures {
+		if f.Kind != "operational" || f.Cohort != cases[i].scope || f.Reason != cases[i].reason {
+			t.Errorf("failure %d = %+v, want operational/%s/%s", i, f, cases[i].scope, cases[i].reason)
+		}
+		if (f.ExitCode == nil) != (cases[i].exitCode == nil) || (cases[i].exitCode != nil && *f.ExitCode != *cases[i].exitCode) {
+			t.Errorf("failure %d exit code = %v, want %v", i, f.ExitCode, cases[i].exitCode)
+		}
+		if f.Tail != cases[i].tail {
+			t.Errorf("failure %d tail = %q, want %q", i, f.Tail, cases[i].tail)
+		}
 	}
 }
 
