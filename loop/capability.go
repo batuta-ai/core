@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/batuta-ai/core/executor"
+	"github.com/batuta-ai/core/executor/acp"
 	"github.com/batuta-ai/core/journal"
 	"github.com/batuta-ai/core/routing"
 )
@@ -21,11 +22,13 @@ type capabilityRoute struct {
 
 type capabilityProbeDetail struct {
 	capabilityRoute
-	RequestedTransport string `json:"requested_transport,omitempty"`
-	Pass               bool   `json:"pass"`
-	Reason             string `json:"reason"`
-	DurationMS         int64  `json:"duration_ms"`
-	Tail               string `json:"tail,omitempty"`
+	RequestedTransport     string          `json:"requested_transport,omitempty"`
+	Pass                   bool            `json:"pass"`
+	Reason                 string          `json:"reason"`
+	DurationMS             int64           `json:"duration_ms"`
+	Tail                   string          `json:"tail,omitempty"`
+	Receipt                json.RawMessage `json:"receipt,omitempty"`
+	ReconciliationRequired bool            `json:"reconciliation_required,omitempty"`
 }
 
 type probeCLIBackend struct {
@@ -50,6 +53,10 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 	route := r.capabilityRoute(ac.runtime)
 	for {
 		r.mu.Lock()
+		if intent, ok := r.pendingProbes[ac.taskID]; ok {
+			r.mu.Unlock()
+			return intent, nil
+		}
 		if detail, ok := r.probes[route]; ok {
 			r.mu.Unlock()
 			return detail, nil
@@ -70,8 +77,27 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 		started := time.Now()
 		transport := route.Transport
 		backend := r.probeBackend
+		acpAttempted := false
 		if selected, ok := backend.(executor.TransportBackend); ok {
 			selected.CLI = probeCLIBackend{backend: selected.CLI, transport: &transport}
+			if open := selected.ACP.Open; open != nil {
+				selected.ACP.Open = func(ctx context.Context, execution executor.Execution) (*acp.Connection, func() error, error) {
+					acpAttempted = true
+					transport = "acp"
+					intent := capabilityProbeDetail{capabilityRoute: route, Reason: "probe_unresolved", ReconciliationRequired: true}
+					if route.Transport == "auto" {
+						intent.RequestedTransport = "auto"
+					}
+					intent.Transport = "acp"
+					if err := r.locked(KindCapabilityProbeIntent, ac.taskID, intent, func() error {
+						r.pendingProbes[ac.taskID] = intent
+						return nil
+					}); err != nil {
+						return nil, nil, err
+					}
+					return open(ctx, execution)
+				}
+			}
 			backend = selected
 		}
 		probe, err := executor.ProbeCapability(ctx, backend, ac.adapter, executor.ProbeRoute{Model: route.Model, Effort: route.Effort}, ac.worktree.Root, min(r.opts.TaskTimeout, 5*time.Minute))
@@ -79,11 +105,24 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 			err = ctx.Err()
 		}
 		detail := capabilityProbeDetail{capabilityRoute: route, Pass: probe.Pass, Reason: probe.Reason, DurationMS: probe.Duration.Milliseconds(), Tail: r.redactDetail(probe.Tail)}
+		if probe.Receipt != nil {
+			receipt, marshalErr := executor.MarshalReceipt(*probe.Receipt)
+			if marshalErr != nil {
+				r.mu.Lock()
+				delete(r.probing, route)
+				close(waiting)
+				r.mu.Unlock()
+				return detail, marshalErr
+			}
+			detail.Receipt = receipt
+		}
+		detail.ReconciliationRequired = probe.Receipt != nil && probe.Receipt.Transport.Failure == "shutdown" ||
+			err != nil && acpAttempted && (probe.Receipt == nil || probe.Receipt.Submission.State != executor.SubmissionNotSubmitted)
 		if route.Transport == "auto" {
 			detail.RequestedTransport = "auto"
 		}
 		detail.Transport = transport
-		if err != nil && ctx.Err() == nil {
+		if err != nil && (ctx.Err() == nil || detail.ReconciliationRequired) {
 			detail.Pass = false
 			detail.Reason = "probe_error"
 			tail := []rune(executor.DropSecretBearingLines(r.redactDetail(err.Error())))
@@ -98,7 +137,14 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 		if err == nil {
 			err = r.record(KindCapabilityProbe, ac.taskID, detail)
 			if err == nil {
-				r.probes[route] = detail
+				if detail.ReconciliationRequired {
+					r.pendingProbes[ac.taskID] = detail
+				} else {
+					r.probes[route] = detail
+					if intent, ok := r.pendingProbes[ac.taskID]; ok && sameProbeRoute(intent.capabilityRoute, detail.capabilityRoute) {
+						delete(r.pendingProbes, ac.taskID)
+					}
+				}
 			}
 		}
 		delete(r.probing, route)
@@ -110,12 +156,19 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 
 func (r *Runner) loadCapabilityProbes(records []journal.Record) error {
 	for _, record := range records {
-		if record.Kind != KindCapabilityProbe {
+		if record.Kind != KindCapabilityProbe && record.Kind != KindCapabilityProbeIntent {
 			continue
 		}
 		var detail capabilityProbeDetail
 		if err := json.Unmarshal(record.Detail, &detail); err != nil {
 			return fmt.Errorf("loop: capability probe journal: %w", err)
+		}
+		if record.Kind == KindCapabilityProbeIntent || detail.ReconciliationRequired {
+			r.pendingProbes[record.TaskID] = detail
+			continue
+		}
+		if intent, ok := r.pendingProbes[record.TaskID]; ok && sameProbeRoute(intent.capabilityRoute, detail.capabilityRoute) {
+			delete(r.pendingProbes, record.TaskID)
 		}
 		r.probes[detail.capabilityRoute] = detail
 		if detail.RequestedTransport == "auto" {
@@ -125,6 +178,10 @@ func (r *Runner) loadCapabilityProbes(records []journal.Record) error {
 		}
 	}
 	return nil
+}
+
+func sameProbeRoute(a, b capabilityRoute) bool {
+	return a.Executor == b.Executor && a.Model == b.Model && a.Effort == b.Effort
 }
 
 func (r *Runner) hasExternalFallback(taskID string, current routing.RuntimeValue) bool {
