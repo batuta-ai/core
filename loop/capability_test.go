@@ -342,49 +342,102 @@ func TestLoopACPProbeShutdownRequiresReconciliation(t *testing.T) {
 }
 
 func TestLoopUnresolvedProbeIntentBlocksResume(t *testing.T) {
+	for _, resumeMode := range []string{"acp", "default_cli", "auto"} {
+		t.Run(resumeMode, func(t *testing.T) {
+			t.Parallel()
+			f := setup(t)
+			var out bytes.Buffer
+			opts := f.options("default", &out)
+			opens := 0
+			transport := loopACPTransport(t, func(executor.Execution) (string, string) {
+				t.Error("task prompt started after unresolved probe")
+				return "", "end_turn"
+			})
+			open := transport.ACP.Open
+			transport.ACP.Open = func(ctx context.Context, e executor.Execution) (*acp.Connection, func() error, error) {
+				opens++
+				return open(ctx, e)
+			}
+			opts.Transport = transport
+			r := prepareACPAttempt(t, f, opts)
+			if err := r.graph.BeginWaveAttempts(1, r.generation); err != nil {
+				t.Fatal(err)
+			}
+			task, _ := r.graph.Task("task_1")
+			attempt := task.Attempts[0]
+			ac := attemptContext{taskID: "task_1", execution: attempt.Execution, runtime: attempt.Runtime, base: attempt.BaseHeadSHA}
+			if err := r.ensureWorktree(context.Background(), &ac, attempt); err != nil {
+				t.Fatal(err)
+			}
+			intent := capabilityProbeDetail{capabilityRoute: r.capabilityRoute(ac.runtime), Reason: "probe_unresolved", ReconciliationRequired: true}
+			if err := r.record(KindCapabilityProbeIntent, ac.taskID, intent); err != nil {
+				t.Fatal(err)
+			}
+			if err := r.Release(); err != nil {
+				t.Fatal(err)
+			}
+			switch resumeMode {
+			case "default_cli":
+				opts.Transport = nil
+			case "auto":
+				auto := *transport
+				auto.Mode = "auto"
+				opts.Transport = &auto
+			}
+			opts.Resume = r.Delivery()
+			resumed, err := Resume(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state, err := resumed.Run(context.Background()); err != nil || state != StateBlocked {
+				t.Fatalf("resumed Run() = %s, %v\n%s", state, err, out.String())
+			}
+			task, _ = resumed.graph.Task("task_1")
+			if task.BlockerCode != blockerSubmissionUncertain || len(task.Attempts) != 1 || opens != 0 {
+				t.Fatalf("unresolved probe replayed: task=%+v opens=%d", task, opens)
+			}
+			if counts := kinds(readJournal(t, f, r.Delivery())); counts[KindStarted] != 0 || counts[KindCapabilityProbe] != 0 {
+				t.Fatalf("resume dispatched task or probe: %v", counts)
+			}
+		})
+	}
+}
+
+func TestLoopProbeIntentOwnershipAndFinalFallback(t *testing.T) {
 	t.Parallel()
-	f := setup(t)
-	var out bytes.Buffer
-	opts := f.options("default", &out)
-	opens := 0
-	transport := loopACPTransport(t, func(executor.Execution) (string, string) {
-		t.Error("task prompt started after unresolved probe")
-		return "", "end_turn"
-	})
-	open := transport.ACP.Open
-	transport.ACP.Open = func(ctx context.Context, e executor.Execution) (*acp.Connection, func() error, error) {
-		opens++
-		return open(ctx, e)
+	r := &Runner{
+		probes:        map[capabilityRoute]capabilityProbeDetail{},
+		pendingProbes: map[string]capabilityProbeDetail{},
+		probing:       map[capabilityRoute]chan struct{}{},
 	}
-	opts.Transport = transport
-	r := prepareACPAttempt(t, f, opts)
-	if err := r.graph.BeginWaveAttempts(1, r.generation); err != nil {
+	intent := capabilityProbeDetail{capabilityRoute: capabilityRoute{Executor: "codex", Model: "fake-low", Effort: "low", Transport: "acp"}, Reason: "probe_unresolved", ReconciliationRequired: true}
+	final := capabilityProbeDetail{capabilityRoute: intent.capabilityRoute, Pass: true, RequestedTransport: "auto"}
+	final.Transport = "cli"
+	record := func(kind journal.Kind, taskID string, detail capabilityProbeDetail) journal.Record {
+		t.Helper()
+		encoded, err := json.Marshal(detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return journal.Record{Kind: kind, TaskID: taskID, Detail: encoded}
+	}
+	if err := r.loadCapabilityProbes([]journal.Record{
+		record(KindCapabilityProbeIntent, "task_1", intent),
+		record(KindCapabilityProbe, "task_2", final),
+	}); err != nil {
 		t.Fatal(err)
 	}
-	task, _ := r.graph.Task("task_1")
-	attempt := task.Attempts[0]
-	ac := attemptContext{taskID: "task_1", execution: attempt.Execution, runtime: attempt.Runtime, base: attempt.BaseHeadSHA}
-	if err := r.ensureWorktree(context.Background(), &ac, attempt); err != nil {
+	ac := attemptContext{taskID: "task_1", runtime: routing.RuntimeValue{Provider: "codex", Model: "fake-low", Reasoning: "low"}}
+	probe, err := r.probeRoute(context.Background(), ac)
+	if err != nil || !probe.ReconciliationRequired || probe.Reason != "probe_unresolved" {
+		t.Fatalf("unrelated task cleared intent: %+v, %v", probe, err)
+	}
+	if err := r.loadCapabilityProbes([]journal.Record{record(KindCapabilityProbe, "task_1", final)}); err != nil {
 		t.Fatal(err)
 	}
-	intent := capabilityProbeDetail{capabilityRoute: r.capabilityRoute(ac.runtime), Reason: "probe_unresolved", ReconciliationRequired: true}
-	if err := r.record(KindCapabilityProbeIntent, ac.taskID, intent); err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Release(); err != nil {
-		t.Fatal(err)
-	}
-	opts.Resume = r.Delivery()
-	resumed, err := Resume(context.Background(), opts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if state, err := resumed.Run(context.Background()); err != nil || state != StateBlocked {
-		t.Fatalf("resumed Run() = %s, %v\n%s", state, err, out.String())
-	}
-	task, _ = resumed.graph.Task("task_1")
-	if task.BlockerCode != blockerSubmissionUncertain || len(task.Attempts) != 1 || opens != 0 {
-		t.Fatalf("unresolved probe replayed: task=%+v opens=%d", task, opens)
+	probe, err = r.probeRoute(context.Background(), ac)
+	if err != nil || !probe.Pass || probe.ReconciliationRequired || len(r.pendingProbes) != 0 {
+		t.Fatalf("final CLI fallback left unresolved intent: %+v, %v; pending=%v", probe, err, r.pendingProbes)
 	}
 }
 

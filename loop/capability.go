@@ -53,6 +53,10 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 	route := r.capabilityRoute(ac.runtime)
 	for {
 		r.mu.Lock()
+		if intent, ok := r.pendingProbes[ac.taskID]; ok {
+			r.mu.Unlock()
+			return intent, nil
+		}
 		if detail, ok := r.probes[route]; ok {
 			r.mu.Unlock()
 			return detail, nil
@@ -85,7 +89,10 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 						intent.RequestedTransport = "auto"
 					}
 					intent.Transport = "acp"
-					if err := r.locked(KindCapabilityProbeIntent, ac.taskID, intent, nil); err != nil {
+					if err := r.locked(KindCapabilityProbeIntent, ac.taskID, intent, func() error {
+						r.pendingProbes[ac.taskID] = intent
+						return nil
+					}); err != nil {
 						return nil, nil, err
 					}
 					return open(ctx, execution)
@@ -131,6 +138,7 @@ func (r *Runner) probeRoute(ctx context.Context, ac attemptContext) (capabilityP
 			err = r.record(KindCapabilityProbe, ac.taskID, detail)
 			if err == nil {
 				r.probes[route] = detail
+				delete(r.pendingProbes, ac.taskID)
 			}
 		}
 		delete(r.probing, route)
@@ -149,6 +157,13 @@ func (r *Runner) loadCapabilityProbes(records []journal.Record) error {
 		if err := json.Unmarshal(record.Detail, &detail); err != nil {
 			return fmt.Errorf("loop: capability probe journal: %w", err)
 		}
+		if record.Kind == KindCapabilityProbeIntent {
+			r.pendingProbes[record.TaskID] = detail
+			continue
+		}
+		if intent, ok := r.pendingProbes[record.TaskID]; ok && sameProbeRoute(intent.capabilityRoute, detail.capabilityRoute) {
+			delete(r.pendingProbes, record.TaskID)
+		}
 		r.probes[detail.capabilityRoute] = detail
 		if detail.RequestedTransport == "auto" {
 			route := detail.capabilityRoute
@@ -157,6 +172,10 @@ func (r *Runner) loadCapabilityProbes(records []journal.Record) error {
 		}
 	}
 	return nil
+}
+
+func sameProbeRoute(a, b capabilityRoute) bool {
+	return a.Executor == b.Executor && a.Model == b.Model && a.Effort == b.Effort
 }
 
 func (r *Runner) hasExternalFallback(taskID string, current routing.RuntimeValue) bool {
