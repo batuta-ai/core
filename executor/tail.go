@@ -1,8 +1,10 @@
 package executor
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -10,6 +12,8 @@ var (
 	secretLine   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
 	secretAssign = regexp.MustCompile(`[A-Z][A-Z0-9_]*=`)
 	secretField  = regexp.MustCompile(`(?i)"(?:[^"]*[_-])?(?:token|api_?key|password|secret|access_key|private_key)\\?"\s*:`)
+	jsonField    = regexp.MustCompile(`"(?:[^"\\]|\\.)*"\s*:`)
+	secretName   = regexp.MustCompile(`(?is)^(?:.*[_-])?(?:token|api_?key|password|secret|access_key|private_key)$`)
 	absolutePath = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/|\\)[^\s"'=]+`)
 )
 
@@ -53,16 +57,42 @@ func DropSecretBearingLines(value string) string {
 }
 
 // DropSecretFieldLines removes every line that holds a secret-shaped
-// assignment anywhere in it or a JSON field whose key names a secret, such as
-// {"api_key":"sk-x"}. Escaped key names are not decoded.
+// assignment anywhere in it or any part of a JSON field whose key names a
+// secret. An incomplete secret value suppresses the remaining output.
 func DropSecretFieldLines(value string) string {
 	if value == "" {
 		return ""
 	}
+	var spans [][2]int
+	matches := secretField.FindAllStringIndex(value, -1)
+	for _, match := range jsonField.FindAllStringIndex(value, -1) {
+		keyJSON := strings.TrimSpace(strings.TrimSuffix(value[match[0]:match[1]], ":"))
+		var key string
+		if json.Unmarshal([]byte(keyJSON), &key) == nil && secretName.MatchString(key) {
+			matches = append(matches, match)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i][0] < matches[j][0] })
+	for _, match := range matches {
+		decoder := json.NewDecoder(strings.NewReader(value[match[1]:]))
+		var field json.RawMessage
+		end := len(value)
+		if err := decoder.Decode(&field); err == nil {
+			end = match[1] + int(decoder.InputOffset())
+		}
+		spans = append(spans, [2]int{match[0], end})
+	}
 	lines := strings.Split(value, "\n")
 	kept := make([]string, 0, len(lines))
+	offset, span := 0, 0
 	for _, line := range lines {
-		if secretAssign.MatchString(line) || secretField.MatchString(line) {
+		end := offset + len(line) + 1
+		for span < len(spans) && spans[span][1] <= offset {
+			span++
+		}
+		hasSecret := span < len(spans) && spans[span][0] < end
+		offset = end
+		if secretAssign.MatchString(line) || hasSecret {
 			continue
 		}
 		kept = append(kept, line)

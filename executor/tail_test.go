@@ -1,6 +1,49 @@
 package executor
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestDropSecretFieldLinesMultiline(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{
+		"\n\"synthetic-secret\"",
+		"\n{\n\"nested\": \"synthetic-secret\"\n}",
+		"\n[\n\"synthetic-secret\"\n]",
+		"\n\"unterminated synthetic-secret",
+		strings.Repeat("\n ", 45) + "\"synthetic-secret\"",
+	} {
+		t.Run(value, func(t *testing.T) {
+			t.Parallel()
+			in := "before\n{\"token\":" + value + "}\nafter"
+			got := DropSecretFieldLines(in)
+			if strings.Contains(got, "synthetic-secret") || !strings.HasPrefix(got, "before") {
+				t.Fatalf("unsafe or lost preceding context: %q", got)
+			}
+			if !strings.Contains(value, "unterminated") && !strings.HasSuffix(got, "after") {
+				t.Fatalf("lost following context: %q", got)
+			}
+		})
+	}
+}
+
+func TestDropSecretFieldLinesEscapedKeys(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{`tok\u0065n`, `api\u005fkey`, `client\u005fsecret`, `a\u000a\u005ftoken`} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			in := "before\n{\"" + key + "\":\n\"synthetic-secret\"}\nafter"
+			if got := DropSecretFieldLines(in); got != "before\nafter" {
+				t.Fatalf("escaped key not redacted: %q", got)
+			}
+		})
+	}
+	in := `{"tok\u0065nizer":12}`
+	if got := DropSecretFieldLines(in); got != in {
+		t.Fatalf("benign escaped key changed: %q", got)
+	}
+}
 
 func TestRedactPathsKeepsRelative(t *testing.T) {
 	t.Parallel()

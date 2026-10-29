@@ -316,6 +316,32 @@ func TestRunFailures(t *testing.T) {
 	}
 }
 
+func TestCouncilFailureMultilineSecretOutsideTail(t *testing.T) {
+	t.Parallel()
+	output := "before\n{\"token\":" + strings.Repeat("\n ", 45) + "\"synthetic-secret\"}\nafter"
+	got := councilFailure("A", "critique", "failed", nil, output).Tail
+	if strings.Contains(got, "synthetic-secret") || !strings.Contains(got, "after") {
+		t.Fatalf("failure tail = %q", got)
+	}
+}
+
+func TestCouncilFailureSeparateStreams(t *testing.T) {
+	t.Parallel()
+	runner := councilRunner(func(_ context.Context, command publication.Command) (publication.CommandResult, error) {
+		return publication.CommandResult{Stdout: []byte(`{"token":`), Stderr: []byte("safe stderr diagnostic"), ExitCode: 1}, nil
+	})
+	table, opts := councilFixture(t, 1, runner)
+	result, _ := Run(t.Context(), "Plan body", nil, table, opts)
+	if len(result.Failures) == 0 {
+		t.Fatal("missing session failures")
+	}
+	for _, failure := range result.Failures {
+		if !strings.Contains(failure.Tail, "safe stderr diagnostic") {
+			t.Fatalf("independent stderr suppressed: %q", failure.Tail)
+		}
+	}
+}
+
 func TestRunFailuresNeedTwoCritiques(t *testing.T) {
 	t.Parallel()
 	var mu sync.Mutex
