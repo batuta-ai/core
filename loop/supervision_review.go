@@ -367,7 +367,13 @@ func supervisionReviewGit(ctx context.Context, root string, args ...string) ([]b
 	}
 	commandArgs := args
 	if runtime.GOOS == "windows" {
-		commandArgs = append([]string{"-c", "core.longpaths=true"}, args...)
+		options := []string{"-c", "core.longpaths=true"}
+		// Discovery can skip a long snapshot and select its ancestor. Bind
+		// operations to the local repository; clone creates its own target.
+		if len(args) > 0 && args[0] != "clone" {
+			options = append(options, "--git-dir=.git", "--work-tree=.")
+		}
+		commandArgs = append(options, args...)
 	}
 	result, err := (publication.ExecRunner{}).Run(ctx, publication.Command{Executable: git, Directory: root, Args: commandArgs})
 	if err != nil || result.ExitCode != 0 || result.StdoutTruncated || result.StderrTruncated {
