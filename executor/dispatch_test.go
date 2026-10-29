@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,6 +95,24 @@ func TestDispatchPreflightCanceled(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
 	if report.ExitClass != "uncertain" || report.ExitCode != 130 {
 		t.Fatalf("canceled preflight: class=%q code=%d", report.ExitClass, report.ExitCode)
+	}
+}
+
+func TestDispatchPreflightCanceledAfterBackendSuccess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	opts := dispatchTestOptions(t, dispatchBackendFunc(func(context.Context, Execution) (Result, error) {
+		calls++
+		cancel()
+		return Result{ExitCode: 0, Finished: true}, nil
+	}))
+	opts.Preflight = true
+	report, err := Dispatch(ctx, opts)
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if !errors.Is(err, context.Canceled) || calls != 1 || report.ExitClass != "uncertain" || report.ExitCode != 130 || report.Preflight != nil {
+		t.Fatalf("canceled preflight: calls=%d report=%+v err=%v", calls, report, err)
 	}
 }
 
@@ -227,5 +246,123 @@ func TestDispatchReportCompactionPreservesFailureAndEvidence(t *testing.T) {
 	}
 	if !got.Receipt.Overflow || got.Receipt.OmittedBytes != 8192 || got.Receipt.Evidence.Path != "/owned/evidence.json" || got.ExitClass != "uncertain" || got.Receipt.Submission.State != SubmissionUncertain {
 		t.Fatalf("compaction lost facts: %s", payload)
+	}
+}
+
+func TestDispatchPreflightEscapingFitsReceipt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name            string
+		output          string
+		retainedDetails []string
+	}{
+		{"quotes", strings.Repeat(`"`, probeTailBytes), nil},
+		{"backslashes", strings.Repeat(`\`, probeTailBytes), nil},
+		{"controls", strings.Repeat("\t\r", probeTailBytes/2), nil},
+		{"html", strings.Repeat("<>&", probeTailBytes), nil},
+		{"unicode", strings.Repeat("<&\\\"\t界", probeTailBytes/4), nil},
+		{"invalid utf8", string(bytes.Repeat([]byte{0xff}, 1000)), nil},
+		{"mixed invalid utf8", strings.Repeat("<", 700) + "diagnostic before invalid: 界\n" + string(bytes.Repeat([]byte{0xff}, 1000)) + "\ndiagnostic after invalid: <&界", []string{"diagnostic before invalid: 界", "diagnostic after invalid: <&界"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := Result{Stdout: []byte(tt.output), ExitCode: 9, Finished: true}
+			opts := dispatchTestOptions(t, dispatchBackendFunc(func(context.Context, Execution) (Result, error) {
+				return result, nil
+			}))
+			opts.Request.Cwd = tempDir(t)
+			opts.Preflight = true
+			report, err := Dispatch(context.Background(), opts)
+			t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(report.Artifacts.Directory, report.Artifacts.Receipt)
+			payload, err := os.ReadFile(path)
+			if err != nil || len(payload) > ReceiptLimit || len(payload) == 0 || payload[len(payload)-1] != '\n' {
+				t.Fatalf("receipt size = %d, limit = %d, err = %v", len(payload), ReceiptLimit, err)
+			}
+			var saved DispatchReport
+			if err := json.Unmarshal(payload, &saved); err != nil {
+				t.Fatal(err)
+			}
+			evidence, err := os.ReadFile(filepath.Join(report.Artifacts.Directory, report.Artifacts.Evidence))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var full DispatchReport
+			if err := json.Unmarshal(evidence, &full); err != nil {
+				t.Fatal(err)
+			}
+			if full.Preflight == nil || full.Preflight.Tail != string([]rune(probeTail(result))) || saved.Preflight == nil || saved.Preflight.Reason != ProbeNoRepository || saved.Preflight.Pass || saved.ExitClass != "executor_incapable" || saved.ExitCode != 6 || saved.WorkerExitCode != -1 || saved.RequestedTransport != "auto" || saved.Receipt.Submission.State != SubmissionNotSubmitted || saved.Receipt.Transport.Outcome != TransportNotStarted || saved.Receipt.Worker.Outcome != WorkerClaimUnknown {
+				t.Fatalf("failure facts changed: saved=%+v full=%+v", saved, full)
+			}
+			if !saved.Receipt.Overflow || saved.Receipt.OmittedBytes < 0 || saved.Receipt.OmittedBytes != len(full.Preflight.Tail)-len(saved.Preflight.Tail) || !strings.HasSuffix(full.Preflight.Tail, saved.Preflight.Tail) || saved.Receipt.Evidence == nil || saved.Receipt.Evidence.Path != filepath.Join(report.Artifacts.Directory, report.Artifacts.Evidence) || report.Preflight.Tail != saved.Preflight.Tail {
+				t.Fatalf("compaction or evidence mismatch: saved=%+v full=%+v", saved, full)
+			}
+			if len(tt.retainedDetails) > 0 && saved.Receipt.OmittedBytes == 0 {
+				t.Fatalf("mixed malformed tail was not compacted: %+v", saved)
+			}
+			for _, detail := range tt.retainedDetails {
+				if !strings.Contains(saved.Preflight.Tail, detail) {
+					t.Fatalf("lost neighboring diagnostic %q: %q", detail, saved.Preflight.Tail)
+				}
+			}
+		})
+	}
+}
+
+func TestDispatchCompactedPassingPreflightKeepsWorkerFailure(t *testing.T) {
+	t.Parallel()
+	dir := gitRepo(t)
+	head := probeHead(t, dir)
+	calls := 0
+	opts := dispatchTestOptions(t, dispatchBackendFunc(func(context.Context, Execution) (Result, error) {
+		calls++
+		if calls == 1 {
+			return Result{Stdout: []byte(strings.Repeat("<", probeTailBytes) + "\n" + CapabilityMarker + " " + head + "\n"), Finished: true}, nil
+		}
+		return Result{ExitCode: 17}, nil
+	}))
+	opts.Request.Cwd = dir
+	opts.Preflight = true
+	report, err := Dispatch(context.Background(), opts)
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if err != nil || calls != 2 {
+		t.Fatalf("dispatch calls=%d err=%v", calls, err)
+	}
+	payload, err := os.ReadFile(filepath.Join(report.Artifacts.Directory, report.Artifacts.Receipt))
+	if err != nil || len(payload) > ReceiptLimit {
+		t.Fatalf("receipt size=%d err=%v", len(payload), err)
+	}
+	if report.Preflight == nil || !report.Preflight.Pass || report.Preflight.Reason != "" || report.ExitClass != "failed" || report.ExitCode != 1 || report.WorkerExitCode != 17 || report.Backend != "cli" || report.Receipt.Submission.State != SubmissionSubmitted || report.Receipt.Transport.Outcome != TransportCompleted || report.Receipt.Worker.Outcome != WorkerClaimedFailure || !report.Receipt.Overflow || report.Receipt.OmittedBytes == 0 {
+		t.Fatalf("worker or preflight facts changed: %+v", report)
+	}
+}
+
+func TestDispatchEvidencePreservesMalformedTailInterior(t *testing.T) {
+	t.Parallel()
+	output := strings.Repeat("A", 1024) + string([]byte{0xff}) + strings.Repeat("B", 1024)
+	opts := dispatchTestOptions(t, dispatchBackendFunc(func(context.Context, Execution) (Result, error) {
+		return Result{Stdout: []byte(output), Finished: true}, nil
+	}))
+	opts.Preflight = true
+	report, err := Dispatch(context.Background(), opts)
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(report.Artifacts.Directory, report.Artifacts.Evidence))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var full DispatchReport
+	if err := json.Unmarshal(data, &full); err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Repeat("A", 1023) + "\uFFFD" + strings.Repeat("B", 1024)
+	if full.Preflight == nil || full.Preflight.Tail != want {
+		t.Fatal("full evidence lost the malformed byte's diagnostic representation")
 	}
 }

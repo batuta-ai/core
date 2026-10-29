@@ -789,3 +789,158 @@ func TestAnswerWithoutGrantUnchanged(t *testing.T) {
 		})
 	}
 }
+
+func TestDashboardResumedDeliveryShowsOpen(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		priorState string
+		resumeKind journal.Kind
+		resumeTask string
+		finalState string
+		wantState  string
+	}{
+		{
+			name:       "canceled resumed by attempts_begun",
+			priorState: StateCanceled,
+			resumeKind: KindAttempts,
+			wantState:  "open",
+		},
+		{
+			name:       "canceled resumed by executor_started",
+			priorState: StateCanceled,
+			resumeKind: KindStarted,
+			resumeTask: "task_1",
+			wantState:  "open",
+		},
+		{
+			name:       "canceled resumed by answer_recorded",
+			priorState: StateCanceled,
+			resumeKind: KindAnswer,
+			resumeTask: "task_1",
+			wantState:  "open",
+		},
+		{
+			name:       "waiting_input resumed by attempts_begun",
+			priorState: StateWaitingInput,
+			resumeKind: KindAttempts,
+			wantState:  "open",
+		},
+		{
+			name:       "waiting_input resumed by executor_started",
+			priorState: StateWaitingInput,
+			resumeKind: KindStarted,
+			resumeTask: "task_1",
+			wantState:  "open",
+		},
+		{
+			name:       "waiting_input resumed by answer_recorded",
+			priorState: StateWaitingInput,
+			resumeKind: KindAnswer,
+			resumeTask: "task_1",
+			wantState:  "open",
+		},
+		{
+			name:       "canceled without resume remains canceled",
+			priorState: StateCanceled,
+			wantState:  StateCanceled,
+		},
+		{
+			name:       "waiting_input without resume remains waiting_input",
+			priorState: StateWaitingInput,
+			wantState:  StateWaitingInput,
+		},
+		{
+			name:       "resumed run ending done shows done",
+			priorState: StateCanceled,
+			resumeKind: KindStarted,
+			resumeTask: "task_1",
+			finalState: StateDone,
+			wantState:  StateDone,
+		},
+		{
+			name:       "resumed run ending blocked shows blocked",
+			priorState: StateWaitingInput,
+			resumeKind: KindAnswer,
+			resumeTask: "task_1",
+			finalState: StateBlocked,
+			wantState:  StateBlocked,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := tempDir(t)
+			store, err := journal.Open(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			delivery := "demo"
+			now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.Local)
+			graph := routing.DeliveryGraph{
+				Tasks: []routing.GraphTask{
+					{
+						TaskID: "task_1",
+						State:  routing.GraphTaskRunning,
+						Attempts: []routing.GraphTaskAttempt{
+							{
+								Execution: 1,
+								Runtime: routing.RuntimeValue{
+									Provider: "codex",
+									Model:    "test-model",
+								},
+							},
+						},
+					},
+				},
+			}
+			if _, err := store.Append(delivery, panelRecord(t, KindOpened, "", now, map[string]any{"slug": delivery}, graph)); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(time.Second)
+			if _, err := store.Append(delivery, panelRecord(t, KindTerminal, "", now, map[string]any{"state": tc.priorState}, graph)); err != nil {
+				t.Fatal(err)
+			}
+			if tc.resumeKind != "" {
+				now = now.Add(time.Second)
+				var detail any
+				switch tc.resumeKind {
+				case KindStarted:
+					detail = map[string]any{"execution": 1, "executor": "codex", "model": "test-model"}
+				case KindAttempts:
+					detail = map[string]any{"wave": 1}
+				case KindAnswer:
+					detail = map[string]any{"execution": 1, "answer": "yes"}
+				}
+				if _, err := store.Append(delivery, panelRecord(t, tc.resumeKind, tc.resumeTask, now, detail, graph)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.finalState != "" {
+				now = now.Add(time.Second)
+				if _, err := store.Append(delivery, panelRecord(t, KindTerminal, "", now, map[string]any{"state": tc.finalState}, graph)); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var out strings.Builder
+			if err := Dashboard(root, delivery, &out); err != nil {
+				t.Fatal(err)
+			}
+			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+			if len(lines) < 2 {
+				t.Fatalf("expected header + row, got %q", out.String())
+			}
+			fields := strings.Fields(lines[1])
+			if len(fields) < 2 {
+				t.Fatalf("expected at least 2 fields in data row, got %q", lines[1])
+			}
+			gotState := fields[1]
+			if gotState != tc.wantState {
+				t.Fatalf("Dashboard state = %q, want %q; output:\n%s", gotState, tc.wantState, out.String())
+			}
+		})
+	}
+}

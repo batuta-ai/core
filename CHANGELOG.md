@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.1.0-beta.59](https://github.com/batuta-ai/core/compare/v1.1.0-beta.58...v1.1.0-beta.59) (2026-10-29)
+
+
+### Bug Fixes
+
+* bind pending probe intent to task identity ([a03c4e8](https://github.com/batuta-ai/core/commit/a03c4e82c5de1accf123f18e17610005bed27d42))
+* block uncertain ACP probes for reconciliation ([66f8a40](https://github.com/batuta-ai/core/commit/66f8a402067f66ab87229f09890adfed5f76fb23))
+* bound preflight receipts and review jobs by encoded size ([abfa080](https://github.com/batuta-ai/core/commit/abfa0804ee190c079ed887641ffa0ac0e3174b79))
+* count omitted diagnostics after UTF-8 replacement ([f40d1e4](https://github.com/batuta-ai/core/commit/f40d1e45c7aedd28e1da46659359cc6aecf116bd))
+* enforce encoded JSON budgets for dispatch and review jobs ([19dd191](https://github.com/batuta-ai/core/commit/19dd191e1b8eef00aca45a9e8fcb094c0e051a64))
+* **executor:** detect dirty file edits and preserve probe cancellation ([8c4300c](https://github.com/batuta-ai/core/commit/8c4300cf58c65f2f77220c0e1bfa132ba2a37006))
+* **executor:** detect dirty file edits and preserve probe cancellation ([d3dc2c4](https://github.com/batuta-ai/core/commit/d3dc2c40fc0b57f814d96d67953d9b7a17e1cf7d))
+* preserve ACP probe uncertainty across cancellation and resume ([d529095](https://github.com/batuta-ai/core/commit/d5290954dec694189aee2cd1c6b465c9f0ac46b5))
+* preserve council artifact pair on publication failure ([34a3f0d](https://github.com/batuta-ai/core/commit/34a3f0d608fae06f3ba7c349d257df92fd913d4b))
+* preserve malformed diagnostics and bound empty review jobs ([83838ff](https://github.com/batuta-ai/core/commit/83838ff0962d84ab250f80e874105e99a5c90c84))
+* preserve stream boundaries and decode secret field names ([6999e56](https://github.com/batuta-ai/core/commit/6999e56a10b22851299131bfa110defae5fbf2f2))
+* redact complete multiline secret values before tail truncation ([38ff2ac](https://github.com/batuta-ai/core/commit/38ff2ac3793a0ebdfff47616e57fdecd5f6ecaaf))
+* redact multiline secrets and recover council artifact publication ([857c525](https://github.com/batuta-ai/core/commit/857c525aacafe8d1125bc5bdc6abb4bd377ae882))
+* retain task uncertainty after probe results are journaled ([6f639fa](https://github.com/batuta-ai/core/commit/6f639fa37852d15f2d75b0b3a0e87b399ec72dd9))
+
 ## [1.1.0-beta.58](https://github.com/batuta-ai/core/compare/v1.1.0-beta.57...v1.1.0-beta.58) (2026-10-26)
 
 
