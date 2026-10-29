@@ -26,6 +26,11 @@ import (
 func supervisionReviewFixture(t *testing.T) (SupervisionOptions, *journal.Store, string) {
 	t.Helper()
 	store, opts := supervisionFixture(t)
+	return initializeSupervisionReviewFixture(t, store, opts)
+}
+
+func initializeSupervisionReviewFixture(t *testing.T, store *journal.Store, opts SupervisionOptions) (SupervisionOptions, *journal.Store, string) {
+	t.Helper()
 	git := func(args ...string) string {
 		t.Helper()
 		c := exec.Command("git", args...)
