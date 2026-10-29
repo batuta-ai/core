@@ -351,18 +351,34 @@ func (p GitProvider) cleanIntegratedWorktree(ctx context.Context, root, head, in
 	// A fresh index prevents the real index's assume-unchanged or skip-worktree
 	// flags from hiding working data. The fallback uses its own unchanged index.
 	env := []string{"GIT_INDEX_FILE=" + index}
+	options := []string{"-c", "core.fsmonitor=false", "-c", "core.ignorestat=false", "-c", "core.sparsecheckout=false", "-c", "index.sparse=false"}
 	probe := func(args ...string) (publication.CommandResult, error) {
-		options := []string{"-c", "core.fsmonitor=false", "-c", "core.ignorestat=false", "-c", "core.sparsecheckout=false", "-c", "index.sparse=false"}
-		return p.runEnvironment(ctx, root, nil, env, append(options, args...)...)
+		return p.runEnvironment(ctx, root, nil, env, append(slices.Clone(options), args...)...)
 	}
 	if _, err := probe("read-tree", head); err != nil {
 		return false, err
 	}
-	status, err := probe("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+	status, err := p.Runner.Run(ctx, publication.Command{
+		Executable: p.Git, Directory: root,
+		Args:        append(slices.Clone(options), "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"),
+		Environment: append([]string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"}, env...),
+		StdoutLimit: 16 << 20, StderrLimit: 64 << 10,
+	})
 	if err != nil {
-		return false, err
+		if detail := strings.TrimSpace(string(status.Stderr)); detail != "" {
+			return false, fmt.Errorf("git status: %w: %s", err, firstLine(detail))
+		}
+		return false, fmt.Errorf("git status: %w", err)
 	}
-	if len(status.Stdout) != 0 {
+	if status.ExitCode != 0 {
+		return false, fmt.Errorf("git status: command exited with code %d", status.ExitCode)
+	}
+	if status.StderrTruncated {
+		return false, errors.New("worktree: git output exceeded bound")
+	}
+	// Successful status overflow proves this optional probe cannot establish
+	// cleanliness. It must not prevent the full snapshot from preserving data.
+	if status.StdoutTruncated || len(status.Stdout) != 0 {
 		return false, nil
 	}
 	// Observe staged data after working data, including changes made while the

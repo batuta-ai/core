@@ -3,6 +3,7 @@ package worktree
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -167,6 +168,94 @@ func TestParkCleanFastPathSafety(t *testing.T) {
 				}
 			}
 			t.Logf("shape=%s Git calls=%d, refs=%d, real index/files/HEAD preserved", shape, len(calls), len(refs))
+		})
+	}
+}
+
+func TestParkCleanProbeBounds(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"stdout_bound", "stdout_bound_with_runner_error", "stderr_bound", "nonzero_status"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			p, base := initRepo(t)
+			root, err := p.Add(ctx, "probe-bound", "batuta/demo/probe-bound", base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			const body = "pending bounded-probe data\n"
+			if err := os.WriteFile(filepath.Join(root, "pending.txt"), []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			path, err := p.run(ctx, root, "rev-parse", "--git-path", "index")
+			if err != nil {
+				t.Fatal(err)
+			}
+			indexPath := strings.TrimSpace(string(path.Stdout))
+			if !filepath.IsAbs(indexPath) {
+				indexPath = filepath.Join(root, indexPath)
+			}
+			before := parkSequenceRead(t, indexPath)
+			injected := errors.New("clean status observer failed")
+			seen, fallback := false, false
+			var status publication.CommandResult
+			p.Runner = observingGitRunner(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
+				args := parkSequenceArgs(command.Args)
+				isStatus := len(args) > 0 && args[0] == "status"
+				if isStatus {
+					seen = true
+					command.StdoutLimit = 1
+					if mode == "stderr_bound" {
+						command.StdoutLimit, command.StderrLimit = 16<<20, 1
+						command.Environment = append(command.Environment, "GIT_TRACE=1")
+					} else if mode == "nonzero_status" {
+						command.Args = []string{"status", "--invalid-clean-probe-option"}
+					}
+				} else if len(args) > 0 && args[0] == "add" {
+					fallback = true
+				}
+				result, err := (publication.ExecRunner{}).Run(ctx, command)
+				if isStatus {
+					status = result
+					if mode == "stdout_bound_with_runner_error" {
+						err = errors.Join(err, injected)
+					}
+				}
+				return result, err
+			})
+			const ref = "refs/batuta/parked/demo/probe-bound-e1"
+			sha, parkErr := p.Park(ctx, root, ref, "wip: bounded proof")
+			p.Runner = publication.ExecRunner{}
+			if !seen || !bytes.Equal(parkSequenceRead(t, indexPath), before) || string(parkSequenceRead(t, filepath.Join(root, "pending.txt"))) != body {
+				t.Fatal("status not observed or real index/data changed")
+			}
+			if head, err := p.Head(ctx, root); err != nil || head != base {
+				t.Fatalf("worktree HEAD changed: %s, %v", head, err)
+			}
+			if mode == "stdout_bound" {
+				if status.ExitCode != 0 || !status.StdoutTruncated || status.StderrTruncated {
+					t.Fatalf("not a successful bounded Git status: %+v", status)
+				}
+				if parkErr != nil || sha == "" || !fallback || string(p.Show(ctx, root, ref, "pending.txt")) != body {
+					t.Fatalf("bounded dirty status prevented recovery fallback: sha=%q fallback=%t err=%v", sha, fallback, parkErr)
+				}
+			} else {
+				if parkErr == nil || sha != "" || fallback {
+					t.Fatalf("genuine probe failure was swallowed: mode=%s sha=%q fallback=%t err=%v", mode, sha, fallback, parkErr)
+				}
+				if mode == "stdout_bound_with_runner_error" && (!status.StdoutTruncated || !errors.Is(parkErr, injected)) {
+					t.Fatalf("bounded output hid genuine runner error: %v", parkErr)
+				}
+				if mode == "stderr_bound" && !status.StderrTruncated {
+					t.Fatal("stderr did not exceed its real bound")
+				}
+				if mode == "nonzero_status" && status.ExitCode == 0 {
+					t.Fatal("invalid status unexpectedly succeeded")
+				}
+				if refs, err := p.Parked(ctx, "demo"); err != nil || len(refs) != 0 {
+					t.Fatalf("probe failure created refs: %v, %v", refs, err)
+				}
+			}
 		})
 	}
 }
