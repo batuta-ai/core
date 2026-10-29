@@ -293,6 +293,13 @@ func (p GitProvider) Park(ctx context.Context, root, ref, message string) (strin
 		return "", err
 	}
 	defer os.RemoveAll(scratch)
+	clean, err := p.cleanIntegratedWorktree(ctx, root, head, filepath.Join(scratch, "clean-index"))
+	if err != nil {
+		return "", err
+	}
+	if clean {
+		return "", nil
+	}
 	env := []string{"GIT_INDEX_FILE=" + filepath.Join(scratch, "index")}
 	if _, err := p.runEnvironment(ctx, root, nil, env, "read-tree", head); err != nil {
 		return "", err
@@ -338,6 +345,36 @@ func (p GitProvider) Park(ctx context.Context, root, ref, message string) (strin
 		}
 	}
 	return p.parkTree(ctx, root, ref, message, head, tree, false)
+}
+
+func (p GitProvider) cleanIntegratedWorktree(ctx context.Context, root, head, index string) (bool, error) {
+	// A fresh index prevents the real index's assume-unchanged or skip-worktree
+	// flags from hiding working data. The fallback uses its own unchanged index.
+	env := []string{"GIT_INDEX_FILE=" + index}
+	probe := func(args ...string) (publication.CommandResult, error) {
+		options := []string{"-c", "core.fsmonitor=false", "-c", "core.ignorestat=false", "-c", "core.sparsecheckout=false", "-c", "index.sparse=false"}
+		return p.runEnvironment(ctx, root, nil, env, append(options, args...)...)
+	}
+	if _, err := probe("read-tree", head); err != nil {
+		return false, err
+	}
+	status, err := probe("status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none")
+	if err != nil {
+		return false, err
+	}
+	if len(status.Stdout) != 0 {
+		return false, nil
+	}
+	// Observe staged data after working data, including changes made while the
+	// probe ran. Neither proof changes the real index or creates recovery refs.
+	staged, err := p.run(ctx, root, "diff-index", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", head, "--")
+	if err != nil {
+		if staged.ExitCode == 1 && !staged.StdoutTruncated && !staged.StderrTruncated {
+			return false, nil
+		}
+		return false, err
+	}
+	return p.IsAncestor(ctx, head, "HEAD")
 }
 
 // parkConflictStages serializes each side separately: a single Git tree cannot

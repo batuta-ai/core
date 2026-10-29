@@ -100,7 +100,7 @@ func TestParkCommandSequenceProtectionCases(t *testing.T) {
 			index := parkSequenceRead(t, indexPath)
 			var calls []parkCommandObservation
 			p.Runner = observingGitRunner(func(ctx context.Context, command publication.Command) (publication.CommandResult, error) {
-				if shape == "git_error" && slices.Equal(command.Args, []string{"read-tree", head}) {
+				if shape == "git_error" && slices.Equal(parkSequenceArgs(command.Args), []string{"read-tree", head}) {
 					command.Args = []string{"read-tree", "refs/heads/missing-sequence-object"}
 				}
 				var streamed bytes.Buffer
@@ -199,47 +199,35 @@ func parkSequenceRead(t *testing.T, path string) []byte {
 
 func assertCleanParkSequence(t *testing.T, calls []parkCommandObservation, p GitProvider, root, ref, head string) {
 	t.Helper()
+	config := []string{"-c", "core.fsmonitor=false", "-c", "core.ignorestat=false", "-c", "core.sparsecheckout=false", "-c", "index.sparse=false"}
 	want := [][]string{
-		{"check-ref-format", ref}, {"rev-parse", "HEAD"}, {"read-tree", head},
-		{"add", "-A", "--", ".", ":(top,exclude).batuta"}, {"write-tree"},
-		{"rev-parse", "--git-path", "index"}, {"ls-files", "-u", "-z"}, {"write-tree"},
-		{"show-ref", "--verify", "--hash", "--", ref}, {"rev-parse", head + "^{tree}"},
-		{"rev-parse", "HEAD"}, {"merge-base", "--is-ancestor", head, head},
+		{"check-ref-format", ref}, {"rev-parse", "HEAD"},
+		append(slices.Clone(config), "read-tree", head),
+		append(slices.Clone(config), "status", "--porcelain=v1", "-z", "--untracked-files=all", "--ignore-submodules=none"),
+		{"diff-index", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", head, "--"},
+		{"merge-base", "--is-ancestor", head, "HEAD"},
 	}
 	if len(calls) != len(want) {
 		t.Fatalf("clean Park calls=%d, want %d", len(calls), len(want))
 	}
-	workingEnv, stagedEnv := calls[2].command.Environment, calls[6].command.Environment
 	baseEnv := []string{"GIT_TERMINAL_PROMPT=0", "GIT_OPTIONAL_LOCKS=0"}
-	for _, env := range [][]string{workingEnv, stagedEnv} {
-		if len(env) != 3 || !slices.Equal(env[:2], baseEnv) || !strings.HasPrefix(env[2], "GIT_INDEX_FILE=") {
-			t.Fatalf("scratch index environment = %q", env)
-		}
-	}
-	workingIndex := strings.TrimPrefix(workingEnv[2], "GIT_INDEX_FILE=")
-	stagedIndex := strings.TrimPrefix(stagedEnv[2], "GIT_INDEX_FILE=")
-	if filepath.Dir(workingIndex) != filepath.Dir(stagedIndex) || filepath.Base(workingIndex) != "index" || filepath.Base(stagedIndex) != "staged-index" {
-		t.Fatalf("scratch indexes = %q, %q", workingIndex, stagedIndex)
+	probeEnv := calls[2].command.Environment
+	if len(probeEnv) != 3 || !slices.Equal(probeEnv[:2], baseEnv) || !strings.HasPrefix(probeEnv[2], "GIT_INDEX_FILE=") || filepath.Base(strings.TrimPrefix(probeEnv[2], "GIT_INDEX_FILE=")) != "clean-index" {
+		t.Fatalf("independent clean proof index environment=%q", probeEnv)
 	}
 	for i, call := range calls {
 		dir, env := root, baseEnv
 		switch i {
-		case 0, 8, 10, 11:
+		case 0, 5:
 			dir = p.Root
-		case 2, 3, 4:
-			env = workingEnv
-		case 6, 7:
-			env = stagedEnv
+		case 2, 3:
+			env = probeEnv
 		}
 		if !slices.Equal(call.command.Args, want[i]) || call.command.Directory != dir || !slices.Equal(call.command.Environment, env) || len(call.command.Stdin) != 0 {
-			t.Errorf("command %d mismatch: %+v; want argv=%q dir=%q env=%q empty stdin", i+1, call.command, want[i], dir, env)
+			t.Errorf("command%d mismatch: %+v; want argv=%q dir=%q env=%q", i+1, call.command, want[i], dir, env)
 		}
-		if i == 8 {
-			if call.err == nil || (call.result.ExitCode != 1 && call.result.ExitCode != 128) {
-				t.Errorf("absent ref must be the expected negative lookup: %+v", call)
-			}
-		} else if call.err != nil || call.result.ExitCode != 0 || call.result.StdoutTruncated || call.result.StderrTruncated {
-			t.Errorf("command %d failed: %+v", i+1, call)
+		if call.err != nil || call.result.ExitCode != 0 || call.result.StdoutTruncated || call.result.StderrTruncated {
+			t.Errorf("command%d failed: %+v", i+1, call)
 		}
 	}
 }

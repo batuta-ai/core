@@ -605,6 +605,10 @@ func (f observingGitRunner) Run(ctx context.Context, cmd publication.Command) (p
 
 func TestParkOrdinaryIndexUsesWriteTree(t *testing.T) {
 	p, _ := initRepo(t)
+	const pending = "pending ordinary index data\n"
+	if err := os.WriteFile(filepath.Join(p.Root, "README.md"), []byte(pending), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	writes, scans := 0, 0
 	p.Runner = observingGitRunner(func(ctx context.Context, cmd publication.Command) (publication.CommandResult, error) {
 		if len(cmd.Args) > 0 && cmd.Args[0] == "ls-files" {
@@ -623,6 +627,9 @@ func TestParkOrdinaryIndexUsesWriteTree(t *testing.T) {
 	}
 	if scans != 1 || writes != 2 {
 		t.Fatalf("scans = %d, write-tree = %d", scans, writes)
+	}
+	if got := string(p.Show(context.Background(), p.Root, "refs/batuta/parked/demo/task-e1", "README.md")); got != pending {
+		t.Fatalf("ordinary-index fallback lost working data: %q", got)
 	}
 }
 

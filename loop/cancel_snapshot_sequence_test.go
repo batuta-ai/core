@@ -30,9 +30,9 @@ func TestCanceledRunSnapshotCommandSequence(t *testing.T) {
 		name, shape, fault string
 		calls, snapshots   int
 	}{
-		{name: "supervised_clean", shape: "clean", calls: 29},
-		{name: "supervised_dirty_staged_working", shape: "dirty", calls: 37, snapshots: 1},
-		{name: "supervised_prior_ref", shape: "prior_ref", calls: 31},
+		{name: "supervised_clean", shape: "clean", calls: 17},
+		{name: "supervised_dirty_staged_working", shape: "dirty", calls: 41, snapshots: 1},
+		{name: "supervised_prior_ref", shape: "prior_ref", calls: 39},
 		{name: "supervised_ref_lost_before_caller_revalidation", shape: "prior_ref", fault: "ref_loss"},
 		{name: "supervised_git_error_before_failure", shape: "dirty", fault: "first_read_tree"},
 		{name: "supervised_git_error_before_terminal", shape: "dirty", fault: "second_read_tree", snapshots: 1},
@@ -97,7 +97,7 @@ func TestCanceledRunSnapshotCommandSequence(t *testing.T) {
 				if slices.Equal(command.Args, []string{"check-ref-format", ref}) {
 					passes++
 				}
-				if !injected && slices.Equal(command.Args, []string{"read-tree", head}) &&
+				if !injected && slices.Equal(cancelSequenceArgs(command.Args), []string{"read-tree", head}) &&
 					(tc.fault == "first_read_tree" && passes == 1 || tc.fault == "second_read_tree" && passes == 2) {
 					injected = true
 					command.Args = []string{"read-tree", "refs/heads/missing-cancel-sequence-object"}
@@ -329,14 +329,14 @@ func assertCancelSequenceBoundaries(t *testing.T, calls []cancelCommandObservati
 	}
 	if shape == "clean" {
 		for pass := range 2 {
-			segment := calls[starts[pass] : starts[pass]+14]
-			want := []string{"check-ref-format", "rev-parse", "read-tree", "add", "write-tree", "rev-parse", "ls-files", "write-tree", "show-ref", "rev-parse", "rev-parse", "merge-base", "rev-parse", "merge-base"}
+			segment := calls[starts[pass] : starts[pass]+8]
+			want := []string{"check-ref-format", "rev-parse", "-c", "-c", "diff-index", "merge-base", "rev-parse", "merge-base"}
 			for i := range segment {
 				if segment[i].command.Args[0] != want[i] {
 					t.Errorf("clean pass=%d command=%d argv=%q want=%s", pass+1, i+1, segment[i].command.Args, want[i])
 				}
 			}
-			if !slices.Equal(segment[12].command.Args, []string{"rev-parse", "HEAD"}) || !strings.HasPrefix(segment[13].command.Args[3], "refs/heads/") {
+			if !slices.Equal(segment[6].command.Args, []string{"rev-parse", "HEAD"}) || !strings.HasPrefix(segment[7].command.Args[3], "refs/heads/") {
 				t.Fatal("missing caller HEAD/integration revalidation")
 			}
 		}
@@ -412,4 +412,11 @@ func assertCancelApprovedResume(t *testing.T, f fixture, r *Runner, approved *Ap
 		t.Fatal("resume changed source or approved bytes")
 	}
 	t.Logf("resume preserved delivery=%s receipt=%s digest=%s; terminal=done, supervision=review_blocked (no review requested)", resumed.Delivery(), approved.ReceiptID, approved.ContentDigest)
+}
+
+func cancelSequenceArgs(args []string) []string {
+	for len(args) >= 2 && args[0] == "-c" {
+		args = args[2:]
+	}
+	return args
 }
