@@ -49,6 +49,7 @@ type ProbeResult struct {
 	ExitCode int
 	Duration time.Duration
 	Tail     string // bounded tail of the executor output
+	Receipt  *Receipt
 }
 
 // ProbeCapability asks the adapter's executor to run a command in dir and
@@ -69,20 +70,26 @@ func ProbeCapability(ctx context.Context, backend Backend, adapter Adapter, rout
 		return ProbeResult{}, err
 	}
 	result, err := backend.Execute(ctx, Execution{Adapter: adapter, Request: request, Invocation: invocation, Timeout: timeout})
+	probe := ProbeResult{ExitCode: result.ExitCode, Duration: result.Duration, Tail: probeTail(result), Receipt: result.Receipt}
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return ProbeResult{}, ctxErr
+		if probe.Receipt == nil {
+			return ProbeResult{}, ctxErr
+		}
+		return probe, ctxErr
 	}
 	if err != nil {
-		return ProbeResult{}, err
+		return probe, err
 	}
-	probe := ProbeResult{ExitCode: result.ExitCode, Duration: result.Duration, Tail: probeTail(result)}
 	var after publication.WorktreeState
 	var afterErr error
 	if beforeErr == nil {
 		after, afterErr = probeWorktreeState(ctx, dir)
 	}
 	if err := ctx.Err(); err != nil {
-		return ProbeResult{}, err
+		if probe.Receipt == nil {
+			return ProbeResult{}, err
+		}
+		return probe, err
 	}
 	switch {
 	case beforeErr != nil:
@@ -100,7 +107,10 @@ func ProbeCapability(ctx context.Context, backend Backend, adapter Adapter, rout
 		probe.Pass = probe.Reason == ""
 	}
 	if err := ctx.Err(); err != nil {
-		return ProbeResult{}, err
+		if probe.Receipt == nil {
+			return ProbeResult{}, err
+		}
+		return probe, err
 	}
 	return probe, nil
 }

@@ -17,6 +17,34 @@ type probeBackend struct {
 	got Execution
 }
 
+type probeErrorBackend func(context.Context, Execution) (Result, error)
+
+func (b probeErrorBackend) Execute(ctx context.Context, e Execution) (Result, error) {
+	return b(ctx, e)
+}
+
+func TestProbeCapabilityKeepsShutdownReceipt(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "error", true: "canceled"}[canceled], func(t *testing.T) {
+			t.Parallel()
+			dir := gitRepo(t)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			receipt := &Receipt{Submission: Submission{State: SubmissionNotSubmitted}, Transport: Transport{Outcome: TransportFailed, Failure: "shutdown"}}
+			backend := probeErrorBackend(func(context.Context, Execution) (Result, error) {
+				if canceled {
+					cancel()
+				}
+				return Result{Receipt: receipt}, errors.New("shutdown unresolved")
+			})
+			probe, err := ProbeCapability(ctx, backend, probeAdapter(), ProbeRoute{}, dir, time.Minute)
+			if err == nil || probe.Receipt == nil || probe.Receipt.Transport.Failure != "shutdown" {
+				t.Fatalf("probe = %+v, error = %v", probe, err)
+			}
+		})
+	}
+}
+
 func (b *probeBackend) Execute(_ context.Context, e Execution) (Result, error) {
 	b.got = e
 	result := b.run(e)

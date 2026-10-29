@@ -61,6 +61,8 @@ const (
 	KindJudgeResult       journal.Kind = "judge_result"
 )
 
+const KindCapabilityProbeIntent journal.Kind = "capability_probe_intent"
+
 // Terminal states of a delivery.
 const (
 	StateDone         = "done"
