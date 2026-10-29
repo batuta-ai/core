@@ -2,6 +2,7 @@ package executor
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,12 +28,21 @@ func probeAdapter() Adapter {
 	return Adapter{Name: "fake", Run: "fake {model_flags} {brief}", Finished: "exit_code", LimitRegex: "usage limit"}
 }
 
+func probeTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func gitRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not on PATH")
 	}
-	dir := tempDir(t)
+	dir := probeTempDir(t)
 	if out, err := exec.Command("git", "-C", dir, "init", "-q").CombinedOutput(); err != nil {
 		t.Fatalf("git init: %v: %s", err, out)
 	}
@@ -85,7 +95,7 @@ func TestProbeCapabilityMarkerReasons(t *testing.T) {
 		{"extra field", dir, CapabilityMarker + " " + head + " copied\n", ProbeMarkerMismatch},
 		{"missing marker", dir, "command unavailable\n", ProbeNoMarker},
 		{"embedded marker", dir, "I will print " + CapabilityMarker + " " + head + " soon\n", ProbeNoMarker},
-		{"no repository", tempDir(t), CapabilityMarker + " " + head + "\n", ProbeNoRepository},
+		{"no repository", probeTempDir(t), CapabilityMarker + " " + head + "\n", ProbeNoRepository},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -189,7 +199,7 @@ func TestProbeCapabilityBoundsTail(t *testing.T) {
 	backend := &probeBackend{run: func(Execution) Result {
 		return Result{Stdout: []byte(strings.Repeat("x", 10000) + "\n" + CapabilityMarker)}
 	}}
-	probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, tempDir(t), time.Minute)
+	probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, probeTempDir(t), time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,7 +221,7 @@ func TestProbeCapabilityRedactsSecrets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			backend := &probeBackend{run: func(Execution) Result { return tt.result }}
-			probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, tempDir(t), time.Minute)
+			probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, probeTempDir(t), time.Minute)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -275,13 +285,98 @@ func TestProbeCapabilityTreeChanged(t *testing.T) {
 	}
 }
 
+func TestProbeCapabilityExistingFileContents(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		tracked bool
+		rewrite bool
+	}{
+		{"dirty tracked rewrite", true, true},
+		{"untracked rewrite", false, true},
+		{"unchanged dirty tracked", true, false},
+		{"unchanged untracked", false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := gitRepo(t)
+			name := "untracked.txt"
+			if tt.tracked {
+				name = "tracked.txt"
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("base-content"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				for _, args := range [][]string{{"add", name}, {"-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "tracked"}} {
+					if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+						t.Fatalf("git %v: %v: %s", args, err, out)
+					}
+				}
+			}
+			path := filepath.Join(dir, name)
+			if err := os.WriteFile(path, []byte("old-content"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			head := probeHead(t, dir)
+			backend := &probeBackend{run: func(Execution) Result {
+				if tt.rewrite {
+					if err := os.WriteFile(path, []byte("new-content"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return Result{Stdout: []byte(CapabilityMarker + " " + head + "\n")}
+			}}
+			probe, err := ProbeCapability(context.Background(), backend, probeAdapter(), ProbeRoute{}, dir, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tt.rewrite && (probe.Pass || probe.Reason != ProbeTreeChanged) {
+				t.Fatalf("rewrite probe = %+v, want tree_changed", probe)
+			}
+			if !tt.rewrite && (!probe.Pass || probe.Reason != "") {
+				t.Fatalf("unchanged probe = %+v, want pass", probe)
+			}
+		})
+	}
+}
+
+func TestProbeCapabilityCanceledAfterBackendSuccess(t *testing.T) {
+	t.Parallel()
+	for _, changeTree := range []bool{false, true} {
+		name := "unchanged tree"
+		if changeTree {
+			name = "changed tree"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := gitRepo(t)
+			head := probeHead(t, dir)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			backend := &probeBackend{run: func(Execution) Result {
+				if changeTree {
+					if err := os.WriteFile(filepath.Join(dir, "stray.txt"), []byte("changed"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				cancel()
+				return Result{Stdout: []byte(CapabilityMarker + " " + head + "\n")}
+			}}
+			probe, err := ProbeCapability(ctx, backend, probeAdapter(), ProbeRoute{}, dir, time.Minute)
+			if !errors.Is(err, context.Canceled) || probe != (ProbeResult{}) {
+				t.Fatalf("canceled probe = %+v, %v", probe, err)
+			}
+		})
+	}
+}
+
 func TestProbeCapabilityRunsRealSubprocess(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX shell fixture")
 	}
 	dir := gitRepo(t)
-	script := filepath.Join(tempDir(t), "capable")
+	script := filepath.Join(probeTempDir(t), "capable")
 	if err := os.WriteFile(script, []byte("#!/bin/sh\nsha=$(git rev-parse HEAD) || exit 1\nprintf 'BATUTA-CAPABLE %s\\n' \"$sha\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}

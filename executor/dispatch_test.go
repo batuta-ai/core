@@ -97,6 +97,24 @@ func TestDispatchPreflightCanceled(t *testing.T) {
 	}
 }
 
+func TestDispatchPreflightCanceledAfterBackendSuccess(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	opts := dispatchTestOptions(t, dispatchBackendFunc(func(context.Context, Execution) (Result, error) {
+		calls++
+		cancel()
+		return Result{ExitCode: 0, Finished: true}, nil
+	}))
+	opts.Preflight = true
+	report, err := Dispatch(ctx, opts)
+	t.Cleanup(func() { os.RemoveAll(report.Artifacts.Directory) })
+	if !errors.Is(err, context.Canceled) || calls != 1 || report.ExitClass != "uncertain" || report.ExitCode != 130 || report.Preflight != nil {
+		t.Fatalf("canceled preflight: calls=%d report=%+v err=%v", calls, report, err)
+	}
+}
+
 func TestDispatchPreflightUnavailable(t *testing.T) {
 	opts := dispatchTestOptions(t, dispatchBackendFunc(func(context.Context, Execution) (Result, error) {
 		return Result{}, errors.New("cannot start")
