@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0-beta.61](https://github.com/batuta-ai/core/compare/v1.1.0-beta.60...v1.1.0-beta.61) (2026-10-29)
+
+
+### Bug Fixes
+
+* **council:** explain incomplete critiques and cross-reviews truthfully ([d02e289](https://github.com/batuta-ai/core/commit/d02e28903f2cf695d740f8c6f673b58d26c797f1))
+
 ## [1.1.0-beta.60](https://github.com/batuta-ai/core/compare/v1.1.0-beta.59...v1.1.0-beta.60) (2026-10-29)
 
 
