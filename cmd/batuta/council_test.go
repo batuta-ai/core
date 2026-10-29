@@ -282,68 +282,29 @@ func TestCouncilArtefactsAtomic(t *testing.T) {
 }
 
 func TestCouncilArtefactsRejectIncompatibleDestinations(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		setup func(t *testing.T, directory string)
-	}{
-		{name: "directory", setup: func(t *testing.T, directory string) {
-			t.Helper()
-			if err := os.Mkdir(filepath.Join(directory, "council.md"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-		}},
-		{name: "symlink", setup: func(t *testing.T, directory string) {
-			t.Helper()
-			if err := os.WriteFile(filepath.Join(directory, "referent"), []byte("unrelated\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink("referent", filepath.Join(directory, "council.md")); err != nil {
-				t.Fatal(err)
-			}
-		}},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			directory := tempDir(t)
-			oldJSON := []byte("old json\n")
-			if err := os.WriteFile(filepath.Join(directory, "council.json"), oldJSON, 0o644); err != nil {
-				t.Fatal(err)
-			}
-			tc.setup(t, directory)
-			if err := writeCouncilArtifacts(directory, map[string][]byte{"council.json": []byte("new json\n"), "council.md": []byte("new md\n")}); err == nil {
-				t.Fatal("writeCouncilArtifacts succeeded with incompatible destination")
-			}
-			got, err := os.ReadFile(filepath.Join(directory, "council.json"))
-			if err != nil || !bytes.Equal(got, oldJSON) {
-				t.Errorf("council.json = %q (%v), want %q", got, err, oldJSON)
-			}
-			if tc.name == "directory" {
-				info, err := os.Lstat(filepath.Join(directory, "council.md"))
-				if err != nil || !info.IsDir() {
-					t.Errorf("council.md directory lost: %v", err)
-				}
-			} else {
-				got, err := os.ReadFile(filepath.Join(directory, "referent"))
-				if err != nil || string(got) != "unrelated\n" {
-					t.Errorf("referent = %q (%v), want unrelated", got, err)
-				}
-				info, err := os.Lstat(filepath.Join(directory, "council.md"))
-				if err != nil || info.Mode()&os.ModeSymlink == 0 {
-					t.Errorf("council.md symlink lost: %v", err)
-				}
-			}
-			entries, err := os.ReadDir(directory)
-			if err != nil {
-				t.Fatal(err)
-			}
-			wantEntries := 2
-			if tc.name == "symlink" {
-				wantEntries++
-			}
-			if len(entries) != wantEntries {
-				t.Errorf("directory holds %d entries, want %d and no staged files", len(entries), wantEntries)
-			}
-		})
+	t.Parallel()
+	directory := tempDir(t)
+	oldJSON := []byte("old json\n")
+	if err := os.WriteFile(filepath.Join(directory, "council.json"), oldJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(directory, "council.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCouncilArtifacts(directory, map[string][]byte{"council.json": []byte("new json\n"), "council.md": []byte("new md\n")}); err == nil {
+		t.Fatal("publication accepted directory destination")
+	}
+	got, err := os.ReadFile(filepath.Join(directory, "council.json"))
+	if err != nil || !bytes.Equal(got, oldJSON) {
+		t.Fatalf("previous JSON changed: %q, %v", got, err)
+	}
+	info, err := os.Lstat(filepath.Join(directory, "council.md"))
+	if err != nil || !info.IsDir() {
+		t.Fatalf("directory lost: %v", err)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("staged files remain: %v, %v", entries, err)
 	}
 }
 

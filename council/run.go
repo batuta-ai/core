@@ -50,7 +50,7 @@ type councilSession struct {
 
 type councilSessionResult struct {
 	output   string
-	tail     string
+	tail     []string
 	exitCode int
 	failure  *CouncilFailure
 	treeErr  error
@@ -135,7 +135,7 @@ func Run(ctx context.Context, plan string, conventions []string, table routing.R
 		}
 		critique, err := ParseCritique(first[i].output, session.label)
 		if err != nil {
-			result.Failures = append(result.Failures, *councilFailure(session.label, "critique", "unparsable answer", &first[i].exitCode, first[i].tail))
+			result.Failures = append(result.Failures, *councilFailure(session.label, "critique", "unparsable answer", &first[i].exitCode, first[i].tail...))
 			continue
 		}
 		result.Critiques = append(result.Critiques, critique)
@@ -158,7 +158,7 @@ func Run(ctx context.Context, plan string, conventions []string, table routing.R
 		}
 		review, err := ParseCrossReview(second[i].output, result.Critiques, session.label)
 		if err != nil {
-			result.Failures = append(result.Failures, *councilFailure(session.label, "cross-review", "unparsable answer", &second[i].exitCode, second[i].tail))
+			result.Failures = append(result.Failures, *councilFailure(session.label, "cross-review", "unparsable answer", &second[i].exitCode, second[i].tail...))
 			continue
 		}
 		result.Reviews = append(result.Reviews, review)
@@ -172,7 +172,7 @@ func Run(ctx context.Context, plan string, conventions []string, table routing.R
 	if final[0].failure != nil {
 		result.Failures = append(result.Failures, *final[0].failure)
 	} else if strings.TrimSpace(final[0].output) == "" {
-		result.Failures = append(result.Failures, *councilFailure(chair.label, "chairman", "empty chairman answer", &final[0].exitCode, final[0].tail))
+		result.Failures = append(result.Failures, *councilFailure(chair.label, "chairman", "empty chairman answer", &final[0].exitCode, final[0].tail...))
 	} else {
 		result.Synthesis = final[0].output
 	}
@@ -223,19 +223,19 @@ func runCouncilSession(ctx context.Context, stage string, session councilSession
 		output = string(outcome.RawStdout)
 	}
 	if runErr != nil {
-		return councilSessionResult{failure: councilFailure(session.label, stage, "session failed to start", &outcome.ExitCode, output+"\n"+string(outcome.Stderr))}
+		return councilSessionResult{failure: councilFailure(session.label, stage, "session failed to start", &outcome.ExitCode, output, string(outcome.Stderr))}
 	}
 	if outcome.TimedOut {
-		return councilSessionResult{failure: councilFailure(session.label, stage, "session timed out", &outcome.ExitCode, output+"\n"+string(outcome.Stderr))}
+		return councilSessionResult{failure: councilFailure(session.label, stage, "session timed out", &outcome.ExitCode, output, string(outcome.Stderr))}
 	}
 	if outcome.RateLimited {
-		return councilSessionResult{failure: councilFailure(session.label, stage, "session hit a usage or rate limit", &outcome.ExitCode, output+"\n"+string(outcome.Stderr))}
+		return councilSessionResult{failure: councilFailure(session.label, stage, "session hit a usage or rate limit", &outcome.ExitCode, output, string(outcome.Stderr))}
 	}
 	if !outcome.Finished {
-		return councilSessionResult{failure: councilFailure(session.label, stage, fmt.Sprintf("session exited with code %d", outcome.ExitCode), &outcome.ExitCode, output+"\n"+string(outcome.Stderr))}
+		return councilSessionResult{failure: councilFailure(session.label, stage, fmt.Sprintf("session exited with code %d", outcome.ExitCode), &outcome.ExitCode, output, string(outcome.Stderr))}
 	}
 	if outcome.Truncated || outcome.Question != "" {
-		return councilSessionResult{failure: councilFailure(session.label, stage, "session output was truncated or requested input", &outcome.ExitCode, output+"\n"+string(outcome.Stderr))}
+		return councilSessionResult{failure: councilFailure(session.label, stage, "session output was truncated or requested input", &outcome.ExitCode, output, string(outcome.Stderr))}
 	}
 	return councilOutputResult(stage, session.label, outcome)
 }
@@ -257,11 +257,11 @@ func councilOutputResult(stage, label string, outcome executor.Result) councilSe
 			if outcome.DecoderDroppedLines > 0 && len(decodedCritique.Findings) == 0 && len(rawCritique.Findings) > 0 && decodedCritique.Verdict == rawCritique.Verdict {
 				output = raw
 			} else {
-				return councilSessionResult{failure: councilFailure(label, stage, "decoded/raw answer conflict", &outcome.ExitCode, decoded+"\n"+raw+"\n"+string(outcome.Stderr))}
+				return councilSessionResult{failure: councilFailure(label, stage, "decoded/raw answer conflict", &outcome.ExitCode, decoded, raw, string(outcome.Stderr))}
 			}
 		}
 	}
-	return councilSessionResult{output: output, tail: output + "\n" + string(outcome.Stderr), exitCode: outcome.ExitCode}
+	return councilSessionResult{output: output, tail: []string{output, string(outcome.Stderr)}, exitCode: outcome.ExitCode}
 }
 
 func checkCouncilTree(ctx context.Context, git publication.GitClient, root string, baseline publication.WorktreeState) error {
@@ -275,8 +275,12 @@ func checkCouncilTree(ctx context.Context, git publication.GitClient, root strin
 	return nil
 }
 
-func councilFailure(label, stage, reason string, code *int, output string) *CouncilFailure {
-	tail := executor.Tail([]byte(executor.DropSecretFieldLines(output)), 40)
+func councilFailure(label, stage, reason string, code *int, outputs ...string) *CouncilFailure {
+	redacted := make([]string, len(outputs))
+	for i, output := range outputs {
+		redacted[i] = executor.DropSecretFieldLines(output)
+	}
+	tail := executor.Tail([]byte(strings.Join(redacted, "\n")), 40)
 	if len(tail) > 4096 {
 		tail = tail[len(tail)-4096:]
 	}

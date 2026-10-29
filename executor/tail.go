@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -11,6 +12,8 @@ var (
 	secretLine   = regexp.MustCompile(`^[A-Z][A-Z0-9_]*=`)
 	secretAssign = regexp.MustCompile(`[A-Z][A-Z0-9_]*=`)
 	secretField  = regexp.MustCompile(`(?i)"(?:[^"]*[_-])?(?:token|api_?key|password|secret|access_key|private_key)\\?"\s*:`)
+	jsonField    = regexp.MustCompile(`"(?:[^"\\]|\\.)*"\s*:`)
+	secretName   = regexp.MustCompile(`(?is)^(?:.*[_-])?(?:token|api_?key|password|secret|access_key|private_key)$`)
 	absolutePath = regexp.MustCompile(`(?:[A-Za-z]:)?(?:/|\\)[^\s"'=]+`)
 )
 
@@ -56,13 +59,21 @@ func DropSecretBearingLines(value string) string {
 // DropSecretFieldLines removes every line that holds a secret-shaped
 // assignment anywhere in it or any part of a JSON field whose key names a
 // secret. An incomplete secret value suppresses the remaining output.
-// Escaped key names are not decoded.
 func DropSecretFieldLines(value string) string {
 	if value == "" {
 		return ""
 	}
 	var spans [][2]int
-	for _, match := range secretField.FindAllStringIndex(value, -1) {
+	matches := secretField.FindAllStringIndex(value, -1)
+	for _, match := range jsonField.FindAllStringIndex(value, -1) {
+		keyJSON := strings.TrimSpace(strings.TrimSuffix(value[match[0]:match[1]], ":"))
+		var key string
+		if json.Unmarshal([]byte(keyJSON), &key) == nil && secretName.MatchString(key) {
+			matches = append(matches, match)
+		}
+	}
+	sort.Slice(matches, func(i, j int) bool { return matches[i][0] < matches[j][0] })
+	for _, match := range matches {
 		decoder := json.NewDecoder(strings.NewReader(value[match[1]:]))
 		var field json.RawMessage
 		end := len(value)

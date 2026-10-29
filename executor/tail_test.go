@@ -28,6 +28,23 @@ func TestDropSecretFieldLinesMultiline(t *testing.T) {
 	}
 }
 
+func TestDropSecretFieldLinesEscapedKeys(t *testing.T) {
+	t.Parallel()
+	for _, key := range []string{`tok\u0065n`, `api\u005fkey`, `client\u005fsecret`, `a\u000a\u005ftoken`} {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+			in := "before\n{\"" + key + "\":\n\"synthetic-secret\"}\nafter"
+			if got := DropSecretFieldLines(in); got != "before\nafter" {
+				t.Fatalf("escaped key not redacted: %q", got)
+			}
+		})
+	}
+	in := `{"tok\u0065nizer":12}`
+	if got := DropSecretFieldLines(in); got != in {
+		t.Fatalf("benign escaped key changed: %q", got)
+	}
+}
+
 func TestRedactPathsKeepsRelative(t *testing.T) {
 	t.Parallel()
 	cases := []struct{ name, in, workspace, want string }{
